@@ -7,7 +7,13 @@ const PORT = process.env.PORT || 3000;
 const TICK_RATE = 20;
 const SEED_FILE = path.join(__dirname, 'world_seed.json');
 let WORLD_SEED;
-try { WORLD_SEED = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8')).seed; } catch (e) { WORLD_SEED = Math.floor(Math.random() * 999999); fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); }
+try {
+  const raw = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8'));
+  WORLD_SEED = Number(raw.seed) >>> 0;
+} catch (e) {
+  WORLD_SEED = (Math.floor(Math.random() * 0x100000000) ^ (Date.now() >>> 0)) >>> 0;
+  try { fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); } catch (e2) {}
+}
 
 const players = new Map();
 let nextId = 1;
