@@ -889,6 +889,46 @@ function hashChunk(cx, cz) {
   return (h >>> 0) / 4294967296;
 }
 
+/** Deterministic island data for a chunk (matches generateIsland). Used for world map so all players see the full archipelago in view. */
+function getProceduralIslandMeta(cx, cz) {
+  const h = hashChunk(cx, cz);
+  if (h > ISLAND_CHANCE) return null;
+  const worldX = cx * CHUNK_SIZE, worldZ = cz * CHUNK_SIZE;
+  const sizeNoise = new SimplexNoise(cx * 123 + cz * 456);
+  const sizeFactor = sizeNoise.noise2D(cx * 0.5, cz * 0.5) * 0.5 + 0.5;
+  const islandRadius = 15 + sizeFactor * 100 + h * 30;
+  const islandHeight = 3 + sizeFactor * 18 + h * 8;
+  const meta = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
+  if (islandRadius > 50 && h < 0.12) {
+    meta.hasTown = true;
+    const ln = new SimplexNoise(cx * 1000 + cz);
+    meta.townName = PORT_TOWN_NAMES[((cx * 73856093 ^ cz * 19349663 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_TOWN_NAMES.length];
+    meta.dockAngle = ln.noise2D(cx + 99, cz + 99) * Math.PI;
+    const dockDist = islandRadius * 0.95;
+    meta.dockX = worldX + Math.cos(meta.dockAngle) * dockDist;
+    meta.dockZ = worldZ + Math.sin(meta.dockAngle) * dockDist;
+  }
+  return meta;
+}
+
+function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, centerWx, centerWz) {
+  let minCx = Math.floor(minWx / CHUNK_SIZE), maxCx = Math.floor(maxWx / CHUNK_SIZE);
+  let minCz = Math.floor(minWz / CHUNK_SIZE), maxCz = Math.floor(maxWz / CHUNK_SIZE);
+  const spanX = maxCx - minCx + 1, spanZ = maxCz - minCz + 1;
+  const maxSpan = 100;
+  const ccx = Math.floor(((centerWx != null ? centerWx : (minWx + maxWx) * 0.5)) / CHUNK_SIZE);
+  const ccz = Math.floor(((centerWz != null ? centerWz : (minWz + maxWz) * 0.5)) / CHUNK_SIZE);
+  const half = maxSpan >> 1;
+  if (spanX > maxSpan) { minCx = ccx - half; maxCx = ccx + half; }
+  if (spanZ > maxSpan) { minCz = ccz - half; maxCz = ccz + half; }
+  for (let cxi = minCx; cxi <= maxCx; cxi++) {
+    for (let czi = minCz; czi <= maxCz; czi++) {
+      const meta = getProceduralIslandMeta(cxi, czi);
+      if (meta) fn(meta);
+    }
+  }
+}
+
 function createPalmTree(x, y, z) {
   const g = new THREE.Group();
   const height = 4 + Math.random() * 3;
@@ -921,14 +961,12 @@ function generateIsland(cx, cz) {
   const key = `${cx},${cz}`;
   if (G.chunks.has(key)) return;
   G.chunks.set(key, true);
-  const h = hashChunk(cx, cz);
-  if (h > ISLAND_CHANCE) return;
+  const meta0 = getProceduralIslandMeta(cx, cz);
+  if (!meta0) return;
 
-  const worldX = cx * CHUNK_SIZE, worldZ = cz * CHUNK_SIZE;
-  const sizeNoise = new SimplexNoise(cx * 123 + cz * 456);
-  const sizeFactor = sizeNoise.noise2D(cx * 0.5, cz * 0.5) * 0.5 + 0.5;
-  const islandRadius = 15 + sizeFactor * 100 + h * 30;
-  const islandHeight = 3 + sizeFactor * 18 + h * 8;
+  const worldX = meta0.worldX, worldZ = meta0.worldZ;
+  const islandRadius = meta0.radius, islandHeight = meta0.maxH;
+  const h = meta0.h;
   const group = new THREE.Group();
   group.userData = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight };
 
@@ -1044,14 +1082,11 @@ function generateIsland(cx, cz) {
     group.add(crate);
   }
 
-  const hasTown = islandRadius > 50 && h < 0.12;
-  if (hasTown) {
+  if (meta0.hasTown) {
+    const dockAngle = meta0.dockAngle;
+    const dockX = meta0.dockX, dockZ = meta0.dockZ;
     group.userData.hasTown = true;
-    group.userData.townName = PORT_TOWN_NAMES[((cx * 73856093 ^ cz * 19349663 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_TOWN_NAMES.length];
-    const dockAngle = ln.noise2D(cx + 99, cz + 99) * Math.PI;
-    const dockDist = islandRadius * 0.95;
-    const dockX = worldX + Math.cos(dockAngle) * dockDist;
-    const dockZ = worldZ + Math.sin(dockAngle) * dockDist;
+    group.userData.townName = meta0.townName;
     group.userData.dockX = dockX; group.userData.dockZ = dockZ;
 
     const dockGeo = new THREE.BoxGeometry(5, 0.4, 14);
@@ -1532,9 +1567,9 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   const sx = x + ndx * muzzle;
   const sy = y + 0.06;
   const sz = z + ndz * muzzle;
-  const nudge = 0.12;
+  const nudge = 0.24;
   const qx = Math.floor(sx * 1000), qy = Math.floor(sy * 1000), qz = Math.floor(sz * 1000);
-  for (let i = 0; i < 11; i++) {
+  for (let i = 0; i < 18; i++) {
     const r0 = fxHash01(qx, qy, qz, i * 3 + 11);
     const r1 = fxHash01(qx, qy, qz, i * 3 + 12);
     const r2 = fxHash01(qx, qy, qz, i * 3 + 13);
@@ -1542,17 +1577,17 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
     const r4 = fxHash01(qx, qy, qz, i * 3 + 15);
     const r5 = fxHash01(qx, qy, qz, i * 3 + 16);
     const sm = new THREE.Mesh(
-      new THREE.SphereGeometry(0.08 + r0 * 0.12, 4, 4),
-      new THREE.MeshBasicMaterial({ color: i < 5 ? 0xe8e8e8 : 0x8a8a8a, transparent: true, opacity: 0.52, depthWrite: false })
+      new THREE.SphereGeometry(0.16 + r0 * 0.22, 6, 5),
+      new THREE.MeshBasicMaterial({ color: i < 8 ? 0xeeeeee : 0x9a9a9a, transparent: true, opacity: 0.5, depthWrite: false })
     );
-    sm.position.set((r1 - 0.5) * nudge, (r2 - 0.5) * nudge * 0.45, (r3 - 0.5) * nudge);
-    sm.userData.vx = ndx * (0.85 + r4 * 0.55) + (r5 - 0.5) * 0.12;
-    sm.userData.vy = 0.12 + fxHash01(qx, qy, qz, i * 3 + 17) * 0.45;
-    sm.userData.vz = ndz * (0.85 + fxHash01(qx, qy, qz, i * 3 + 18) * 0.55) + (fxHash01(qx, qy, qz, i * 3 + 19) - 0.5) * 0.12;
-    const lf = 1.25 + fxHash01(qx, qy, qz, i * 3 + 20) * 0.95;
+    sm.position.set((r1 - 0.5) * nudge, (r2 - 0.5) * nudge * 0.5, (r3 - 0.5) * nudge);
+    sm.userData.vx = ndx * (0.55 + r4 * 0.35) + (r5 - 0.5) * 0.1;
+    sm.userData.vy = 0.1 + fxHash01(qx, qy, qz, i * 3 + 17) * 0.38;
+    sm.userData.vz = ndz * (0.55 + fxHash01(qx, qy, qz, i * 3 + 18) * 0.35) + (fxHash01(qx, qy, qz, i * 3 + 19) - 0.5) * 0.1;
+    const lf = 1.55 + fxHash01(qx, qy, qz, i * 3 + 20) * 1.15;
     sm.userData.life = lf;
     sm.userData.life0 = lf;
-    sm.userData.drag = 0.88;
+    sm.userData.drag = 0.9;
     sg.add(sm);
   }
   sg.position.set(sx, sy, sz);
@@ -1573,8 +1608,8 @@ function updateCannonSmoke(dt) {
       ch.position.z += ch.userData.vz * dt;
       ch.userData.vy += 0.22 * dt;
       const t = 1 - ch.userData.life / Math.max(0.001, ch.userData.life0 || 1);
-      ch.scale.setScalar(1 + t * 2.8);
-      if (ch.material) ch.material.opacity = Math.max(0, (ch.userData.life / (ch.userData.life0 || 1)) * 0.52);
+      ch.scale.setScalar(1 + t * 4.5);
+      if (ch.material) ch.material.opacity = Math.max(0, (ch.userData.life / (ch.userData.life0 || 1)) * 0.5);
       if (ch.userData.life > 0) any = true;
     });
     if (!any) {
@@ -1662,8 +1697,9 @@ function npcFireAtPlayer(npc) {
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
   const localX = side * (npcSpec.hullW * 0.55 + 0.6);
   const wx = npc.x + localX * cosR;
-  const wz = npc.z + localX * sinR;
-  const dirX = side * cosR, dirZ = side * sinR;
+  const wz = npc.z - localX * sinR;
+  const broadsideAngle = npc.rotation + side * Math.PI / 2;
+  const dirX = Math.sin(broadsideAngle), dirZ = Math.cos(broadsideAngle);
   const cannonY = (npc.mesh?.position.y || SEA_LEVEL + 0.5) + npcSpec.hullH * 0.6;
   spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
   fireCannonball(wx, wz, dirX, dirZ, cannonY, 'npc');
@@ -2229,17 +2265,17 @@ window.addEventListener('touchend', e => {
   if (e.touches.length < 2) pinchDist = 0;
 });
 
-document.getElementById('touch-port')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(1); }, { passive: false });
-document.getElementById('touch-starboard')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(-1); }, { passive: false });
+document.getElementById('touch-port')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(-1); }, { passive: false });
+document.getElementById('touch-starboard')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(1); }, { passive: false });
 document.getElementById('touch-edge-left')?.addEventListener('touchstart', e => {
   if (G.mobileControlScheme !== 3 || G.mode !== 'playing') return;
   e.preventDefault();
-  doFireSide(1);
+  doFireSide(-1);
 }, { passive: false });
 document.getElementById('touch-edge-right')?.addEventListener('touchstart', e => {
   if (G.mobileControlScheme !== 3 || G.mode !== 'playing') return;
   e.preventDefault();
-  doFireSide(-1);
+  doFireSide(1);
 }, { passive: false });
 document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.max(12, G.camera.targetZoom - 12); }, { passive: false });
 document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.min(200, G.camera.targetZoom + 12); }, { passive: false });
@@ -2262,7 +2298,7 @@ function pcBroadsideSideFromPointer(clientX, clientY) {
   const c0 = worldToScreenClient(cx, y, cz);
   const d = 14;
   const cosR = Math.cos(rot), sinR = Math.sin(rot);
-  const starS = worldToScreenClient(cx + cosR * d, y, cz + sinR * d);
+  const starS = worldToScreenClient(cx + cosR * d, y, cz - sinR * d);
   let sdx = starS.x - c0.x, sdy = starS.y - c0.y;
   if (sdx * sdx + sdy * sdy < 100) {
     const bowS = worldToScreenClient(cx + sinR * d, y, cz + cosR * d);
@@ -2413,8 +2449,8 @@ function doFireSide(fireSide) {
     const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
     const localX = fireSide * (spec.hullW * 0.55 + 0.6);
 
-    const wx = G.player.x + localX * cosR - localZ * sinR;
-    const wz = G.player.z + localX * sinR + localZ * cosR;
+    const wx = G.player.x + localX * cosR + localZ * sinR;
+    const wz = G.player.z - localX * sinR + localZ * cosR;
 
     spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
     fireCannonball(wx, wz, dirX, dirZ, cannonY, 'player', G.myId);
@@ -3474,8 +3510,10 @@ function drawFullmap() {
     for (let i = -1; i < h / gs + 2; i++) { ctx.beginPath(); ctx.moveTo(0, oz + i * gs); ctx.lineTo(w, oz + i * gs); ctx.stroke(); }
   }
 
-  islandGroup.children.forEach(g => {
-    const d = g.userData;
+  const pad = CHUNK_SIZE * 1.5;
+  const bMinX = centerX - w / (2 * s) - pad, bMaxX = centerX + w / (2 * s) + pad;
+  const bMinZ = centerZ - h / (2 * s) - pad, bMaxZ = centerZ + h / (2 * s) + pad;
+  forEachProceduralIslandInWorldBounds(bMinX, bMaxX, bMinZ, bMaxZ, d => {
     const sx = cx + (d.worldX - centerX) * s, sy = cy + (d.worldZ - centerZ) * s;
     if (sx < -50 || sx > w + 50 || sy < -50 || sy > h + 50) return;
     const ir = Math.max(4, d.radius * s);
@@ -3498,17 +3536,15 @@ function drawFullmap() {
     }
     ctx.closePath(); ctx.fill();
     ctx.shadowBlur = 0;
-  });
-
-  G.islands.forEach(isl => {
-    if (!isl.hasTown) return;
-    const tx = cx + (isl.dockX - centerX) * s, ty = cy + (isl.dockZ - centerZ) * s;
-    if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
-    ctx.fillStyle = '#e8c050'; ctx.fillRect(tx - 3, ty - 3, 6, 6);
-    ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
-    ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
-    ctx.fillText(isl.townName, tx, ty - 7);
-  });
+    if (d.hasTown) {
+      const tx = cx + (d.dockX - centerX) * s, ty = cy + (d.dockZ - centerZ) * s;
+      if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
+      ctx.fillStyle = '#e8c050'; ctx.fillRect(tx - 3, ty - 3, 6, 6);
+      ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
+      ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
+      ctx.fillText(d.townName, tx, ty - 7);
+    }
+  }, centerX, centerZ);
 
   G.npcs.forEach(n => {
     if (n.sinking) return;
@@ -3623,8 +3659,11 @@ function drawMinimap() {
       ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w, ly); ctx.stroke();
     }
   }
-  islandGroup.children.forEach(g => {
-    const d = g.userData; const sx = cx + (d.worldX - G.player.x) * s, sy = cy + (d.worldZ - G.player.z) * s;
+  const mmPad = CHUNK_SIZE * 1.5;
+  const mmMinX = G.player.x - w / (2 * s) - mmPad, mmMaxX = G.player.x + w / (2 * s) + mmPad;
+  const mmMinZ = G.player.z - h / (2 * s) - mmPad, mmMaxZ = G.player.z + h / (2 * s) + mmPad;
+  forEachProceduralIslandInWorldBounds(mmMinX, mmMaxX, mmMinZ, mmMaxZ, d => {
+    const sx = cx + (d.worldX - G.player.x) * s, sy = cy + (d.worldZ - G.player.z) * s;
     if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) return;
     const ir = Math.max(2, d.radius * s);
     const pts = 12;
@@ -3644,15 +3683,14 @@ function drawMinimap() {
       p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
     }
     ctx.closePath(); ctx.fill();
-  });
-  G.islands.forEach(isl => {
-    if (!isl.hasTown) return;
-    const tx = cx + (isl.dockX - G.player.x) * s, ty = cy + (isl.dockZ - G.player.z) * s;
-    if (tx > 0 && tx < w && ty > 0 && ty < h) {
-      ctx.fillStyle = '#e8c050'; ctx.fillRect(tx - 2, ty - 2, 4, 4);
-      if (s > 0.05) { ctx.fillStyle = '#e8c050'; ctx.font = '7px Georgia'; ctx.textAlign = 'center'; ctx.fillText(isl.townName, tx, ty - 5); }
+    if (d.hasTown) {
+      const tx = cx + (d.dockX - G.player.x) * s, ty = cy + (d.dockZ - G.player.z) * s;
+      if (tx > 0 && tx < w && ty > 0 && ty < h) {
+        ctx.fillStyle = '#e8c050'; ctx.fillRect(tx - 2, ty - 2, 4, 4);
+        if (s > 0.05) { ctx.fillStyle = '#e8c050'; ctx.font = '7px Georgia'; ctx.textAlign = 'center'; ctx.fillText(d.townName, tx, ty - 5); }
+      }
     }
-  });
+  }, G.player.x, G.player.z);
   G.npcs.forEach(n => { if (n.sinking) return; const sx = cx + (n.x - G.player.x) * s, sy = cy + (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
   G.otherPlayers.forEach(p => { const sx = cx + (p.x - G.player.x) * s, sy = cy + (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
