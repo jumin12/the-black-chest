@@ -642,38 +642,45 @@ function spawnSeagulls(wx, wz, count) {
 }
 
 const fishSchools = [];
+const schoolLeaders = [];
+
 function spawnFish(wx, wz, count) {
-  const schoolColor = [0x66aadd, 0xaacc66, 0xddaa55, 0x55dddd, 0xee8844][Math.floor(Math.random() * 5)];
-  const schoolPhase = Math.random() * Math.PI * 2;
-  const schoolRadius = 5 + Math.random() * 10;
-  const schoolSpeed = 0.5 + Math.random() * 0.4;
-  const schoolDepth = SEA_LEVEL + 0.05;
+  const schoolColor = [0x5599cc, 0x99bb55, 0xcc9944, 0x44bbbb, 0xdd7733][Math.floor(Math.random() * 5)];
+  const depth = SEA_LEVEL - 0.1 - Math.random() * 0.2;
+  const leader = { x: wx, z: wz, dir: Math.random() * Math.PI * 2, speed: 2 + Math.random() * 2, turnTimer: 3 + Math.random() * 5, depth };
+  schoolLeaders.push(leader);
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.4, 4), new THREE.MeshBasicMaterial({ color: schoolColor }));
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.35, 4), new THREE.MeshBasicMaterial({ color: schoolColor }));
     body.rotation.z = Math.PI / 2; fg.add(body);
-    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 0.12), new THREE.MeshBasicMaterial({ color: schoolColor, side: THREE.DoubleSide }));
-    tail.position.set(-0.22, 0, 0); fg.add(tail);
-    fg.position.set(wx, schoolDepth, wz);
-    fg.userData.cx = wx; fg.userData.cz = wz;
-    fg.userData.phase = schoolPhase + i * 0.3;
-    fg.userData.radius = schoolRadius + (Math.random() - 0.5) * 3;
-    fg.userData.speed = schoolSpeed + (Math.random() - 0.5) * 0.1;
-    fg.userData.depth = schoolDepth + (Math.random() - 0.5) * 0.3;
-    fg.userData.offsetX = (Math.random() - 0.5) * 2;
-    fg.userData.offsetZ = (Math.random() - 0.5) * 2;
+    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.1), new THREE.MeshBasicMaterial({ color: schoolColor, side: THREE.DoubleSide }));
+    tail.position.set(-0.2, 0, 0); fg.add(tail);
+    fg.position.set(wx + (Math.random() - 0.5) * 3, depth, wz + (Math.random() - 0.5) * 3);
+    fg.userData.leader = leader;
+    fg.userData.offsetX = (Math.random() - 0.5) * 2.5;
+    fg.userData.offsetZ = (Math.random() - 0.5) * 2.5;
+    fg.userData.wiggle = Math.random() * Math.PI * 2;
     scene.add(fg); fishSchools.push(fg);
   }
 }
 
 function updateFish(dt) {
+  schoolLeaders.forEach(l => {
+    l.turnTimer -= dt;
+    if (l.turnTimer <= 0) { l.dir += (Math.random() - 0.5) * 2; l.turnTimer = 2 + Math.random() * 6; }
+    l.x += Math.sin(l.dir) * l.speed * dt;
+    l.z += Math.cos(l.dir) * l.speed * dt;
+  });
   fishSchools.forEach(f => {
-    f.userData.phase += f.userData.speed * dt;
-    const p = f.userData.phase;
-    f.position.x = f.userData.cx + Math.cos(p) * f.userData.radius + f.userData.offsetX;
-    f.position.z = f.userData.cz + Math.sin(p) * f.userData.radius + f.userData.offsetZ;
-    f.position.y = f.userData.depth + Math.sin(p * 2.5) * 0.2;
-    f.rotation.y = p + Math.PI / 2;
+    const l = f.userData.leader;
+    const tx = l.x + f.userData.offsetX, tz = l.z + f.userData.offsetZ;
+    f.position.x += (tx - f.position.x) * 2 * dt;
+    f.position.z += (tz - f.position.z) * 2 * dt;
+    f.position.y = l.depth + Math.sin(G.time * 3 + f.userData.wiggle) * 0.08;
+    f.userData.wiggle += dt * 5;
+    const dx = tx - f.position.x, dz = tz - f.position.z;
+    if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) f.rotation.y = Math.atan2(dx, dz);
+    f.children[1].rotation.y = Math.sin(G.time * 8 + f.userData.wiggle) * 0.4;
   });
 }
 
@@ -1156,7 +1163,7 @@ function connectToServer() {
   ws.onopen = () => {
     notify('Connected to server');
     const capName = G.player.crew[0]?.name || 'Pirate';
-    ws.send(JSON.stringify({ type: 'set_name', name: capName }));
+    ws.send(JSON.stringify({ type: 'set_name', name: capName, shipName: G.player.shipName }));
   };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
@@ -1172,6 +1179,15 @@ function connectToServer() {
       case 'ship_update': { const p = G.otherPlayers.get(msg.id); if (p) { p.shipType = msg.shipType; p.shipParts = msg.shipParts; if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } } break; }
       case 'chat': addChatMessage(msg.name, msg.text); break;
       case 'cannonball': fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player'); break;
+      case 'npc_sync': {
+        if (msg.npcs) msg.npcs.forEach((nd, idx) => {
+          if (idx < G.npcs.length && !G.npcs[idx].sinking) {
+            G.npcs[idx].x = nd.x; G.npcs[idx].z = nd.z; G.npcs[idx].rotation = nd.r;
+            G.npcs[idx].health = nd.h; G.npcs[idx].aggro = nd.aggro;
+          }
+        });
+        break;
+      }
       case 'ship_sunk': {
         notify(`${msg.name}'s ship is sinking!`);
         spawnSwimmers(msg.x, msg.z, 3);
@@ -1739,15 +1755,26 @@ function update(dt) {
   });
 
   G.otherPlayers.forEach((p, id) => {
-    if (!otherShipGroups.has(id)) {
+    if (!otherShipGroups.has(id) || otherShipGroups.get(id).userData.cachedName !== (p.shipName || p.name)) {
+      if (otherShipGroups.has(id)) { scene.remove(otherShipGroups.get(id)); otherShipGroups.delete(id); }
       const st = p.shipType || 'sloop';
-      const sm = buildShipMesh(st, p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' }, p.color || '#4488cc', p.name || `Pirate ${id}`);
+      const displayName = p.shipName || p.name || `Pirate ${id}`;
+      const captainName = p.name || '';
+      const sm = buildShipMesh(st, p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' }, p.color || '#4488cc', displayName);
+      if (captainName && captainName !== displayName) {
+        const capLabel = makeTextSprite(displayName, '#88bbff', captainName);
+        const spec = SHIP_TYPES[st];
+        capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
+        sm.children = sm.children.filter(c => !(c instanceof THREE.Sprite));
+        sm.add(capLabel);
+      }
       const defaultCrew = [
-        { name: 'Captain', role: 'captain', task: 'helm', color: p.color },
+        { name: captainName || 'Captain', role: 'captain', task: 'helm', color: p.color },
         { name: 'Gunner', role: 'gunner', task: 'cannons' },
         { name: 'Sailor', role: 'sailor', task: 'sails' }
       ];
       buildCrewMeshes(sm, defaultCrew, st);
+      sm.userData.cachedName = displayName;
       otherShipGroups.set(id, sm);
       scene.add(sm);
     }
@@ -1956,6 +1983,15 @@ function update(dt) {
 
   sendTimer -= dt;
   if (sendTimer <= 0) { sendUpdate(); sendTimer = 0.05; }
+
+  if (!G.npcSyncTimer) G.npcSyncTimer = 0;
+  G.npcSyncTimer -= dt;
+  const isHost = G.myId && (!G.otherPlayers.size || G.myId <= Math.min(...Array.from(G.otherPlayers.keys()), G.myId));
+  if (isHost && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
+    G.npcSyncTimer = 0.5;
+    const npcData = G.npcs.filter(n => !n.sinking).map(n => ({ x: Math.round(n.x), z: Math.round(n.z), r: Math.round(n.rotation * 100) / 100, h: Math.round(n.health), name: n.name, type: n.type, aggro: n.aggro || false }));
+    ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
+  }
 }
 
 function render() {
