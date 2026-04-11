@@ -136,6 +136,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   </div>
   <div id="compass"><canvas id="compass-canvas" width="180" height="180"></canvas></div>
   <div id="minimap"><canvas id="minimap-canvas" width="180" height="180"></canvas></div>
+  <div id="death-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,0,0,0.5);z-index:40;pointer-events:none;flex-direction:column;align-items:center;justify-content:center;">
+    <div style="color:#cc3333;font-size:clamp(28px,6vw,48px);font-weight:bold;text-shadow:0 0 20px rgba(200,30,30,0.6);">SHIP SINKING</div>
+    <div id="death-timer" style="color:#d4a848;font-size:18px;margin-top:12px;">Respawning in 8s</div>
+  </div>
   <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,15,30,0.95);z-index:50;pointer-events:auto;">
     <canvas id="fullmap-canvas" width="600" height="600" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);max-width:90vw;max-height:90vh;border:2px solid rgba(180,140,60,0.5);border-radius:8px;"></canvas>
     <div style="position:absolute;top:12px;right:16px;color:#d4a848;font-size:14px;cursor:pointer;" id="fullmap-close">CLOSE [M]</div>
@@ -238,7 +242,7 @@ const G = {
   damageChunks: [],
   swimmers: [],
   playerSinking: false, playerSinkTimer: 0,
-  camera: { offsetX: 0, offsetZ: 0, zoom: 50, targetZoom: 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
+  camera: { offsetX: 0, offsetZ: 0, zoom: isMobile ? 80 : 50, targetZoom: isMobile ? 80 : 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
   crewReloading: false, crewReloadTimer: 0,
@@ -391,12 +395,13 @@ const waterVS = `
   }
   void main(){
     vec3 pos=position;
-    pos += gw(pos,0.07,50.0,vec2(1,.3),0.8) + gw(pos,0.05,30.0,vec2(.3,1),.6)
-         + gw(pos,0.03,18.0,vec2(-.5,.7),0.9) + gw(pos,0.02,10.0,vec2(.7,-.4),1.1);
+    pos += gw(pos,0.08,55.0,vec2(1,.2),0.7) + gw(pos,0.05,35.0,vec2(.4,1),.55)
+         + gw(pos,0.035,20.0,vec2(-.6,.8),0.85) + gw(pos,0.025,12.0,vec2(.8,-.3),1.0)
+         + gw(pos,0.015,7.0,vec2(-.2,-.9),1.3) + gw(pos,0.01,4.0,vec2(.9,.5),1.6);
     vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
     float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
-    pX += gw(pX,.07,50.,vec2(1,.3),.8) + gw(pX,.05,30.,vec2(.3,1),.6) + gw(pX,.03,18.,vec2(-.5,.7),.9) + gw(pX,.02,10.,vec2(.7,-.4),1.1);
-    pZ += gw(pZ,.07,50.,vec2(1,.3),.8) + gw(pZ,.05,30.,vec2(.3,1),.6) + gw(pZ,.03,18.,vec2(-.5,.7),.9) + gw(pZ,.02,10.,vec2(.7,-.4),1.1);
+    pX += gw(pX,.08,55.,vec2(1,.2),.7) + gw(pX,.05,35.,vec2(.4,1),.55) + gw(pX,.035,20.,vec2(-.6,.8),.85) + gw(pX,.025,12.,vec2(.8,-.3),1.) + gw(pX,.015,7.,vec2(-.2,-.9),1.3);
+    pZ += gw(pZ,.08,55.,vec2(1,.2),.7) + gw(pZ,.05,35.,vec2(.4,1),.55) + gw(pZ,.035,20.,vec2(-.6,.8),.85) + gw(pZ,.025,12.,vec2(.8,-.3),1.) + gw(pZ,.015,7.,vec2(-.2,-.9),1.3);
     vNormal = normalize(cross(pZ-pos, pX-pos));
     gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
   }`;
@@ -627,18 +632,25 @@ function spawnSeagulls(wx, wz, count) {
 
 const fishSchools = [];
 function spawnFish(wx, wz, count) {
+  const schoolColor = [0x4477aa, 0x77aa55, 0xaa8844, 0x44aaaa, 0x6666bb][Math.floor(Math.random() * 5)];
+  const schoolPhase = Math.random() * Math.PI * 2;
+  const schoolRadius = 6 + Math.random() * 14;
+  const schoolSpeed = 0.4 + Math.random() * 0.5;
+  const schoolDepth = SEA_LEVEL - 0.6 - Math.random() * 1.2;
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.35, 4), new THREE.MeshLambertMaterial({ color: [0x6688aa, 0x88aa66, 0xaa8855, 0x55aaaa][i % 4] }));
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.25, 3), new THREE.MeshLambertMaterial({ color: schoolColor }));
     body.rotation.z = Math.PI / 2; fg.add(body);
-    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.1), new THREE.MeshLambertMaterial({ color: 0x5577aa, side: THREE.DoubleSide }));
-    tail.position.set(-0.2, 0, 0); fg.add(tail);
-    fg.position.set(wx + (Math.random() - 0.5) * 25, SEA_LEVEL - 0.8 - Math.random() * 1.5, wz + (Math.random() - 0.5) * 25);
+    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.07), new THREE.MeshLambertMaterial({ color: schoolColor, side: THREE.DoubleSide }));
+    tail.position.set(-0.15, 0, 0); fg.add(tail);
+    fg.position.set(wx, schoolDepth, wz);
     fg.userData.cx = wx; fg.userData.cz = wz;
-    fg.userData.phase = Math.random() * Math.PI * 2;
-    fg.userData.radius = 5 + Math.random() * 12;
-    fg.userData.speed = 0.5 + Math.random() * 0.6;
-    fg.userData.depth = fg.position.y;
+    fg.userData.phase = schoolPhase + i * 0.3;
+    fg.userData.radius = schoolRadius + (Math.random() - 0.5) * 3;
+    fg.userData.speed = schoolSpeed + (Math.random() - 0.5) * 0.1;
+    fg.userData.depth = schoolDepth + (Math.random() - 0.5) * 0.3;
+    fg.userData.offsetX = (Math.random() - 0.5) * 2;
+    fg.userData.offsetZ = (Math.random() - 0.5) * 2;
     scene.add(fg); fishSchools.push(fg);
   }
 }
@@ -647,9 +659,9 @@ function updateFish(dt) {
   fishSchools.forEach(f => {
     f.userData.phase += f.userData.speed * dt;
     const p = f.userData.phase;
-    f.position.x = f.userData.cx + Math.cos(p) * f.userData.radius;
-    f.position.z = f.userData.cz + Math.sin(p) * f.userData.radius;
-    f.position.y = f.userData.depth + Math.sin(p * 3) * 0.3;
+    f.position.x = f.userData.cx + Math.cos(p) * f.userData.radius + f.userData.offsetX;
+    f.position.z = f.userData.cz + Math.sin(p) * f.userData.radius + f.userData.offsetZ;
+    f.position.y = f.userData.depth + Math.sin(p * 2.5) * 0.2;
     f.rotation.y = p + Math.PI / 2;
   });
 }
@@ -1019,9 +1031,11 @@ function updateNPCs(dt) {
         if (npc.sinkTimer > 4) { scene.remove(npc.mesh); npc.health = -999; }
       }
     } else if (npc.mesh) {
-      npc.mesh.position.set(npc.x, SEA_LEVEL + 0.3 + Math.sin(G.time * 1.3 + npc.x) * 0.3, npc.z);
+      const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + npc.z * 0.06) * 0.08;
+      npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + nWH, npc.z);
       npc.mesh.rotation.y = npc.rotation;
-      npc.mesh.rotation.z = Math.sin(G.time * 0.7 + npc.z) * 0.04;
+      npc.mesh.rotation.x = Math.sin(G.time * 0.9 + npc.z * 0.05) * 0.025;
+      npc.mesh.rotation.z = Math.sin(G.time * 0.7 + npc.x * 0.06) * 0.035;
     }
   });
 }
@@ -1151,7 +1165,7 @@ window.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeAllPanels();
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-window.addEventListener('wheel', e => { G.camera.targetZoom = Math.max(15, Math.min(120, G.camera.targetZoom + e.deltaY * 0.05)); }, { passive: true });
+window.addEventListener('wheel', e => { G.camera.targetZoom = Math.max(12, Math.min(200, G.camera.targetZoom + e.deltaY * 0.08)); }, { passive: true });
 
 window.addEventListener('mousedown', e => { if (e.button === 1) { middleDown = true; lastMX = e.clientX; lastMY = e.clientY; e.preventDefault(); } });
 window.addEventListener('mouseup', e => { if (e.button === 1) middleDown = false; });
@@ -1188,7 +1202,7 @@ window.addEventListener('touchmove', e => {
   }
   if (e.touches.length === 2) {
     const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    if (pinchDist > 0) { G.camera.targetZoom = Math.max(15, Math.min(120, G.camera.targetZoom - (d - pinchDist) * 0.15)); }
+    if (pinchDist > 0) { G.camera.targetZoom = Math.max(12, Math.min(200, G.camera.targetZoom - (d - pinchDist) * 0.2)); }
     pinchDist = d; e.preventDefault();
   }
 }, { passive: false });
@@ -1205,8 +1219,8 @@ window.addEventListener('touchend', e => {
 
 document.getElementById('touch-port')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(-1); }, { passive: false });
 document.getElementById('touch-starboard')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(1); }, { passive: false });
-document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.max(15, G.camera.targetZoom - 8); }, { passive: false });
-document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.min(120, G.camera.targetZoom + 8); }, { passive: false });
+document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.max(12, G.camera.targetZoom - 12); }, { passive: false });
+document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.min(200, G.camera.targetZoom + 12); }, { passive: false });
 
 window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
 
@@ -1478,21 +1492,37 @@ function drawFullmap() {
 document.getElementById('minimap').onclick = toggleFullmap;
 document.getElementById('fullmap-close').onclick = toggleFullmap;
 
+let mmZoom = 0.08;
 function drawMinimap() {
-  const w = 180, h = 180, s = 0.15, cx = w / 2, cy = h / 2;
-  mmCtx.fillStyle = '#0a1e3c'; mmCtx.fillRect(0, 0, w, h);
+  const w = 180, h = 180, s = mmZoom, cx = w / 2, cy = h / 2;
+  const ctx = mmCtx;
+  ctx.fillStyle = '#081828'; ctx.fillRect(0, 0, w, h);
+  const gridSize = CHUNK_SIZE * s;
+  if (gridSize > 8) {
+    ctx.strokeStyle = 'rgba(30,50,70,0.4)'; ctx.lineWidth = 0.5;
+    for (let gx = -10; gx <= 10; gx++) {
+      const lx = cx + (gx * CHUNK_SIZE - G.player.x % CHUNK_SIZE) * s;
+      const ly = cy + (gx * CHUNK_SIZE - G.player.z % CHUNK_SIZE) * s;
+      ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w, ly); ctx.stroke();
+    }
+  }
   islandGroup.children.forEach(g => {
     const d = g.userData; const sx = cx + (d.worldX - G.player.x) * s, sy = cy + (d.worldZ - G.player.z) * s;
-    if (sx < -20 || sx > w + 20 || sy < -20 || sy > h + 20) return;
-    mmCtx.fillStyle = '#4a8a3f'; mmCtx.beginPath(); mmCtx.arc(sx, sy, Math.max(3, d.radius * s), 0, Math.PI * 2); mmCtx.fill();
-    mmCtx.fillStyle = '#e8d68c'; mmCtx.beginPath(); mmCtx.arc(sx, sy, Math.max(2, d.radius * s * 0.7), 0, Math.PI * 2); mmCtx.fill();
+    if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) return;
+    const ir = Math.max(2, d.radius * s);
+    ctx.fillStyle = '#2a5a25'; ctx.beginPath(); ctx.arc(sx, sy, ir + 1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c0a868'; ctx.beginPath(); ctx.arc(sx, sy, ir * 0.8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3a6a30'; ctx.beginPath(); ctx.arc(sx, sy, ir * 0.5, 0, Math.PI * 2); ctx.fill();
   });
-  G.npcs.forEach(n => { const sx = cx + (n.x - G.player.x) * s, sy = cy + (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { mmCtx.fillStyle = '#cc3333'; mmCtx.beginPath(); mmCtx.arc(sx, sy, 3, 0, Math.PI * 2); mmCtx.fill(); } });
-  G.otherPlayers.forEach(p => { const sx = cx + (p.x - G.player.x) * s, sy = cy + (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { mmCtx.fillStyle = p.color || '#44aaff'; mmCtx.beginPath(); mmCtx.arc(sx, sy, 3, 0, Math.PI * 2); mmCtx.fill(); } });
-  mmCtx.fillStyle = '#ffdd44'; mmCtx.beginPath(); mmCtx.arc(cx, cy, 4, 0, Math.PI * 2); mmCtx.fill();
-  mmCtx.strokeStyle = '#ffdd44'; mmCtx.lineWidth = 2; mmCtx.beginPath(); mmCtx.moveTo(cx, cy);
-  mmCtx.lineTo(cx + Math.sin(G.player.rotation) * 8, cy + Math.cos(G.player.rotation) * 8); mmCtx.stroke();
+  G.npcs.forEach(n => { if (n.sinking) return; const sx = cx + (n.x - G.player.x) * s, sy = cy + (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
+  G.otherPlayers.forEach(p => { const sx = cx + (p.x - G.player.x) * s, sy = cy + (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
+  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.sin(G.player.rotation) * 7, cy + Math.cos(G.player.rotation) * 7); ctx.stroke();
+  ctx.strokeStyle = 'rgba(180,140,60,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(1, 1, w - 2, h - 2);
 }
+document.getElementById('minimap').addEventListener('wheel', e => { e.preventDefault(); e.stopPropagation(); mmZoom = Math.max(0.02, Math.min(0.3, mmZoom + e.deltaY * 0.0002)); drawMinimap(); }, { passive: false });
 
 /* ============================== GAME LOOP ================================ */
 let lastTime = 0, sendTimer = 0;
@@ -1555,8 +1585,13 @@ function update(dt) {
   updateSeagulls(dt);
   updateFish(dt);
 
-  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4 + Math.sin(G.time * 1.5) * 0.25, G.player.z);
-  playerShipGroup.rotation.set(Math.sin(G.time * 1.2) * 0.02, G.player.rotation, Math.sin(G.time * 0.8) * 0.03);
+  const waveH = Math.sin(G.time * 0.7 + G.player.x * 0.04) * 0.15 + Math.sin(G.time * 1.1 + G.player.z * 0.06) * 0.1 + Math.sin(G.time * 1.8 + G.player.x * 0.08) * 0.05;
+  const wavePitch = Math.sin(G.time * 0.9 + G.player.z * 0.05) * 0.03 + Math.sin(G.time * 1.5 + G.player.x * 0.07) * 0.015;
+  const waveRoll = Math.sin(G.time * 0.7 + G.player.x * 0.06) * 0.04 + Math.sin(G.time * 1.3 + G.player.z * 0.04) * 0.02;
+  if (!G.playerSinking) {
+    playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.35 + waveH, G.player.z);
+    playerShipGroup.rotation.set(wavePitch, G.player.rotation, waveRoll);
+  }
 
   const hasGuns = G.player.shipParts.cannon && G.player.shipParts.cannon !== 'none';
   arcLeft.visible = hasGuns;
@@ -1737,8 +1772,8 @@ function update(dt) {
 
   if (G.player.health <= 0 && !G.playerSinking) {
     G.playerSinking = true; G.playerSinkTimer = 0;
+    G.playerSinkY = playerShipGroup.position.y;
     G.player.speed = 0; G.player.anchored = true;
-    notify('Your ship is sinking!');
     spawnSwimmers(G.player.x, G.player.z, Math.min(G.player.crew.length, 4));
     for (let li = 0; li < 2; li++) {
       const lootItem = { type: ['wood','iron','gold'][Math.floor(Math.random()*3)],
@@ -1748,13 +1783,16 @@ function update(dt) {
       crate.position.set(lootItem.x, SEA_LEVEL+0.5, lootItem.z);
       crate.userData.floatItem = lootItem; crate.userData.isLoot = true; scene.add(crate);
     }
+    document.getElementById('death-overlay').style.display = 'flex';
   }
   if (G.playerSinking) {
     G.playerSinkTimer += dt;
-    playerShipGroup.position.y -= dt * 0.8;
-    playerShipGroup.rotation.z += dt * 0.15;
-    playerShipGroup.rotation.x += dt * 0.05;
-    if (G.playerSinkTimer > 6) {
+    const remaining = Math.max(0, 8 - G.playerSinkTimer);
+    document.getElementById('death-timer').textContent = `Respawning in ${Math.ceil(remaining)}s`;
+    G.playerSinkY -= dt * 0.6;
+    playerShipGroup.position.set(G.player.x, G.playerSinkY, G.player.z);
+    playerShipGroup.rotation.set(G.playerSinkTimer * 0.06, G.player.rotation, G.playerSinkTimer * 0.12);
+    if (G.playerSinkTimer > 8) {
       G.playerSinking = false;
       G.player.health = 50; G.player.anchored = false;
       G.player.x += (Math.random() - 0.5) * 100;
@@ -1764,9 +1802,9 @@ function update(dt) {
       if (goldItem) goldItem.count = Math.max(0, goldItem.count - 15);
       G.player.crew = G.player.crew.filter(c => c.role !== 'prisoner').slice(0, 4);
       rebuildPlayerShip();
+      document.getElementById('death-overlay').style.display = 'none';
       notify('Respawned! Lost 15 gold.');
     }
-    return;
   }
 
   for (let i = splashes.length - 1; i >= 0; i--) {
