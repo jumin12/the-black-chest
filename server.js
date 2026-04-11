@@ -120,6 +120,10 @@ wss.on('connection', (ws) => {
           broadcast({ type: 'cannonball', id, x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz }, id);
           break;
         }
+        case 'ship_sunk': {
+          broadcast({ type: 'ship_sunk', id, x: msg.x, z: msg.z, loot: msg.loot, name: players.get(id)?.name || 'Unknown' });
+          break;
+        }
       }
     } catch (e) { }
   });
