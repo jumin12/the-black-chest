@@ -89,6 +89,7 @@ wss.on('connection', (ws) => {
     player: playerData,
     players: Array.from(players.values()).filter(p => p.id !== id)
   }));
+  ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
 
   broadcast({ type: 'player_join', player: playerData }, id);
 
@@ -139,12 +140,21 @@ wss.on('connection', (ws) => {
         }
         case 'leaderboard_update': {
           const p = players.get(id);
-          if (p) { p.kills = (p.kills || 0) + (msg.kills || 0); p.loot = (p.loot || 0) + (msg.loot || 0); }
-          const lb = Array.from(players.values()).map(pl => ({ name: pl.name || pl.shipName || 'Pirate', kills: pl.kills || 0, loot: pl.loot || 0 }));
-          leaderboardHistory = leaderboardHistory.filter(e => !lb.find(l => l.name === e.name));
-          leaderboardHistory.push(...lb);
+          if (!p) break;
+          const dk = msg.kills || 0;
+          const dl = msg.loot || 0;
+          p.kills = (p.kills || 0) + dk;
+          p.loot = (p.loot || 0) + dl;
+          const capName = (p.name || p.shipName || 'Pirate').slice(0, 28);
+          let row = leaderboardHistory.find(e => e.name === capName);
+          if (!row) {
+            row = { name: capName, kills: 0, loot: 0 };
+            leaderboardHistory.push(row);
+          }
+          row.kills += dk;
+          row.loot += dl;
           leaderboardHistory.sort((a, b) => b.kills - a.kills || b.loot - a.loot);
-          leaderboardHistory = leaderboardHistory.slice(0, 20);
+          leaderboardHistory = leaderboardHistory.slice(0, 50);
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
