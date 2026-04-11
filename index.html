@@ -713,12 +713,18 @@ function generateIsland(cx, cz) {
     const dockZ = worldZ + Math.sin(dockAngle) * dockDist;
     group.userData.dockX = dockX; group.userData.dockZ = dockZ;
 
-    const dockGeo = new THREE.BoxGeometry(4, 0.3, 12);
+    const dockGeo = new THREE.BoxGeometry(5, 0.4, 14);
     const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
     const dock = new THREE.Mesh(dockGeo, dockMat);
-    dock.position.set(dockX, SEA_LEVEL + 0.4, dockZ);
-    dock.rotation.y = dockAngle; dock.receiveShadow = true;
+    dock.position.set(dockX, SEA_LEVEL + 0.8, dockZ);
+    dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
     group.add(dock);
+    for (let pi2 = 0; pi2 < 6; pi2++) {
+      const pileX = dockX + Math.cos(dockAngle) * ((pi2 - 2.5) * 2.5) + Math.cos(dockAngle + Math.PI/2) * 2.2 * (pi2 % 2 === 0 ? 1 : -1);
+      const pileZ = dockZ + Math.sin(dockAngle) * ((pi2 - 2.5) * 2.5) + Math.sin(dockAngle + Math.PI/2) * 2.2 * (pi2 % 2 === 0 ? 1 : -1);
+      const pile = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 1.8, 5), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
+      pile.position.set(pileX, SEA_LEVEL + 0.1, pileZ); group.add(pile);
+    }
 
     for (let pi = 0; pi < 4; pi++) {
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.5, 4), dockMat);
@@ -732,13 +738,17 @@ function generateIsland(cx, cz) {
       const bOff = (bi % 2 === 0 ? 1 : -1) * (2 + bi * 1.5);
       const bx = dockX + Math.cos(ba) * (8 + bi * 4) + Math.cos(ba + Math.PI/2) * bOff;
       const bz = dockZ + Math.sin(ba) * (8 + bi * 4) + Math.sin(ba + Math.PI/2) * bOff;
-      const bH = 2 + Math.random() * 2;
-      const bldg = new THREE.Mesh(new THREE.BoxGeometry(2.5 + Math.random() * 2, bH, 2.5 + Math.random() * 2),
+      const bH = 2.5 + Math.random() * 1.5;
+      const bW = 2.5 + Math.random() * 2;
+      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW),
         new THREE.MeshLambertMaterial({ color: [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868][bi] }));
-      bldg.position.set(bx, SEA_LEVEL + 1.5 + bH/2, bz); bldg.castShadow = true;
+      const baseY = SEA_LEVEL + 2 + islandHeight * 0.15;
+      bldg.position.set(bx, baseY + bH / 2, bz); bldg.castShadow = true;
       group.add(bldg);
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(2.2, 1.3, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
-      roof.position.set(bx, bldg.position.y + bH/2 + 0.6, bz); roof.rotation.y = Math.PI / 4; group.add(roof);
+      const foundation = new THREE.Mesh(new THREE.BoxGeometry(bW + 0.5, 0.3, bW + 0.5), new THREE.MeshLambertMaterial({ color: 0x5a4a38 }));
+      foundation.position.set(bx, baseY, bz); group.add(foundation);
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(bW * 0.8, 1.5, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
+      roof.position.set(bx, baseY + bH + 0.7, bz); roof.rotation.y = Math.PI / 4; group.add(roof);
     }
 
     const townLabel = makeTextSprite(group.userData.townName, '#e8d090', 'Trading Port');
@@ -1607,9 +1617,10 @@ function updateCrewPanel() {
   const l = document.getElementById('crew-list'); l.innerHTML = '';
   const spec = SHIP_TYPES[G.player.shipType];
   l.innerHTML += `<div style="font-size:11px;color:#a09080;margin-bottom:6px;">Crew: ${G.player.crew.length}/${spec.maxCrew}</div>`;
-  G.player.crew.forEach(m => {
+  G.player.crew.forEach((m, mi) => {
     const d = document.createElement('div'); d.className = 'crew-member';
-    d.innerHTML = `<div class="role">${m.role}</div><div style="flex:1">${m.name}<br><span style="color:#888;font-size:10px;">Task: ${m.task}</span></div><div class="crew-health"><div style="width:${m.health}%"></div></div>`;
+    const ransomBtn = m.role === 'prisoner' ? `<button onclick="ransomPrisoner(${mi})" style="background:rgba(180,140,60,0.2);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-family:Georgia,serif;margin-left:4px;">Ransom 15g</button>` : '';
+    d.innerHTML = `<div class="role">${m.role}</div><div style="flex:1">${m.name}<br><span style="color:#888;font-size:10px;">Task: ${m.task}</span>${ransomBtn}</div><div class="crew-health"><div style="width:${m.health}%"></div></div>`;
     l.appendChild(d);
   });
 }
@@ -1633,6 +1644,17 @@ function updatePiratesPanel() {
     l.appendChild(d);
   });
 }
+
+window.ransomPrisoner = function(idx) {
+  if (idx < 0 || idx >= G.player.crew.length) return;
+  if (G.player.crew[idx].role !== 'prisoner') { notify('Can only ransom prisoners!'); return; }
+  const gold = G.player.inventory.find(i => i.id === 'gold');
+  if (gold) gold.count += 15;
+  notify(`Ransomed ${G.player.crew[idx].name} for 15 gold!`);
+  G.player.crew.splice(idx, 1);
+  rebuildPlayerShip();
+  updateCrewPanel();
+};
 
 function updateMissionsPanel() {
   const l = document.getElementById('missions-list'); l.innerHTML = '';
@@ -1659,7 +1681,7 @@ document.getElementById('btn-log').onclick = () => {
   const panel = document.getElementById('log-panel');
   const vis = panel.style.display !== 'none' && panel.style.display !== '';
   closeAllPanels();
-  if (!vis) { panel.style.display = 'block'; switchLogTab('ship'); hideMobileControls(); }
+  if (!vis) { panel.style.display = 'block'; switchLogTab('ship'); hideMobileControls(); document.getElementById('btn-log').classList.add('active'); }
 };
 document.querySelectorAll('.log-tab').forEach(tab => {
   tab.onclick = () => switchLogTab(tab.dataset.tab);
@@ -1680,6 +1702,7 @@ function switchLogTab(name) {
 document.getElementById('btn-chat').onclick = () => {
   togglePanel('chat-box');
   hideMobileControls();
+  document.getElementById('btn-chat').classList.add('active');
   unreadChat = 0;
   const badge = document.getElementById('chat-badge');
   if (badge) badge.style.display = 'none';
@@ -1707,15 +1730,21 @@ const RECRUIT_ROLES = ['gunner','sailor','navigator'];
 function dockAtPort() {
   if (!G.nearDock) return;
   G.docked = true; G.player.anchored = true; G.player.speed = 0;
+  G.dockingAnim = { timer: 0, targetX: G.nearDock.dockX, targetZ: G.nearDock.dockZ };
   document.getElementById('dock-prompt').style.display = 'none';
-  document.getElementById('port-panel').style.display = 'block';
-  document.getElementById('port-title').textContent = G.nearDock.townName;
-  showPortTab('trade');
+  hideMobileControls();
+  setTimeout(() => {
+    document.getElementById('port-panel').style.display = 'block';
+    document.getElementById('port-title').textContent = G.nearDock.townName;
+    showPortTab('trade');
+  }, 1500);
 }
 
 function leavePort() {
   G.docked = false; G.player.anchored = false; G.player.speed = 1;
+  G.dockingAnim = null;
   document.getElementById('port-panel').style.display = 'none';
+  if (isMobile) document.getElementById('touch-controls').style.display = 'block';
 }
 
 function showPortTab(tab) {
@@ -2231,6 +2260,14 @@ function update(dt) {
   const waveH = Math.sin(G.time * 0.7 + G.player.x * 0.04) * 0.15 + Math.sin(G.time * 1.1 + G.player.z * 0.06) * 0.1 + Math.sin(G.time * 1.8 + G.player.x * 0.08) * 0.05;
   const wavePitch = Math.sin(G.time * 0.9 + G.player.z * 0.05) * 0.03 + Math.sin(G.time * 1.5 + G.player.x * 0.07) * 0.015;
   const waveRoll = Math.sin(G.time * 0.7 + G.player.x * 0.06) * 0.04 + Math.sin(G.time * 1.3 + G.player.z * 0.04) * 0.02;
+  if (G.dockingAnim) {
+    G.dockingAnim.timer += dt;
+    const t = Math.min(G.dockingAnim.timer / 1.5, 1);
+    const ease = t * t * (3 - 2 * t);
+    G.player.x += (G.dockingAnim.targetX - G.player.x) * ease * 2 * dt;
+    G.player.z += (G.dockingAnim.targetZ - G.player.z) * ease * 2 * dt;
+    G.player.speed *= 0.9;
+  }
   if (!G.playerSinking) {
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.35 + waveH, G.player.z);
     playerShipGroup.rotation.set(wavePitch, G.player.rotation, waveRoll);
@@ -3108,6 +3145,9 @@ document.getElementById('start-btn').onclick = () => {
     if (isMobile) document.getElementById('touch-controls').style.display = 'block';
     G.chunks.clear(); islandGroup.clear(); G.islands = [];
     noise = new SimplexNoise(G.seed);
+    playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
+    water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
+    sky.position.set(G.player.x, 0, G.player.z);
     rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
     renderer.domElement.focus(); document.body.focus();
     notify('Progress restored');
