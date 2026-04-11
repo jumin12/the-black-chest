@@ -127,11 +127,19 @@ wss.on('connection', (ws) => {
           break;
         }
         case 'cannonball': {
-          broadcast({ type: 'cannonball', id, x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz }, id);
+          broadcast({ type: 'cannonball', shooterId: id, x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz }, id);
           break;
         }
         case 'npc_sync': {
-          broadcast({ type: 'npc_sync', npcs: msg.npcs }, id);
+          broadcast({ type: 'npc_sync', npcs: msg.npcs, wind: msg.wind }, id);
+          break;
+        }
+        case 'npc_cannon': {
+          broadcast({ type: 'npc_cannon', x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, y: msg.y }, id);
+          break;
+        }
+        case 'cannon_fx': {
+          broadcast({ type: 'cannon_fx', x: msg.x, y: msg.y, z: msg.z, dx: msg.dx, dz: msg.dz }, id);
           break;
         }
         case 'ship_sunk': {
@@ -139,7 +147,37 @@ wss.on('connection', (ws) => {
           break;
         }
         case 'loot_spawn': {
-          broadcast({ type: 'loot_spawn', x: msg.x, z: msg.z, loot: msg.loot || { type: msg.type, count: msg.count } });
+          broadcast({ type: 'loot_spawn', x: msg.x, z: msg.z, loot: msg.loot || { type: msg.type, count: msg.count } }, id);
+          break;
+        }
+        case 'swimmer_spawn': {
+          if (msg.swimmers && Array.isArray(msg.swimmers)) {
+            broadcast({ type: 'swimmer_spawn', swimmers: msg.swimmers }, id);
+          }
+          break;
+        }
+        case 'pvp_kill_credit': {
+          const killerId = msg.killerId;
+          if (!killerId || killerId === id) break;
+          const dk = Math.max(0, Math.floor(msg.kills || 0));
+          const dl = Math.max(0, Math.floor(msg.loot || 0));
+          if (dk === 0 && dl === 0) break;
+          const kp = players.get(killerId);
+          if (!kp) break;
+          kp.kills = (kp.kills || 0) + dk;
+          kp.loot = (kp.loot || 0) + dl;
+          const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
+          let row = leaderboardHistory.find(e => e.name === capName);
+          if (!row) {
+            row = { name: capName, kills: 0, loot: 0 };
+            leaderboardHistory.push(row);
+          }
+          row.kills += dk;
+          row.loot += dl;
+          leaderboardHistory.sort((a, b) => b.kills - a.kills || b.loot - a.loot);
+          leaderboardHistory = leaderboardHistory.slice(0, 50);
+          saveLeaderboard();
+          broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
         }
         case 'leaderboard_update': {
