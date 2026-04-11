@@ -266,14 +266,14 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 </div>
 
 <div id="touch-controls">
-  <div id="joystick-zone">
+  <div id="joystick-zone" style="position:absolute;bottom:70px;left:50%;transform:translateX(-50%);width:120px;height:120px;pointer-events:auto;touch-action:none;">
     <div id="joystick-base"><div id="joystick-knob"></div></div>
   </div>
-  <div class="touch-btn" id="touch-port" title="Fire Port (Left)" style="position:absolute;left:10px;top:40%;width:48px;height:48px;font-size:10px;font-weight:bold;pointer-events:auto;z-index:15;">PORT</div>
-  <div class="touch-btn" id="touch-starboard" title="Fire Starboard (Right)" style="position:absolute;right:10px;top:40%;width:48px;height:48px;font-size:10px;font-weight:bold;pointer-events:auto;z-index:15;">STAR</div>
-  <div style="position:absolute;right:16px;bottom:80px;display:flex;flex-direction:column;gap:8px;pointer-events:auto;">
-    <div class="touch-btn" id="touch-zoom-in" title="Zoom In" style="width:44px;height:44px;font-size:18px;">+</div>
-    <div class="touch-btn" id="touch-zoom-out" title="Zoom Out" style="width:44px;height:44px;font-size:18px;">&minus;</div>
+  <div class="touch-btn" id="touch-port" title="Fire Port" style="position:absolute;bottom:95px;left:calc(50% - 110px);width:50px;height:50px;font-size:9px;font-weight:bold;pointer-events:auto;z-index:15;">PORT</div>
+  <div class="touch-btn" id="touch-starboard" title="Fire Starboard" style="position:absolute;bottom:95px;right:calc(50% - 110px);width:50px;height:50px;font-size:9px;font-weight:bold;pointer-events:auto;z-index:15;">STAR</div>
+  <div id="touch-zoom" style="position:absolute;top:90px;right:6px;display:flex;flex-direction:column;gap:6px;pointer-events:auto;">
+    <div class="touch-btn" id="touch-zoom-in" title="Zoom In" style="width:36px;height:36px;font-size:16px;">+</div>
+    <div class="touch-btn" id="touch-zoom-out" title="Zoom Out" style="width:36px;height:36px;font-size:16px;">&minus;</div>
   </div>
 </div>
 
@@ -1522,6 +1522,11 @@ function togglePanel(id) {
 function closeAllPanels() {
   document.querySelectorAll('.side-panel,#chat-box').forEach(p => p.style.display = 'none');
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
+  if (isMobile) document.getElementById('touch-controls').style.display = 'block';
+}
+
+function hideMobileControls() {
+  if (isMobile) document.getElementById('touch-controls').style.display = 'none';
 }
 function notify(text) { const el = document.getElementById('notification'); el.textContent = text; el.style.opacity = '1'; clearTimeout(el._t); el._t = setTimeout(() => el.style.opacity = '0', 2500); }
 let unreadChat = 0;
@@ -1589,7 +1594,7 @@ document.getElementById('btn-log').onclick = () => {
   const panel = document.getElementById('log-panel');
   const vis = panel.style.display !== 'none' && panel.style.display !== '';
   closeAllPanels();
-  if (!vis) { panel.style.display = 'block'; switchLogTab('ship'); }
+  if (!vis) { panel.style.display = 'block'; switchLogTab('ship'); hideMobileControls(); }
 };
 document.querySelectorAll('.log-tab').forEach(tab => {
   tab.onclick = () => switchLogTab(tab.dataset.tab);
@@ -1607,6 +1612,7 @@ function switchLogTab(name) {
 }
 document.getElementById('btn-chat').onclick = () => {
   togglePanel('chat-box');
+  hideMobileControls();
   unreadChat = 0;
   const badge = document.getElementById('chat-badge');
   if (badge) badge.style.display = 'none';
@@ -1879,7 +1885,8 @@ let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = 0.15, fmDragging = fal
 function toggleFullmap() {
   fullmapOpen = !fullmapOpen;
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
-  if (fullmapOpen) { fmPanX = 0; fmPanZ = 0; drawFullmap(); }
+  if (fullmapOpen) { fmPanX = 0; fmPanZ = 0; drawFullmap(); hideMobileControls(); }
+  else if (isMobile && G.mode === 'playing') document.getElementById('touch-controls').style.display = 'block';
 }
 function drawFullmap() {
   const cv = document.getElementById('fullmap-canvas');
@@ -1923,6 +1930,16 @@ function drawFullmap() {
     }
     ctx.closePath(); ctx.fill();
     ctx.shadowBlur = 0;
+  });
+
+  G.islands.forEach(isl => {
+    if (!isl.hasTown) return;
+    const tx = cx + (isl.dockX - centerX) * s, ty = cy + (isl.dockZ - centerZ) * s;
+    if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
+    ctx.fillStyle = '#e8c050'; ctx.fillRect(tx - 3, ty - 3, 6, 6);
+    ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
+    ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
+    ctx.fillText(isl.townName, tx, ty - 7);
   });
 
   G.npcs.forEach(n => {
@@ -2034,6 +2051,14 @@ function drawMinimap() {
       p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
     }
     ctx.closePath(); ctx.fill();
+  });
+  G.islands.forEach(isl => {
+    if (!isl.hasTown) return;
+    const tx = cx + (isl.dockX - G.player.x) * s, ty = cy + (isl.dockZ - G.player.z) * s;
+    if (tx > 0 && tx < w && ty > 0 && ty < h) {
+      ctx.fillStyle = '#e8c050'; ctx.fillRect(tx - 2, ty - 2, 4, 4);
+      if (s > 0.05) { ctx.fillStyle = '#e8c050'; ctx.font = '7px Georgia'; ctx.textAlign = 'center'; ctx.fillText(isl.townName, tx, ty - 5); }
+    }
   });
   G.npcs.forEach(n => { if (n.sinking) return; const sx = cx + (n.x - G.player.x) * s, sy = cy + (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
   G.otherPlayers.forEach(p => { const sx = cx + (p.x - G.player.x) * s, sy = cy + (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
