@@ -138,6 +138,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <div id="minimap"><canvas id="minimap-canvas" width="180" height="180"></canvas></div>
   <div id="death-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,0,0,0.5);z-index:40;pointer-events:none;flex-direction:column;align-items:center;justify-content:center;">
     <div style="color:#cc3333;font-size:clamp(28px,6vw,48px);font-weight:bold;text-shadow:0 0 20px rgba(200,30,30,0.6);">SHIP SINKING</div>
+    <div id="death-killer" style="color:#e0d6c2;font-size:16px;margin-top:8px;"></div>
     <div id="death-timer" style="color:#d4a848;font-size:18px;margin-top:12px;">Respawning in 8s</div>
   </div>
   <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,12,25,0.97);z-index:50;pointer-events:auto;">
@@ -154,6 +155,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div class="tb-btn" id="btn-crew" title="Crew (C)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><circle cx="9" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg></div>
     <div class="tb-btn" id="btn-chat" title="Chat (T)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.4 8.4 0 01-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.4 8.4 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg></div>
     <div class="tb-btn" id="btn-anchor" title="Anchor (X)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><circle cx="12" cy="5" r="3"/><line x1="12" y1="8" x2="12" y2="21"/><path d="M5 12H2a10 10 0 0020 0h-3"/></svg></div>
+    <div class="tb-btn" id="btn-help" title="Controls (?)" style="font-size:16px;font-weight:bold;color:#d4a848;">?</div>
   </div>
 
   <div id="ship-panel" class="side-panel">
@@ -175,8 +177,9 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   </div>
   <div id="controls-help">
     <h2>Controls</h2>
-    <kbd>W</kbd><kbd>S</kbd> Sail &nbsp; <kbd>A</kbd><kbd>D</kbd> Turn &nbsp; <kbd>Space</kbd> Fire<br>
-    <kbd>Arrows</kbd> Pan Camera &nbsp; <kbd>Scroll</kbd> Zoom<br>
+    <kbd>W</kbd><kbd>S</kbd> Sail &nbsp; <kbd>A</kbd><kbd>D</kbd> Turn<br>
+    <kbd>Z</kbd> Fire Port &nbsp; <kbd>X</kbd> Fire Starboard &nbsp; <kbd>Space</kbd> Fire Both<br>
+    <kbd>Q</kbd><kbd>E</kbd> Rotate Camera &nbsp; <kbd>Scroll</kbd> Zoom &nbsp; <kbd>M</kbd> Map<br>
     <kbd>B</kbd> Ship &nbsp; <kbd>I</kbd> Inventory &nbsp; <kbd>C</kbd> Crew &nbsp; <kbd>T</kbd> Chat
   </div>
 </div>
@@ -185,8 +188,8 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <div id="joystick-zone">
     <div id="joystick-base"><div id="joystick-knob"></div></div>
   </div>
-  <div class="touch-btn" id="touch-port" title="Fire Port" style="position:absolute;left:16px;top:50%;transform:translateY(-80px);font-size:11px;pointer-events:auto;">PORT</div>
-  <div class="touch-btn" id="touch-starboard" title="Fire Starboard" style="position:absolute;right:16px;top:50%;transform:translateY(-80px);font-size:11px;pointer-events:auto;">STAR</div>
+  <div class="touch-btn" id="touch-port" title="Fire Port (Left)" style="position:absolute;left:10px;top:40%;width:48px;height:48px;font-size:10px;font-weight:bold;pointer-events:auto;z-index:15;">PORT</div>
+  <div class="touch-btn" id="touch-starboard" title="Fire Starboard (Right)" style="position:absolute;right:10px;top:40%;width:48px;height:48px;font-size:10px;font-weight:bold;pointer-events:auto;z-index:15;">STAR</div>
   <div style="position:absolute;right:16px;bottom:80px;display:flex;flex-direction:column;gap:8px;pointer-events:auto;">
     <div class="touch-btn" id="touch-zoom-in" title="Zoom In" style="width:44px;height:44px;font-size:18px;">+</div>
     <div class="touch-btn" id="touch-zoom-out" title="Zoom Out" style="width:44px;height:44px;font-size:18px;">&minus;</div>
@@ -242,7 +245,7 @@ const G = {
   npcs: [],
   damageChunks: [],
   swimmers: [],
-  playerSinking: false, playerSinkTimer: 0,
+  playerSinking: false, playerSinkTimer: 0, lastAttacker: '',
   camera: { offsetX: 0, offsetZ: 0, zoom: isMobile ? 80 : 50, targetZoom: isMobile ? 80 : 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
@@ -515,7 +518,7 @@ function generateIsland(cx, cz) {
   const group = new THREE.Group();
   group.userData = { cx, cz, worldX, worldZ, radius: islandRadius };
 
-  const seg = Math.max(20, Math.floor(islandRadius * (isMobile ? 0.8 : 1.3)));
+  const seg = Math.max(24, Math.floor(islandRadius * (isMobile ? 1.0 : 1.8)));
   const terrainGeo = new THREE.PlaneGeometry(islandRadius * 2.2, islandRadius * 2.2, seg, seg);
   terrainGeo.rotateX(-Math.PI / 2);
   const positions = terrainGeo.attributes.position;
@@ -526,12 +529,12 @@ function generateIsland(cx, cz) {
     const px = positions.getX(i), pz = positions.getZ(i);
     const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
 
-    const n1 = noise.fbm((worldX + px) * 0.02, (worldZ + pz) * 0.02, 5);
-    const n2 = islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04) * 0.3;
-    const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.06, (worldZ + pz) * 0.06)) * 0.4;
+    const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
+    const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
+    const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
     const combined = n1 * 0.6 + n2 + ridges;
 
-    const edgeWarp = islandNoise.noise2D(px * 0.06, pz * 0.06) * 0.2 + islandNoise.noise2D(px * 0.15, pz * 0.15) * 0.08;
+    const edgeWarp = islandNoise.noise2D(px * 0.03, pz * 0.03) * 0.15 + islandNoise.noise2D(px * 0.08, pz * 0.08) * 0.06;
     const warpedDist = dist + edgeWarp;
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
@@ -644,17 +647,30 @@ function spawnSeagulls(wx, wz, count) {
 const fishSchools = [];
 const schoolLeaders = [];
 
+const FISH_SPECIES = [
+  { color: 0x4488bb, size: 0.08, len: 0.3 },
+  { color: 0x88bb44, size: 0.06, len: 0.22 },
+  { color: 0xcc8833, size: 0.1, len: 0.35 },
+  { color: 0x33bbaa, size: 0.05, len: 0.18 },
+  { color: 0xdd6633, size: 0.12, len: 0.4 },
+  { color: 0x6666cc, size: 0.07, len: 0.25 },
+  { color: 0xaaaa44, size: 0.09, len: 0.32 },
+  { color: 0x44cccc, size: 0.06, len: 0.2 },
+  { color: 0xbb5555, size: 0.11, len: 0.38 },
+  { color: 0x77aa88, size: 0.08, len: 0.28 }
+];
+
 function spawnFish(wx, wz, count) {
-  const schoolColor = [0x5599cc, 0x99bb55, 0xcc9944, 0x44bbbb, 0xdd7733][Math.floor(Math.random() * 5)];
-  const depth = SEA_LEVEL - 0.1 - Math.random() * 0.2;
-  const leader = { x: wx, z: wz, dir: Math.random() * Math.PI * 2, speed: 2 + Math.random() * 2, turnTimer: 3 + Math.random() * 5, depth };
+  const species = FISH_SPECIES[Math.floor(Math.random() * FISH_SPECIES.length)];
+  const depth = SEA_LEVEL - 0.05 - Math.random() * 0.15;
+  const leader = { x: wx, z: wz, dir: Math.random() * Math.PI * 2, speed: 1.5 + Math.random() * 3, turnTimer: 3 + Math.random() * 5, depth };
   schoolLeaders.push(leader);
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.35, 4), new THREE.MeshBasicMaterial({ color: schoolColor }));
-    body.rotation.z = Math.PI / 2; fg.add(body);
-    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.1), new THREE.MeshBasicMaterial({ color: schoolColor, side: THREE.DoubleSide }));
-    tail.position.set(-0.2, 0, 0); fg.add(tail);
+    const body = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 4), new THREE.MeshBasicMaterial({ color: species.color }));
+    body.rotation.z = -Math.PI / 2; fg.add(body);
+    const tail = new THREE.Mesh(new THREE.PlaneGeometry(species.size * 1.2, species.size), new THREE.MeshBasicMaterial({ color: species.color, side: THREE.DoubleSide }));
+    tail.position.set(-species.len * 0.6, 0, 0); fg.add(tail);
     fg.position.set(wx + (Math.random() - 0.5) * 3, depth, wz + (Math.random() - 0.5) * 3);
     fg.userData.leader = leader;
     fg.userData.offsetX = (Math.random() - 0.5) * 2.5;
@@ -1232,11 +1248,11 @@ window.addEventListener('keydown', e => {
   if (k === 'c') togglePanel('crew-panel');
   if (k === 't') { togglePanel('chat-box'); if (document.getElementById('chat-box').style.display !== 'none') setTimeout(() => document.getElementById('chat-input').focus(), 50); }
   if (k === 'f') { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
-  if (k === 'x') doAnchor();
+  if (k === 'v') doAnchor();
   if (k === 'm') toggleFullmap();
   if (e.key === ' ' && G.mode === 'playing') { e.preventDefault(); doFire(); }
   if (k === 'z' && G.mode === 'playing') doFireSide(-1);
-  if (k === 'c' && G.mode === 'playing') doFireSide(1);
+  if (k === 'x' && G.mode === 'playing') doFireSide(1);
   if (e.key === 'Escape') closeAllPanels();
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
@@ -1416,6 +1432,10 @@ document.getElementById('btn-inv').onclick = () => togglePanel('inventory-panel'
 document.getElementById('btn-crew').onclick = () => togglePanel('crew-panel');
 document.getElementById('btn-chat').onclick = () => togglePanel('chat-box');
 document.getElementById('btn-anchor').onclick = () => doAnchor();
+document.getElementById('btn-help').onclick = () => {
+  const h = document.getElementById('controls-help');
+  h.style.display = h.style.display === 'block' ? 'none' : 'block';
+};
 
 /* ============================== COMPASS ================================== */
 const compCanvas = document.getElementById('compass-canvas');
@@ -1832,6 +1852,11 @@ function update(dt) {
       if (distP < 5 && b.y > SEA_LEVEL - 1) {
         G.player.health = Math.max(0, G.player.health - (b.owner === 'other_player' ? 12 : 8));
         spawnDamageChunks(b.x, b.y, b.z);
+        if (b.owner === 'other_player') {
+          G.otherPlayers.forEach(op => { if (Math.hypot(b.x - op.x, b.z - op.z) < 60) G.lastAttacker = (op.shipName || op.name || 'Enemy Player'); });
+        } else {
+          G.npcs.forEach(n => { if (Math.hypot(b.x - n.x, b.z - n.z) < 60) G.lastAttacker = n.name; });
+        }
         notify(`Hull hit! HP: ${Math.round(G.player.health)}`);
         b.life = 0;
       }
@@ -1917,6 +1942,7 @@ function update(dt) {
     }
     if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_sunk', x: G.player.x, z: G.player.z, loot: lootDrops }));
     document.getElementById('death-overlay').style.display = 'flex';
+    document.getElementById('death-killer').textContent = G.lastAttacker ? `Sunk by: ${G.lastAttacker}` : 'Lost at sea';
   }
   if (G.playerSinking) {
     G.playerSinkTimer += dt;
