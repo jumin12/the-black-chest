@@ -180,10 +180,11 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <div id="joystick-zone">
     <div id="joystick-base"><div id="joystick-knob"></div></div>
   </div>
-  <div id="touch-actions">
-    <div class="touch-btn" id="touch-fire" title="Fire"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></div>
-    <div class="touch-btn" id="touch-zoom-in" title="Zoom In">+</div>
-    <div class="touch-btn" id="touch-zoom-out" title="Zoom Out">&minus;</div>
+  <div class="touch-btn" id="touch-port" title="Fire Port" style="position:absolute;left:16px;top:50%;transform:translateY(-80px);font-size:11px;pointer-events:auto;">PORT</div>
+  <div class="touch-btn" id="touch-starboard" title="Fire Starboard" style="position:absolute;right:16px;top:50%;transform:translateY(-80px);font-size:11px;pointer-events:auto;">STAR</div>
+  <div style="position:absolute;right:16px;bottom:80px;display:flex;flex-direction:column;gap:8px;pointer-events:auto;">
+    <div class="touch-btn" id="touch-zoom-in" title="Zoom In" style="width:44px;height:44px;font-size:18px;">+</div>
+    <div class="touch-btn" id="touch-zoom-out" title="Zoom Out" style="width:44px;height:44px;font-size:18px;">&minus;</div>
   </div>
 </div>
 
@@ -237,7 +238,7 @@ const G = {
   damageChunks: [],
   camera: { offsetX: 0, offsetZ: 0, zoom: 50, targetZoom: 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
-  cannonCooldown: 0,
+  portCooldown: 0, starboardCooldown: 0,
   crewReloading: false, crewReloadTimer: 0,
   currentSailAngle: 0
 };
@@ -388,12 +389,12 @@ const waterVS = `
   }
   void main(){
     vec3 pos=position;
-    pos += gw(pos,0.12,45.0,vec2(1,.3),1.0) + gw(pos,0.08,28.0,vec2(.3,1),.8)
-         + gw(pos,0.06,16.0,vec2(-.5,.7),1.2) + gw(pos,0.04,9.0,vec2(.7,-.4),1.5);
+    pos += gw(pos,0.07,50.0,vec2(1,.3),0.8) + gw(pos,0.05,30.0,vec2(.3,1),.6)
+         + gw(pos,0.03,18.0,vec2(-.5,.7),0.9) + gw(pos,0.02,10.0,vec2(.7,-.4),1.1);
     vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
     float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
-    pX += gw(pX,.12,45.,vec2(1,.3),1.) + gw(pX,.08,28.,vec2(.3,1),.8) + gw(pX,.06,16.,vec2(-.5,.7),1.2) + gw(pX,.04,9.,vec2(.7,-.4),1.5);
-    pZ += gw(pZ,.12,45.,vec2(1,.3),1.) + gw(pZ,.08,28.,vec2(.3,1),.8) + gw(pZ,.06,16.,vec2(-.5,.7),1.2) + gw(pZ,.04,9.,vec2(.7,-.4),1.5);
+    pX += gw(pX,.07,50.,vec2(1,.3),.8) + gw(pX,.05,30.,vec2(.3,1),.6) + gw(pX,.03,18.,vec2(-.5,.7),.9) + gw(pX,.02,10.,vec2(.7,-.4),1.1);
+    pZ += gw(pZ,.07,50.,vec2(1,.3),.8) + gw(pZ,.05,30.,vec2(.3,1),.6) + gw(pZ,.03,18.,vec2(-.5,.7),.9) + gw(pZ,.02,10.,vec2(.7,-.4),1.1);
     vNormal = normalize(cross(pZ-pos, pX-pos));
     gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
   }`;
@@ -490,8 +491,8 @@ function generateIsland(cx, cz) {
   const group = new THREE.Group();
   group.userData = { cx, cz, worldX, worldZ, radius: islandRadius };
 
-  const seg = Math.max(12, Math.floor(islandRadius * (isMobile ? 0.7 : 1.2)));
-  const terrainGeo = new THREE.PlaneGeometry(islandRadius * 2, islandRadius * 2, seg, seg);
+  const seg = Math.max(16, Math.floor(islandRadius * (isMobile ? 0.8 : 1.2)));
+  const terrainGeo = new THREE.CircleGeometry(islandRadius, seg, 0, Math.PI * 2);
   terrainGeo.rotateX(-Math.PI / 2);
   const positions = terrainGeo.attributes.position;
   const colors = new Float32Array(positions.count * 3);
@@ -586,6 +587,39 @@ function generateIsland(cx, cz) {
 
   islandGroup.add(group);
   G.islands.push(group.userData);
+  if (seagulls.length < 30) spawnSeagulls(worldX, worldZ, 1 + Math.floor(Math.random() * 2));
+}
+
+const seagulls = [];
+function spawnSeagulls(wx, wz, count) {
+  for (let i = 0; i < count; i++) {
+    const sg = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 3), new THREE.MeshLambertMaterial({ color: 0xeeeeee }));
+    body.rotation.x = Math.PI / 2; sg.add(body);
+    const wingL = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
+    wingL.position.set(-0.2, 0, 0); sg.add(wingL);
+    const wingR = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
+    wingR.position.set(0.2, 0, 0); sg.add(wingR);
+    sg.position.set(wx + (Math.random() - 0.5) * 30, 8 + Math.random() * 6, wz + (Math.random() - 0.5) * 30);
+    sg.userData.cx = wx; sg.userData.cz = wz; sg.userData.phase = Math.random() * Math.PI * 2;
+    sg.userData.radius = 8 + Math.random() * 15; sg.userData.speed = 0.3 + Math.random() * 0.4;
+    sg.userData.wingL = wingL; sg.userData.wingR = wingR;
+    scene.add(sg); seagulls.push(sg);
+  }
+}
+
+function updateSeagulls(dt) {
+  seagulls.forEach(sg => {
+    sg.userData.phase += sg.userData.speed * dt;
+    const p = sg.userData.phase;
+    sg.position.x = sg.userData.cx + Math.cos(p) * sg.userData.radius;
+    sg.position.z = sg.userData.cz + Math.sin(p) * sg.userData.radius;
+    sg.position.y = 8 + Math.sin(p * 2) * 1.5;
+    sg.rotation.y = p + Math.PI / 2;
+    const wingFlap = Math.sin(G.time * 4 + sg.userData.phase * 3) * 0.4;
+    sg.userData.wingL.rotation.z = wingFlap;
+    sg.userData.wingR.rotation.z = -wingFlap;
+  });
 }
 
 function updateChunks() {
@@ -737,6 +771,19 @@ function buildShipMesh(type, parts, flagColor, shipName) {
     }
   }
 
+  const fmH = spec.hullLen * 0.45;
+  const foremast = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, fmH, 4), rm);
+  foremast.position.set(0, spec.hullH * 0.5 + fmH / 2, spec.hullLen * 0.42);
+  foremast.rotation.x = -0.2; foremast.castShadow = true; g.add(foremast);
+  const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, spec.hullLen * 0.3, 4), rm);
+  bowsprit.position.set(0, spec.hullH * 0.4, spec.hullLen * 0.55);
+  bowsprit.rotation.x = -0.5; g.add(bowsprit);
+  const jibGeo = new THREE.PlaneGeometry(spec.hullW * 0.5, fmH * 0.5, 3, 3);
+  const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
+  jib.position.set(0, spec.hullH * 0.5 + fmH * 0.5, spec.hullLen * 0.44);
+  jib.rotation.y = 0.3; jib.userData.isSail = true; jib.userData.basePositions = jibGeo.attributes.position.array.slice();
+  g.add(jib);
+
   if (parts.figurehead && parts.figurehead !== 'none') {
     const fg = new THREE.ConeGeometry(0.3, 1.2, 6); fg.rotateX(Math.PI * 0.3);
     const fh = new THREE.Mesh(fg, new THREE.MeshPhongMaterial({ color: 0xd4a848, shininess: 40 }));
@@ -801,7 +848,7 @@ function buildCrewMeshes(group, crewList, shipType) {
     }
     let px, pz, py;
     const qdH = spec.hullH * 0.55;
-    if (member.task === 'helm') { px = 0; pz = -spec.hullLen * 0.42; py = spec.hullH * 0.65 + qdH + 0.05; }
+    if (member.task === 'helm') { px = 0; pz = -spec.hullLen * 0.46; py = spec.hullH * 0.65 + qdH + 0.05; }
     else if (member.task === 'sails') { px = (Math.random() - 0.5) * spec.hullW * 0.4; pz = spec.hullLen * 0.1; py = spec.hullH * 0.65; }
     else if (member.task === 'cannons') { px = (idx % 2 === 0 ? 1 : -1) * spec.hullW * 0.35; pz = (idx - crewList.length / 2) * 1.2; py = spec.hullH * 0.65; }
     else if (member.task === 'lookout') { px = 0; pz = spec.hullLen * 0.35; py = spec.hullH * 0.65; }
@@ -1035,6 +1082,8 @@ window.addEventListener('keydown', e => {
   if (k === 'x') doAnchor();
   if (k === 'm') toggleFullmap();
   if (e.key === ' ' && G.mode === 'playing') { e.preventDefault(); doFire(); }
+  if (k === 'z' && G.mode === 'playing') doFireSide(-1);
+  if (k === 'c' && G.mode === 'playing') doFireSide(1);
   if (e.key === 'Escape') closeAllPanels();
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
@@ -1090,51 +1139,49 @@ window.addEventListener('touchend', e => {
   if (e.touches.length < 2) pinchDist = 0;
 });
 
-document.getElementById('touch-fire')?.addEventListener('touchstart', e => { e.preventDefault(); doFire(); }, { passive: false });
+document.getElementById('touch-port')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(-1); }, { passive: false });
+document.getElementById('touch-starboard')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(1); }, { passive: false });
 document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.max(15, G.camera.targetZoom - 8); }, { passive: false });
 document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.min(120, G.camera.targetZoom + 8); }, { passive: false });
 
 window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
 
 /* ============================== ACTIONS =================================== */
-function doFire() {
+function doFireSide(fireSide) {
   const spec = SHIP_TYPES[G.player.shipType];
   const cp = SHIP_PARTS.cannon.find(c => c.id === G.player.shipParts.cannon);
   if (!cp || cp.damage <= 0) { notify('No cannons equipped!'); return; }
-  if (G.cannonCooldown > 0) return;
 
-  G.cannonCooldown = 2.0;
-  G.crewReloading = true;
-  G.crewReloadTimer = 1.5;
+  if (fireSide === 1 && G.starboardCooldown > 0) return;
+  if (fireSide === -1 && G.portCooldown > 0) return;
+
+  if (fireSide === 1) G.starboardCooldown = 2.5;
+  else G.portCooldown = 2.5;
+  G.crewReloading = true; G.crewReloadTimer = 1.5;
 
   const rot = G.player.rotation;
   const cc = spec.cannonSlots || 2;
+  const perSide = Math.ceil(cc / 2);
   const shipY = playerShipGroup.position.y;
   const cannonY = shipY + spec.hullH * 0.6;
+  const cosR = Math.cos(rot), sinR = Math.sin(rot);
 
-  for (let c = 0; c < cc; c++) {
-    const side = c % 2 === 0 ? 1 : -1;
-    const idx = Math.floor(c / 2);
-    const cannonCount = Math.ceil(cc / 2);
-    const spread = cannonCount > 1 ? ((idx / (cannonCount - 1)) - 0.5) * BROADSIDE_ANGLE * 2 : 0;
-
-    const baseAngle = rot + side * Math.PI / 2 + spread;
-    const localZ = (idx - Math.floor(cc / 4) + 0.5) * 1.5;
-    const localX = side * (spec.hullW * 0.55 + 0.6);
-    const cosR = Math.cos(rot), sinR = Math.sin(rot);
+  for (let i = 0; i < perSide; i++) {
+    const spread = perSide > 1 ? ((i / (perSide - 1)) - 0.5) * BROADSIDE_ANGLE * 2 : 0;
+    const baseAngle = rot + fireSide * Math.PI / 2 + spread;
+    const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
+    const localX = fireSide * (spec.hullW * 0.55 + 0.6);
 
     const wx = G.player.x + localX * cosR - localZ * sinR;
     const wz = G.player.z + localX * sinR + localZ * cosR;
-
-    const dirX = Math.sin(baseAngle);
-    const dirZ = Math.cos(baseAngle);
+    const dirX = Math.sin(baseAngle), dirZ = Math.cos(baseAngle);
 
     fireCannonball(wx, wz, dirX, dirZ, cannonY, 'player');
-    if (ws?.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ }));
-    }
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ }));
   }
 }
+
+function doFire() { doFireSide(1); doFireSide(-1); }
 
 function doAnchor() {
   G.player.anchored = !G.player.anchored;
@@ -1432,7 +1479,8 @@ function update(dt) {
   }
   G.camera.zoom += (G.camera.targetZoom - G.camera.zoom) * 4 * dt;
 
-  if (G.cannonCooldown > 0) G.cannonCooldown -= dt;
+  if (G.portCooldown > 0) G.portCooldown -= dt;
+  if (G.starboardCooldown > 0) G.starboardCooldown -= dt;
   if (G.crewReloading) {
     G.crewReloadTimer -= dt;
     if (G.crewReloadTimer <= 0) G.crewReloading = false;
@@ -1440,6 +1488,7 @@ function update(dt) {
 
   updateChunks();
   updateNPCs(dt);
+  updateSeagulls(dt);
 
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4 + Math.sin(G.time * 1.5) * 0.25, G.player.z);
   playerShipGroup.rotation.set(Math.sin(G.time * 1.2) * 0.02, G.player.rotation, Math.sin(G.time * 0.8) * 0.03);
@@ -1452,11 +1501,10 @@ function update(dt) {
     arcLeft.rotation.y = G.player.rotation + Math.PI / 2;
     arcRight.position.set(G.player.x, SEA_LEVEL + 2, G.player.z);
     arcRight.rotation.y = G.player.rotation - Math.PI / 2;
-    const coolPct = Math.max(0, G.cannonCooldown / 2);
-    arcLeft.material.opacity = coolPct > 0 ? 0.03 : 0.1;
-    arcRight.material.opacity = coolPct > 0 ? 0.03 : 0.1;
-    arcLeft.material.color.set(coolPct > 0 ? 0x888888 : 0xff4444);
-    arcRight.material.color.set(coolPct > 0 ? 0x888888 : 0xff4444);
+    arcLeft.material.opacity = G.portCooldown > 0 ? 0.04 : 0.12;
+    arcRight.material.opacity = G.starboardCooldown > 0 ? 0.04 : 0.12;
+    arcLeft.material.color.set(G.portCooldown > 0 ? 0x666666 : 0xff4444);
+    arcRight.material.color.set(G.starboardCooldown > 0 ? 0x666666 : 0xff4444);
   }
 
   const relWind = G.wind.angle - G.player.rotation;
@@ -1542,6 +1590,15 @@ function update(dt) {
             const gi = G.player.inventory.find(x => x.id === 'gold');
             if (gi) gi.count += 30;
             npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
+            for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
+              const lootItem = { type: ['wood','iron','gold','gunpowder'][Math.floor(Math.random() * 4)],
+                x: npc.x + (Math.random() - 0.5) * 8, z: npc.z + (Math.random() - 0.5) * 8, collected: false };
+              G.floatingItems.push(lootItem);
+              const crate = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
+              crate.position.set(lootItem.x, SEA_LEVEL + 0.5, lootItem.z);
+              crate.userData.floatItem = lootItem; crate.userData.isLoot = true;
+              scene.add(crate);
+            }
           }
           b.life = 0;
         }
@@ -1550,7 +1607,7 @@ function update(dt) {
 
     if (b.owner === 'npc' || b.owner === 'other_player') {
       const distP = Math.hypot(b.x - G.player.x, b.z - G.player.z);
-      if (distP < 3) {
+      if (distP < 5 && b.y > SEA_LEVEL - 1) {
         G.player.health = Math.max(0, G.player.health - (b.owner === 'other_player' ? 12 : 8));
         spawnDamageChunks(b.x, b.y, b.z);
         notify(`Hull hit! HP: ${Math.round(G.player.health)}`);
@@ -1609,8 +1666,12 @@ function update(dt) {
 
   water.position.set(G.player.x, SEA_LEVEL - 0.3, G.player.z);
   if (isMobile) {
-    G.camera.targetYaw = G.player.rotation + Math.PI;
-    G.camera.yaw += (G.camera.targetYaw - G.camera.yaw) * 3 * dt;
+    const targetY = G.player.rotation + Math.PI;
+    let camDiff = targetY - G.camera.yaw;
+    while (camDiff > Math.PI) camDiff -= Math.PI * 2;
+    while (camDiff < -Math.PI) camDiff += Math.PI * 2;
+    G.camera.yaw += camDiff * 2.5 * dt;
+    G.camera.targetYaw = G.camera.yaw;
   }
   const cDist = G.camera.zoom, cAng = G.camera.angle, cYaw = G.camera.yaw;
   camera.position.set(
