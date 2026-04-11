@@ -148,14 +148,15 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   #tutorial-next{font-size:15px;padding:14px 20px;min-height:48px;touch-action:manipulation;}
   #tutorial-skip{min-height:44px;touch-action:manipulation;margin-top:8px;}
 }
-#cargo-3d-wrap{width:100%;height:240px;position:relative;border-radius:6px;border:1px solid rgba(140,100,40,0.2);overflow:hidden;background:radial-gradient(ellipse at center,rgba(12,20,35,0.95),rgba(4,8,14,0.98));flex-shrink:0;}
+#cargo-3d-wrap{width:100%;height:340px;position:relative;border-radius:6px;border:1px solid rgba(140,100,40,0.2);overflow:hidden;background:radial-gradient(ellipse at center,rgba(12,20,35,0.95),rgba(4,8,14,0.98));flex-shrink:0;touch-action:none;}
 #cargo-3d{width:100%;height:100%;}
 #log-inv{display:flex;flex-direction:column;gap:8px;min-height:0;overflow:hidden;max-height:calc(75vh - 96px);}
 #log-inv #inv-list{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;}
-.cargo-slots-overlay{position:absolute;left:14%;right:14%;top:52%;bottom:13%;display:grid;gap:1px;pointer-events:none;z-index:2;box-sizing:border-box;overflow:hidden;align-content:stretch;}
-.cargo-slot-box{border:1px solid rgba(212,168,72,0.45);background:rgba(12,8,6,0.72);border-radius:2px;padding:0 1px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:0;height:100%;font-size:5px;color:#e0d6c2;line-height:1.02;overflow:hidden;}
-.cargo-slot-box.empty{border-style:dashed;opacity:0.6;color:#5a4a38;font-size:5px;}
+.cargo-slots-overlay{position:absolute;left:14%;right:14%;top:52%;bottom:13%;display:grid;gap:1px;pointer-events:auto;z-index:3;box-sizing:border-box;overflow:hidden;align-content:stretch;touch-action:none;}
+.cargo-slot-box{border:1px solid rgba(212,168,72,0.45);background:rgba(12,8,6,0.72);border-radius:2px;padding:0 1px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:0;height:100%;font-size:5px;color:#e0d6c2;line-height:1.02;overflow:hidden;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;}
+.cargo-slot-box.empty{border-style:dashed;opacity:0.6;color:#5a4a38;font-size:5px;cursor:default;}
 .cargo-slot-box.filled{border-color:rgba(200,160,80,0.65);background:rgba(28,20,12,0.82);}
+.cargo-slot-box.dragging{opacity:0.45;cursor:grabbing;}
 .cargo-slot-icon{font-size:9px;font-weight:bold;color:#d4a848;line-height:1;}
 .cargo-slot-amt{font-size:5px;color:#b8a890;}
 .cargo-slot-name{font-size:5px;color:#7a6a58;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -507,6 +508,19 @@ const SHIP_TYPES = {
   galleon: { name: 'Galleon', desc: 'Heavy hauler', hullLen: 14, hullW: 4.5, hullH: 2.3, masts: 3, maxCrew: 18, speed: 0.75, turnRate: 0.7, cannonSlots: 6, cargoSlots: 16, bowStyle: 'wide' },
   warship: { name: 'Man-o-War', desc: 'Floating fortress', hullLen: 18, hullW: 5.5, hullH: 2.8, masts: 3, maxCrew: 28, speed: 0.55, turnRate: 0.5, cannonSlots: 10, cargoSlots: 22, bowStyle: 'blunt' }
 };
+
+const ITEM_MAX_STACK = 999;
+const ITEM_DEFS = {
+  wood: { name: 'Wood Planks', icon: 'W' },
+  cloth: { name: 'Sail Cloth', icon: 'C' },
+  iron: { name: 'Iron Ingot', icon: 'Fe' },
+  gold: { name: 'Gold Coins', icon: 'Au' },
+  rum: { name: 'Rum Barrels', icon: 'R' },
+  gunpowder: { name: 'Gunpowder', icon: 'GP' }
+};
+function getItemMeta(id) {
+  return ITEM_DEFS[id] || { name: String(id), icon: '?' };
+}
 
 const SHIP_PARTS = {
   hull: [
@@ -864,9 +878,11 @@ function generateIsland(cx, cz) {
 
   if (ln.noise2D(cx, cz) > 0.2) {
     const items = ['wood', 'cloth', 'iron', 'gold', 'rum', 'gunpowder'];
-    const fi = { type: items[Math.floor(Math.abs(ln.noise2D(cx + 5, cz + 5)) * items.length)],
+    const fiType = items[Math.floor(Math.abs(ln.noise2D(cx + 5, cz + 5)) * items.length)];
+    const fi = { type: fiType,
       x: worldX + ln.noise2D(cx, cz + 1) * islandRadius * 0.4,
-      z: worldZ + ln.noise2D(cx + 1, cz) * islandRadius * 0.4, collected: false };
+      z: worldZ + ln.noise2D(cx + 1, cz) * islandRadius * 0.4, collected: false,
+      count: fiType === 'gold' ? 12 + Math.floor(Math.abs(ln.noise2D(cx, cz)) * 8) : 4 + Math.floor(Math.abs(ln.noise2D(cx + 2, cz)) * 4) };
     G.floatingItems.push(fi);
     const crate = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
     crate.position.set(fi.x, SEA_LEVEL + 1.5, fi.z); crate.castShadow = true; crate.userData.floatItem = fi;
@@ -1514,6 +1530,17 @@ function createSplash(x, z) {
   sg.position.set(x, SEA_LEVEL, z); sg.userData.life = 1.0; scene.add(sg); return sg;
 }
 
+function addFloatingLootMesh(x, z, type, count) {
+  const cnt = count != null ? count : (type === 'gold' ? 15 : 4);
+  const li = { type, count: cnt, x, z, collected: false };
+  G.floatingItems.push(li);
+  const crate = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
+  crate.position.set(li.x, SEA_LEVEL + 0.5, li.z);
+  crate.userData.floatItem = li;
+  crate.userData.isLoot = true;
+  scene.add(crate);
+}
+
 /* ============================== NETWORK =================================== */
 let ws = null;
 function getServerUrl() {
@@ -1564,19 +1591,21 @@ function connectToServer() {
         break;
       }
       case 'ship_sunk': {
-        notify(`${msg.name}'s ship is sinking!`);
-        spawnSwimmers(msg.x, msg.z, 3);
-        if (msg.loot) msg.loot.forEach(l => {
-          const li = { type: l.type, x: l.x, z: l.z, collected: false };
-          G.floatingItems.push(li);
-          const crate = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.7,0.7), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
-          crate.position.set(li.x, SEA_LEVEL+0.5, li.z);
-          crate.userData.floatItem = li; crate.userData.isLoot = true; scene.add(crate);
-        });
+        if (msg.id !== G.myId) {
+          notify(`${msg.name}'s ship is sinking!`);
+          spawnSwimmers(msg.x, msg.z, 3);
+          if (msg.loot) msg.loot.forEach(l => addFloatingLootMesh(l.x, l.z, l.type, l.count));
+        }
         if (otherShipGroups.has(msg.id)) {
           const sg = otherShipGroups.get(msg.id);
           sg.userData.sinking = true; sg.userData.sinkY = sg.position.y;
         }
+        break;
+      }
+      case 'loot_spawn': {
+        const l = msg.loot || {};
+        const t = l.type || msg.type;
+        if (t) addFloatingLootMesh(msg.x, msg.z, t, l.count);
         break;
       }
     }
@@ -1969,7 +1998,7 @@ function updateDebugBuilder() {
   Object.entries(SHIP_TYPES).forEach(([key, spec]) => {
     const b = document.createElement('div'); b.className = 'part-slot' + (key === G.player.shipType ? ' active' : '');
     b.innerHTML = `<div class="value">${spec.name}</div><div class="label">${spec.desc}</div>`;
-    b.onclick = () => { G.player.shipType = key; rebuildPlayerShip(); updateDebugBuilder(); updateShipPanel(); };
+    b.onclick = () => { G.player.shipType = key; rebuildPlayerShip(); ensureCargoSlots(); updateDebugBuilder(); updateShipPanel(); };
     td.appendChild(b);
   });
   const pd = document.getElementById('ship-parts-list');
@@ -1989,11 +2018,151 @@ function updateDebugBuilder() {
 }
 
 let cargoRenderer, cargoScene, cargoCamera, cargoShipPreview;
+let cargoPtrDrag = { active: false, from: -1, x: 0, y: 0, pointerId: null };
+
+function slotSumById(id) {
+  let t = 0;
+  (G.player.cargoSlots || []).forEach(s => { if (s && s.id === id) t += s.count; });
+  return t;
+}
+function syncInventoryFromCargoSlots() {
+  const map = new Map();
+  (Array.isArray(G.player.cargoSlots) ? G.player.cargoSlots : []).forEach(s => {
+    if (s && s.count > 0) map.set(s.id, (map.get(s.id) || 0) + s.count);
+  });
+  G.player.inventory = Array.from(map.entries()).map(([id, count]) => {
+    const m = getItemMeta(id);
+    return { id, name: m.name, icon: m.icon, count };
+  });
+}
+function ensureCargoSlots() {
+  const n = (SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop).cargoSlots;
+  if (!Array.isArray(G.player.cargoSlots)) G.player.cargoSlots = [];
+  if (G.player.cargoSlots.length !== n) {
+    const old = G.player.cargoSlots.filter(Boolean);
+    G.player.cargoSlots = Array(n).fill(null);
+    for (let i = 0; i < old.length && i < n; i++) G.player.cargoSlots[i] = old[i];
+    if (old.length > n) {
+      for (let i = n; i < old.length; i++) {
+        const s = old[i];
+        if (s && s.count > 0) spawnWorldLootAt(G.player.x, G.player.z, s.id, s.count);
+      }
+      notify('Hold shrank — excess cargo floated free!');
+    }
+    syncInventoryFromCargoSlots();
+  }
+  const any = G.player.cargoSlots.some(s => s);
+  if (!any && G.player.inventory && G.player.inventory.some(i => i.count > 0)) {
+    const map = new Map();
+    G.player.inventory.forEach(it => { if (it.count > 0) map.set(it.id, (map.get(it.id) || 0) + it.count); });
+    let idx = 0;
+    for (const id of map.keys()) {
+      const total = map.get(id);
+      const m = getItemMeta(id);
+      let left = total;
+      while (left > 0 && idx < n) {
+        const put = Math.min(ITEM_MAX_STACK, left);
+        G.player.cargoSlots[idx++] = { id, name: m.name, icon: m.icon, count: put };
+        left -= put;
+      }
+      while (left > 0) {
+        const drop = Math.min(ITEM_MAX_STACK, left);
+        spawnWorldLootAt(G.player.x, G.player.z, id, drop);
+        left -= drop;
+      }
+    }
+    syncInventoryFromCargoSlots();
+  }
+}
+function reconcileSlotsWithInventory() {
+  ensureCargoSlots();
+  const want = new Map();
+  G.player.inventory.forEach(row => { if (row.count > 0) want.set(row.id, row.count); });
+  for (const [id, target] of [...want.entries()]) {
+    let cur = slotSumById(id);
+    while (cur > target) {
+      let removed = false;
+      for (let i = G.player.cargoSlots.length - 1; i >= 0 && cur > target; i--) {
+        const s = G.player.cargoSlots[i];
+        if (!s || s.id !== id) continue;
+        const take = Math.min(s.count, cur - target);
+        s.count -= take;
+        cur -= take;
+        removed = true;
+        if (s.count <= 0) G.player.cargoSlots[i] = null;
+      }
+      if (!removed) break;
+    }
+  }
+  for (const [id, target] of want) {
+    let cur = slotSumById(id);
+    if (cur >= target) continue;
+    let need = target - cur;
+    const meta = getItemMeta(id);
+    while (need > 0) {
+      let placed = false;
+      for (let i = 0; i < G.player.cargoSlots.length; i++) {
+        const s = G.player.cargoSlots[i];
+        if (s && s.id === id && s.count < ITEM_MAX_STACK) {
+          const add = Math.min(ITEM_MAX_STACK - s.count, need);
+          s.count += add;
+          need -= add;
+          placed = true;
+          if (need <= 0) break;
+        }
+      }
+      if (need <= 0) break;
+      for (let i = 0; i < G.player.cargoSlots.length; i++) {
+        if (!G.player.cargoSlots[i]) {
+          const add = Math.min(ITEM_MAX_STACK, need);
+          G.player.cargoSlots[i] = { id, name: meta.name, icon: meta.icon, count: add };
+          need -= add;
+          placed = true;
+          if (need <= 0) break;
+        }
+      }
+      if (!placed) break;
+    }
+  }
+}
+function swapCargoSlots(a, b) {
+  ensureCargoSlots();
+  if (a === b || a < 0 || b < 0) return;
+  const n = G.player.cargoSlots.length;
+  if (a >= n || b >= n) return;
+  const t = G.player.cargoSlots[a];
+  G.player.cargoSlots[a] = G.player.cargoSlots[b];
+  G.player.cargoSlots[b] = t;
+  syncInventoryFromCargoSlots();
+}
+function spawnWorldLootAt(wx, wz, type, count) {
+  const lx = wx + (Math.random() - 0.5) * 2.5;
+  const lz = wz + (Math.random() - 0.5) * 2.5;
+  const cnt = Math.max(1, (count == null || Number.isNaN(Number(count))) ? (type === 'gold' ? 15 : 4) : Number(count));
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'loot_spawn', x: lx, z: lz, loot: { type, count: cnt } }));
+  } else {
+    addFloatingLootMesh(lx, lz, type, cnt);
+  }
+}
+function jettisonCargoSlot(slotIdx) {
+  ensureCargoSlots();
+  const s = G.player.cargoSlots[slotIdx];
+  if (!s || s.count <= 0) return;
+  const qty = s.count;
+  const id = s.id;
+  G.player.cargoSlots[slotIdx] = null;
+  syncInventoryFromCargoSlots();
+  const jx = G.player.x + Math.sin(G.player.rotation) * 5;
+  const jz = G.player.z + Math.cos(G.player.rotation) * 5;
+  spawnWorldLootAt(jx, jz, id, qty);
+  notify(`Jettisoned ${qty}× ${getItemMeta(id).name} astern!`);
+}
 
 function ensureCargoPreview() {
   const container = document.getElementById('cargo-3d');
   if (!container || cargoRenderer) return;
-  const h = 280;
+  const h = Math.max(280, container.clientHeight || 340);
   const w = Math.max(200, container.clientWidth || 280);
   cargoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   cargoRenderer.setSize(w, h);
@@ -2008,8 +2177,8 @@ function ensureCargoPreview() {
   cargoScene.add(sun);
   cargoScene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a4a30, 0.38));
 
-  cargoCamera = new THREE.PerspectiveCamera(32, w / h, 0.1, 120);
-  cargoCamera.position.set(0, 5.2, 15);
+  cargoCamera = new THREE.PerspectiveCamera(28, w / h, 0.1, 120);
+  cargoCamera.position.set(0, 5.4, 12.5);
   cargoCamera.lookAt(0, 0.75, 0);
 }
 
@@ -2018,7 +2187,7 @@ function resizeCargoPreview() {
   const container = document.getElementById('cargo-3d');
   if (!container) return;
   const w = Math.max(200, container.clientWidth);
-  const h = 280;
+  const h = Math.max(280, container.clientHeight || 340);
   cargoRenderer.setSize(w, h);
   cargoCamera.aspect = w / h;
   cargoCamera.updateProjectionMatrix();
@@ -2051,20 +2220,20 @@ function updateCargo3DMesh() {
 function renderCargoSlotsOverlay() {
   const el = document.getElementById('cargo-slots-overlay');
   if (!el) return;
+  ensureCargoSlots();
   const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
   const n = spec.cargoSlots || 6;
   const cols = Math.min(4, n);
   const rows = Math.ceil(n / cols);
   el.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
   el.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
-  const items = G.player.inventory.filter(i => i.count > 0);
   let html = '';
   for (let i = 0; i < n; i++) {
-    const it = items[i];
-    if (it) {
-      html += `<div class="cargo-slot-box filled"><span class="cargo-slot-icon">${it.icon}</span><span class="cargo-slot-amt">×${it.count}</span><span class="cargo-slot-name">${it.name}</span></div>`;
+    const it = G.player.cargoSlots[i];
+    if (it && it.count > 0) {
+      html += `<div class="cargo-slot-box filled" data-slot="${i}" data-empty="0"><span class="cargo-slot-icon">${it.icon}</span><span class="cargo-slot-amt">×${it.count}</span><span class="cargo-slot-name">${it.name}</span></div>`;
     } else {
-      html += '<div class="cargo-slot-box empty">Empty hold</div>';
+      html += `<div class="cargo-slot-box empty" data-slot="${i}" data-empty="1">Empty</div>`;
     }
   }
   el.innerHTML = html;
@@ -2079,11 +2248,12 @@ function renderCargoPreviewIfOpen() {
 }
 
 function updateInventoryPanel() {
+  ensureCargoSlots();
   ensureCargoPreview();
   updateCargo3DMesh();
   renderCargoSlotsOverlay();
   const l = document.getElementById('inv-list');
-  l.innerHTML = '<div style="color:#8a7a60;font-size:10px;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px;">Manifest</div>';
+  l.innerHTML = '<div style="color:#8a7a60;font-size:10px;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px;">Manifest</div><div style="color:#6a5a48;font-size:9px;margin-bottom:8px;line-height:1.35;">Drag stacks between hold slots. Drag off the ship into open water to jettison as floating cargo.</div>';
   G.player.inventory.forEach(item => {
     const d = document.createElement('div'); d.className = 'inv-item';
     d.innerHTML = `<div class="icon">${item.icon}</div><div>${item.name} <b>x${item.count}</b></div>`;
@@ -2142,6 +2312,7 @@ window.ransomPrisoner = function(idx) {
   if (G.player.crew[idx].role !== 'prisoner') { notify('Can only ransom prisoners!'); return; }
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (gold) gold.count += 15;
+  reconcileSlotsWithInventory();
   if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'leaderboard_update', kills: 0, loot: 15 }));
   notify(`Ransomed ${G.player.crew[idx].name} for 15 gold!`);
   G.player.crew.splice(idx, 1);
@@ -2356,6 +2527,7 @@ window.portUpgrade = function(slot, id, cost) {
   gold.count -= cost;
   G.player.shipParts[slot] = id;
   rebuildPlayerShip();
+  reconcileSlotsWithInventory();
   notify(`Upgraded ${slot}!`);
   showPortTab('upgrades');
   updateShipPanel();
@@ -2367,6 +2539,7 @@ window.portBuy = function(id, cost) {
   gold.count -= cost;
   const item = G.player.inventory.find(i => i.id === id);
   if (item) item.count += 1;
+  reconcileSlotsWithInventory();
   notify(`Bought 1 ${id}`);
   showPortTab('trade');
 };
@@ -2377,6 +2550,7 @@ window.portSell = function(id, price) {
   item.count -= 1;
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (gold) gold.count += price;
+  reconcileSlotsWithInventory();
   notify(`Sold 1 ${id} for ${price}g`);
   showPortTab('trade');
 };
@@ -2388,6 +2562,7 @@ window.portRecruit = function(name, role) {
   if (!gold || gold.count < 25) { notify('Not enough gold!'); return; }
   gold.count -= 25;
   G.player.crew.push({ name, role, health: 100, task: 'idle', color: '#5a5a5a' });
+  reconcileSlotsWithInventory();
   notify(`${name} joined your crew!`);
   rebuildPlayerShip();
   showPortTab('recruit');
@@ -3010,14 +3185,12 @@ function update(dt) {
             npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
             spawnSwimmers(npc.x, npc.z, 2 + Math.floor(Math.random() * 3));
             for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
-              const lootItem = { type: ['wood','iron','gold','gunpowder'][Math.floor(Math.random() * 4)],
-                x: npc.x + (Math.random() - 0.5) * 8, z: npc.z + (Math.random() - 0.5) * 8, collected: false };
-              G.floatingItems.push(lootItem);
-              const crate = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
-              crate.position.set(lootItem.x, SEA_LEVEL + 0.5, lootItem.z);
-              crate.userData.floatItem = lootItem; crate.userData.isLoot = true;
-              scene.add(crate);
+              const t = ['wood','iron','gold','gunpowder'][Math.floor(Math.random() * 4)];
+              const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : 2 + Math.floor(Math.random() * 5);
+              const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
+              addFloatingLootMesh(lx, lz, t, c);
             }
+            reconcileSlotsWithInventory();
           }
           b.life = 0;
         }
@@ -3116,13 +3289,11 @@ function update(dt) {
     spawnSwimmers(G.player.x, G.player.z, Math.min(G.player.crew.length, 4), G.player.crew);
     const lootDrops = [];
     for (let li = 0; li < 2 + Math.floor(Math.random()*2); li++) {
-      const lootItem = { type: ['wood','iron','gold','gunpowder'][Math.floor(Math.random()*4)],
-        x: G.player.x + (Math.random()-0.5)*10, z: G.player.z + (Math.random()-0.5)*10, collected: false };
-      G.floatingItems.push(lootItem);
-      lootDrops.push({ type: lootItem.type, x: lootItem.x, z: lootItem.z });
-      const crate = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.7,0.7), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
-      crate.position.set(lootItem.x, SEA_LEVEL+0.5, lootItem.z);
-      crate.userData.floatItem = lootItem; crate.userData.isLoot = true; scene.add(crate);
+      const t = ['wood','iron','gold','gunpowder'][Math.floor(Math.random()*4)];
+      const c = t === 'gold' ? 10 + Math.floor(Math.random() * 12) : 2 + Math.floor(Math.random() * 5);
+      const lx = G.player.x + (Math.random()-0.5)*10, lz = G.player.z + (Math.random()-0.5)*10;
+      lootDrops.push({ type: t, x: lx, z: lz, count: c });
+      addFloatingLootMesh(lx, lz, t, c);
     }
     if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_sunk', x: G.player.x, z: G.player.z, loot: lootDrops }));
     document.getElementById('death-overlay').style.display = 'flex';
@@ -3143,6 +3314,7 @@ function update(dt) {
       G.player.speed = 1;
       const goldItem = G.player.inventory.find(i => i.id === 'gold');
       if (goldItem) goldItem.count = Math.max(0, goldItem.count - 15);
+      reconcileSlotsWithInventory();
       G.player.crew = G.player.crew.filter(c => c.role !== 'prisoner').slice(0, 4);
       rebuildPlayerShip();
       document.getElementById('death-overlay').style.display = 'none';
@@ -3160,9 +3332,18 @@ function update(dt) {
     if (item.collected) return;
     if (Math.hypot(G.player.x - item.x, G.player.z - item.z) < 8) {
       item.collected = true;
-      const ex = G.player.inventory.find(i => i.id === item.type);
-      if (ex) ex.count += (item.type === 'gold' ? 20 : 3);
-      notify(`Collected ${item.type}!`);
+      const amt = item.count != null && !Number.isNaN(Number(item.count))
+        ? Number(item.count)
+        : (item.type === 'gold' ? 20 : 3);
+      let ex = G.player.inventory.find(i => i.id === item.type);
+      if (!ex) {
+        const m = getItemMeta(item.type);
+        ex = { id: item.type, name: m.name, icon: m.icon, count: 0 };
+        G.player.inventory.push(ex);
+      }
+      ex.count += amt;
+      reconcileSlotsWithInventory();
+      notify(`Collected ${item.type} ×${amt}!`);
       islandGroup.traverse(c => { if (c.userData.floatItem === item) c.visible = false; });
       const toRemove = [];
       scene.traverse(c => { if (c.userData.floatItem === item) toRemove.push(c); });
@@ -3804,6 +3985,7 @@ function saveProgress() {
       flagColor: G.player.flagColor,
       shipParts: G.player.shipParts,
       inventory: G.player.inventory,
+      cargoSlots: G.player.cargoSlots,
       crew: G.player.crew,
       gold: G.player.inventory.find(i => i.id === 'gold')?.count || 0,
       quests: G.quests
@@ -3825,6 +4007,8 @@ function loadProgress() {
     if (data.shipType) G.player.shipType = data.shipType;
     if (data.shipParts) G.player.shipParts = data.shipParts;
     if (data.inventory) G.player.inventory = data.inventory;
+    if (data.cargoSlots && Array.isArray(data.cargoSlots)) G.player.cargoSlots = data.cargoSlots;
+    if (data.cargoSlots && data.cargoSlots.some(Boolean)) syncInventoryFromCargoSlots();
     if (data.crew) G.player.crew = data.crew;
     if (data.quests) G.quests = data.quests;
     if (data.flagColor) G.player.flagColor = data.flagColor;
@@ -3984,6 +4168,7 @@ document.getElementById('new-game-btn').onclick = () => {
     { id: 'rum', name: 'Rum Barrels', icon: 'R', count: 2 },
     { id: 'gunpowder', name: 'Gunpowder', icon: 'GP', count: 5 }
   ];
+  G.player.cargoSlots = [];
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('create-screen').style.display = 'block';
   buildCreationUI();
@@ -4022,6 +4207,55 @@ document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(tab => {
     document.getElementById(tab.dataset.panel)?.classList.add('mob-active');
   };
 });
+
+(function bindCargoSlotDrag() {
+  const overlay = document.getElementById('cargo-slots-overlay');
+  if (!overlay) return;
+  function endDrag(e) {
+    if (!cargoPtrDrag.active) return;
+    overlay.querySelectorAll('.cargo-slot-box.dragging').forEach(b => b.classList.remove('dragging'));
+    const from = cargoPtrDrag.from;
+    cargoPtrDrag.active = false;
+    try {
+      if (cargoPtrDrag.pointerId != null) overlay.releasePointerCapture(cargoPtrDrag.pointerId);
+    } catch (err) {}
+    cargoPtrDrag.pointerId = null;
+    const wrap = document.getElementById('cargo-3d-wrap');
+    if (!wrap || from < 0) return;
+    const r = wrap.getBoundingClientRect();
+    const margin = 10;
+    const inside = cargoPtrDrag.x >= r.left - margin && cargoPtrDrag.x <= r.right + margin && cargoPtrDrag.y >= r.top - margin && cargoPtrDrag.y <= r.bottom + margin;
+    if (!inside) jettisonCargoSlot(from);
+    else {
+      const el = document.elementFromPoint(cargoPtrDrag.x, cargoPtrDrag.y);
+      const target = el && el.closest ? el.closest('.cargo-slot-box') : null;
+      const to = target && target.dataset.slot != null ? +target.dataset.slot : -1;
+      if (to >= 0 && to !== from) swapCargoSlots(from, to);
+    }
+    updateInventoryPanel();
+  }
+  overlay.addEventListener('pointerdown', e => {
+    if (G.mode !== 'playing') return;
+    const box = e.target.closest('.cargo-slot-box');
+    if (!box || box.dataset.empty === '1') return;
+    cargoPtrDrag.active = true;
+    cargoPtrDrag.from = +box.dataset.slot;
+    cargoPtrDrag.x = e.clientX;
+    cargoPtrDrag.y = e.clientY;
+    cargoPtrDrag.pointerId = e.pointerId;
+    box.classList.add('dragging');
+    try { overlay.setPointerCapture(e.pointerId); } catch (err2) {}
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  overlay.addEventListener('pointermove', e => {
+    if (!cargoPtrDrag.active) return;
+    cargoPtrDrag.x = e.clientX;
+    cargoPtrDrag.y = e.clientY;
+  });
+  overlay.addEventListener('pointerup', endDrag);
+  overlay.addEventListener('pointercancel', endDrag);
+})();
 
 requestAnimationFrame(gameLoop);
 
