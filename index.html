@@ -102,10 +102,18 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 <div id="create-screen">
   <div class="inner">
     <h2>&#9773; Assemble Your Crew</h2>
+    <canvas id="crew-preview" width="380" height="160" style="width:100%;height:auto;border-radius:8px;background:rgba(15,30,50,0.6);border:1px solid rgba(180,140,60,0.3);margin-bottom:16px;"></canvas>
     <label>Captain Name</label>
     <input type="text" id="cap-name" value="Captain Blackwood" maxlength="24" />
-    <label>Captain Coat Color</label>
+    <label>Coat Color</label>
     <div class="color-row" id="cap-colors"></div>
+    <label>Hat</label>
+    <div class="color-row" id="cap-hat"></div>
+    <label>Outfit</label>
+    <div class="color-row" id="cap-outfit"></div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;">
+      <input type="checkbox" id="cap-parrot" style="width:20px;height:20px;accent-color:#d4a848;" /> Shoulder Parrot 🦜
+    </label>
     <hr style="border:none;border-top:1px solid rgba(180,140,60,0.2);margin:16px 0;">
     <div id="crew-editors"></div>
     <button id="create-launch">&#9875; Set Sail!</button>
@@ -218,9 +226,11 @@ const G = {
 };
 
 const SHIP_TYPES = {
-  sloop: { name: 'Sloop', hullLen: 6, hullW: 2, hullH: 1.2, masts: 1, maxCrew: 4, speed: 1.2, turnRate: 1.3 },
-  brigantine: { name: 'Brigantine', hullLen: 9, hullW: 3, hullH: 1.6, masts: 2, maxCrew: 8, speed: 1.0, turnRate: 1.0 },
-  galleon: { name: 'Galleon', hullLen: 14, hullW: 4.5, hullH: 2.2, masts: 3, maxCrew: 16, speed: 0.75, turnRate: 0.7 }
+  cutter: { name: 'Cutter', desc: 'Nimble scout', hullLen: 5, hullW: 1.6, hullH: 1.0, masts: 1, maxCrew: 3, speed: 1.4, turnRate: 1.6, cannonSlots: 1, bowStyle: 'pointed' },
+  sloop: { name: 'Sloop', desc: 'Fast raider', hullLen: 7, hullW: 2.2, hullH: 1.3, masts: 1, maxCrew: 5, speed: 1.2, turnRate: 1.3, cannonSlots: 2, bowStyle: 'pointed' },
+  brigantine: { name: 'Brigantine', desc: 'Balanced trader', hullLen: 10, hullW: 3.2, hullH: 1.7, masts: 2, maxCrew: 10, speed: 1.0, turnRate: 1.0, cannonSlots: 4, bowStyle: 'wide' },
+  galleon: { name: 'Galleon', desc: 'Heavy hauler', hullLen: 14, hullW: 4.5, hullH: 2.3, masts: 3, maxCrew: 18, speed: 0.75, turnRate: 0.7, cannonSlots: 6, bowStyle: 'wide' },
+  warship: { name: 'Man-o-War', desc: 'Floating fortress', hullLen: 18, hullW: 5.5, hullH: 2.8, masts: 3, maxCrew: 28, speed: 0.55, turnRate: 0.5, cannonSlots: 10, bowStyle: 'blunt' }
 };
 
 const SHIP_PARTS = {
@@ -599,8 +609,31 @@ function buildShipMesh(type, parts, flagColor) {
     const yard = new THREE.Mesh(yg, rm); yard.position.set(0, spec.hullH * 0.6 + mH * 0.85, mZ); g.add(yard);
   }
 
+  if (spec.bowStyle === 'blunt') {
+    const bowGeo = new THREE.BoxGeometry(spec.hullW * 0.7, spec.hullH * 0.6, spec.hullLen * 0.08);
+    const bow = new THREE.Mesh(bowGeo, new THREE.MeshPhongMaterial({ color: hc, shininess: 15 }));
+    bow.position.set(0, spec.hullH * 0.2, spec.hullLen * 0.48); bow.castShadow = true; g.add(bow);
+  }
+
+  if (type === 'warship') {
+    const qd = new THREE.BoxGeometry(spec.hullW * 0.85, spec.hullH * 1.0, spec.hullLen * 0.22);
+    const quarter = new THREE.Mesh(qd, new THREE.MeshPhongMaterial({ color: 0x4a2a10, shininess: 15 }));
+    quarter.position.set(0, spec.hullH * 0.7, -spec.hullLen * 0.35); quarter.castShadow = true; g.add(quarter);
+    const wg = new THREE.CylinderGeometry(0.06, 0.06, spec.hullW * 0.6, 4); wg.rotateZ(Math.PI / 2);
+    for (let wi = 0; wi < 3; wi++) {
+      const win = new THREE.Mesh(wg, new THREE.MeshBasicMaterial({ color: 0x888844 }));
+      win.position.set(0, spec.hullH * 0.3, -spec.hullLen * (0.1 + wi * 0.12)); g.add(win);
+    }
+  }
+
+  if (type === 'galleon' || type === 'warship') {
+    const cb = new THREE.BoxGeometry(spec.hullW * 0.55, spec.hullH * 0.3, spec.hullLen * 0.08);
+    const crows = new THREE.Mesh(cb, rm);
+    crows.position.set(0, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.95, 0); g.add(crows);
+  }
+
   if (parts.cannon && parts.cannon !== 'none') {
-    const cc = type === 'sloop' ? 2 : type === 'brigantine' ? 4 : 6;
+    const cc = spec.cannonSlots || 2;
     const cg = new THREE.CylinderGeometry(0.1, 0.15, 1.2, 6); cg.rotateZ(Math.PI / 2);
     const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
     for (let c = 0; c < cc; c++) {
@@ -634,12 +667,39 @@ function buildCrewMeshes(group, crewList, shipType) {
   const spec = SHIP_TYPES[shipType];
   crewList.forEach((member, idx) => {
     const cg = new THREE.Group(); cg.userData.isCrew = true; cg.userData.crewIdx = idx;
-    const defaultColors = { captain: 0x8b0000, gunner: 0x4a4a4a, navigator: 0x2a2a6a, sailor: 0x2a4a6a };
-    const bc = member.color ? new THREE.Color(member.color) : new THREE.Color(defaultColors[member.role] || 0x2a4a6a);
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.4, 4, 5), new THREE.MeshLambertMaterial({ color: bc }));
-    body.position.y = 0.35; cg.add(body);
+    const dcols = { captain: 0x8b0000, gunner: 0x4a4a4a, navigator: 0x2a2a6a, sailor: 0x2a4a6a };
+    const bc = member.color ? new THREE.Color(member.color) : new THREE.Color(dcols[member.role] || 0x2a4a6a);
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, member.outfit === 'coat' ? 0.5 : 0.4, 4, 5), new THREE.MeshLambertMaterial({ color: bc }));
+    body.position.y = member.outfit === 'coat' ? 0.3 : 0.35; cg.add(body);
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 6), new THREE.MeshLambertMaterial({ color: 0xd4a070 }));
     head.position.y = 0.7; cg.add(head);
+
+    if (member.hat === 'tricorn') {
+      const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 0.04, 6), new THREE.MeshLambertMaterial({ color: 0x1a1008 }));
+      hatBrim.position.y = 0.82; cg.add(hatBrim);
+      const hatTop = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.1, 6), new THREE.MeshLambertMaterial({ color: 0x1a1008 }));
+      hatTop.position.y = 0.88; cg.add(hatTop);
+    } else if (member.hat === 'bandana') {
+      const band = new THREE.Mesh(new THREE.SphereGeometry(0.13, 6, 4, 0, Math.PI * 2, 0, Math.PI * 0.5), new THREE.MeshLambertMaterial({ color: 0xcc2222 }));
+      band.position.y = 0.72; cg.add(band);
+    } else if (member.hat === 'captain') {
+      const capHat = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.12, 0.18), new THREE.MeshLambertMaterial({ color: 0x0a0a2a }));
+      capHat.position.y = 0.86; cg.add(capHat);
+      const goldBand = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.03, 0.12), new THREE.MeshLambertMaterial({ color: 0xd4a848 }));
+      goldBand.position.y = 0.83; cg.add(goldBand);
+    } else if (member.hat === 'hood') {
+      const hood = new THREE.Mesh(new THREE.SphereGeometry(0.15, 6, 6), new THREE.MeshLambertMaterial({ color: 0x3a3a3a }));
+      hood.position.y = 0.73; hood.scale.set(1, 0.8, 1.1); cg.add(hood);
+    }
+
+    if (member.parrot) {
+      const pBody = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 5), new THREE.MeshLambertMaterial({ color: 0x22aa22 }));
+      pBody.position.set(0.2, 0.65, 0); cg.add(pBody);
+      const pHead = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 4), new THREE.MeshLambertMaterial({ color: 0xff3333 }));
+      pHead.position.set(0.2, 0.72, 0); cg.add(pHead);
+      const beak = new THREE.Mesh(new THREE.ConeGeometry(0.015, 0.04, 3), new THREE.MeshLambertMaterial({ color: 0xffaa00 }));
+      beak.position.set(0.24, 0.72, 0); beak.rotation.z = -Math.PI / 2; cg.add(beak);
+    }
     let px, pz;
     if (member.task === 'helm') { px = 0; pz = -spec.hullLen * 0.35; }
     else if (member.task === 'sails') { px = (Math.random() - 0.5) * spec.hullW * 0.4; pz = spec.hullLen * 0.1; }
@@ -666,7 +726,7 @@ function spawnNPCs() {
     const npc = {
       x: G.player.x + Math.cos(a) * d, z: G.player.z + Math.sin(a) * d,
       rotation: Math.random() * Math.PI * 2, speed: 2 + Math.random() * 3,
-      health: 60 + Math.random() * 40, type: Math.random() > 0.5 ? 'brigantine' : 'sloop',
+      health: 60 + Math.random() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(Math.random() * 5)],
       name: ['Sea Phantom', 'Red Tide', 'Storm Chaser', 'Bone Rattler', 'Shadow Wave'][Math.floor(Math.random() * 5)],
       wanderAngle: Math.random() * Math.PI * 2, wanderTimer: 5 + Math.random() * 10
     };
@@ -885,7 +945,7 @@ function updateShipPanel() {
   td.innerHTML = '<div class="label" style="margin-bottom:6px;font-size:11px;color:#a09080;">HULL TYPE</div>';
   Object.entries(SHIP_TYPES).forEach(([key, spec]) => {
     const b = document.createElement('div'); b.className = 'part-slot' + (key === G.player.shipType ? ' active' : '');
-    b.innerHTML = `<div class="value">${spec.name}</div><div class="label">Crew: ${spec.maxCrew} | Speed: ${spec.speed}x | Turn: ${spec.turnRate}x</div>`;
+    b.innerHTML = `<div class="value">${spec.name}</div><div class="label">${spec.desc} | Crew: ${spec.maxCrew} | Speed: ${spec.speed}x | Guns: ${spec.cannonSlots}</div>`;
     b.onclick = () => { G.player.shipType = key; rebuildPlayerShip(); updateShipPanel(); if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_update', shipType: key, shipParts: G.player.shipParts })); };
     td.appendChild(b);
   });
@@ -938,97 +998,114 @@ const compCanvas = document.getElementById('compass-canvas');
 const compCtx = compCanvas.getContext('2d');
 
 function drawCompass() {
-  const ctx = compCtx, s = 180, c = s / 2, r = c - 10;
+  const ctx = compCtx, s = 180, cx = s / 2, cy = s / 2, r = cx - 8;
   ctx.clearRect(0, 0, s, s);
+  ctx.save(); ctx.translate(cx, cy);
 
-  ctx.save();
-  ctx.translate(c, c);
+  ctx.beginPath(); ctx.arc(0, 0, r + 5, 0, Math.PI * 2);
+  const rim = ctx.createRadialGradient(0, 0, r - 2, 0, 0, r + 5);
+  rim.addColorStop(0, '#6a4a1a'); rim.addColorStop(0.5, '#8a6a2a'); rim.addColorStop(1, '#4a3010');
+  ctx.fillStyle = rim; ctx.fill();
 
-  ctx.beginPath(); ctx.arc(0, 0, r + 4, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(30, 20, 12, 0.9)'; ctx.fill();
   ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
-  const bg = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
-  bg.addColorStop(0, '#3a2a18'); bg.addColorStop(0.7, '#2a1c10'); bg.addColorStop(1, '#1a100a');
-  ctx.fillStyle = bg; ctx.fill();
-  ctx.strokeStyle = 'rgba(180,140,60,0.6)'; ctx.lineWidth = 2; ctx.stroke();
+  const face = ctx.createRadialGradient(-r * 0.2, -r * 0.2, 0, 0, 0, r);
+  face.addColorStop(0, '#e8d8b8'); face.addColorStop(0.4, '#d8c8a0'); face.addColorStop(0.8, '#c0a878'); face.addColorStop(1, '#a08858');
+  ctx.fillStyle = face; ctx.fill();
+  ctx.strokeStyle = '#6a4a1a'; ctx.lineWidth = 2.5; ctx.stroke();
 
-  ctx.beginPath(); ctx.arc(0, 0, r - 6, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(180,140,60,0.25)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, r - 4, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(100,70,30,0.4)'; ctx.lineWidth = 0.8; ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, r * 0.72, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(100,70,30,0.25)'; ctx.lineWidth = 0.5; ctx.stroke();
 
-  const playerRot = -G.player.rotation;
-  ctx.save();
-  ctx.rotate(playerRot);
+  ctx.save(); ctx.rotate(-G.player.rotation);
 
   for (let i = 0; i < 32; i++) {
     const a = (i / 32) * Math.PI * 2 - Math.PI / 2;
-    const inner = i % 4 === 0 ? r - 22 : i % 2 === 0 ? r - 16 : r - 12;
-    ctx.beginPath();
-    ctx.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
-    ctx.lineTo(Math.cos(a) * (r - 8), Math.sin(a) * (r - 8));
-    ctx.strokeStyle = i % 4 === 0 ? 'rgba(212,168,72,0.8)' : 'rgba(180,140,60,0.3)';
-    ctx.lineWidth = i % 4 === 0 ? 2 : 1;
-    ctx.stroke();
+    const outer = r - 6, inner = i % 8 === 0 ? r - 18 : i % 4 === 0 ? r - 14 : i % 2 === 0 ? r - 11 : r - 9;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
+    ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer);
+    ctx.strokeStyle = i % 8 === 0 ? '#3a2810' : i % 4 === 0 ? 'rgba(60,40,20,0.7)' : 'rgba(80,60,30,0.35)';
+    ctx.lineWidth = i % 8 === 0 ? 2 : 1; ctx.stroke();
   }
 
-  const dirs = [
-    { label: 'N', angle: -Math.PI / 2, color: '#cc3333', size: 16 },
-    { label: 'E', angle: 0, color: '#d4a848', size: 13 },
-    { label: 'S', angle: Math.PI / 2, color: '#d4a848', size: 13 },
-    { label: 'W', angle: Math.PI, color: '#d4a848', size: 13 }
+  function drawStar(points, outerR, innerR, color, stroke) {
+    ctx.beginPath();
+    for (let i = 0; i < points * 2; i++) {
+      const a = (i / (points * 2)) * Math.PI * 2 - Math.PI / 2;
+      const pr = i % 2 === 0 ? outerR : innerR;
+      if (i === 0) ctx.moveTo(Math.cos(a) * pr, Math.sin(a) * pr);
+      else ctx.lineTo(Math.cos(a) * pr, Math.sin(a) * pr);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color; ctx.fill();
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 0.8; ctx.stroke(); }
+  }
+
+  drawStar(16, r * 0.55, r * 0.15, 'rgba(80,60,30,0.12)', 'rgba(80,60,30,0.2)');
+  drawStar(8, r * 0.5, r * 0.12, 'rgba(80,60,30,0.08)');
+
+  const nr = r * 0.52;
+  ctx.beginPath(); ctx.moveTo(0, -nr); ctx.lineTo(-nr * 0.14, -nr * 0.1); ctx.lineTo(0, nr * 0.08); ctx.closePath();
+  ctx.fillStyle = '#b82020'; ctx.fill(); ctx.strokeStyle = '#7a1010'; ctx.lineWidth = 0.7; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -nr); ctx.lineTo(nr * 0.14, -nr * 0.1); ctx.lineTo(0, nr * 0.08); ctx.closePath();
+  ctx.fillStyle = '#d83030'; ctx.fill(); ctx.strokeStyle = '#7a1010'; ctx.lineWidth = 0.7; ctx.stroke();
+
+  ctx.beginPath(); ctx.moveTo(0, nr); ctx.lineTo(-nr * 0.12, nr * 0.1); ctx.lineTo(0, -nr * 0.06); ctx.closePath();
+  ctx.fillStyle = 'rgba(40,30,15,0.7)'; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(0, nr); ctx.lineTo(nr * 0.12, nr * 0.1); ctx.lineTo(0, -nr * 0.06); ctx.closePath();
+  ctx.fillStyle = 'rgba(60,45,20,0.7)'; ctx.fill();
+
+  ctx.beginPath(); ctx.moveTo(nr, 0); ctx.lineTo(nr * 0.1, -nr * 0.12); ctx.lineTo(-nr * 0.06, 0); ctx.closePath();
+  ctx.fillStyle = 'rgba(50,35,15,0.6)'; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(nr, 0); ctx.lineTo(nr * 0.1, nr * 0.12); ctx.lineTo(-nr * 0.06, 0); ctx.closePath();
+  ctx.fillStyle = 'rgba(70,50,25,0.6)'; ctx.fill();
+
+  ctx.beginPath(); ctx.moveTo(-nr, 0); ctx.lineTo(-nr * 0.1, -nr * 0.12); ctx.lineTo(nr * 0.06, 0); ctx.closePath();
+  ctx.fillStyle = 'rgba(50,35,15,0.6)'; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-nr, 0); ctx.lineTo(-nr * 0.1, nr * 0.12); ctx.lineTo(nr * 0.06, 0); ctx.closePath();
+  ctx.fillStyle = 'rgba(70,50,25,0.6)'; ctx.fill();
+
+  const labels = [
+    { t: 'N', a: -Math.PI / 2, c: '#991111', s: 15, b: true },
+    { t: 'E', a: 0, c: '#3a2810', s: 12, b: false },
+    { t: 'S', a: Math.PI / 2, c: '#3a2810', s: 12, b: false },
+    { t: 'W', a: Math.PI, c: '#3a2810', s: 12, b: false }
   ];
-  dirs.forEach(d => {
-    const dr = r - 32;
-    const x = Math.cos(d.angle) * dr, y = Math.sin(d.angle) * dr;
-    ctx.font = `bold ${d.size}px serif`;
-    ctx.fillStyle = d.color;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(d.label, x, y);
+  labels.forEach(l => {
+    const dr = r * 0.78;
+    ctx.font = `${l.b ? 'bold ' : ''}${l.s}px "Georgia",serif`;
+    ctx.fillStyle = l.c; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(l.t, Math.cos(l.a) * dr, Math.sin(l.a) * dr);
   });
 
-  const star = r - 50;
-  ctx.beginPath();
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
-    const pr = i % 2 === 0 ? star * 0.5 : star * 0.18;
-    if (i === 0) ctx.moveTo(Math.cos(a) * pr, Math.sin(a) * pr);
-    else ctx.lineTo(Math.cos(a) * pr, Math.sin(a) * pr);
-  }
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(212,168,72,0.15)'; ctx.fill();
-  ctx.strokeStyle = 'rgba(212,168,72,0.3)'; ctx.lineWidth = 1; ctx.stroke();
-
   const wa = G.wind.angle - Math.PI / 2;
-  const wr = r - 45;
-  ctx.save();
-  ctx.rotate(wa);
-  ctx.beginPath();
-  ctx.moveTo(wr, 0);
-  ctx.lineTo(-8, -5);
-  ctx.lineTo(-4, 0);
-  ctx.lineTo(-8, 5);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(100,180,220,0.8)'; ctx.fill();
-  ctx.strokeStyle = 'rgba(150,210,240,0.9)'; ctx.lineWidth = 1; ctx.stroke();
+  const wr = r * 0.6;
+  ctx.save(); ctx.rotate(wa);
+  ctx.beginPath(); ctx.moveTo(wr, 0); ctx.lineTo(wr - 12, -5); ctx.lineTo(wr - 8, 0); ctx.lineTo(wr - 12, 5); ctx.closePath();
+  ctx.fillStyle = 'rgba(50,130,200,0.85)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(80,160,230,0.9)'; ctx.lineWidth = 1; ctx.stroke();
   ctx.restore();
 
   ctx.restore();
 
-  ctx.beginPath();
-  ctx.moveTo(0, -r + 26);
-  ctx.lineTo(-4, -r + 34);
-  ctx.lineTo(4, -r + 34);
-  ctx.closePath();
-  ctx.fillStyle = '#ffdd44'; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(0, -r + 18); ctx.lineTo(-5, -r + 28); ctx.lineTo(5, -r + 28); ctx.closePath();
+  ctx.fillStyle = '#e8c030'; ctx.fill(); ctx.strokeStyle = '#a08020'; ctx.lineWidth = 1; ctx.stroke();
 
-  ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2);
-  ctx.fillStyle = '#d4a848'; ctx.fill();
-  ctx.strokeStyle = 'rgba(100,70,20,0.8)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2);
+  const pin = ctx.createRadialGradient(0, 0, 0, 0, 0, 5);
+  pin.addColorStop(0, '#f0d060'); pin.addColorStop(1, '#8a6020');
+  ctx.fillStyle = pin; ctx.fill();
+  ctx.strokeStyle = '#5a3a10'; ctx.lineWidth = 1; ctx.stroke();
+
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
+  const gloss = ctx.createRadialGradient(-r * 0.3, -r * 0.3, 0, 0, 0, r);
+  gloss.addColorStop(0, 'rgba(255,255,255,0.12)'); gloss.addColorStop(0.5, 'rgba(255,255,255,0.03)'); gloss.addColorStop(1, 'rgba(0,0,0,0.05)');
+  ctx.fillStyle = gloss; ctx.fill();
 
   ctx.restore();
-
-  ctx.fillStyle = 'rgba(180,140,60,0.7)';
-  ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText(`${G.wind.speed.toFixed(0)} kn`, c, s - 4);
+  ctx.fillStyle = '#6a5030'; ctx.font = '10px Georgia,serif'; ctx.textAlign = 'center';
+  ctx.fillText(`Wind ${G.wind.speed.toFixed(0)}kn`, cx, s - 2);
 }
 
 /* ============================== MINIMAP ================================== */
@@ -1100,12 +1177,20 @@ function update(dt) {
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4 + Math.sin(G.time * 1.5) * 0.25, G.player.z);
   playerShipGroup.rotation.set(Math.sin(G.time * 1.2) * 0.02, G.player.rotation, Math.sin(G.time * 0.8) * 0.03);
 
+  const relWind = G.wind.angle - G.player.rotation;
+  const windPushZ = Math.cos(relWind);
+  const windPushX = Math.sin(relWind);
+  const windStr = G.wind.speed / 7;
+
   playerShipGroup.traverse(child => {
     if (child.userData.isSail && child.userData.basePositions) {
       const p = child.geometry.attributes.position, base = child.userData.basePositions;
       for (let i = 0; i < p.count; i++) {
-        const bz = base[i * 3 + 2], by = base[i * 3 + 1];
-        p.setZ(i, bz + Math.sin(G.time * 2 + by * 3) * 0.12 * (1 + Math.abs(G.player.speed) * 0.1) + Math.sin(G.time * 1.5 + base[i * 3] * 2) * 0.08);
+        const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
+        const billowAmt = (1 - Math.abs(by) / 3) * 0.5;
+        const flutter = Math.sin(G.time * 2.5 + by * 4 + bx * 2) * 0.04;
+        p.setZ(i, bz + windPushZ * billowAmt * windStr + flutter);
+        p.setX(i, bx + windPushX * billowAmt * windStr * 0.3);
       }
       p.needsUpdate = true; child.geometry.computeVertexNormals();
     }
@@ -1185,69 +1270,174 @@ function gameLoop(time) {
 }
 
 /* ============================== CHARACTER CREATION ======================= */
-const CREW_COLORS = ['#8b0000','#1a3a6a','#2a6a2a','#6a2a6a','#5a3a1a','#1a5a5a','#6a4a0a','#3a3a3a','#6a1a3a','#0a4a6a'];
-const SKIN_TONES = ['#f5d0a9','#d4a070','#c68642','#8d5524','#6b3a1f','#4a2511'];
+const CREW_COLORS = ['#8b0000','#cc2222','#1a3a6a','#2a6a2a','#6a2a6a','#5a3a1a','#1a5a5a','#6a4a0a','#3a3a3a','#6a1a3a','#0a4a6a','#aa6600'];
+const HAT_OPTIONS = [
+  { id: 'none', label: '—', emoji: '' },
+  { id: 'tricorn', label: '🎩 Tricorn', emoji: '🎩' },
+  { id: 'bandana', label: '🧣 Bandana', emoji: '🧣' },
+  { id: 'captain', label: '👑 Captain', emoji: '👑' },
+  { id: 'hood', label: '🪖 Hood', emoji: '🪖' }
+];
+const OUTFIT_OPTIONS = [
+  { id: 'coat', label: 'Long Coat' },
+  { id: 'vest', label: 'Vest' },
+  { id: 'shirt', label: 'Shirt' }
+];
+
+function makeOptionRow(container, options, selectedId, type) {
+  container.innerHTML = '';
+  options.forEach(opt => {
+    const btn = document.createElement('div');
+    btn.className = 'color-swatch' + (opt.id === selectedId ? ' sel' : '');
+    btn.style.background = 'rgba(40,30,20,0.7)';
+    btn.style.borderRadius = '8px';
+    btn.style.width = '44px'; btn.style.height = '36px';
+    btn.style.display = 'flex'; btn.style.alignItems = 'center'; btn.style.justifyContent = 'center';
+    btn.style.fontSize = opt.emoji ? '18px' : '11px'; btn.style.color = '#d4a848';
+    btn.textContent = opt.emoji || opt.label;
+    btn.dataset.optId = opt.id;
+    btn.onclick = () => { container.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('sel')); btn.classList.add('sel'); drawCrewPreview(); };
+    container.appendChild(btn);
+  });
+}
+
+function makeColorRow(container, colors, selectedColor) {
+  container.innerHTML = '';
+  colors.forEach(c => {
+    const sw = document.createElement('div');
+    sw.className = 'color-swatch' + (c === selectedColor ? ' sel' : '');
+    sw.style.background = c; sw.dataset.color = c;
+    sw.onclick = () => { container.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('sel')); sw.classList.add('sel'); drawCrewPreview(); };
+    container.appendChild(sw);
+  });
+}
+
+function drawCrewPreview() {
+  const cv = document.getElementById('crew-preview');
+  if (!cv) return;
+  const ctx = cv.getContext('2d'), w = 380, h = 160;
+  ctx.clearRect(0, 0, w, h);
+
+  const allCrew = getCrewFromUI();
+  const count = allCrew.length;
+  const spacing = Math.min(80, w / (count + 0.5));
+  const startX = (w - spacing * (count - 1)) / 2;
+
+  allCrew.forEach((member, i) => {
+    const x = startX + i * spacing, y = h - 20;
+
+    ctx.fillStyle = member.color || '#4a4a4a';
+    if (member.outfit === 'coat') {
+      ctx.fillRect(x - 12, y - 50, 24, 35);
+      ctx.fillRect(x - 14, y - 50, 28, 10);
+    } else if (member.outfit === 'vest') {
+      ctx.fillRect(x - 10, y - 48, 20, 30);
+      ctx.fillStyle = '#d4a070'; ctx.fillRect(x - 6, y - 48, 12, 8);
+    } else {
+      ctx.fillRect(x - 9, y - 46, 18, 28);
+    }
+
+    ctx.fillStyle = '#d4a070';
+    ctx.beginPath(); ctx.arc(x, y - 58, 10, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = '#2a1a0a';
+    ctx.fillRect(x - 5, y - 15, 4, 15); ctx.fillRect(x + 1, y - 15, 4, 15);
+
+    if (member.hat === 'tricorn') {
+      ctx.fillStyle = '#2a1a0a';
+      ctx.beginPath(); ctx.moveTo(x - 14, y - 64); ctx.lineTo(x + 14, y - 64); ctx.lineTo(x + 10, y - 60);
+      ctx.lineTo(x, y - 72); ctx.lineTo(x - 10, y - 60); ctx.closePath(); ctx.fill();
+    } else if (member.hat === 'bandana') {
+      ctx.fillStyle = '#cc2222';
+      ctx.beginPath(); ctx.arc(x, y - 60, 11, Math.PI, 0); ctx.fill();
+      ctx.fillRect(x + 8, y - 60, 8, 3);
+    } else if (member.hat === 'captain') {
+      ctx.fillStyle = '#1a1a3a';
+      ctx.fillRect(x - 12, y - 68, 24, 6);
+      ctx.fillRect(x - 8, y - 74, 16, 8);
+      ctx.fillStyle = '#d4a848';
+      ctx.fillRect(x - 4, y - 72, 8, 3);
+    } else if (member.hat === 'hood') {
+      ctx.fillStyle = '#3a3a3a';
+      ctx.beginPath(); ctx.arc(x, y - 58, 13, Math.PI * 1.2, Math.PI * -0.2); ctx.fill();
+    }
+
+    if (member.parrot) {
+      ctx.fillStyle = '#22aa22';
+      ctx.beginPath(); ctx.arc(x + 15, y - 55, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ff4444';
+      ctx.beginPath(); ctx.arc(x + 15, y - 60, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffaa00';
+      ctx.fillRect(x + 18, y - 61, 4, 2);
+    }
+
+    ctx.fillStyle = '#d4a848'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(member.name.length > 12 ? member.name.slice(0, 11) + '..' : member.name, x, y + 14);
+    ctx.fillStyle = '#888'; ctx.font = '8px sans-serif';
+    ctx.fillText(member.role, x, y + 24);
+  });
+}
+
+function getCrewFromUI() {
+  const capName = document.getElementById('cap-name')?.value.trim() || 'Captain';
+  const capColor = document.querySelector('#cap-colors .color-swatch.sel')?.dataset.color || '#8b0000';
+  const capHat = document.querySelector('#cap-hat .color-swatch.sel')?.dataset.optId || 'tricorn';
+  const capOutfit = document.querySelector('#cap-outfit .color-swatch.sel')?.dataset.optId || 'coat';
+  const capParrot = document.getElementById('cap-parrot')?.checked || false;
+
+  const crew = [{ name: capName, role: 'captain', color: capColor, hat: capHat, outfit: capOutfit, parrot: capParrot }];
+  document.querySelectorAll('.crew-name').forEach((input, idx) => {
+    const name = input.value.trim() || 'Pirate';
+    const row = document.querySelector(`.crew-color-row[data-idx="${idx}"]`);
+    const color = row?.querySelector('.color-swatch.sel')?.dataset.color || '#3a3a3a';
+    const hatRow = document.querySelector(`.crew-hat-row[data-idx="${idx}"]`);
+    const hat = hatRow?.querySelector('.color-swatch.sel')?.dataset.optId || 'none';
+    const roles = ['gunner', 'sailor', 'navigator'];
+    crew.push({ name, role: roles[idx] || 'sailor', color, hat, outfit: 'vest', parrot: false });
+  });
+  return crew;
+}
 
 function buildCreationUI() {
-  const colDiv = document.getElementById('cap-colors');
-  colDiv.innerHTML = '';
-  CREW_COLORS.forEach((c, i) => {
-    const sw = document.createElement('div');
-    sw.className = 'color-swatch' + (i === 0 ? ' sel' : '');
-    sw.style.background = c;
-    sw.dataset.color = c;
-    sw.onclick = () => { colDiv.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('sel')); sw.classList.add('sel'); };
-    colDiv.appendChild(sw);
-  });
+  makeColorRow(document.getElementById('cap-colors'), CREW_COLORS, '#8b0000');
+  makeOptionRow(document.getElementById('cap-hat'), HAT_OPTIONS, 'tricorn', 'hat');
+  makeOptionRow(document.getElementById('cap-outfit'), OUTFIT_OPTIONS, 'coat', 'outfit');
+  document.getElementById('cap-parrot').onchange = drawCrewPreview;
+  document.getElementById('cap-name').oninput = drawCrewPreview;
 
   const crewDiv = document.getElementById('crew-editors');
   crewDiv.innerHTML = '';
   const defaultCrew = [
-    { name: 'Salty Pete', role: 'gunner', task: 'cannons' },
-    { name: 'One-Eye Jack', role: 'sailor', task: 'sails' },
-    { name: 'Red Mary', role: 'navigator', task: 'lookout' }
+    { name: 'Salty Pete', role: 'gunner', color: '#3a3a3a', hat: 'bandana' },
+    { name: 'One-Eye Jack', role: 'sailor', color: '#2a6a2a', hat: 'none' },
+    { name: 'Red Mary', role: 'navigator', color: '#1a3a6a', hat: 'tricorn' }
   ];
-  defaultCrew.forEach((crew, idx) => {
+  defaultCrew.forEach((c, idx) => {
     const div = document.createElement('div');
     div.className = 'crew-edit';
     div.innerHTML = `
-      <span class="role-tag">${crew.role}</span>
+      <span class="role-tag">${c.role}</span>
       <label>Name</label>
-      <input type="text" class="crew-name" data-idx="${idx}" value="${crew.name}" maxlength="24" />
+      <input type="text" class="crew-name" data-idx="${idx}" value="${c.name}" maxlength="24" />
       <label>Outfit Color</label>
       <div class="color-row crew-color-row" data-idx="${idx}"></div>
+      <label>Hat</label>
+      <div class="color-row crew-hat-row" data-idx="${idx}"></div>
     `;
     crewDiv.appendChild(div);
-    const row = div.querySelector('.crew-color-row');
-    CREW_COLORS.forEach((c, ci) => {
-      const sw = document.createElement('div');
-      sw.className = 'color-swatch' + (c === (idx === 0 ? '#3a3a3a' : idx === 1 ? '#2a6a2a' : '#1a3a6a') ? ' sel' : '');
-      sw.style.background = c;
-      sw.dataset.color = c;
-      sw.onclick = () => { row.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('sel')); sw.classList.add('sel'); };
-      row.appendChild(sw);
-    });
+    makeColorRow(div.querySelector('.crew-color-row'), CREW_COLORS, c.color);
+    makeOptionRow(div.querySelector('.crew-hat-row'), HAT_OPTIONS, c.hat, 'hat');
+    div.querySelector('.crew-name').oninput = drawCrewPreview;
   });
+  drawCrewPreview();
 }
 
 function launchGame() {
-  const capName = document.getElementById('cap-name').value.trim() || 'Captain Blackwood';
-  const capColorEl = document.querySelector('#cap-colors .color-swatch.sel');
-  const capColor = capColorEl ? capColorEl.dataset.color : '#8b0000';
-
-  G.player.crew[0].name = capName;
-  G.player.crew[0].color = capColor;
-
-  const crewNames = document.querySelectorAll('.crew-name');
-  const defaultRoles = ['gunner', 'sailor', 'navigator'];
-  const defaultTasks = ['cannons', 'sails', 'lookout'];
-  crewNames.forEach((input, idx) => {
-    const name = input.value.trim() || G.player.crew[idx + 1].name;
-    G.player.crew[idx + 1].name = name;
-    const row = document.querySelector(`.crew-color-row[data-idx="${idx}"]`);
-    const selSwatch = row?.querySelector('.color-swatch.sel');
-    if (selSwatch) G.player.crew[idx + 1].color = selSwatch.dataset.color;
-  });
+  const allCrew = getCrewFromUI();
+  G.player.crew = allCrew.map((c, i) => ({
+    name: c.name, role: c.role, health: 100, color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
+    task: ['helm', 'cannons', 'sails', 'lookout'][i] || 'idle'
+  }));
 
   document.getElementById('create-screen').style.display = 'none';
   if (!isMobile) {
