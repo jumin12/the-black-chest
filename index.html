@@ -225,7 +225,8 @@ const G = {
   cannonballs: [],
   floatingItems: [],
   npcs: [],
-  camera: { offsetX: 0, offsetZ: 0, zoom: 50, targetZoom: 50, angle: Math.PI / 4, yaw: 0, targetYaw: 0 },
+  debris: [],
+  camera: { offsetX: 0, offsetZ: 0, zoom: 50, targetZoom: 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   cannonCooldown: 0,
   crewReloading: false, crewReloadTimer: 0,
@@ -798,34 +799,110 @@ function spawnNPCs() {
       rotation: Math.random() * Math.PI * 2, speed: 2 + Math.random() * 3,
       health: 60 + Math.random() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(Math.random() * 5)],
       name: ['Sea Phantom', 'Red Tide', 'Storm Chaser', 'Bone Rattler', 'Shadow Wave'][Math.floor(Math.random() * 5)],
-      wanderAngle: Math.random() * Math.PI * 2, wanderTimer: 5 + Math.random() * 10
+      wanderAngle: Math.random() * Math.PI * 2, wanderTimer: 5 + Math.random() * 10,
+      aggro: false, aggroTimer: 0, fireCooldown: 0, sinking: false, sinkTimer: 0, maxHealth: 60 + Math.random() * 40
     };
+    npc.maxHealth = npc.health;
     const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, '#aa2222', npc.name);
     npc.mesh = mesh; scene.add(mesh);
     G.npcs.push(npc);
   }
 }
 
+function spawnDebris(x, y, z, count) {
+  for (let i = 0; i < count; i++) {
+    const size = 0.1 + Math.random() * 0.25;
+    const geo = new THREE.BoxGeometry(size, size * 0.5, size);
+    const mat = new THREE.MeshLambertMaterial({ color: Math.random() > 0.5 ? 0x6b3a1f : 0x5a3a1a });
+    const chunk = new THREE.Mesh(geo, mat);
+    chunk.position.set(x + (Math.random() - 0.5) * 2, y + Math.random() * 2, z + (Math.random() - 0.5) * 2);
+    chunk.userData.vx = (Math.random() - 0.5) * 8;
+    chunk.userData.vy = 4 + Math.random() * 6;
+    chunk.userData.vz = (Math.random() - 0.5) * 8;
+    chunk.userData.life = 2 + Math.random();
+    chunk.userData.isDebris = true;
+    scene.add(chunk);
+    G.debris.push(chunk);
+  }
+}
+
+function npcFireAtPlayer(npc) {
+  const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
+  const toPlayerX = G.player.x - npc.x, toPlayerZ = G.player.z - npc.z;
+  const dist = Math.hypot(toPlayerX, toPlayerZ);
+  if (dist > 50 || dist < 3) return;
+
+  const dirX = toPlayerX / dist, dirZ = toPlayerZ / dist;
+  const npcY = SEA_LEVEL + 0.3 + spec.hullH * 0.6;
+  const spread = 0.15;
+
+  for (let i = 0; i < Math.min(spec.cannonSlots || 2, 3); i++) {
+    const sa = (Math.random() - 0.5) * spread;
+    const fdx = dirX * Math.cos(sa) - dirZ * Math.sin(sa);
+    const fdz = dirX * Math.sin(sa) + dirZ * Math.cos(sa);
+    fireCannonball(npc.x + dirX * spec.hullW, npc.z + dirZ * spec.hullW, fdx, fdz, npcY);
+  }
+}
+
 function updateNPCs(dt) {
-  G.npcs.forEach(npc => {
-    npc.wanderTimer -= dt;
-    if (npc.wanderTimer <= 0) {
-      npc.wanderAngle += (Math.random() - 0.5) * 1.5;
-      npc.wanderTimer = 4 + Math.random() * 8;
+  for (let ni = G.npcs.length - 1; ni >= 0; ni--) {
+    const npc = G.npcs[ni];
+
+    if (npc.sinking) {
+      npc.sinkTimer += dt;
+      if (npc.mesh) {
+        npc.mesh.position.y = SEA_LEVEL + 0.3 - npc.sinkTimer * 1.5;
+        npc.mesh.rotation.z = npc.sinkTimer * 0.4;
+        npc.mesh.rotation.x = npc.sinkTimer * 0.2;
+      }
+      if (npc.sinkTimer > 4) {
+        if (npc.mesh) scene.remove(npc.mesh);
+        G.npcs.splice(ni, 1);
+      }
+      continue;
     }
-    const targetRot = npc.wanderAngle;
-    let diff = targetRot - npc.rotation;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    npc.rotation += diff * 0.5 * dt;
+
+    if (npc.fireCooldown > 0) npc.fireCooldown -= dt;
+
+    const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+
+    if (npc.aggro) {
+      npc.aggroTimer -= dt;
+      if (npc.aggroTimer <= 0 && distToPlayer > 80) npc.aggro = false;
+
+      const toPlayerAngle = Math.atan2(G.player.x - npc.x, G.player.z - npc.z);
+      const perpAngle = toPlayerAngle + Math.PI / 2;
+      let targetAngle = distToPlayer < 25 ? perpAngle : toPlayerAngle;
+      let diff = targetAngle - npc.rotation;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      npc.rotation += diff * 1.2 * dt;
+
+      if (npc.fireCooldown <= 0 && distToPlayer < 50) {
+        npcFireAtPlayer(npc);
+        npc.fireCooldown = 3 + Math.random() * 2;
+      }
+    } else {
+      npc.wanderTimer -= dt;
+      if (npc.wanderTimer <= 0) {
+        npc.wanderAngle += (Math.random() - 0.5) * 1.5;
+        npc.wanderTimer = 4 + Math.random() * 8;
+      }
+      let diff = npc.wanderAngle - npc.rotation;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      npc.rotation += diff * 0.5 * dt;
+    }
+
     npc.x += Math.sin(npc.rotation) * npc.speed * dt;
     npc.z += Math.cos(npc.rotation) * npc.speed * dt;
+
     if (npc.mesh) {
       npc.mesh.position.set(npc.x, SEA_LEVEL + 0.3 + Math.sin(G.time * 1.3 + npc.x) * 0.3, npc.z);
       npc.mesh.rotation.y = npc.rotation;
       npc.mesh.rotation.z = Math.sin(G.time * 0.7 + npc.z) * 0.04;
     }
-  });
+  }
 }
 
 /* ============================== CANNONBALLS =============================== */
@@ -1363,15 +1440,52 @@ function update(dt) {
     const b = G.cannonballs[i];
     b.x += b.dx * dt; b.z += b.dz * dt; b.dy -= 15 * dt; b.y += b.dy * dt; b.life -= dt;
     if (cannonballMeshes[i]) cannonballMeshes[i].position.set(b.x, b.y, b.z);
-    G.npcs.forEach(npc => { if (Math.hypot(b.x - npc.x, b.z - npc.z) < 3) { npc.health -= 15; if (npc.health <= 0) { notify(`Sank ${npc.name}! +30 gold`); const gi = G.player.inventory.find(x => x.id === 'gold'); if (gi) gi.count += 30; scene.remove(npc.mesh); npc.health = -999; } b.life = 0; } });
+    G.npcs.forEach(npc => {
+      if (npc.sinking) return;
+      if (Math.hypot(b.x - npc.x, b.z - npc.z) < 3.5) {
+        npc.health -= 15;
+        npc.aggro = true;
+        npc.aggroTimer = 30;
+        spawnDebris(b.x, b.y, b.z, 4);
+        if (npc.health <= 0 && !npc.sinking) {
+          npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
+          spawnDebris(npc.x, SEA_LEVEL + 1, npc.z, 8);
+          notify(`Sinking ${npc.name}! +30 gold`);
+          const gi = G.player.inventory.find(x => x.id === 'gold');
+          if (gi) gi.count += 30;
+        }
+        b.life = 0;
+      }
+    });
+
+    if (Math.hypot(b.x - G.player.x, b.z - G.player.z) < 3 && b.life > 0) {
+      G.player.health = Math.max(0, G.player.health - 10);
+      spawnDebris(b.x, b.y, b.z, 3);
+      b.life = 0;
+      if (G.player.health <= 0) notify('Your ship is destroyed!');
+    }
+
     if (b.y <= SEA_LEVEL || b.life <= 0) { if (b.y <= SEA_LEVEL) splashes.push(createSplash(b.x, b.z)); if (cannonballMeshes[i]) scene.remove(cannonballMeshes[i]); G.cannonballs.splice(i, 1); cannonballMeshes.splice(i, 1); }
   }
-  G.npcs = G.npcs.filter(n => n.health > -900);
 
   for (let i = splashes.length - 1; i >= 0; i--) {
     const s = splashes[i]; s.userData.life -= dt * 2;
     s.children.forEach(d => { d.userData.vy -= 10 * dt; d.position.x += d.userData.vx * dt; d.position.y += d.userData.vy * dt; d.position.z += d.userData.vz * dt; d.material.opacity = Math.max(0, s.userData.life); });
     if (s.userData.life <= 0) { scene.remove(s); s.children.forEach(c => { c.geometry.dispose(); c.material.dispose(); }); splashes.splice(i, 1); }
+  }
+
+  for (let i = G.debris.length - 1; i >= 0; i--) {
+    const d = G.debris[i];
+    d.userData.vy -= 12 * dt;
+    d.position.x += d.userData.vx * dt;
+    d.position.y += d.userData.vy * dt;
+    d.position.z += d.userData.vz * dt;
+    d.rotation.x += dt * 5; d.rotation.z += dt * 3;
+    d.userData.life -= dt;
+    if (d.position.y < SEA_LEVEL || d.userData.life <= 0) {
+      scene.remove(d); d.geometry.dispose(); d.material.dispose();
+      G.debris.splice(i, 1);
+    }
   }
 
   G.floatingItems.forEach(item => {
