@@ -136,6 +136,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   </div>
   <div id="compass"><canvas id="compass-canvas" width="180" height="180"></canvas></div>
   <div id="minimap"><canvas id="minimap-canvas" width="180" height="180"></canvas></div>
+  <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,15,30,0.95);z-index:50;pointer-events:auto;">
+    <canvas id="fullmap-canvas" width="600" height="600" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);max-width:90vw;max-height:90vh;border:2px solid rgba(180,140,60,0.5);border-radius:8px;"></canvas>
+    <div style="position:absolute;top:12px;right:16px;color:#d4a848;font-size:14px;cursor:pointer;" id="fullmap-close">CLOSE [M]</div>
+  </div>
   <div id="anchor-status" class="hud-box" style="display:none;">Anchored</div>
   <div id="notification"></div>
 
@@ -1029,6 +1033,7 @@ window.addEventListener('keydown', e => {
   if (k === 't') { togglePanel('chat-box'); if (document.getElementById('chat-box').style.display !== 'none') setTimeout(() => document.getElementById('chat-input').focus(), 50); }
   if (k === 'f') { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
   if (k === 'x') doAnchor();
+  if (k === 'm') toggleFullmap();
   if (e.key === ' ' && G.mode === 'playing') { e.preventDefault(); doFire(); }
   if (e.key === 'Escape') closeAllPanels();
 });
@@ -1330,6 +1335,38 @@ function drawCompass() {
 /* ============================== MINIMAP ================================== */
 const mmCanvas = document.getElementById('minimap-canvas');
 const mmCtx = mmCanvas.getContext('2d');
+let fullmapOpen = false;
+function toggleFullmap() {
+  fullmapOpen = !fullmapOpen;
+  document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
+  if (fullmapOpen) drawFullmap();
+}
+function drawFullmap() {
+  const cv = document.getElementById('fullmap-canvas');
+  const ctx = cv.getContext('2d'), w = 600, h = 600, s = 0.06;
+  const cx = w / 2, cy = h / 2;
+  ctx.fillStyle = '#0a1830'; ctx.fillRect(0, 0, w, h);
+  for (let gx = -5; gx <= 5; gx++) { ctx.strokeStyle = 'rgba(40,60,80,0.3)'; ctx.beginPath(); ctx.moveTo(cx + gx * CHUNK_SIZE * s, 0); ctx.lineTo(cx + gx * CHUNK_SIZE * s, h); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, cy + gx * CHUNK_SIZE * s); ctx.lineTo(w, cy + gx * CHUNK_SIZE * s); ctx.stroke(); }
+  islandGroup.children.forEach(g => {
+    const d = g.userData; const sx = cx + (d.worldX - G.player.x) * s, sy = cy + (d.worldZ - G.player.z) * s;
+    if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) return;
+    const ir = Math.max(5, d.radius * s);
+    ctx.fillStyle = '#3a6a2a'; ctx.beginPath(); ctx.arc(sx, sy, ir, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c8b87a'; ctx.beginPath(); ctx.arc(sx, sy, ir * 0.75, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#4a7a3a'; ctx.beginPath(); ctx.arc(sx, sy, ir * 0.45, 0, Math.PI * 2); ctx.fill();
+  });
+  G.npcs.forEach(n => { const sx = cx + (n.x - G.player.x) * s, sy = cy + (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 8); } });
+  G.otherPlayers.forEach(p => { const sx = cx + (p.x - G.player.x) * s, sy = cy + (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 6, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(p.name || 'Player', sx, sy - 10); } });
+  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.sin(G.player.rotation) * 14, cy + Math.cos(G.player.rotation) * 14); ctx.stroke();
+  ctx.fillStyle = '#d4a848'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(G.player.shipName || 'You', cx, cy + 18);
+  ctx.fillStyle = 'rgba(180,140,60,0.5)'; ctx.font = '10px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('Press M to close', 8, h - 8);
+}
+document.getElementById('minimap').onclick = toggleFullmap;
+document.getElementById('fullmap-close').onclick = toggleFullmap;
+
 function drawMinimap() {
   const w = 180, h = 180, s = 0.15, cx = w / 2, cy = h / 2;
   mmCtx.fillStyle = '#0a1e3c'; mmCtx.fillRect(0, 0, w, h);
@@ -1375,8 +1412,8 @@ function update(dt) {
 
     if (forward > 0.1) G.player.speed = Math.min(G.player.speed + 4 * dt * speedMult * forward, 12 * speedMult);
     else if (forward < -0.1) G.player.speed = Math.max(G.player.speed - 6 * dt * Math.abs(forward), -3);
-    else G.player.speed *= (1 - 0.8 * dt);
-    if (Math.abs(G.player.speed) < 0.05) G.player.speed = 0;
+    else G.player.speed *= (1 - 0.3 * dt);
+    if (Math.abs(G.player.speed) < 0.02) G.player.speed = 0;
 
     if (Math.abs(turn) > 0.1) G.player.rotation += turn * spec.turnRate * dt * Math.min(1, Math.abs(G.player.speed) * 0.3 + 0.3);
 
@@ -1472,7 +1509,14 @@ function update(dt) {
 
   G.otherPlayers.forEach((p, id) => {
     if (!otherShipGroups.has(id)) {
-      const sm = buildShipMesh(p.shipType || 'sloop', p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' }, p.color || '#4488cc', p.name || `Pirate ${id}`);
+      const st = p.shipType || 'sloop';
+      const sm = buildShipMesh(st, p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' }, p.color || '#4488cc', p.name || `Pirate ${id}`);
+      const defaultCrew = [
+        { name: 'Captain', role: 'captain', task: 'helm', color: p.color },
+        { name: 'Gunner', role: 'gunner', task: 'cannons' },
+        { name: 'Sailor', role: 'sailor', task: 'sails' }
+      ];
+      buildCrewMeshes(sm, defaultCrew, st);
       otherShipGroups.set(id, sm);
       scene.add(sm);
     }
@@ -1563,7 +1607,11 @@ function update(dt) {
     }
   });
 
-  water.position.set(G.player.x, SEA_LEVEL, G.player.z);
+  water.position.set(G.player.x, SEA_LEVEL - 0.3, G.player.z);
+  if (isMobile) {
+    G.camera.targetYaw = G.player.rotation + Math.PI;
+    G.camera.yaw += (G.camera.targetYaw - G.camera.yaw) * 3 * dt;
+  }
   const cDist = G.camera.zoom, cAng = G.camera.angle, cYaw = G.camera.yaw;
   camera.position.set(
     G.player.x + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
@@ -1601,7 +1649,7 @@ function gameLoop(time) {
   lastTime = time;
   update(dt); render();
   if (G.mode === 'playing') {
-    if (Math.floor(G.time * 4) !== Math.floor((G.time - dt) * 4)) { updateHUD(); drawMinimap(); }
+    if (Math.floor(G.time * 4) !== Math.floor((G.time - dt) * 4)) { updateHUD(); drawMinimap(); if (fullmapOpen) drawFullmap(); }
     autoSaveTimer += dt;
     if (autoSaveTimer > 15) { saveProgress(); autoSaveTimer = 0; }
   }
