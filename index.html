@@ -102,7 +102,9 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 <div id="create-screen">
   <div class="inner">
     <h2>Assemble Your Crew</h2>
-    <canvas id="crew-preview" width="380" height="160" style="width:100%;height:auto;border-radius:8px;background:rgba(15,30,50,0.6);border:1px solid rgba(180,140,60,0.3);margin-bottom:16px;"></canvas>
+    <div id="preview-3d" style="width:100%;height:200px;border-radius:8px;border:1px solid rgba(180,140,60,0.3);margin-bottom:16px;overflow:hidden;background:linear-gradient(180deg,#1a3050,#0a1828);"></div>
+    <label>Ship Name</label>
+    <input type="text" id="ship-name-input" value="The Black Wave" maxlength="28" />
     <label>Captain Name</label>
     <input type="text" id="cap-name" value="Captain Blackwood" maxlength="24" />
     <label>Coat Color</label>
@@ -198,6 +200,7 @@ const G = {
     x: 0, z: 0, rotation: 0, speed: 0,
     health: 100, maxHealth: 100,
     anchored: false,
+    shipName: 'The Black Wave',
     shipType: 'sloop',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' },
     inventory: [
@@ -558,7 +561,7 @@ const playerShipGroup = new THREE.Group();
 scene.add(playerShipGroup);
 const otherShipGroups = new Map();
 
-function buildShipMesh(type, parts, flagColor) {
+function buildShipMesh(type, parts, flagColor, shipName) {
   const g = new THREE.Group(), spec = SHIP_TYPES[type];
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
@@ -661,6 +664,12 @@ function buildShipMesh(type, parts, flagColor) {
     fmesh.position.set(0.6, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.9, 0);
     fmesh.userData.isFlag = true; g.add(fmesh);
   }
+
+  if (shipName) {
+    const label = makeTextSprite(shipName, flagColor ? '#ff8888' : '#d4a848');
+    label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
+    g.add(label);
+  }
   return g;
 }
 
@@ -714,11 +723,39 @@ function buildCrewMeshes(group, crewList, shipType) {
   });
 }
 
+let shipNameSprite = null;
+
+function makeTextSprite(text, color = '#d4a848') {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 256, 64);
+  ctx.fillStyle = 'rgba(10,6,4,0.6)';
+  ctx.roundRect(4, 8, 248, 48, 8); ctx.fill();
+  ctx.strokeStyle = 'rgba(180,140,60,0.5)'; ctx.lineWidth = 1;
+  ctx.roundRect(4, 8, 248, 48, 8); ctx.stroke();
+  ctx.font = 'bold 22px Georgia, serif';
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(6, 1.5, 1);
+  return sprite;
+}
+
 function rebuildPlayerShip() {
   playerShipGroup.clear();
   const ship = buildShipMesh(G.player.shipType, G.player.shipParts);
   playerShipGroup.add(ship);
   buildCrewMeshes(ship, G.player.crew, G.player.shipType);
+
+  const spec = SHIP_TYPES[G.player.shipType];
+  shipNameSprite = makeTextSprite(G.player.shipName);
+  shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
+  playerShipGroup.add(shipNameSprite);
 }
 
 /* ============================== NPC SHIPS ================================ */
@@ -732,7 +769,7 @@ function spawnNPCs() {
       name: ['Sea Phantom', 'Red Tide', 'Storm Chaser', 'Bone Rattler', 'Shadow Wave'][Math.floor(Math.random() * 5)],
       wanderAngle: Math.random() * Math.PI * 2, wanderTimer: 5 + Math.random() * 10
     };
-    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, '#aa2222');
+    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, '#aa2222', npc.name);
     npc.mesh = mesh; scene.add(mesh);
     G.npcs.push(npc);
   }
@@ -911,18 +948,20 @@ function doFire() {
   G.crewReloading = true;
   G.crewReloadTimer = 1.5;
 
-  const cosR = Math.cos(G.player.rotation), sinR = Math.sin(G.player.rotation);
+  const rot = G.player.rotation;
+  const sinR = Math.sin(rot), cosR = Math.cos(rot);
   const cc = spec.cannonSlots || 2;
   for (let c = 0; c < cc; c++) {
     const side = c % 2 === 0 ? 1 : -1;
     const idx = Math.floor(c / 2);
-    const localZ = (idx - Math.floor(cc / 4) + 0.5) * 1.8;
-    const localX = side * spec.hullW * 0.5;
+    const localZ = (idx - Math.floor(cc / 4) + 0.5) * 1.5;
+    const localX = side * (spec.hullW * 0.55 + 0.3);
 
-    const wx = G.player.x + localX * cosR + localZ * sinR;
-    const wz = G.player.z - localX * sinR + localZ * cosR;
+    const wx = G.player.x + localX * cosR - localZ * sinR;
+    const wz = G.player.z + localX * sinR + localZ * cosR;
+
     const dirX = side * cosR;
-    const dirZ = -side * sinR;
+    const dirZ = side * sinR;
 
     fireCannonball(wx, wz, dirX, dirZ);
     if (ws?.readyState === 1) {
@@ -1159,7 +1198,8 @@ function update(dt) {
     const spec = SHIP_TYPES[G.player.shipType];
     const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
     const speedMult = spec.speed + (sailPart ? sailPart.speedBonus : 0);
-    const windEffect = Math.cos(G.wind.angle - G.player.rotation) * 0.3 + 0.7;
+    const windDot = Math.cos(G.wind.angle - G.player.rotation);
+    const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
 
     let forward = 0, turn = 0;
     if (keys['w'] || keys['arrowup']) forward = 1;
@@ -1209,17 +1249,18 @@ function update(dt) {
   const relWind = G.wind.angle - G.player.rotation;
   const windPushZ = Math.cos(relWind);
   const windPushX = Math.sin(relWind);
-  const windStr = G.wind.speed / 7;
+  const windStr = G.wind.speed / 6;
+  const sailAngle = Math.atan2(windPushX, windPushZ) * 0.4;
 
   playerShipGroup.traverse(child => {
     if (child.userData.isSail && child.userData.basePositions) {
+      child.rotation.y = sailAngle;
       const p = child.geometry.attributes.position, base = child.userData.basePositions;
       for (let i = 0; i < p.count; i++) {
         const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
         const billowAmt = (1 - Math.abs(by) / 3) * 0.5;
-        const flutter = Math.sin(G.time * 2.5 + by * 4 + bx * 2) * 0.04;
+        const flutter = Math.sin(G.time * 2.5 + by * 4 + bx * 2) * 0.03;
         p.setZ(i, bz + windPushZ * billowAmt * windStr + flutter);
-        p.setX(i, bx + windPushX * billowAmt * windStr * 0.3);
       }
       p.needsUpdate = true; child.geometry.computeVertexNormals();
     }
@@ -1452,12 +1493,56 @@ function getCrewFromUI() {
   return crew;
 }
 
+let previewRenderer, previewScene, previewCamera, previewShip;
+
+function setup3DPreview() {
+  const container = document.getElementById('preview-3d');
+  if (!container) return;
+  previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  previewRenderer.setSize(container.clientWidth, 200);
+  previewRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  container.appendChild(previewRenderer.domElement);
+
+  previewScene = new THREE.Scene();
+  previewScene.add(new THREE.AmbientLight(0x8899bb, 0.8));
+  const pSun = new THREE.DirectionalLight(0xffeedd, 1.5);
+  pSun.position.set(5, 10, 5); previewScene.add(pSun);
+  previewScene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.3));
+
+  previewCamera = new THREE.PerspectiveCamera(40, container.clientWidth / 200, 0.1, 100);
+  previewCamera.position.set(8, 6, 8);
+  previewCamera.lookAt(0, 1, 0);
+
+  updatePreviewShip();
+}
+
+function updatePreviewShip() {
+  if (!previewScene) return;
+  if (previewShip) previewScene.remove(previewShip);
+  const allCrew = getCrewFromUI();
+  const shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
+  previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, null, shipName);
+  buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
+    ...c, health: 100, task: ['helm','cannons','sails','lookout'][i] || 'idle'
+  })), G.player.shipType);
+  previewScene.add(previewShip);
+}
+
+function renderPreview() {
+  if (!previewRenderer || !previewScene) return;
+  if (previewShip) previewShip.rotation.y += 0.005;
+  previewRenderer.render(previewScene, previewCamera);
+  if (document.getElementById('create-screen')?.style.display !== 'none') requestAnimationFrame(renderPreview);
+}
+
 function buildCreationUI() {
   makeColorRow(document.getElementById('cap-colors'), CREW_COLORS, '#8b0000');
   makeOptionRow(document.getElementById('cap-hat'), HAT_OPTIONS, 'tricorn', 'hat');
   makeOptionRow(document.getElementById('cap-outfit'), OUTFIT_OPTIONS, 'coat', 'outfit');
-  document.getElementById('cap-parrot').onchange = drawCrewPreview;
-  document.getElementById('cap-name').oninput = drawCrewPreview;
+  document.getElementById('cap-parrot').onchange = () => { drawCrewPreview(); updatePreviewShip(); };
+  document.getElementById('cap-name').oninput = () => { drawCrewPreview(); updatePreviewShip(); };
+  document.getElementById('ship-name-input').oninput = updatePreviewShip;
 
   const crewDiv = document.getElementById('crew-editors');
   crewDiv.innerHTML = '';
@@ -1481,12 +1566,15 @@ function buildCreationUI() {
     crewDiv.appendChild(div);
     makeColorRow(div.querySelector('.crew-color-row'), CREW_COLORS, c.color);
     makeOptionRow(div.querySelector('.crew-hat-row'), HAT_OPTIONS, c.hat, 'hat');
-    div.querySelector('.crew-name').oninput = drawCrewPreview;
+    div.querySelector('.crew-name').oninput = () => { drawCrewPreview(); updatePreviewShip(); };
   });
   drawCrewPreview();
+  setup3DPreview();
+  requestAnimationFrame(renderPreview);
 }
 
 function launchGame() {
+  G.player.shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
   const allCrew = getCrewFromUI();
   G.player.crew = allCrew.map((c, i) => ({
     name: c.name, role: c.role, health: 100, color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
@@ -1511,6 +1599,7 @@ function saveProgress() {
     const data = {
       x: G.player.x, z: G.player.z, rotation: G.player.rotation,
       health: G.player.health, shipType: G.player.shipType,
+      shipName: G.player.shipName,
       shipParts: G.player.shipParts,
       inventory: G.player.inventory,
       crew: G.player.crew,
@@ -1529,6 +1618,7 @@ function loadProgress() {
     if (data.z !== undefined) G.player.z = data.z;
     if (data.rotation !== undefined) G.player.rotation = data.rotation;
     if (data.health !== undefined) G.player.health = data.health;
+    if (data.shipName) G.player.shipName = data.shipName;
     if (data.shipType) G.player.shipType = data.shipType;
     if (data.shipParts) G.player.shipParts = data.shipParts;
     if (data.inventory) G.player.inventory = data.inventory;
