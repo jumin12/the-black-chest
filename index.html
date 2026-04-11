@@ -825,10 +825,11 @@ let windParticles, windParticleGeo;
 function initWindStreamVisual() {
   const n = 520;
   const pos = new Float32Array(n * 3);
+  const extent = 2800;
   for (let i = 0; i < n; i++) {
-    pos[i * 3] = (Math.random() - 0.5) * 100;
-    pos[i * 3 + 1] = 5 + Math.random() * 32;
-    pos[i * 3 + 2] = (Math.random() - 0.5) * 100;
+    pos[i * 3] = (Math.random() - 0.5) * extent * 2;
+    pos[i * 3 + 1] = 5 + Math.random() * 34;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * extent * 2;
   }
   windParticleGeo = new THREE.BufferGeometry();
   windParticleGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -836,16 +837,29 @@ function initWindStreamVisual() {
     color: 0xb8ddff, size: 0.42, transparent: true, opacity: 0.34, depthWrite: false,
     blending: THREE.AdditiveBlending, sizeAttenuation: true
   }));
+  windParticles.position.set(0, 0, 0);
   scene.add(windParticles);
+}
+function scatterWindStreaksNearPlayer() {
+  if (!windParticleGeo) return;
+  const arr = windParticleGeo.attributes.position.array;
+  const px = G.player.x, pz = G.player.z;
+  const spread = 340 + (G.camera.zoom / 200) * 120;
+  for (let i = 0; i < arr.length; i += 3) {
+    arr[i] = px + (Math.random() - 0.5) * spread * 2;
+    arr[i + 1] = 5 + Math.random() * 32;
+    arr[i + 2] = pz + (Math.random() - 0.5) * spread * 2;
+  }
+  windParticleGeo.attributes.position.needsUpdate = true;
 }
 function updateWindStreamVisual(dt) {
   if (!windParticles || !windParticleGeo || G.mode !== 'playing') return;
-  windParticles.position.set(G.player.x, 0, G.player.z);
   const arr = windParticleGeo.attributes.position.array;
-  const lim = 48 + (G.camera.zoom / 200) * 165;
+  const px = G.player.x, pz = G.player.z;
+  const recycleR = 480 + (G.camera.zoom / 200) * 100;
+  const recycleR2 = recycleR * recycleR;
   for (let i = 0; i < arr.length; i += 3) {
-    const wx = G.player.x + arr[i];
-    const wz = G.player.z + arr[i + 2];
+    let wx = arr[i], wz = arr[i + 2];
     const wdat = getWindAt(wx, wz);
     const W = wdat.angle;
     const dirX = Math.sin(W);
@@ -855,16 +869,22 @@ function updateWindStreamVisual(dt) {
     const baseSpeed = wdat.speed * 0.4 * dt;
     const along = 0.88 + 0.12 * Math.sin(G.time * 1.2 + i * 0.02);
     const cross = 0.1 * Math.sin(G.time * 0.95 + i * 0.031);
-    arr[i] += (dirX * along + perpX * cross) * baseSpeed;
+    wx += (dirX * along + perpX * cross) * baseSpeed;
+    wz += (dirZ * along + perpZ * cross) * baseSpeed;
     arr[i + 1] += Math.sin(G.time * 0.65 + i * 0.015) * 0.35 * dt;
-    arr[i + 2] += (dirZ * along + perpZ * cross) * baseSpeed;
-    if (Math.abs(arr[i]) > lim || Math.abs(arr[i + 2]) > lim) {
-      const spread = (Math.random() - 0.5) * lim * 1.2;
-      const spread2 = (Math.random() - 0.5) * lim * 1.2;
-      arr[i] = -dirX * lim * 1.05 + spread * perpX + spread2 * 0.25 * dirX;
-      arr[i + 2] = -dirZ * lim * 1.05 + spread * perpZ + spread2 * 0.25 * dirZ;
+    const dx = wx - px, dz = wz - pz;
+    if (dx * dx + dz * dz > recycleR2) {
+      const wNear = getWindAt(px, pz);
+      const ux = Math.sin(wNear.angle), uz = Math.cos(wNear.angle);
+      const r = 260 + Math.random() * 200;
+      const spread = (Math.random() - 0.5) * 240;
+      wx = px - ux * r - uz * spread;
+      wz = pz - uz * r + ux * spread;
+      arr[i + 1] = 6 + Math.random() * 26;
     }
-    if (arr[i + 1] < 3 || arr[i + 1] > 42) arr[i + 1] = 6 + Math.random() * 26;
+    arr[i] = wx;
+    arr[i + 2] = wz;
+    if (arr[i + 1] < 3 || arr[i + 1] > 48) arr[i + 1] = 6 + Math.random() * 26;
   }
   windParticleGeo.attributes.position.needsUpdate = true;
 }
@@ -1879,24 +1899,91 @@ function addFloatingLootMesh(x, z, type, count) {
 /* ============================== NETWORK =================================== */
 let ws = null;
 let playWorldNetTimeoutId = null;
-function schedulePlayWorldNetFallback() {
-  if (playWorldNetTimeoutId) clearTimeout(playWorldNetTimeoutId);
-  playWorldNetTimeoutId = setTimeout(() => {
-    playWorldNetTimeoutId = null;
-    if (!G.playWorldAwaitingNetInit || G.mode !== 'playing') return;
-    G.worldSeed = G.fallbackWorldSeed >>> 0;
-    G.seed = G.worldSeed;
-    noise = new SimplexNoise(G.worldSeed);
-    G.playWorldAwaitingNetInit = false;
-    updateChunks();
-    spawnNPCs();
-    notify('Could not sync with server — using a local world.');
-  }, 2500);
-}
+let prefetchedServerSeed = null;
+
 function getServerUrl() {
   const p = new URLSearchParams(location.search), ex = p.get('server');
   if (ex) return ex;
   return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
+}
+function getHealthUrl() {
+  const p = new URLSearchParams(location.search), ex = p.get('server');
+  if (ex) {
+    try {
+      const u = new URL(ex.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:'));
+      return `${u.protocol}//${u.host}/health`;
+    } catch (e) {}
+  }
+  return `${location.protocol}//${location.host}/health`;
+}
+function applySharedWorldFromServerSeed(s) {
+  const seed = Number(s) >>> 0;
+  G.worldSeed = seed;
+  G.seed = seed;
+  noise = new SimplexNoise(G.worldSeed);
+  G.playWorldAwaitingNetInit = false;
+  if (playWorldNetTimeoutId) {
+    clearTimeout(playWorldNetTimeoutId);
+    playWorldNetTimeoutId = null;
+  }
+  G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
+  G.npcs = [];
+  G.chunks.clear();
+  islandGroup.clear();
+  G.islands = [];
+  updateChunks();
+  spawnNPCs();
+  scatterWindStreaksNearPlayer();
+}
+function startServerSeedPrefetch() {
+  prefetchedServerSeed = null;
+  fetch(getHealthUrl(), { cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : Promise.reject()))
+    .then(j => {
+      if (j && j.seed != null) {
+        prefetchedServerSeed = Number(j.seed) >>> 0;
+        if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
+          if ((G.worldSeed >>> 0) !== (prefetchedServerSeed >>> 0)) {
+            applySharedWorldFromServerSeed(prefetchedServerSeed);
+          } else {
+            G.playWorldAwaitingNetInit = false;
+            if (playWorldNetTimeoutId) {
+              clearTimeout(playWorldNetTimeoutId);
+              playWorldNetTimeoutId = null;
+            }
+            noise = new SimplexNoise(G.worldSeed);
+            updateChunks();
+            spawnNPCs();
+            scatterWindStreaksNearPlayer();
+          }
+        }
+      }
+    })
+    .catch(() => {});
+}
+function schedulePlayWorldNetFallback() {
+  if (playWorldNetTimeoutId) clearTimeout(playWorldNetTimeoutId);
+  playWorldNetTimeoutId = setTimeout(async () => {
+    playWorldNetTimeoutId = null;
+    if (!G.playWorldAwaitingNetInit || G.mode !== 'playing') return;
+    let s = prefetchedServerSeed;
+    let fromHttp = s != null;
+    if (s == null) {
+      try {
+        const r = await fetch(getHealthUrl(), { cache: 'no-store' });
+        if (r.ok) {
+          const j = await r.json();
+          if (j.seed != null) {
+            s = Number(j.seed) >>> 0;
+            fromHttp = true;
+          }
+        }
+      } catch (e) {}
+    }
+    if (s == null) s = G.fallbackWorldSeed >>> 0;
+    applySharedWorldFromServerSeed(s);
+    notify(fromHttp ? 'Shared world synced.' : 'Offline — islands may not match other players.');
+  }, 4200);
 }
 function connectToServer() {
   const url = getServerUrl();
@@ -1916,31 +2003,14 @@ function connectToServer() {
         if (msg.seed != null) {
           const s = Number(msg.seed) >>> 0;
           if (G.mode === 'playing' && (G.playWorldAwaitingNetInit || (G.worldSeed >>> 0) !== s)) {
-            G.worldSeed = s;
-            G.seed = s;
-            noise = new SimplexNoise(G.worldSeed);
-            G.playWorldAwaitingNetInit = false;
-            if (playWorldNetTimeoutId) { clearTimeout(playWorldNetTimeoutId); playWorldNetTimeoutId = null; }
-            G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
-            G.npcs = [];
-            G.chunks.clear();
-            islandGroup.clear();
-            G.islands = [];
-            updateChunks();
-            spawnNPCs();
+            applySharedWorldFromServerSeed(s);
           } else {
             G.worldSeed = s;
             G.seed = s;
             noise = new SimplexNoise(G.worldSeed);
           }
         } else if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
-          G.worldSeed = G.fallbackWorldSeed >>> 0;
-          G.seed = G.worldSeed;
-          noise = new SimplexNoise(G.worldSeed);
-          G.playWorldAwaitingNetInit = false;
-          if (playWorldNetTimeoutId) { clearTimeout(playWorldNetTimeoutId); playWorldNetTimeoutId = null; }
-          updateChunks();
-          spawnNPCs();
+          applySharedWorldFromServerSeed(G.fallbackWorldSeed >>> 0);
         }
         if (msg.player) {
           if (!hasSave) { G.player.x = msg.player.x; G.player.z = msg.player.z; }
@@ -4590,6 +4660,7 @@ function beginVoyageAfterCharacter() {
   islandGroup.clear();
   G.islands = [];
   rebuildPlayerShip();
+  startServerSeedPrefetch();
   connectToServer();
   schedulePlayWorldNetFallback();
   renderer.domElement.focus(); document.body.focus();
@@ -4869,7 +4940,7 @@ document.getElementById('start-btn').onclick = () => {
       document.getElementById('touch-controls').style.display = 'block';
       applyMobileControlScheme(G.mobileControlScheme);
     }
-    G.fallbackWorldSeed = G.worldSeed >>> 0;
+    G.fallbackWorldSeed = (Math.floor(Math.random() * 0x100000000) ^ (Date.now() >>> 0)) >>> 0;
     G.playWorldAwaitingNetInit = true;
     G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
     G.npcs = [];
@@ -4878,6 +4949,7 @@ document.getElementById('start-btn').onclick = () => {
     water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
     sky.position.set(G.player.x, 0, G.player.z);
     rebuildPlayerShip();
+    startServerSeedPrefetch();
     connectToServer();
     schedulePlayWorldNetFallback();
     renderer.domElement.focus(); document.body.focus();
