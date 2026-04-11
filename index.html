@@ -87,6 +87,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   .tb-btn{width:38px;height:38px;font-size:16px;}
   #touch-controls{display:block;}
   #controls-help{display:none !important;}
+  #btn-help{display:none !important;}
 }
 @media(hover:none) and (pointer:coarse){
   #touch-controls{display:block;}
@@ -153,7 +154,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div class="tb-btn" id="btn-ship" title="Ship (B)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><path d="M2 20l2-4h16l2 4"/><path d="M4 16l1-6h14l1 6"/><path d="M12 10V3"/><path d="M8 6h8"/></svg></div>
     <div class="tb-btn" id="btn-inv" title="Inventory (I)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a4 4 0 018 0v2"/></svg></div>
     <div class="tb-btn" id="btn-crew" title="Crew (C)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><circle cx="9" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg></div>
-    <div class="tb-btn" id="btn-chat" title="Chat (T)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.4 8.4 0 01-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.4 8.4 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg></div>
+    <div class="tb-btn" id="btn-chat" title="Chat (T)" style="position:relative;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.4 8.4 0 01-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.4 8.4 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg><div id="chat-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:#cc2222;color:#fff;font-size:9px;font-weight:bold;min-width:16px;height:16px;border-radius:8px;display:none;align-items:center;justify-content:center;padding:0 3px;font-family:sans-serif;"></div></div>
     <div class="tb-btn" id="btn-anchor" title="Anchor (X)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><circle cx="12" cy="5" r="3"/><line x1="12" y1="8" x2="12" y2="21"/><path d="M5 12H2a10 10 0 0020 0h-3"/></svg></div>
     <div class="tb-btn" id="btn-help" title="Controls (?)" style="font-size:16px;font-weight:bold;color:#d4a848;">?</div>
   </div>
@@ -1258,7 +1259,7 @@ window.addEventListener('keydown', e => {
   if (k === 'b') togglePanel('ship-panel');
   if (k === 'i') togglePanel('inventory-panel');
   if (k === 'c') togglePanel('crew-panel');
-  if (k === 't') { togglePanel('chat-box'); if (document.getElementById('chat-box').style.display !== 'none') setTimeout(() => document.getElementById('chat-input').focus(), 50); }
+  if (k === 't') { togglePanel('chat-box'); if (document.getElementById('chat-box').style.display !== 'none') { setTimeout(() => document.getElementById('chat-input').focus(), 50); unreadChat = 0; const badge = document.getElementById('chat-badge'); if (badge) badge.style.display = 'none'; } }
   if (k === 'f') { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
   if (k === 'v') doAnchor();
   if (k === 'm') toggleFullmap();
@@ -1293,12 +1294,14 @@ window.addEventListener('touchmove', e => {
     const t = e.changedTouches[i];
     if (t.identifier === joyTouchId) {
       const dx = t.clientX - joyCenter.x, dy = t.clientY - joyCenter.y;
-      const dist = Math.min(Math.sqrt(dx * dx + dy * dy), 50);
-      const angle = Math.atan2(dx, dy);
-      G.touch.joyX = (dx / 50); G.touch.joyY = (dy / 50);
-      G.touch.joyX = Math.max(-1, Math.min(1, G.touch.joyX));
-      G.touch.joyY = Math.max(-1, Math.min(1, G.touch.joyY));
-      const kx = (dx / 50) * 28, ky = (dy / 50) * 28;
+      const rawDist = Math.sqrt(dx * dx + dy * dy);
+      const maxR = 40;
+      const clampDist = Math.min(rawDist, maxR);
+      const normX = rawDist > 2 ? (dx / rawDist) * (clampDist / maxR) : 0;
+      const normY = rawDist > 2 ? (dy / rawDist) * (clampDist / maxR) : 0;
+      G.touch.joyX = Math.max(-1, Math.min(1, normX));
+      G.touch.joyY = Math.max(-1, Math.min(1, normY));
+      const kx = G.touch.joyX * 30, ky = G.touch.joyY * 30;
       joyKnob.style.transform = `translate(calc(-50% + ${kx}px), calc(-50% + ${ky}px))`;
       e.preventDefault();
     }
@@ -1320,8 +1323,8 @@ window.addEventListener('touchend', e => {
   if (e.touches.length < 2) pinchDist = 0;
 });
 
-document.getElementById('touch-port')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(-1); }, { passive: false });
-document.getElementById('touch-starboard')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(1); }, { passive: false });
+document.getElementById('touch-port')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(1); }, { passive: false });
+document.getElementById('touch-starboard')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(-1); }, { passive: false });
 document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.max(12, G.camera.targetZoom - 12); }, { passive: false });
 document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.min(200, G.camera.targetZoom + 12); }, { passive: false });
 
@@ -1390,7 +1393,19 @@ function closeAllPanels() {
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
 }
 function notify(text) { const el = document.getElementById('notification'); el.textContent = text; el.style.opacity = '1'; clearTimeout(el._t); el._t = setTimeout(() => el.style.opacity = '0', 2500); }
-function addChatMessage(name, text) { const log = document.getElementById('chat-log'); const d = document.createElement('div'); d.innerHTML = `<span style="color:#d4a848">${name}:</span> ${text}`; log.appendChild(d); log.scrollTop = log.scrollHeight; }
+let unreadChat = 0;
+function addChatMessage(name, text) {
+  const log = document.getElementById('chat-log');
+  const d = document.createElement('div');
+  d.innerHTML = `<span style="color:#d4a848">${name}:</span> ${text}`;
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+  const chatBox = document.getElementById('chat-box');
+  if (chatBox.style.display === 'none' || chatBox.style.display === '') {
+    unreadChat++;
+    const badge = document.getElementById('chat-badge');
+    if (badge) { badge.style.display = 'flex'; badge.textContent = unreadChat > 9 ? '9+' : unreadChat; }
+  }
+}
 
 function updateShipPanel() {
   const td = document.getElementById('ship-type-selector');
@@ -1442,7 +1457,12 @@ function updateCrewPanel() {
 document.getElementById('btn-ship').onclick = () => togglePanel('ship-panel');
 document.getElementById('btn-inv').onclick = () => togglePanel('inventory-panel');
 document.getElementById('btn-crew').onclick = () => togglePanel('crew-panel');
-document.getElementById('btn-chat').onclick = () => togglePanel('chat-box');
+document.getElementById('btn-chat').onclick = () => {
+  togglePanel('chat-box');
+  unreadChat = 0;
+  const badge = document.getElementById('chat-badge');
+  if (badge) badge.style.display = 'none';
+};
 document.getElementById('btn-anchor').onclick = () => doAnchor();
 document.getElementById('btn-help').onclick = () => {
   const h = document.getElementById('controls-help');
