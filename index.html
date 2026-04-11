@@ -140,9 +140,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div style="color:#cc3333;font-size:clamp(28px,6vw,48px);font-weight:bold;text-shadow:0 0 20px rgba(200,30,30,0.6);">SHIP SINKING</div>
     <div id="death-timer" style="color:#d4a848;font-size:18px;margin-top:12px;">Respawning in 8s</div>
   </div>
-  <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,15,30,0.95);z-index:50;pointer-events:auto;">
-    <canvas id="fullmap-canvas" width="600" height="600" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);max-width:90vw;max-height:90vh;border:2px solid rgba(180,140,60,0.5);border-radius:8px;"></canvas>
-    <div style="position:absolute;top:12px;right:16px;color:#d4a848;font-size:14px;cursor:pointer;" id="fullmap-close">CLOSE [M]</div>
+  <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,12,25,0.97);z-index:50;pointer-events:auto;">
+    <canvas id="fullmap-canvas" width="800" height="800" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(95vw,95vh);height:min(95vw,95vh);border:2px solid rgba(180,140,60,0.4);border-radius:8px;touch-action:none;cursor:grab;"></canvas>
+    <div style="position:absolute;top:10px;right:14px;color:#d4a848;font-size:14px;cursor:pointer;background:rgba(20,12,8,0.8);padding:6px 14px;border-radius:6px;border:1px solid rgba(180,140,60,0.4);" id="fullmap-close">CLOSE</div>
+    <div style="position:absolute;top:10px;left:14px;color:#8090a0;font-size:11px;">Scroll to zoom / Drag to pan / M to close</div>
   </div>
   <div id="anchor-status" class="hud-box" style="display:none;">Anchored</div>
   <div id="notification"></div>
@@ -420,9 +421,13 @@ const waterFS = `
     float NdL = max(dot(N,L),0.0);
     vec3 diff = wc*(0.35+0.65*NdL);
     vec3 H=normalize(L+V);
-    float spec=pow(max(dot(N,H),0.0),800.0);
-    float specNoise = sin(vWorldPos.x*0.3+uTime*0.1)*sin(vWorldPos.z*0.4-uTime*0.08)*0.5+0.5;
-    vec3 specC = vec3(1.0,0.95,0.85)*spec*1.2*specNoise;
+    float spec=pow(max(dot(N,H),0.0),900.0);
+    float sn1 = sin(vWorldPos.x*0.37+vWorldPos.z*0.23+uTime*0.09);
+    float sn2 = sin(vWorldPos.x*0.71-vWorldPos.z*0.53+uTime*0.13)*0.7;
+    float sn3 = sin(vWorldPos.x*1.37+vWorldPos.z*1.71-uTime*0.07)*0.4;
+    float sn4 = sin(vWorldPos.x*2.91-vWorldPos.z*2.37+uTime*0.17)*0.2;
+    float specMask = clamp((sn1+sn2+sn3+sn4)*0.22+0.5, 0.1, 1.0);
+    vec3 specC = vec3(1.0,0.96,0.88)*spec*0.8*specMask;
     vec3 R=reflect(-V,N); float er=pow(max(R.y*0.5+0.5,0.0),0.4);
     vec3 refl = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er)*fresnel;
     float sss = pow(max(dot(V,-L+N*0.4),0.0),2.5)*0.3;
@@ -529,14 +534,13 @@ function generateIsland(cx, cz) {
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
     const isLand = ht > 0.2 && warpedDist < 0.92;
-    if (!isLand) ht = -0.4;
-    else ht = Math.max(0.25, ht);
-    positions.setY(i, ht);
+    if (!isLand) { positions.setX(i, 0); positions.setZ(i, 0); positions.setY(i, -2); }
+    else { ht = Math.max(0.25, ht); positions.setY(i, ht); }
 
     const nh = Math.max(0, ht) / islandHeight;
     const slope = dist > 0.01 ? Math.max(0,ht) / (dist * islandRadius) : 0;
     let r, g, b;
-    if (!isLand) { r = 0.05; g = 0.28; b = 0.32; }
+    if (!isLand) { r = 0; g = 0; b = 0; }
     else if (ht < 0.4) {
       r = 0.93; g = 0.87; b = 0.60;
     } else if (nh < 0.08) {
@@ -633,17 +637,17 @@ function spawnSeagulls(wx, wz, count) {
 
 const fishSchools = [];
 function spawnFish(wx, wz, count) {
-  const schoolColor = [0x4477aa, 0x77aa55, 0xaa8844, 0x44aaaa, 0x6666bb][Math.floor(Math.random() * 5)];
+  const schoolColor = [0x66aadd, 0xaacc66, 0xddaa55, 0x55dddd, 0xee8844][Math.floor(Math.random() * 5)];
   const schoolPhase = Math.random() * Math.PI * 2;
-  const schoolRadius = 6 + Math.random() * 14;
-  const schoolSpeed = 0.4 + Math.random() * 0.5;
-  const schoolDepth = SEA_LEVEL - 0.15 - Math.random() * 0.4;
+  const schoolRadius = 5 + Math.random() * 10;
+  const schoolSpeed = 0.5 + Math.random() * 0.4;
+  const schoolDepth = SEA_LEVEL + 0.05;
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.25, 3), new THREE.MeshLambertMaterial({ color: schoolColor }));
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.4, 4), new THREE.MeshBasicMaterial({ color: schoolColor }));
     body.rotation.z = Math.PI / 2; fg.add(body);
-    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.07), new THREE.MeshLambertMaterial({ color: schoolColor, side: THREE.DoubleSide }));
-    tail.position.set(-0.15, 0, 0); fg.add(tail);
+    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 0.12), new THREE.MeshBasicMaterial({ color: schoolColor, side: THREE.DoubleSide }));
+    tail.position.set(-0.22, 0, 0); fg.add(tail);
     fg.position.set(wx, schoolDepth, wz);
     fg.userData.cx = wx; fg.userData.cz = wz;
     fg.userData.phase = schoolPhase + i * 0.3;
@@ -954,15 +958,19 @@ function rebuildPlayerShip() {
 }
 
 /* ============================== NPC SHIPS ================================ */
+function seededRand(seed) { seed = ((seed * 16807) % 2147483647 + 2147483647) % 2147483647; return seed / 2147483647; }
 function spawnNPCs() {
-  for (let i = 0; i < 3; i++) {
-    const a = Math.random() * Math.PI * 2, d = 150 + Math.random() * 300;
+  const npcSeed = G.seed * 7 + 13;
+  for (let i = 0; i < 5; i++) {
+    let s = npcSeed + i * 997;
+    const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
+    const a = sr() * Math.PI * 2, d = 100 + sr() * 400;
     const npc = {
-      x: G.player.x + Math.cos(a) * d, z: G.player.z + Math.sin(a) * d,
-      rotation: Math.random() * Math.PI * 2, speed: 2 + Math.random() * 3,
-      health: 60 + Math.random() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(Math.random() * 5)],
-      name: ['Sea Phantom', 'Red Tide', 'Storm Chaser', 'Bone Rattler', 'Shadow Wave'][Math.floor(Math.random() * 5)],
-      wanderAngle: Math.random() * Math.PI * 2, wanderTimer: 5 + Math.random() * 10
+      x: Math.cos(a) * d, z: Math.sin(a) * d,
+      rotation: sr() * Math.PI * 2, speed: 2 + sr() * 3,
+      health: 60 + sr() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(sr() * 5)],
+      name: ['Sea Phantom','Red Tide','Storm Chaser','Bone Rattler','Shadow Wave','Black Serpent','Iron Maiden'][Math.floor(sr() * 7)],
+      wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10
     };
     const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, '#aa2222', npc.name);
     const npcCrew = [
@@ -1483,35 +1491,55 @@ function drawCompass() {
 /* ============================== MINIMAP ================================== */
 const mmCanvas = document.getElementById('minimap-canvas');
 const mmCtx = mmCanvas.getContext('2d');
-let fullmapOpen = false;
+let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = 0.04, fmDragging = false, fmLastX = 0, fmLastY = 0;
 function toggleFullmap() {
   fullmapOpen = !fullmapOpen;
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
-  if (fullmapOpen) drawFullmap();
+  if (fullmapOpen) { fmPanX = 0; fmPanZ = 0; drawFullmap(); }
 }
 function drawFullmap() {
   const cv = document.getElementById('fullmap-canvas');
-  const ctx = cv.getContext('2d'), w = 600, h = 600, s = 0.06;
+  const ctx = cv.getContext('2d'), w = 800, h = 800, s = fmZoom;
+  const centerX = G.player.x + fmPanX, centerZ = G.player.z + fmPanZ;
   const cx = w / 2, cy = h / 2;
-  ctx.fillStyle = '#0a1830'; ctx.fillRect(0, 0, w, h);
-  for (let gx = -5; gx <= 5; gx++) { ctx.strokeStyle = 'rgba(40,60,80,0.3)'; ctx.beginPath(); ctx.moveTo(cx + gx * CHUNK_SIZE * s, 0); ctx.lineTo(cx + gx * CHUNK_SIZE * s, h); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, cy + gx * CHUNK_SIZE * s); ctx.lineTo(w, cy + gx * CHUNK_SIZE * s); ctx.stroke(); }
+  ctx.fillStyle = '#060e1e'; ctx.fillRect(0, 0, w, h);
+  const gs = CHUNK_SIZE * s;
+  if (gs > 5) {
+    ctx.strokeStyle = 'rgba(25,40,60,0.5)'; ctx.lineWidth = 0.5;
+    const ox = (cx - (centerX * s) % gs + gs) % gs;
+    const oz = (cy - (centerZ * s) % gs + gs) % gs;
+    for (let i = -1; i < w / gs + 2; i++) { const lx = ox + i * gs; ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, h); ctx.stroke(); }
+    for (let i = -1; i < h / gs + 2; i++) { const ly = oz + i * gs; ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w, ly); ctx.stroke(); }
+  }
   islandGroup.children.forEach(g => {
-    const d = g.userData; const sx = cx + (d.worldX - G.player.x) * s, sy = cy + (d.worldZ - G.player.z) * s;
-    if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) return;
-    const ir = Math.max(5, d.radius * s);
-    ctx.fillStyle = '#3a6a2a'; ctx.beginPath(); ctx.arc(sx, sy, ir, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#c8b87a'; ctx.beginPath(); ctx.arc(sx, sy, ir * 0.75, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#4a7a3a'; ctx.beginPath(); ctx.arc(sx, sy, ir * 0.45, 0, Math.PI * 2); ctx.fill();
+    const d = g.userData;
+    const sx = cx + (d.worldX - centerX) * s, sy = cy + (d.worldZ - centerZ) * s;
+    if (sx < -40 || sx > w + 40 || sy < -40 || sy > h + 40) return;
+    const ir = Math.max(3, d.radius * s);
+    ctx.fillStyle = '#1a4a1a'; ctx.beginPath(); ctx.arc(sx, sy, ir + 2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#b8a060'; ctx.beginPath(); ctx.arc(sx, sy, ir, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2a6a25'; ctx.beginPath(); ctx.arc(sx, sy, ir * 0.6, 0, Math.PI * 2); ctx.fill();
   });
-  G.npcs.forEach(n => { const sx = cx + (n.x - G.player.x) * s, sy = cy + (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 8); } });
-  G.otherPlayers.forEach(p => { const sx = cx + (p.x - G.player.x) * s, sy = cy + (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 6, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(p.name || 'Player', sx, sy - 10); } });
-  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.stroke();
-  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx, cy);
-  ctx.lineTo(cx + Math.sin(G.player.rotation) * 14, cy + Math.cos(G.player.rotation) * 14); ctx.stroke();
-  ctx.fillStyle = '#d4a848'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(G.player.shipName || 'You', cx, cy + 18);
-  ctx.fillStyle = 'rgba(180,140,60,0.5)'; ctx.font = '10px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('Press M to close', 8, h - 8);
+  G.npcs.forEach(n => { if (n.sinking) return; const sx = cx + (n.x - centerX) * s, sy = cy + (n.z - centerZ) * s; if (sx > -10 && sx < w + 10 && sy > -10 && sy < h + 10) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#ffaaaa'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 7); } });
+  G.otherPlayers.forEach(p => { const sx = cx + (p.x - centerX) * s, sy = cy + (p.z - centerZ) * s; if (sx > -10 && sx < w + 10 && sy > -10 && sy < h + 10) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.fillStyle = '#ffffff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(p.name || 'Player', sx, sy - 9); } });
+  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx - fmPanX * s, cy - fmPanZ * s, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx - fmPanX * s, cy - fmPanZ * s, 5, 0, Math.PI * 2); ctx.stroke();
+  const pr = G.player.rotation;
+  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(cx - fmPanX * s, cy - fmPanZ * s);
+  ctx.lineTo(cx - fmPanX * s + Math.sin(pr) * 12, cy - fmPanZ * s + Math.cos(pr) * 12); ctx.stroke();
+  ctx.fillStyle = '#d4a848'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(G.player.shipName || 'You', cx - fmPanX * s, cy - fmPanZ * s + 16);
 }
+const fmCanvas = document.getElementById('fullmap-canvas');
+fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = Math.max(0.01, Math.min(0.15, fmZoom + e.deltaY * -0.00005)); if (fullmapOpen) drawFullmap(); }, { passive: false });
+fmCanvas.addEventListener('mousedown', e => { fmDragging = true; fmLastX = e.clientX; fmLastY = e.clientY; fmCanvas.style.cursor = 'grabbing'; });
+window.addEventListener('mousemove', e => { if (fmDragging) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ -= (e.clientY - fmLastY) * scale / fmZoom; fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap(); } });
+window.addEventListener('mouseup', () => { fmDragging = false; fmCanvas.style.cursor = 'grab'; });
+let fmTouchId = null, fmTouchX = 0, fmTouchY = 0;
+fmCanvas.addEventListener('touchstart', e => { e.preventDefault(); const t = e.touches[0]; fmTouchId = t.identifier; fmTouchX = t.clientX; fmTouchY = t.clientY; }, { passive: false });
+fmCanvas.addEventListener('touchmove', e => { e.preventDefault(); for (let i = 0; i < e.changedTouches.length; i++) { const t = e.changedTouches[i]; if (t.identifier === fmTouchId) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (t.clientX - fmTouchX) * scale / fmZoom; fmPanZ -= (t.clientY - fmTouchY) * scale / fmZoom; fmTouchX = t.clientX; fmTouchY = t.clientY; if (fullmapOpen) drawFullmap(); } } }, { passive: false });
+fmCanvas.addEventListener('touchend', () => { fmTouchId = null; });
 document.getElementById('minimap').onclick = toggleFullmap;
 document.getElementById('fullmap-close').onclick = toggleFullmap;
 
