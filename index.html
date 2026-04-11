@@ -625,15 +625,27 @@ function generateIsland(cx, cz) {
     const warpedDist = dist + edgeWarp;
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
-    const isLand = ht > 0.2 && warpedDist < 0.9;
-    if (!isLand) { positions.setX(i, 0); positions.setZ(i, 0); positions.setY(i, -2); }
-    else { ht = Math.max(0.5, ht); positions.setY(i, ht); }
+    const isLand = ht > 0.15 && warpedDist < 0.93;
+    if (!isLand) {
+      const edgeFade = Math.max(0, 1 - warpedDist) * 2;
+      if (edgeFade > 0.1 && ht > 0) {
+        positions.setY(i, ht * edgeFade * 0.3);
+      } else {
+        positions.setX(i, 0); positions.setZ(i, 0); positions.setY(i, -2);
+      }
+    } else {
+      ht = Math.max(0.4, ht);
+      positions.setY(i, ht);
+    }
 
     const nh = Math.max(0, ht) / islandHeight;
     const slope = dist > 0.01 ? Math.max(0,ht) / (dist * islandRadius) : 0;
     let r, g, b;
-    if (!isLand) { r = 0; g = 0; b = 0; }
-    else if (ht < 0.4) {
+    if (!isLand && positions.getY(i) > -1) {
+      const sh = positions.getY(i);
+      r = 0.85 + sh * 0.1; g = 0.78 + sh * 0.05; b = 0.50 + sh * 0.1;
+    } else if (!isLand) { r = 0; g = 0; b = 0; }
+    else if (ht < 0.5) {
       r = 0.93; g = 0.87; b = 0.60;
     } else if (nh < 0.08) {
       r = 0.90; g = 0.82; b = 0.52;
@@ -708,7 +720,7 @@ function generateIsland(cx, cz) {
     group.userData.hasTown = true;
     group.userData.townName = ['Port Royal','Tortuga','Nassau','Havana','Santiago','Bridgetown','Maracaibo','Cartagena'][Math.floor(h * 80) % 8];
     const dockAngle = ln.noise2D(cx + 99, cz + 99) * Math.PI;
-    const dockDist = islandRadius * 0.8;
+    const dockDist = islandRadius * 0.95;
     const dockX = worldX + Math.cos(dockAngle) * dockDist;
     const dockZ = worldZ + Math.sin(dockAngle) * dockDist;
     group.userData.dockX = dockX; group.userData.dockZ = dockZ;
@@ -759,14 +771,17 @@ function generateIsland(cx, cz) {
   islandGroup.add(group);
   G.islands.push(group.userData);
   if (seagulls.length < 30) spawnSeagulls(worldX, worldZ, 1 + Math.floor(Math.random() * 2));
-  if (fishSchools.length < 80) {
+  if (fishSchools.length < 150) {
     for (let fi = 0; fi < 2; fi++) {
       const fishAngle = Math.random() * Math.PI * 2;
       const fishDist = islandRadius + 5 + Math.random() * 30;
       spawnFish(worldX + Math.cos(fishAngle) * fishDist, worldZ + Math.sin(fishAngle) * fishDist, 4 + Math.floor(Math.random() * 4));
     }
-    const openAngle = Math.random() * Math.PI * 2;
-    spawnFish(worldX + Math.cos(openAngle) * (50 + Math.random() * 80), worldZ + Math.sin(openAngle) * (50 + Math.random() * 80), 2 + Math.floor(Math.random() * 3));
+    for (let oi = 0; oi < 3; oi++) {
+      const openAngle = Math.random() * Math.PI * 2;
+      const openDist = 40 + Math.random() * 120;
+      spawnFish(worldX + Math.cos(openAngle) * openDist, worldZ + Math.sin(openAngle) * openDist, 3 + Math.floor(Math.random() * 4));
+    }
   }
 }
 
@@ -816,12 +831,12 @@ function spawnFish(wx, wz, count) {
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
     const body = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 5), new THREE.MeshBasicMaterial({ color: species.color }));
-    body.rotation.z = -Math.PI / 2; fg.add(body);
+    body.rotation.x = Math.PI / 2; fg.add(body);
     const tail = new THREE.Mesh(new THREE.PlaneGeometry(species.size * 1.2, species.size), new THREE.MeshBasicMaterial({ color: species.color, side: THREE.DoubleSide }));
-    tail.position.set(-species.len * 0.6, 0, 0); fg.add(tail);
+    tail.position.set(0, 0, -species.len * 0.55); fg.add(tail);
     if (species.name === 'dolphin' || species.name === 'shark') {
       const fin = new THREE.Mesh(new THREE.ConeGeometry(species.size * 0.4, species.size * 1.5, 3), new THREE.MeshBasicMaterial({ color: species.color }));
-      fin.position.set(0, species.size * 0.8, 0); fg.add(fin);
+      fin.position.set(0, species.size * 0.7, -species.len * 0.1); fg.add(fin);
     }
     fg.position.set(wx + (Math.random() - 0.5) * 3, depth, wz + (Math.random() - 0.5) * 3);
     fg.userData.leader = leader;
@@ -846,8 +861,9 @@ function updateFish(dt) {
     f.position.z += (tz - f.position.z) * 2 * dt;
     f.position.y = l.depth + Math.sin(G.time * 3 + f.userData.wiggle) * 0.08;
     f.userData.wiggle += dt * 5;
-    const dx = tx - f.position.x, dz = tz - f.position.z;
-    if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) f.rotation.y = Math.atan2(dx, dz);
+    const fdx = l.x - f.position.x, fdz = l.z - f.position.z;
+    const moveLen = Math.sqrt(fdx * fdx + fdz * fdz);
+    if (moveLen > 0.05) f.rotation.y = Math.atan2(fdx, fdz);
     f.children[1].rotation.y = Math.sin(G.time * 8 + f.userData.wiggle) * 0.4;
   });
 }
@@ -1657,6 +1673,7 @@ window.ransomPrisoner = function(idx) {
   notify(`Ransomed ${G.player.crew[idx].name} for 15 gold!`);
   G.player.crew.splice(idx, 1);
   rebuildPlayerShip();
+  updateCrewPanel();
   if (G.docked) showPortTab('trade');
 };
 
