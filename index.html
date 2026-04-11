@@ -1007,7 +1007,7 @@ function buildCrewMeshes(group, crewList, shipType) {
     let px, pz, py;
     const qdH = spec.hullH * 0.55;
     if (member.task === 'helm') { px = 0; pz = -spec.hullLen * 0.46; py = spec.hullH * 0.65 + qdH + 0.05; }
-    else if (member.task === 'sails') { px = (Math.random() - 0.5) * spec.hullW * 0.4; pz = spec.hullLen * 0.1; py = spec.hullH * 0.65; }
+    else if (member.task === 'sails') { px = spec.hullW * 0.15; pz = spec.hullLen * 0.1; py = spec.hullH * 0.65; }
     else if (member.task === 'cannons') { px = (idx % 2 === 0 ? 1 : -1) * spec.hullW * 0.35; pz = (idx - crewList.length / 2) * 1.2; py = spec.hullH * 0.65; }
     else if (member.task === 'lookout') { px = 0; pz = spec.hullLen * 0.35; py = spec.hullH * 0.65; }
     else { px = (Math.random() - 0.5) * spec.hullW * 0.5; pz = (Math.random() - 0.5) * spec.hullLen * 0.4; py = spec.hullH * 0.65; }
@@ -1655,7 +1655,7 @@ function drawCompass() {
 /* ============================== MINIMAP ================================== */
 const mmCanvas = document.getElementById('minimap-canvas');
 const mmCtx = mmCanvas.getContext('2d');
-let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = 0.012, fmDragging = false, fmLastX = 0, fmLastY = 0;
+let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = 0.15, fmDragging = false, fmLastX = 0, fmLastY = 0;
 function toggleFullmap() {
   fullmapOpen = !fullmapOpen;
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
@@ -1744,7 +1744,7 @@ function drawFullmap() {
   ctx.fillText(`Zoom: ${(fmZoom * 1000).toFixed(0)}x`, w - 12, h - 10);
 }
 const fmCanvas = document.getElementById('fullmap-canvas');
-fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = Math.max(0.005, Math.min(0.3, fmZoom + e.deltaY * -0.00008)); if (fullmapOpen) drawFullmap(); }, { passive: false });
+fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = Math.max(0.005, Math.min(0.8, fmZoom * (1 - e.deltaY * 0.001))); if (fullmapOpen) drawFullmap(); }, { passive: false });
 fmCanvas.addEventListener('mousedown', e => { fmDragging = true; fmLastX = e.clientX; fmLastY = e.clientY; fmCanvas.style.cursor = 'grabbing'; });
 window.addEventListener('mousemove', e => { if (fmDragging) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ -= (e.clientY - fmLastY) * scale / fmZoom; fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap(); } });
 window.addEventListener('mouseup', () => { fmDragging = false; fmCanvas.style.cursor = 'grab'; });
@@ -1758,7 +1758,7 @@ fmCanvas.addEventListener('touchmove', e => {
   e.preventDefault(); e.stopPropagation();
   if (e.touches.length === 2) {
     const nd = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    if (fmPinchDist > 0) { fmZoom = Math.max(0.005, Math.min(0.3, fmZoom * (nd / fmPinchDist))); }
+    if (fmPinchDist > 0) { fmZoom = Math.max(0.005, Math.min(0.8, fmZoom * (nd / fmPinchDist))); }
     fmPinchDist = nd;
     if (fullmapOpen) drawFullmap();
     return;
@@ -2445,7 +2445,8 @@ function updatePreviewShip() {
   if (previewShip) previewScene.remove(previewShip);
   const allCrew = getCrewFromUI();
   const shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
-  previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, null, shipName);
+  const prevFlagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
+  previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, prevFlagColor, shipName);
   buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
     ...c, health: 100, task: ['helm','cannons','sails','lookout'][i] || 'idle'
   })), G.player.shipType);
@@ -2550,6 +2551,7 @@ function launchGame() {
   }
   G.mode = 'playing';
   G.player.speed = 1;
+  document.getElementById('ui-layer').style.display = '';
   noise = new SimplexNoise(G.seed);
   rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
   renderer.domElement.focus(); document.body.focus();
@@ -2600,6 +2602,8 @@ noise = new SimplexNoise(G.seed);
 updateChunks();
 spawnNPCs();
 
+document.getElementById('ui-layer').style.display = 'none';
+
 function menuRender() {
   if (G.mode !== 'playing') {
     G.time += 0.016;
@@ -2607,11 +2611,19 @@ function menuRender() {
     waterUniforms.uTime.value = G.time;
     waterUniforms.uCamPos.value.copy(camera.position);
     sky.material.uniforms.uTime.value = G.time;
-    camera.position.set(Math.sin(G.time * 0.05) * 30, 40, Math.cos(G.time * 0.05) * 30);
-    camera.lookAt(0, 0, 0);
+    const camR = 25;
+    camera.position.set(Math.sin(G.time * 0.04) * camR, 15 + Math.sin(G.time * 0.02) * 3, Math.cos(G.time * 0.04) * camR);
+    camera.lookAt(0, 1, 0);
     updateNPCs(0.016);
     updateSeagulls(0.016);
     updateFish(0.016);
+    G.npcs.forEach(npc => {
+      if (npc.mesh) {
+        const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12;
+        npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + nWH, npc.z);
+        npc.mesh.rotation.y = npc.rotation;
+      }
+    });
     renderer.render(scene, camera);
     requestAnimationFrame(menuRender);
   }
@@ -2697,6 +2709,7 @@ document.getElementById('start-btn').onclick = () => {
     document.getElementById('create-screen').style.display = 'none';
     G.mode = 'playing';
     G.player.speed = Math.max(G.player.speed, 1);
+    document.getElementById('ui-layer').style.display = '';
     noise = new SimplexNoise(G.seed);
     rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
     renderer.domElement.focus(); document.body.focus();
