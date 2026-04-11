@@ -1913,22 +1913,34 @@ function connectToServer() {
     switch (msg.type) {
       case 'init':
         G.myId = msg.id;
-        if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
-          if (msg.seed != null) {
-            G.worldSeed = Number(msg.seed) >>> 0;
-            G.seed = G.worldSeed;
+        if (msg.seed != null) {
+          const s = Number(msg.seed) >>> 0;
+          if (G.mode === 'playing' && (G.playWorldAwaitingNetInit || (G.worldSeed >>> 0) !== s)) {
+            G.worldSeed = s;
+            G.seed = s;
+            noise = new SimplexNoise(G.worldSeed);
+            G.playWorldAwaitingNetInit = false;
+            if (playWorldNetTimeoutId) { clearTimeout(playWorldNetTimeoutId); playWorldNetTimeoutId = null; }
+            G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
+            G.npcs = [];
+            G.chunks.clear();
+            islandGroup.clear();
+            G.islands = [];
+            updateChunks();
+            spawnNPCs();
           } else {
-            G.worldSeed = G.fallbackWorldSeed >>> 0;
-            G.seed = G.worldSeed;
+            G.worldSeed = s;
+            G.seed = s;
+            noise = new SimplexNoise(G.worldSeed);
           }
+        } else if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
+          G.worldSeed = G.fallbackWorldSeed >>> 0;
+          G.seed = G.worldSeed;
           noise = new SimplexNoise(G.worldSeed);
           G.playWorldAwaitingNetInit = false;
           if (playWorldNetTimeoutId) { clearTimeout(playWorldNetTimeoutId); playWorldNetTimeoutId = null; }
           updateChunks();
           spawnNPCs();
-        } else if (msg.seed != null) {
-          const s = Number(msg.seed) >>> 0;
-          G.seed = s;
         }
         if (msg.player) {
           if (!hasSave) { G.player.x = msg.player.x; G.player.z = msg.player.z; }
@@ -4857,14 +4869,17 @@ document.getElementById('start-btn').onclick = () => {
       document.getElementById('touch-controls').style.display = 'block';
       applyMobileControlScheme(G.mobileControlScheme);
     }
+    G.fallbackWorldSeed = G.worldSeed >>> 0;
+    G.playWorldAwaitingNetInit = true;
     G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
     G.npcs = [];
     G.chunks.clear(); islandGroup.clear(); G.islands = [];
-    noise = new SimplexNoise(G.worldSeed);
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
     water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
     sky.position.set(G.player.x, 0, G.player.z);
-    rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
+    rebuildPlayerShip();
+    connectToServer();
+    schedulePlayWorldNetFallback();
     renderer.domElement.focus(); document.body.focus();
     if (masterGain) masterGain.gain.value = G.soundVolume;
     notify('Progress restored');
