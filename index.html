@@ -423,12 +423,12 @@ const waterFS = `
     vec3 wc = mix(deepBlue, mix(midOcean, mix(shallow, nearSurf, depthFactor), depthFactor*0.7), 0.5+fresnel*0.5);
     float NdL = max(dot(N,L),0.0);
     vec3 diff = wc*(0.35+0.65*NdL);
-    vec3 H=normalize(L+V);
-    vec3 R=reflect(-L,vec3(0.0,1.0,0.0));
-    float sunReflDist = length(vWorldPos.xz - uCamPos.xz + R.xz * dot(vWorldPos-uCamPos,R)/dot(R,R));
-    float sunArea = exp(-sunReflDist * sunReflDist * 0.0003);
-    float spec = pow(max(dot(N,H),0.0), 1200.0) * sunArea;
-    vec3 specC = vec3(1.0,0.97,0.90) * spec * 2.0;
+    vec3 reflDir = reflect(-V, N);
+    float sunRefl = max(dot(reflDir, L), 0.0);
+    float sunGlint = pow(sunRefl, 800.0) * 0.6;
+    float distFromCam = length(vWorldPos.xz - uCamPos.xz);
+    float falloff = exp(-distFromCam * distFromCam * 0.00001);
+    vec3 specC = vec3(1.0,0.97,0.90) * sunGlint * falloff;
     vec3 Rv=reflect(-V,N); float er=pow(max(Rv.y*0.5+0.5,0.0),0.4);
     vec3 refl = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er)*fresnel;
     float sss = pow(max(dot(V,-L+N*0.4),0.0),2.5)*0.3;
@@ -901,13 +901,14 @@ function buildShipMesh(type, parts, flagColor, shipName) {
     fh.position.set(0, spec.hullH * 0.3, spec.hullLen * 0.55); fh.castShadow = true; g.add(fh);
   }
 
-  if (flagColor) {
+  {
     const fc = document.createElement('canvas'); fc.width = 64; fc.height = 48;
-    const ctx = fc.getContext('2d'); ctx.fillStyle = flagColor; ctx.fillRect(0, 0, 64, 48);
-    ctx.fillStyle = '#000'; ctx.font = '28px serif'; ctx.fillText('\u2620', 18, 36);
-    const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.7),
+    const ctx = fc.getContext('2d');
+    ctx.fillStyle = flagColor || '#1a1a1a'; ctx.fillRect(0, 0, 64, 48);
+    ctx.fillStyle = flagColor ? '#000' : '#ddd'; ctx.font = '28px serif'; ctx.fillText('\u2620', 18, 36);
+    const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8),
       new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(fc), side: THREE.DoubleSide }));
-    fmesh.position.set(0.6, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.9, 0);
+    fmesh.position.set(0.7, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.95, 0);
     fmesh.userData.isFlag = true; g.add(fmesh);
   }
 
@@ -1000,7 +1001,7 @@ function makeTextSprite(text, color = '#d4a848', subtitle = '') {
 
 function rebuildPlayerShip() {
   playerShipGroup.clear();
-  const ship = buildShipMesh(G.player.shipType, G.player.shipParts);
+  const ship = buildShipMesh(G.player.shipType, G.player.shipParts, G.player.crew[0]?.color || '#8b0000');
   playerShipGroup.add(ship);
   buildCrewMeshes(ship, G.player.crew, G.player.shipType);
 
@@ -1189,7 +1190,8 @@ function connectToServer() {
   ws.onopen = () => {
     notify('Connected to server');
     const capName = G.player.crew[0]?.name || 'Pirate';
-    ws.send(JSON.stringify({ type: 'set_name', name: capName, shipName: G.player.shipName }));
+    const crewSync = G.player.crew.map(c => ({ name: c.name, role: c.role, color: c.color, hat: c.hat }));
+    ws.send(JSON.stringify({ type: 'set_name', name: capName, shipName: G.player.shipName, crew: crewSync }));
   };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
@@ -1732,8 +1734,10 @@ function update(dt) {
     }
 
     if (G.touch.active) {
-      forward = -G.touch.joyY;
-      turn = -G.touch.joyX;
+      forward = -G.touch.joyY * 1.2;
+      turn = -G.touch.joyX * 1.3;
+      forward = Math.max(-1, Math.min(1, forward));
+      turn = Math.max(-1, Math.min(1, turn));
     }
 
     if (forward > 0.1) G.player.speed = Math.min(G.player.speed + 4 * dt * speedMult * forward, 12 * speedMult);
@@ -1778,6 +1782,36 @@ function update(dt) {
   if (!G.playerSinking) {
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.35 + waveH, G.player.z);
     playerShipGroup.rotation.set(wavePitch, G.player.rotation, waveRoll);
+  }
+
+  if (Math.abs(G.player.speed) > 0.5 && !G.playerSinking) {
+    if (!G.wakeTimer) G.wakeTimer = 0;
+    G.wakeTimer -= dt;
+    if (G.wakeTimer <= 0) {
+      G.wakeTimer = 0.15;
+      const wakeGeo = new THREE.PlaneGeometry(0.8, 0.8);
+      wakeGeo.rotateX(-Math.PI / 2);
+      const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({ color: 0xccddee, transparent: true, opacity: 0.3, depthWrite: false }));
+      const behind = -Math.abs(G.player.speed) * 0.15;
+      wake.position.set(
+        G.player.x - Math.sin(G.player.rotation) * 3 + (Math.random() - 0.5) * 1,
+        SEA_LEVEL + 0.05,
+        G.player.z - Math.cos(G.player.rotation) * 3 + (Math.random() - 0.5) * 1
+      );
+      wake.userData.life = 2.0;
+      scene.add(wake);
+      if (!G.wakeTrail) G.wakeTrail = [];
+      G.wakeTrail.push(wake);
+    }
+  }
+  if (G.wakeTrail) {
+    for (let i = G.wakeTrail.length - 1; i >= 0; i--) {
+      const w = G.wakeTrail[i];
+      w.userData.life -= dt;
+      w.material.opacity = w.userData.life * 0.15;
+      w.scale.setScalar(1 + (2 - w.userData.life) * 1.5);
+      if (w.userData.life <= 0) { scene.remove(w); w.geometry.dispose(); w.material.dispose(); G.wakeTrail.splice(i, 1); }
+    }
   }
 
   const hasGuns = G.player.shipParts.cannon && G.player.shipParts.cannon !== 'none';
@@ -1856,12 +1890,15 @@ function update(dt) {
         sm.children = sm.children.filter(c => !(c instanceof THREE.Sprite));
         sm.add(capLabel);
       }
-      const defaultCrew = [
-        { name: captainName || 'Captain', role: 'captain', task: 'helm', color: p.color },
-        { name: 'Gunner', role: 'gunner', task: 'cannons' },
-        { name: 'Sailor', role: 'sailor', task: 'sails' }
+      const pCrew = p.crewData && p.crewData.length ? p.crewData.map((c, ci) => ({
+        name: c.name || 'Pirate', role: c.role || 'sailor', color: c.color, hat: c.hat,
+        task: ['helm','cannons','sails','lookout'][ci] || 'idle', health: 100
+      })) : [
+        { name: captainName || 'Captain', role: 'captain', task: 'helm', color: p.color, health: 100 },
+        { name: 'Gunner', role: 'gunner', task: 'cannons', health: 100 },
+        { name: 'Sailor', role: 'sailor', task: 'sails', health: 100 }
       ];
-      buildCrewMeshes(sm, defaultCrew, st);
+      buildCrewMeshes(sm, pCrew, st);
       sm.userData.cachedName = displayName;
       otherShipGroups.set(id, sm);
       scene.add(sm);
@@ -1921,9 +1958,15 @@ function update(dt) {
         G.player.health = Math.max(0, G.player.health - (b.owner === 'other_player' ? 12 : 8));
         spawnDamageChunks(b.x, b.y, b.z);
         if (b.owner === 'other_player') {
-          G.otherPlayers.forEach(op => { if (Math.hypot(b.x - op.x, b.z - op.z) < 60) G.lastAttacker = (op.shipName || op.name || 'Enemy Player'); });
+          G.otherPlayers.forEach(op => {
+            if (Math.hypot(b.x - op.x, b.z - op.z) < 60) {
+              const shipN = op.shipName || 'Unknown Ship';
+              const capN = op.name || 'Unknown Captain';
+              G.lastAttacker = `${shipN} (Captain ${capN})`;
+            }
+          });
         } else {
-          G.npcs.forEach(n => { if (Math.hypot(b.x - n.x, b.z - n.z) < 60) G.lastAttacker = n.name; });
+          G.npcs.forEach(n => { if (Math.hypot(b.x - n.x, b.z - n.z) < 60) G.lastAttacker = `${n.name} (AI Pirate)`; });
         }
         notify(`Hull hit! HP: ${Math.round(G.player.health)}`);
         b.life = 0;
