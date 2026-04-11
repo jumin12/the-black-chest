@@ -1544,9 +1544,13 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   const sg = new THREE.Group();
   const len = Math.hypot(dx, dz) || 1;
   const ndx = dx / len, ndz = dz / len;
-  const nudge = 0.2;
-  const qx = Math.floor(x * 1000), qy = Math.floor(y * 1000), qz = Math.floor(z * 1000);
-  for (let i = 0; i < 7; i++) {
+  const muzzle = 0.78;
+  const sx = x + ndx * muzzle;
+  const sy = y + 0.06;
+  const sz = z + ndz * muzzle;
+  const nudge = 0.12;
+  const qx = Math.floor(sx * 1000), qy = Math.floor(sy * 1000), qz = Math.floor(sz * 1000);
+  for (let i = 0; i < 11; i++) {
     const r0 = fxHash01(qx, qy, qz, i * 3 + 11);
     const r1 = fxHash01(qx, qy, qz, i * 3 + 12);
     const r2 = fxHash01(qx, qy, qz, i * 3 + 13);
@@ -1554,17 +1558,20 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
     const r4 = fxHash01(qx, qy, qz, i * 3 + 15);
     const r5 = fxHash01(qx, qy, qz, i * 3 + 16);
     const sm = new THREE.Mesh(
-      new THREE.SphereGeometry(0.1 + r0 * 0.1, 4, 4),
-      new THREE.MeshBasicMaterial({ color: i < 4 ? 0xdddddd : 0x999999, transparent: true, opacity: 0.5, depthWrite: false })
+      new THREE.SphereGeometry(0.08 + r0 * 0.12, 4, 4),
+      new THREE.MeshBasicMaterial({ color: i < 5 ? 0xe8e8e8 : 0x8a8a8a, transparent: true, opacity: 0.52, depthWrite: false })
     );
-    sm.position.set((r1 - 0.5) * nudge, (r2 - 0.5) * nudge * 0.5, (r3 - 0.5) * nudge);
-    sm.userData.vx = ndx * (0.6 + r4 * 0.5) + (r5 - 0.5) * 0.35;
-    sm.userData.vy = 0.35 + fxHash01(qx, qy, qz, i * 3 + 17) * 0.9;
-    sm.userData.vz = ndz * (0.6 + fxHash01(qx, qy, qz, i * 3 + 18) * 0.5) + (fxHash01(qx, qy, qz, i * 3 + 19) - 0.5) * 0.35;
-    sm.userData.life = 0.38 + fxHash01(qx, qy, qz, i * 3 + 20) * 0.22;
+    sm.position.set((r1 - 0.5) * nudge, (r2 - 0.5) * nudge * 0.45, (r3 - 0.5) * nudge);
+    sm.userData.vx = ndx * (0.85 + r4 * 0.55) + (r5 - 0.5) * 0.12;
+    sm.userData.vy = 0.12 + fxHash01(qx, qy, qz, i * 3 + 17) * 0.45;
+    sm.userData.vz = ndz * (0.85 + fxHash01(qx, qy, qz, i * 3 + 18) * 0.55) + (fxHash01(qx, qy, qz, i * 3 + 19) - 0.5) * 0.12;
+    const lf = 1.25 + fxHash01(qx, qy, qz, i * 3 + 20) * 0.95;
+    sm.userData.life = lf;
+    sm.userData.life0 = lf;
+    sm.userData.drag = 0.88;
     sg.add(sm);
   }
-  sg.position.set(x, y, z);
+  sg.position.set(sx, sy, sz);
   scene.add(sg);
   cannonSmokePuffs.push(sg);
 }
@@ -1574,12 +1581,16 @@ function updateCannonSmoke(dt) {
     let any = false;
     g.children.forEach(ch => {
       ch.userData.life -= dt;
+      const d = ch.userData.drag != null ? ch.userData.drag : 0.88;
+      ch.userData.vx *= Math.pow(d, dt * 60);
+      ch.userData.vz *= Math.pow(d, dt * 60);
       ch.position.x += ch.userData.vx * dt;
       ch.position.y += ch.userData.vy * dt;
       ch.position.z += ch.userData.vz * dt;
-      ch.userData.vy += 0.5 * dt;
-      ch.scale.setScalar(1 + (0.4 - ch.userData.life) * 2.2);
-      if (ch.material) ch.material.opacity = Math.max(0, ch.userData.life * 1.6);
+      ch.userData.vy += 0.22 * dt;
+      const t = 1 - ch.userData.life / Math.max(0.001, ch.userData.life0 || 1);
+      ch.scale.setScalar(1 + t * 2.8);
+      if (ch.material) ch.material.opacity = Math.max(0, (ch.userData.life / (ch.userData.life0 || 1)) * 0.52);
       if (ch.userData.life > 0) any = true;
     });
     if (!any) {
@@ -2145,11 +2156,19 @@ window.addEventListener('keydown', e => {
   if (e.key === 'F3') {
     e.preventDefault();
     const dbg = document.getElementById('debug-panel');
-    if (dbg) {
-      const open = dbg.style.display !== 'block';
-      dbg.style.display = open ? 'block' : 'none';
-      if (open) { updateDebugBuilder(); drawDebugWindMap(); }
+    if (!dbg) return;
+    if (dbg.style.display === 'block') {
+      dbg.style.display = 'none';
+      return;
     }
+    const pw = prompt('Debug password:');
+    if (pw !== 'test123') {
+      if (pw != null && pw !== '') notify('Incorrect password.');
+      return;
+    }
+    dbg.style.display = 'block';
+    updateDebugBuilder();
+    drawDebugWindMap();
   }
   if (e.key === ' ' && G.mode === 'playing') { e.preventDefault(); doFire(); }
   if (k === 'z' && G.mode === 'playing') doFireSide(-1);
@@ -2377,15 +2396,14 @@ function doFireSide(fireSide) {
   const cannonY = shipY + spec.hullH * 0.6;
   const cosR = Math.cos(rot), sinR = Math.sin(rot);
 
+  const broadsideAngle = rot + fireSide * Math.PI / 2;
+  const dirX = Math.sin(broadsideAngle), dirZ = Math.cos(broadsideAngle);
   for (let i = 0; i < perSide; i++) {
-    const spread = perSide > 1 ? ((i / (perSide - 1)) - 0.5) * BROADSIDE_ANGLE * 2 : 0;
-    const baseAngle = rot + fireSide * Math.PI / 2 + spread;
     const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
     const localX = fireSide * (spec.hullW * 0.55 + 0.6);
 
     const wx = G.player.x + localX * cosR - localZ * sinR;
     const wz = G.player.z + localX * sinR + localZ * cosR;
-    const dirX = Math.sin(baseAngle), dirZ = Math.cos(baseAngle);
 
     spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
     fireCannonball(wx, wz, dirX, dirZ, cannonY, 'player', G.myId);
