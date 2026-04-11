@@ -508,10 +508,10 @@ function generateIsland(cx, cz) {
   if (h > ISLAND_CHANCE) return;
 
   const worldX = cx * CHUNK_SIZE, worldZ = cz * CHUNK_SIZE;
-  const iln = new SimplexNoise(cx * 31 + cz * 17);
-  const sizeVar = Math.abs(iln.noise2D(cx * 0.5, cz * 0.5));
-  const islandRadius = 10 + sizeVar * 45 + h * 30;
-  const islandHeight = 2 + sizeVar * 8 + h * 10;
+  const sizeNoise = new SimplexNoise(cx * 123 + cz * 456);
+  const sizeFactor = sizeNoise.noise2D(cx * 0.5, cz * 0.5) * 0.5 + 0.5;
+  const islandRadius = 10 + sizeFactor * 70 + h * 20;
+  const islandHeight = 2 + sizeFactor * 16 + h * 6;
   const group = new THREE.Group();
   group.userData = { cx, cz, worldX, worldZ, radius: islandRadius };
 
@@ -616,7 +616,11 @@ function generateIsland(cx, cz) {
   islandGroup.add(group);
   G.islands.push(group.userData);
   if (seagulls.length < 30) spawnSeagulls(worldX, worldZ, 1 + Math.floor(Math.random() * 2));
-  if (fishSchools.length < 40) spawnFish(worldX, worldZ, 2 + Math.floor(Math.random() * 3));
+  if (fishSchools.length < 40) {
+    const fishAngle = Math.random() * Math.PI * 2;
+    const fishDist = islandRadius + 5 + Math.random() * 20;
+    spawnFish(worldX + Math.cos(fishAngle) * fishDist, worldZ + Math.sin(fishAngle) * fishDist, 3 + Math.floor(Math.random() * 3));
+  }
 }
 
 const seagulls = [];
@@ -643,12 +647,12 @@ function spawnFish(wx, wz, count) {
   const schoolPhase = Math.random() * Math.PI * 2;
   const schoolRadius = 5 + Math.random() * 10;
   const schoolSpeed = 0.5 + Math.random() * 0.4;
-  const schoolDepth = SEA_LEVEL + 0.15;
+  const schoolDepth = SEA_LEVEL + 0.05;
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.45, 4), new THREE.MeshBasicMaterial({ color: schoolColor, depthTest: false }));
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.4, 4), new THREE.MeshBasicMaterial({ color: schoolColor }));
     body.rotation.z = Math.PI / 2; fg.add(body);
-    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.14), new THREE.MeshBasicMaterial({ color: schoolColor, side: THREE.DoubleSide, depthTest: false }));
+    const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 0.12), new THREE.MeshBasicMaterial({ color: schoolColor, side: THREE.DoubleSide }));
     tail.position.set(-0.22, 0, 0); fg.add(tail);
     fg.position.set(wx, schoolDepth, wz);
     fg.userData.cx = wx; fg.userData.cz = wz;
@@ -658,7 +662,6 @@ function spawnFish(wx, wz, count) {
     fg.userData.depth = schoolDepth + (Math.random() - 0.5) * 0.3;
     fg.userData.offsetX = (Math.random() - 0.5) * 2;
     fg.userData.offsetZ = (Math.random() - 0.5) * 2;
-    fg.renderOrder = 2;
     scene.add(fg); fishSchools.push(fg);
   }
 }
@@ -686,6 +689,15 @@ function updateSeagulls(dt) {
     sg.userData.wingL.rotation.z = wingFlap;
     sg.userData.wingR.rotation.z = -wingFlap;
   });
+}
+
+function isOnIsland(x, z) {
+  for (const isl of G.islands) {
+    const dx = x - isl.worldX, dz = z - isl.worldZ;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < isl.radius * 0.7) return true;
+  }
+  return false;
 }
 
 function updateChunks() {
@@ -868,7 +880,7 @@ function buildShipMesh(type, parts, flagColor, shipName) {
 
   if (shipName) {
     const label = makeTextSprite(shipName, flagColor ? '#ff8888' : '#d4a848');
-    label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 4, 0);
+    label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     g.add(label);
   }
   return g;
@@ -927,24 +939,29 @@ function buildCrewMeshes(group, crewList, shipType) {
 
 let shipNameSprite = null;
 
-function makeTextSprite(text, color = '#d4a848') {
+function makeTextSprite(text, color = '#d4a848', subtitle = '') {
   const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 64;
+  canvas.width = 512; canvas.height = 80;
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 256, 64);
-  ctx.fillStyle = 'rgba(10,6,4,0.6)';
-  ctx.roundRect(4, 8, 248, 48, 8); ctx.fill();
-  ctx.strokeStyle = 'rgba(180,140,60,0.5)'; ctx.lineWidth = 1;
-  ctx.roundRect(4, 8, 248, 48, 8); ctx.stroke();
-  ctx.font = 'bold 22px Georgia, serif';
+  ctx.clearRect(0, 0, 512, 80);
+  ctx.fillStyle = 'rgba(10,6,4,0.65)';
+  ctx.roundRect(8, 4, 496, 72, 10); ctx.fill();
+  ctx.strokeStyle = 'rgba(180,140,60,0.4)'; ctx.lineWidth = 1.5;
+  ctx.roundRect(8, 4, 496, 72, 10); ctx.stroke();
+  ctx.font = 'bold 28px Georgia, serif';
   ctx.fillStyle = color;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 32);
+  ctx.fillText(text.length > 20 ? text.slice(0,19)+'..' : text, 256, subtitle ? 28 : 40);
+  if (subtitle) {
+    ctx.font = '18px sans-serif'; ctx.fillStyle = 'rgba(200,190,170,0.8)';
+    ctx.fillText(subtitle.length > 24 ? subtitle.slice(0,23)+'..' : subtitle, 256, 56);
+  }
   const tex = new THREE.CanvasTexture(canvas);
   tex.needsUpdate = true;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, sizeAttenuation: true });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(8, 2, 1);
+  sprite.scale.set(8, 1.2, 1);
+  sprite.renderOrder = 100;
   return sprite;
 }
 
@@ -955,36 +972,19 @@ function rebuildPlayerShip() {
   buildCrewMeshes(ship, G.player.crew, G.player.shipType);
 
   const spec = SHIP_TYPES[G.player.shipType];
-  shipNameSprite = makeTextSprite(G.player.shipName);
+  shipNameSprite = makeTextSprite(G.player.shipName, '#d4a848', G.player.crew[0]?.name || '');
   shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
   playerShipGroup.add(shipNameSprite);
 }
 
 /* ============================== NPC SHIPS ================================ */
-function isOnIsland(wx, wz) {
-  for (let i = 0; i < G.islands.length; i++) {
-    const isl = G.islands[i];
-    const dx = wx - isl.worldX, dz = wz - isl.worldZ;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < isl.radius * 0.75) return isl;
-  }
-  return null;
-}
-
-function pushOffIsland(ox, oz, isl) {
-  const dx = ox - isl.worldX, dz = oz - isl.worldZ;
-  const dist = Math.max(0.1, Math.sqrt(dx * dx + dz * dz));
-  const pushDist = isl.radius * 0.8;
-  return { x: isl.worldX + (dx / dist) * pushDist, z: isl.worldZ + (dz / dist) * pushDist };
-}
-
 function seededRand(seed) { seed = ((seed * 16807) % 2147483647 + 2147483647) % 2147483647; return seed / 2147483647; }
 function spawnNPCs() {
   const npcSeed = G.seed * 7 + 13;
   for (let i = 0; i < 5; i++) {
     let s = npcSeed + i * 997;
     const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
-    const a = sr() * Math.PI * 2, d = 200 + sr() * 800;
+    const a = sr() * Math.PI * 2, d = 80 + sr() * 800;
     const npc = {
       x: Math.cos(a) * d, z: Math.sin(a) * d,
       rotation: sr() * Math.PI * 2, speed: 2 + sr() * 3,
@@ -1055,18 +1055,10 @@ function updateNPCs(dt) {
       npc.rotation += diff * 0.5 * dt;
     }
 
-    const nnx = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
-    const nnz = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
-    const npcIsl = isOnIsland(nnx, nnz);
-    if (npcIsl) {
-      const awayAngle = Math.atan2(npc.x - npcIsl.worldX, npc.z - npcIsl.worldZ);
-      npc.wanderAngle = awayAngle + (Math.random() - 0.5) * 1.0;
-      npc.wanderTimer = 3 + Math.random() * 4;
-      const np = pushOffIsland(nnx, nnz, npcIsl);
-      npc.x = np.x; npc.z = np.z;
-    } else {
-      npc.x = nnx; npc.z = nnz;
-    }
+    const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
+    const nNewZ = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
+    if (!isOnIsland(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
+    else { npc.wanderAngle += Math.PI * 0.5; npc.wanderTimer = 0.5; }
 
     if (npc.sinking) {
       npc.sinkTimer = (npc.sinkTimer || 0) + dt;
@@ -1098,19 +1090,25 @@ function fireCannonball(x, z, dx, dz, spawnY, owner) {
   const m = new THREE.Mesh(cbGeo, cbMat); m.position.set(x, y, z); scene.add(m); cannonballMeshes.push(m);
 }
 
-function spawnSwimmers(wx, wz, count) {
+function spawnSwimmers(wx, wz, count, crewData) {
   for (let i = 0; i < count; i++) {
     const sg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.3, 3, 4), new THREE.MeshLambertMaterial({ color: [0x8b0000, 0x2a4a6a, 0x4a4a4a, 0x2a6a2a][i % 4] }));
+    const crewColor = crewData && crewData[i] ? new THREE.Color(crewData[i].color || '#4a4a4a') : new THREE.Color([0x8b0000, 0x2a4a6a, 0x4a4a4a, 0x2a6a2a][i % 4]);
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.3, 3, 4), new THREE.MeshLambertMaterial({ color: crewColor }));
     body.rotation.x = Math.PI / 2; body.position.y = 0.05; sg.add(body);
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 5, 5), new THREE.MeshLambertMaterial({ color: 0xd4a070 }));
     head.position.set(0, 0.15, -0.2); sg.add(head);
     const a = Math.random() * Math.PI * 2;
-    sg.position.set(wx + Math.cos(a) * (2 + Math.random() * 4), SEA_LEVEL + 0.05, wz + Math.sin(a) * (2 + Math.random() * 4));
+    const jumpDist = 2 + Math.random() * 4;
+    sg.position.set(wx, SEA_LEVEL + 2 + Math.random() * 2, wz);
+    sg.userData.targetX = wx + Math.cos(a) * jumpDist;
+    sg.userData.targetZ = wz + Math.sin(a) * jumpDist;
+    sg.userData.jumping = true; sg.userData.jumpVY = 2 + Math.random() * 3;
     sg.userData.driftX = (Math.random() - 0.5) * 0.8;
     sg.userData.driftZ = (Math.random() - 0.5) * 0.8;
     sg.userData.bobPhase = Math.random() * Math.PI * 2;
     sg.userData.life = 60;
+    sg.userData.crewName = crewData && crewData[i] ? crewData[i].name : null;
     scene.add(sg);
     G.swimmers.push(sg);
   }
@@ -1211,9 +1209,8 @@ window.addEventListener('keydown', e => {
     else if (e.key === 'Escape') { document.getElementById('chat-input').blur(); document.getElementById('chat-box').style.display = 'none'; }
     return;
   }
-  const k = e.key.toLowerCase();
-  if (fullmapOpen) { if (k === 'm' || e.key === 'Escape') toggleFullmap(); return; }
   keys[e.key.toLowerCase()] = true;
+  const k = e.key.toLowerCase();
   if (k === 'b') togglePanel('ship-panel');
   if (k === 'i') togglePanel('inventory-panel');
   if (k === 'c') togglePanel('crew-panel');
@@ -1623,10 +1620,12 @@ function update(dt) {
     const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
 
     let forward = 0, turn = 0;
-    if (keys['w'] || keys['arrowup']) forward = 1;
-    else if (keys['s'] || keys['arrowdown']) forward = -1;
-    if (keys['a'] || keys['arrowleft']) turn = 1;
-    else if (keys['d'] || keys['arrowright']) turn = -1;
+    if (!fullmapOpen) {
+      if (keys['w'] || keys['arrowup']) forward = 1;
+      else if (keys['s'] || keys['arrowdown']) forward = -1;
+      if (keys['a'] || keys['arrowleft']) turn = 1;
+      else if (keys['d'] || keys['arrowright']) turn = -1;
+    }
 
     if (G.touch.active) {
       forward = -G.touch.joyY;
@@ -1643,14 +1642,8 @@ function update(dt) {
     const effectiveSpeed = G.player.speed * windEffect;
     const newX = G.player.x + Math.sin(G.player.rotation) * effectiveSpeed * dt;
     const newZ = G.player.z + Math.cos(G.player.rotation) * effectiveSpeed * dt;
-    const colIsl = isOnIsland(newX, newZ);
-    if (colIsl) {
-      const pushed = pushOffIsland(newX, newZ, colIsl);
-      G.player.x = pushed.x; G.player.z = pushed.z;
-      G.player.speed *= 0.3;
-    } else {
-      G.player.x = newX; G.player.z = newZ;
-    }
+    if (!isOnIsland(newX, newZ)) { G.player.x = newX; G.player.z = newZ; }
+    else { G.player.speed *= 0.3; }
   }
 
   if (keys['q']) G.camera.targetYaw -= 1.5 * dt;
@@ -1791,7 +1784,7 @@ function update(dt) {
             const gi = G.player.inventory.find(x => x.id === 'gold');
             if (gi) gi.count += 30;
             npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
-            spawnSwimmers(npc.x, npc.z, 3);
+            spawnSwimmers(npc.x, npc.z, 2 + Math.floor(Math.random() * 3));
             for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
               const lootItem = { type: ['wood','iron','gold','gunpowder'][Math.floor(Math.random() * 4)],
                 x: npc.x + (Math.random() - 0.5) * 8, z: npc.z + (Math.random() - 0.5) * 8, collected: false };
@@ -1851,9 +1844,18 @@ function update(dt) {
 
   for (let i = G.swimmers.length - 1; i >= 0; i--) {
     const sw = G.swimmers[i];
-    sw.position.x += sw.userData.driftX * dt;
-    sw.position.z += sw.userData.driftZ * dt;
-    sw.position.y = SEA_LEVEL + 0.05 + Math.sin(G.time * 2 + sw.userData.bobPhase) * 0.1;
+    if (sw.userData.jumping) {
+      sw.userData.jumpVY -= 8 * dt;
+      sw.position.y += sw.userData.jumpVY * dt;
+      sw.position.x += (sw.userData.targetX - sw.position.x) * 3 * dt;
+      sw.position.z += (sw.userData.targetZ - sw.position.z) * 3 * dt;
+      sw.rotation.x = -Math.PI * 0.3;
+      if (sw.position.y <= SEA_LEVEL + 0.1) { sw.userData.jumping = false; sw.position.y = SEA_LEVEL + 0.05; sw.rotation.x = 0; }
+    } else {
+      sw.position.x += sw.userData.driftX * dt;
+      sw.position.z += sw.userData.driftZ * dt;
+      sw.position.y = SEA_LEVEL + 0.05 + Math.sin(G.time * 2 + sw.userData.bobPhase) * 0.1;
+    }
     sw.rotation.y += dt * 0.5;
     sw.userData.life -= dt;
     const distToPlayer = Math.hypot(sw.position.x - G.player.x, sw.position.z - G.player.z);
@@ -1875,7 +1877,7 @@ function update(dt) {
     G.playerSinking = true; G.playerSinkTimer = 0;
     G.playerSinkY = playerShipGroup.position.y;
     G.player.speed = 0; G.player.anchored = true;
-    spawnSwimmers(G.player.x, G.player.z, Math.min(G.player.crew.length, 4));
+    spawnSwimmers(G.player.x, G.player.z, Math.min(G.player.crew.length, 4), G.player.crew);
     const lootDrops = [];
     for (let li = 0; li < 2 + Math.floor(Math.random()*2); li++) {
       const lootItem = { type: ['wood','iron','gold','gunpowder'][Math.floor(Math.random()*4)],
