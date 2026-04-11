@@ -129,6 +129,14 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 #tutorial-highlight{position:fixed;border:3px solid #d4a848;border-radius:10px;box-shadow:0 0 0 4px rgba(212,168,72,0.25),0 0 24px rgba(212,168,72,0.35);pointer-events:none;z-index:86;display:none;transition:all 0.25s ease;}
 #tutorial-next{background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;border:none;padding:12px 28px;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-weight:bold;width:100%;}
 #tutorial-skip{background:none;border:1px solid rgba(140,100,40,0.4);color:#8a7a60;padding:8px;margin-top:10px;width:100%;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-size:12px;}
+@media(max-width:768px){
+  #tutorial-overlay{justify-content:center;align-items:stretch;padding:12px;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right));padding-bottom:max(16px,env(safe-area-inset-bottom));padding-top:max(12px,env(safe-area-inset-top));min-height:100dvh;box-sizing:border-box;}
+  #tutorial-card{max-width:100%;width:100%;padding:16px 14px;margin:0 auto;max-height:min(78vh,520px);overflow-y:auto;-webkit-overflow-scrolling:touch;box-sizing:border-box;}
+  #tutorial-card h4{font-size:clamp(16px,4.2vw,18px);}
+  #tutorial-card p{font-size:clamp(13px,3.6vw,15px);margin-bottom:12px;}
+  #tutorial-next{font-size:15px;padding:14px 20px;min-height:48px;touch-action:manipulation;}
+  #tutorial-skip{min-height:44px;touch-action:manipulation;margin-top:8px;}
+}
 #cargo-3d-wrap{width:100%;height:220px;position:relative;border-radius:6px;border:1px solid rgba(140,100,40,0.2);overflow:hidden;background:radial-gradient(ellipse at center,rgba(12,20,35,0.95),rgba(4,8,14,0.98));}
 #cargo-3d{width:100%;height:100%;}
 .touch-fire-edge{position:fixed;left:0;top:0;width:26%;height:100%;z-index:13;pointer-events:none;touch-action:manipulation;display:none;}
@@ -1547,7 +1555,11 @@ let pinchDist = 0;
 window.addEventListener('keydown', e => {
   if (document.activeElement?.id === 'chat-input') {
     if (e.key === 'Enter') { const inp = document.getElementById('chat-input'); if (inp.value.trim()) { const capName = G.player.crew[0]?.name || 'Pirate'; if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'chat', text: inp.value.trim() })); else addChatMessage(capName, inp.value.trim()); inp.value = ''; } inp.blur(); e.preventDefault(); }
-    else if (e.key === 'Escape') { document.getElementById('chat-input').blur(); document.getElementById('chat-box').style.display = 'none'; }
+    else if (e.key === 'Escape') {
+      document.getElementById('chat-input').blur();
+      closeAllPanels();
+      e.preventDefault();
+    }
     return;
   }
   keys[e.key.toLowerCase()] = true;
@@ -1558,7 +1570,19 @@ window.addEventListener('keydown', e => {
     closeAllPanels();
     if (!vis) { panel.style.display = 'block'; switchLogTab(k === 'b' ? 'ship' : k === 'i' ? 'inv' : 'crew'); }
   }
-  if (k === 't') { togglePanel('chat-box'); if (document.getElementById('chat-box').style.display !== 'none') { setTimeout(() => document.getElementById('chat-input').focus(), 50); unreadChat = 0; const badge = document.getElementById('chat-badge'); if (badge) badge.style.display = 'none'; } }
+  if (k === 't') {
+    const cb = document.getElementById('chat-box');
+    const wasOpen = cb.style.display !== 'none' && cb.style.display !== '';
+    togglePanel('chat-box');
+    const nowOpen = cb.style.display !== 'none' && cb.style.display !== '';
+    if (nowOpen) {
+      setTimeout(() => document.getElementById('chat-input').focus(), 50);
+      unreadChat = 0;
+      const badge = document.getElementById('chat-badge');
+      if (badge) badge.style.display = 'none';
+      if (isMobile) hideMobileControls();
+    }
+  }
   if (k === 'f') { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
   if (k === 'v') doAnchor();
   if (k === 'e' && G.nearDock && !G.docked) dockAtPort();
@@ -1578,7 +1602,7 @@ window.addEventListener('keydown', e => {
     const sm = document.getElementById('settings-modal');
     if (sm && sm.style.display === 'flex') {
       sm.style.display = 'none';
-      if (isMobile && G.mode === 'playing') document.getElementById('touch-controls').style.display = 'block';
+      restoreMobileGameControls();
       e.preventDefault();
       return;
     }
@@ -1802,12 +1826,21 @@ function togglePanel(id) {
     document.getElementById(btnMap[id])?.classList.add('active');
   }
 }
+function restoreMobileGameControls() {
+  if (!isMobile || G.mode !== 'playing') return;
+  const tc = document.getElementById('touch-controls');
+  if (tc) {
+    tc.style.display = 'block';
+    applyMobileControlScheme(G.mobileControlScheme);
+  }
+}
+
 function closeAllPanels() {
   document.querySelectorAll('.side-panel,#chat-box').forEach(p => p.style.display = 'none');
   const sm = document.getElementById('settings-modal');
   if (sm) sm.style.display = 'none';
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
-  if (isMobile && G.mode === 'playing') document.getElementById('touch-controls').style.display = 'block';
+  restoreMobileGameControls();
 }
 
 function hideMobileControls() {
@@ -2064,12 +2097,16 @@ function switchLogTab(name) {
   if (name === 'pirates') { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'get_leaderboard' })); updatePiratesPanel(); }
 }
 document.getElementById('btn-chat').onclick = () => {
+  const chatBox = document.getElementById('chat-box');
+  const wasOpen = chatBox.style.display !== 'none' && chatBox.style.display !== '';
   togglePanel('chat-box');
-  hideMobileControls();
-  document.getElementById('btn-chat').classList.add('active');
-  unreadChat = 0;
-  const badge = document.getElementById('chat-badge');
-  if (badge) badge.style.display = 'none';
+  if (!wasOpen) {
+    hideMobileControls();
+    unreadChat = 0;
+    const badge = document.getElementById('chat-badge');
+    if (badge) badge.style.display = 'none';
+    setTimeout(() => document.getElementById('chat-input').focus(), 50);
+  }
 };
 document.getElementById('btn-anchor').onclick = () => doAnchor();
 
@@ -2414,7 +2451,7 @@ function toggleFullmap() {
   fullmapOpen = !fullmapOpen;
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
   if (fullmapOpen) { fmPanX = 0; fmPanZ = 0; drawFullmap(); hideMobileControls(); }
-  else if (isMobile && G.mode === 'playing') document.getElementById('touch-controls').style.display = 'block';
+  else restoreMobileGameControls();
 }
 function drawFullmap() {
   const cv = document.getElementById('fullmap-canvas');
@@ -3534,16 +3571,12 @@ function showTutorialStep() {
 }
 
 function endTutorial() {
-  try { localStorage.setItem('pirates_tutorial_done', '1'); } catch (e) {}
   const ov = document.getElementById('tutorial-overlay');
   if (ov) ov.style.display = 'none';
   positionTutorialHighlight(null);
 }
 
-function maybeStartFirstTutorial() {
-  try {
-    if (localStorage.getItem('pirates_tutorial_done')) return;
-  } catch (e) { return; }
+function startTutorialAfterNewCrew() {
   tutorialSteps = buildTutorialSteps();
   tutorialStepIndex = 0;
   const ov = document.getElementById('tutorial-overlay');
@@ -3557,7 +3590,7 @@ document.getElementById('tutorial-next')?.addEventListener('click', () => {
   tutorialStepIndex++;
   if (tutorialStepIndex >= tutorialSteps.length) {
     endTutorial();
-    if (isMobile && G.mode === 'playing') document.getElementById('touch-controls').style.display = 'block';
+    restoreMobileGameControls();
     return;
   }
   showTutorialStep();
@@ -3565,7 +3598,7 @@ document.getElementById('tutorial-next')?.addEventListener('click', () => {
 
 document.getElementById('tutorial-skip')?.addEventListener('click', () => {
   endTutorial();
-  if (isMobile && G.mode === 'playing') document.getElementById('touch-controls').style.display = 'block';
+  restoreMobileGameControls();
 });
 
 function beginVoyageAfterCharacter() {
@@ -3586,7 +3619,7 @@ function beginVoyageAfterCharacter() {
   rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
   renderer.domElement.focus(); document.body.focus();
   if (masterGain) masterGain.gain.value = G.soundVolume;
-  maybeStartFirstTutorial();
+  startTutorialAfterNewCrew();
 }
 
 function launchGame() {
@@ -3632,7 +3665,7 @@ document.getElementById('btn-settings')?.addEventListener('click', () => {
 document.getElementById('settings-close')?.addEventListener('click', () => {
   const m = document.getElementById('settings-modal');
   if (m) m.style.display = 'none';
-  if (isMobile && G.mode === 'playing') document.getElementById('touch-controls').style.display = 'block';
+  restoreMobileGameControls();
 });
 
 document.getElementById('settings-volume')?.addEventListener('input', e => {
@@ -3820,7 +3853,6 @@ document.getElementById('start-btn').onclick = () => {
     if (masterGain) masterGain.gain.value = G.soundVolume;
     notify('Progress restored');
     if (!isMobile) { document.getElementById('controls-help').style.display = 'block'; setTimeout(() => document.getElementById('controls-help').style.display = 'none', 4000); }
-    maybeStartFirstTutorial();
   } else {
     document.getElementById('create-screen').style.display = 'block';
     buildCreationUI();
