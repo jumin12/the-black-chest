@@ -1353,13 +1353,17 @@ function connectToServer() {
     const capName = G.player.crew[0]?.name || 'Pirate';
     const crewSync = G.player.crew.map(c => ({ name: c.name, role: c.role, color: c.color, hat: c.hat }));
     ws.send(JSON.stringify({ type: 'set_name', name: capName, shipName: G.player.shipName, crew: crewSync }));
+    ws.send(JSON.stringify({ type: 'update', x: G.player.x, z: G.player.z, rotation: G.player.rotation, speed: G.player.speed, health: G.player.health }));
   };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     switch (msg.type) {
       case 'init':
         G.myId = msg.id; G.seed = msg.seed; noise = new SimplexNoise(G.seed);
-        if (msg.player) { G.player.x = msg.player.x; G.player.z = msg.player.z; G.player.color = msg.player.color; G.player.name = msg.player.name; }
+        if (msg.player) {
+          if (!hasSave) { G.player.x = msg.player.x; G.player.z = msg.player.z; }
+          G.player.color = msg.player.color; G.player.name = msg.player.name;
+        }
         if (msg.players) msg.players.forEach(p => G.otherPlayers.set(p.id, p));
         break;
       case 'player_join': G.otherPlayers.set(msg.player.id, msg.player); notify(`${msg.player.name} joined`); break;
@@ -1619,8 +1623,7 @@ function updateCrewPanel() {
   l.innerHTML += `<div style="font-size:11px;color:#a09080;margin-bottom:6px;">Crew: ${G.player.crew.length}/${spec.maxCrew}</div>`;
   G.player.crew.forEach((m, mi) => {
     const d = document.createElement('div'); d.className = 'crew-member';
-    const ransomBtn = m.role === 'prisoner' ? `<button onclick="ransomPrisoner(${mi})" style="background:rgba(180,140,60,0.2);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-family:Georgia,serif;margin-left:4px;">Ransom 15g</button>` : '';
-    d.innerHTML = `<div class="role">${m.role}</div><div style="flex:1">${m.name}<br><span style="color:#888;font-size:10px;">Task: ${m.task}</span>${ransomBtn}</div><div class="crew-health"><div style="width:${m.health}%"></div></div>`;
+    d.innerHTML = `<div class="role">${m.role}</div><div style="flex:1">${m.name}<br><span style="color:#888;font-size:10px;">Task: ${m.task}</span></div><div class="crew-health"><div style="width:${m.health}%"></div></div>`;
     l.appendChild(d);
   });
 }
@@ -1650,10 +1653,11 @@ window.ransomPrisoner = function(idx) {
   if (G.player.crew[idx].role !== 'prisoner') { notify('Can only ransom prisoners!'); return; }
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (gold) gold.count += 15;
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'leaderboard_update', kills: 0, loot: 15 }));
   notify(`Ransomed ${G.player.crew[idx].name} for 15 gold!`);
   G.player.crew.splice(idx, 1);
   rebuildPlayerShip();
-  updateCrewPanel();
+  if (G.docked) showPortTab('trade');
 };
 
 function updateMissionsPanel() {
@@ -1768,6 +1772,21 @@ function showPortTab(tab) {
         </div>`;
       content.appendChild(d);
     });
+    const prisoners = G.player.crew.filter(c => c.role === 'prisoner');
+    if (prisoners.length > 0) {
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'color:#d4a848;font-size:12px;margin:14px 0 8px;border-top:1px solid rgba(140,100,40,0.2);padding-top:10px;';
+      hdr.textContent = `Prisoners (${prisoners.length})`;
+      content.appendChild(hdr);
+      prisoners.forEach((p, pi) => {
+        const idx = G.player.crew.indexOf(p);
+        const pd = document.createElement('div');
+        pd.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
+        pd.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${p.name}</div><div style="color:#8a7a60;font-size:10px;">Prisoner</div></div>
+          <button onclick="ransomPrisoner(${idx})" style="background:rgba(180,140,60,0.25);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Ransom 15g</button>`;
+        content.appendChild(pd);
+      });
+    }
   } else if (tab === 'recruit') {
     const spec = SHIP_TYPES[G.player.shipType];
     content.innerHTML = `<div style="color:#8a7a60;font-size:11px;margin-bottom:8px;">Crew: ${G.player.crew.length}/${spec.maxCrew} | Cost: 25 gold each</div>`;

@@ -5,11 +5,17 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 const TICK_RATE = 20;
-const WORLD_SEED = Math.floor(Math.random() * 999999);
+const SEED_FILE = path.join(__dirname, 'world_seed.json');
+let WORLD_SEED;
+try { WORLD_SEED = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8')).seed; } catch (e) { WORLD_SEED = Math.floor(Math.random() * 999999); fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); }
 
 const players = new Map();
 let nextId = 1;
+
+const LB_FILE = path.join(__dirname, 'leaderboard.json');
 let leaderboardHistory = [];
+try { leaderboardHistory = JSON.parse(fs.readFileSync(LB_FILE, 'utf-8')); } catch (e) {}
+function saveLeaderboard() { try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e) {} }
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -139,6 +145,7 @@ wss.on('connection', (ws) => {
           leaderboardHistory.push(...lb);
           leaderboardHistory.sort((a, b) => b.kills - a.kills || b.loot - a.loot);
           leaderboardHistory = leaderboardHistory.slice(0, 20);
+          saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
         }
