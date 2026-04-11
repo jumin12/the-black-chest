@@ -535,7 +535,7 @@ const G = {
   npcs: [],
   damageChunks: [],
   swimmers: [],
-  playerSinking: false, playerSinkTimer: 0, lastAttacker: '',
+  playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
   nearDock: null, docked: false, quests: [],
   camera: { offsetX: 0, offsetZ: 0, zoom: isMobile ? 150 : 50, targetZoom: isMobile ? 150 : 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
@@ -779,6 +779,44 @@ const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
 water.renderOrder = -1;
 scene.add(water);
 
+let windParticles, windParticleGeo;
+function initWindStreamVisual() {
+  const n = 380;
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * 100;
+    pos[i * 3 + 1] = 5 + Math.random() * 32;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * 100;
+  }
+  windParticleGeo = new THREE.BufferGeometry();
+  windParticleGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  windParticles = new THREE.Points(windParticleGeo, new THREE.PointsMaterial({
+    color: 0xb8ddff, size: 0.42, transparent: true, opacity: 0.34, depthWrite: false,
+    blending: THREE.AdditiveBlending, sizeAttenuation: true
+  }));
+  scene.add(windParticles);
+}
+function updateWindStreamVisual(dt) {
+  if (!windParticles || !windParticleGeo || G.mode !== 'playing') return;
+  windParticles.position.set(G.player.x, 0, G.player.z);
+  const arr = windParticleGeo.attributes.position.array;
+  const wx = Math.sin(G.wind.angle) * G.wind.speed * 0.42 * dt;
+  const wz = Math.cos(G.wind.angle) * G.wind.speed * 0.42 * dt;
+  const lim = 48;
+  for (let i = 0; i < arr.length; i += 3) {
+    arr[i] += wx * (0.85 + 0.15 * Math.sin(G.time * 1.2 + i * 0.02));
+    arr[i + 1] += Math.sin(G.time * 0.65 + i * 0.015) * 0.35 * dt;
+    arr[i + 2] += wz * (0.85 + 0.15 * Math.cos(G.time * 1.1 + i * 0.02));
+    if (Math.abs(arr[i]) > lim || Math.abs(arr[i + 2]) > lim) {
+      arr[i] = (Math.random() - 0.5) * lim * 1.8;
+      arr[i + 2] = (Math.random() - 0.5) * lim * 1.8;
+    }
+    if (arr[i + 1] < 3 || arr[i + 1] > 42) arr[i + 1] = 6 + Math.random() * 26;
+  }
+  windParticleGeo.attributes.position.needsUpdate = true;
+}
+initWindStreamVisual();
+
 /* ============================= ISLANDS =================================== */
 const islandGroup = new THREE.Group();
 scene.add(islandGroup);
@@ -835,7 +873,7 @@ function generateIsland(cx, cz) {
   const islandRadius = 15 + sizeFactor * 100 + h * 30;
   const islandHeight = 3 + sizeFactor * 18 + h * 8;
   const group = new THREE.Group();
-  group.userData = { cx, cz, worldX, worldZ, radius: islandRadius };
+  group.userData = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight };
 
   const seg = Math.max(28, Math.floor(islandRadius * 2.0));
   const terrainGeo = new THREE.PlaneGeometry(islandRadius * 2.2, islandRadius * 2.2, seg, seg);
@@ -1126,6 +1164,28 @@ function isOnIsland(x, z) {
   return false;
 }
 
+function approxTerrainHeightAt(x, z) {
+  let peak = SEA_LEVEL - 50;
+  for (const isl of G.islands) {
+    const dx = x - isl.worldX, dz = z - isl.worldZ;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const edge = isl.radius * 0.85;
+    if (dist < edge) {
+      const maxH = isl.maxH != null ? isl.maxH : 12;
+      const t = Math.max(0, 1 - (dist / edge));
+      peak = Math.max(peak, SEA_LEVEL + maxH * t * t * 0.95);
+    }
+  }
+  return peak;
+}
+
+function fxHash01(qx, qy, qz, salt) {
+  let h = Math.imul(qx | 0, 374761393) ^ Math.imul(qy | 0, 668265263) ^ Math.imul(qz | 0, 1442695041) ^ Math.imul(salt | 0, 2654435761);
+  h = (h ^ (h >>> 13)) >>> 0;
+  h = Math.imul(h, 1274126177) >>> 0;
+  return (h >>> 0) / 4294967296;
+}
+
 function updateChunks() {
   const pcx = Math.floor(G.player.x / CHUNK_SIZE), pcz = Math.floor(G.player.z / CHUNK_SIZE);
   for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++)
@@ -1405,8 +1465,67 @@ function rebuildPlayerShip() {
   updateCargo3DMesh();
 }
 
+/* ============================== CANNON VFX (smoke) ======================= */
+const cannonSmokePuffs = [];
+function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
+  const sg = new THREE.Group();
+  const len = Math.hypot(dx, dz) || 1;
+  const ndx = dx / len, ndz = dz / len;
+  const nudge = 0.2;
+  const qx = Math.floor(x * 1000), qy = Math.floor(y * 1000), qz = Math.floor(z * 1000);
+  for (let i = 0; i < 7; i++) {
+    const r0 = fxHash01(qx, qy, qz, i * 3 + 11);
+    const r1 = fxHash01(qx, qy, qz, i * 3 + 12);
+    const r2 = fxHash01(qx, qy, qz, i * 3 + 13);
+    const r3 = fxHash01(qx, qy, qz, i * 3 + 14);
+    const r4 = fxHash01(qx, qy, qz, i * 3 + 15);
+    const r5 = fxHash01(qx, qy, qz, i * 3 + 16);
+    const sm = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1 + r0 * 0.1, 4, 4),
+      new THREE.MeshBasicMaterial({ color: i < 4 ? 0xdddddd : 0x999999, transparent: true, opacity: 0.5, depthWrite: false })
+    );
+    sm.position.set((r1 - 0.5) * nudge, (r2 - 0.5) * nudge * 0.5, (r3 - 0.5) * nudge);
+    sm.userData.vx = ndx * (0.6 + r4 * 0.5) + (r5 - 0.5) * 0.35;
+    sm.userData.vy = 0.35 + fxHash01(qx, qy, qz, i * 3 + 17) * 0.9;
+    sm.userData.vz = ndz * (0.6 + fxHash01(qx, qy, qz, i * 3 + 18) * 0.5) + (fxHash01(qx, qy, qz, i * 3 + 19) - 0.5) * 0.35;
+    sm.userData.life = 0.38 + fxHash01(qx, qy, qz, i * 3 + 20) * 0.22;
+    sg.add(sm);
+  }
+  sg.position.set(x, y, z);
+  scene.add(sg);
+  cannonSmokePuffs.push(sg);
+}
+function updateCannonSmoke(dt) {
+  for (let i = cannonSmokePuffs.length - 1; i >= 0; i--) {
+    const g = cannonSmokePuffs[i];
+    let any = false;
+    g.children.forEach(ch => {
+      ch.userData.life -= dt;
+      ch.position.x += ch.userData.vx * dt;
+      ch.position.y += ch.userData.vy * dt;
+      ch.position.z += ch.userData.vz * dt;
+      ch.userData.vy += 0.5 * dt;
+      ch.scale.setScalar(1 + (0.4 - ch.userData.life) * 2.2);
+      if (ch.material) ch.material.opacity = Math.max(0, ch.userData.life * 1.6);
+      if (ch.userData.life > 0) any = true;
+    });
+    if (!any) {
+      scene.remove(g);
+      g.children.forEach(ch => { ch.geometry.dispose(); ch.material.dispose(); });
+      cannonSmokePuffs.splice(i, 1);
+    }
+  }
+}
+
 /* ============================== NPC SHIPS ================================ */
 function seededRand(seed) { seed = ((seed * 16807) % 2147483647 + 2147483647) % 2147483647; return seed / 2147483647; }
+function isMultiplayerHost() {
+  if (!G.myId || !ws || ws.readyState !== 1) return true;
+  if (!G.otherPlayers.size) return true;
+  const ids = Array.from(G.otherPlayers.keys());
+  ids.push(G.myId);
+  return G.myId <= Math.min(...ids);
+}
 function spawnNPCs() {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
@@ -1421,11 +1540,13 @@ function spawnNPCs() {
       nx += (sr() - 0.5) * 100; nz += (sr() - 0.5) * 100;
     }
     const npc = {
+      syncId: i,
       x: nx, z: nz,
       rotation: sr() * Math.PI * 2, speed: 2 + sr() * 3,
       health: 60 + sr() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(sr() * 5)],
       name: ['Sea Phantom','Red Tide','Storm Chaser','Bone Rattler','Shadow Wave','Black Serpent','Iron Maiden'][Math.floor(sr() * 7)],
-      wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10
+      wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
+      underFireTimer: 0, fireJitter: sr()
     };
     const npcFlags = ['#8b0000','#1a1a4a','#4a0a2a','#2a4a1a','#6a3a0a','#3a1a3a','#0a3a3a'];
     const npcFlagColor = npcFlags[Math.floor(sr() * npcFlags.length)];
@@ -1446,12 +1567,12 @@ function npcFireAtPlayer(npc) {
   const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
   const dist = Math.hypot(dx, dz);
-  if (dist > 50 || dist < 3) return;
+  if (dist > 72 || dist < 2) return;
 
   const toPlayerAngle = Math.atan2(dx, dz);
   const relAngle = toPlayerAngle - npc.rotation;
   const normRel = ((relAngle % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-  const side = Math.abs(normRel) > Math.PI / 4 && Math.abs(normRel) < Math.PI * 0.75 ? Math.sign(normRel) : 0;
+  const side = Math.abs(normRel) > Math.PI / 7 && Math.abs(normRel) < Math.PI * 0.82 ? Math.sign(normRel) : 0;
   if (side === 0) return;
 
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
@@ -1460,50 +1581,69 @@ function npcFireAtPlayer(npc) {
   const wz = npc.z + localX * sinR;
   const dirX = side * cosR, dirZ = side * sinR;
   const cannonY = (npc.mesh?.position.y || SEA_LEVEL + 0.5) + npcSpec.hullH * 0.6;
+  spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
   fireCannonball(wx, wz, dirX, dirZ, cannonY, 'npc');
+  if (ws?.readyState === 1 && isMultiplayerHost()) {
+    ws.send(JSON.stringify({ type: 'npc_cannon', x: wx, z: wz, dx: dirX, dz: dirZ, y: cannonY }));
+    ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
+  }
 }
 
 function updateNPCs(dt) {
+  const host = isMultiplayerHost();
   G.npcs.forEach(npc => {
-    if (!npc.fireCooldown) npc.fireCooldown = 0;
-    npc.fireCooldown -= dt;
+    if (host) {
+      if (!npc.fireCooldown) npc.fireCooldown = 0;
+      npc.fireCooldown -= dt;
+      if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
 
-    const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+      const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
 
-    if (npc.aggro && distToPlayer < 80) {
-      const targetAngle = Math.atan2(G.player.x - npc.x, G.player.z - npc.z) + Math.PI / 3;
-      let diff = targetAngle - npc.rotation;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      npc.rotation += diff * 0.8 * dt;
+      if (npc.aggro && distToPlayer < 110) {
+        const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
+        const toPlayer = Math.atan2(dx, dz);
+        const starboardBroadside = toPlayer + Math.PI / 2;
+        const portBroadside = toPlayer - Math.PI / 2;
+        const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+        const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+        const targetAngle = npc.underFireTimer > 0
+          ? (dStar < dPort ? starboardBroadside : portBroadside)
+          : (toPlayer + Math.PI / 3);
+        let diff = targetAngle - npc.rotation;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.08;
+        npc.rotation += diff * turnMul * dt;
 
-      if (npc.fireCooldown <= 0 && distToPlayer < 50) {
-        npcFireAtPlayer(npc);
-        npc.fireCooldown = 3 + Math.random() * 2;
+        if (npc.fireCooldown <= 0 && distToPlayer < 64) {
+          npcFireAtPlayer(npc);
+          const jitter = (npc.fireJitter != null ? npc.fireJitter : 0.5) * 0.35;
+          npc.fireCooldown = 0.48 + jitter * 0.85 + Math.random() * 0.55;
+        }
+      } else {
+        npc.wanderTimer -= dt;
+        if (npc.wanderTimer <= 0) {
+          npc.wanderAngle += (Math.random() - 0.5) * 1.5;
+          npc.wanderTimer = 4 + Math.random() * 8;
+        }
+        let diff = npc.wanderAngle - npc.rotation;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        npc.rotation += diff * 0.5 * dt;
       }
-    } else {
-      npc.wanderTimer -= dt;
-      if (npc.wanderTimer <= 0) {
-        npc.wanderAngle += (Math.random() - 0.5) * 1.5;
-        npc.wanderTimer = 4 + Math.random() * 8;
-      }
-      let diff = npc.wanderAngle - npc.rotation;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      npc.rotation += diff * 0.5 * dt;
-    }
 
-    const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
-    const nNewZ = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
-    if (!isOnIsland(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
-    else {
-      npc.wanderAngle += Math.PI * 0.7 + Math.random() * 0.6;
-      npc.rotation = npc.wanderAngle;
-      npc.wanderTimer = 0.3;
-      if (isOnIsland(npc.x, npc.z)) {
-        const escAngle = Math.atan2(-npc.x, -npc.z);
-        npc.x += Math.sin(escAngle) * 5; npc.z += Math.cos(escAngle) * 5;
-        npc.wanderAngle = escAngle;
+      const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
+      const nNewZ = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
+      if (!isOnIsland(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
+      else {
+        npc.wanderAngle += Math.PI * 0.7 + Math.random() * 0.6;
+        npc.rotation = npc.wanderAngle;
+        npc.wanderTimer = 0.3;
+        if (isOnIsland(npc.x, npc.z)) {
+          const escAngle = Math.atan2(-npc.x, -npc.z);
+          npc.x += Math.sin(escAngle) * 5; npc.z += Math.cos(escAngle) * 5;
+          npc.wanderAngle = escAngle;
+        }
       }
     }
 
@@ -1512,7 +1652,7 @@ function updateNPCs(dt) {
       if (npc.mesh) {
         npc.mesh.position.y -= dt * 1.5;
         npc.mesh.rotation.z += dt * 0.3;
-        if (npc.sinkTimer > 4) { scene.remove(npc.mesh); npc.health = -999; }
+        if (npc.sinkTimer > 4) { scene.remove(npc.mesh); npc.mesh = null; npc.health = -999; }
       }
     } else if (npc.mesh) {
       const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + npc.z * 0.06) * 0.08;
@@ -1522,6 +1662,7 @@ function updateNPCs(dt) {
       npc.mesh.rotation.z = Math.sin(G.time * 0.7 + npc.x * 0.06) * 0.035;
     }
   });
+  if (host) G.npcs = G.npcs.filter(n => n.health > -900);
 }
 
 /* ============================== CANNONBALLS =============================== */
@@ -1530,9 +1671,9 @@ const cbGeo = new THREE.SphereGeometry(0.2, 6, 6);
 const cbMat = new THREE.MeshPhongMaterial({ color: 0x222222 });
 const splashes = [];
 
-function fireCannonball(x, z, dx, dz, spawnY, owner) {
+function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId) {
   const y = spawnY || (SEA_LEVEL + 1.2);
-  const b = { x, z, y, dx: dx * 35, dz: dz * 35, dy: 1.5, life: 4, owner: owner || 'player' };
+  const b = { x, z, y, dx: dx * 35, dz: dz * 35, dy: 1.5, life: 4, owner: owner || 'player', sourcePlayerId: sourcePlayerId != null ? sourcePlayerId : null };
   G.cannonballs.push(b);
   const m = new THREE.Mesh(cbGeo, cbMat); m.position.set(x, y, z); scene.add(m); cannonballMeshes.push(m);
 }
@@ -1569,6 +1710,40 @@ function spawnSwimmers(wx, wz, count, crewData, opts) {
   }
 }
 
+function swimmerStreamHash(wx, wz, salt) {
+  let h = (Math.imul(Math.floor(wx * 1000), 2654435761) ^ Math.floor(wz * 1000) ^ (salt | 0)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
+  return (h >>> 0) / 4294967296;
+}
+function spawnNetworkSwimmer(wx, wz, crewRestore) {
+  const sg = new THREE.Group();
+  const crewColor = crewRestore ? new THREE.Color(crewRestore.color || '#4a4a4a') : new THREE.Color(0x8b0000);
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.3, 3, 4), new THREE.MeshLambertMaterial({ color: crewColor }));
+  body.rotation.x = Math.PI / 2; body.position.y = 0.05; sg.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 5, 5), new THREE.MeshLambertMaterial({ color: 0xd4a070 }));
+  head.position.set(0, 0.15, -0.2); sg.add(head);
+  const a = swimmerStreamHash(wx, wz, 1) * Math.PI * 2;
+  const jumpDist = 2 + swimmerStreamHash(wx, wz, 2) * 4;
+  sg.position.set(wx, SEA_LEVEL + 2 + swimmerStreamHash(wx, wz, 3) * 2, wz);
+  sg.userData.targetX = wx + Math.cos(a) * jumpDist;
+  sg.userData.targetZ = wz + Math.sin(a) * jumpDist;
+  sg.userData.jumping = true;
+  sg.userData.jumpVY = 2 + swimmerStreamHash(wx, wz, 4) * 3;
+  sg.userData.driftX = (swimmerStreamHash(wx, wz, 5) - 0.5) * 0.8;
+  sg.userData.driftZ = (swimmerStreamHash(wx, wz, 6) - 0.5) * 0.8;
+  sg.userData.bobPhase = swimmerStreamHash(wx, wz, 7) * Math.PI * 2;
+  sg.userData.life = 60;
+  sg.userData.crewName = crewRestore ? crewRestore.name : null;
+  if (crewRestore) {
+    sg.userData.crewRestore = {
+      name: crewRestore.name, role: crewRestore.role, health: crewRestore.health, task: crewRestore.task || 'idle',
+      color: crewRestore.color || '#4a4a4a', hat: crewRestore.hat || 'none', outfit: crewRestore.outfit || 'vest', parrot: !!crewRestore.parrot
+    };
+  }
+  scene.add(sg);
+  G.swimmers.push(sg);
+}
+
 function spawnDamageChunks(wx, wy, wz) {
   for (let i = 0; i < 6; i++) {
     const size = 0.1 + Math.random() * 0.2;
@@ -1588,14 +1763,37 @@ function spawnDamageChunks(wx, wy, wz) {
 
 function createSplash(x, z) {
   const sg = new THREE.Group();
+  const qx = Math.floor(x * 100), qz = Math.floor(z * 100);
   for (let i = 0; i < 6; i++) {
-    const d = new THREE.Mesh(new THREE.SphereGeometry(0.1 + Math.random() * 0.12, 3, 3),
+    const r = (k) => fxHash01(qx, i * 17 +90, qz, k);
+    const d = new THREE.Mesh(new THREE.SphereGeometry(0.1 + r(0) * 0.12, 3, 3),
       new THREE.MeshBasicMaterial({ color: 0xaaddff, transparent: true, opacity: 0.7 }));
-    d.position.set((Math.random() - 0.5) * 1.2, Math.random() * 1.5, (Math.random() - 0.5) * 1.2);
-    d.userData.vy = 3 + Math.random() * 3; d.userData.vx = (Math.random() - 0.5) * 2.5; d.userData.vz = (Math.random() - 0.5) * 2.5;
+    d.position.set((r(1) - 0.5) * 1.2, r(2) * 1.5, (r(3) - 0.5) * 1.2);
+    d.userData.vy = 3 + r(4) * 3; d.userData.vx = (r(5) - 0.5) * 2.5; d.userData.vz = (r(6) - 0.5) * 2.5;
     sg.add(d);
   }
   sg.position.set(x, SEA_LEVEL, z); sg.userData.life = 1.0; scene.add(sg); return sg;
+}
+
+function spawnLandCannonImpact(x, z) {
+  const qx = Math.floor(x * 100), qz = Math.floor(z * 100);
+  for (let i = 0; i < 10; i++) {
+    const r = (k) => fxHash01(qx, i * 31 + 200, qz, k);
+    const d = 0.12 + r(0) * 0.18;
+    const dust = new THREE.Mesh(
+      new THREE.SphereGeometry(d, 4, 4),
+      new THREE.MeshBasicMaterial({ color: r(1) > 0.45 ? 0x8b7355 : 0x5c4030, transparent: true, opacity: 0.75, depthWrite: false })
+    );
+    const ty = approxTerrainHeightAt(x, z);
+    const lift = Math.min(2.2, Math.max(0, ty - SEA_LEVEL) * 0.35);
+    dust.position.set(x + (r(2) - 0.5) * 2.2, ty + 0.15 + lift * 0.2 + r(3) * 0.6, z + (r(4) - 0.5) * 2.2);
+    dust.userData.vx = (r(5) - 0.5) * 5;
+    dust.userData.vy = 2.5 + r(6) * 3.5;
+    dust.userData.vz = (r(7) - 0.5) * 5;
+    dust.userData.life = 0.85;
+    scene.add(dust);
+    G.damageChunks.push(dust);
+  }
 }
 
 function addFloatingLootMesh(x, z, type, count) {
@@ -1644,7 +1842,7 @@ function connectToServer() {
       case 'state': msg.players.forEach(p => { if (p.id !== G.myId) { const ex = G.otherPlayers.get(p.id); if (ex) Object.assign(ex, p); } }); break;
       case 'ship_update': { const p = G.otherPlayers.get(msg.id); if (p) { p.shipType = msg.shipType; p.shipParts = msg.shipParts; if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } } break; }
       case 'chat': addChatMessage(msg.name, msg.text); break;
-      case 'cannonball': fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player'); break;
+      case 'cannonball': fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId); break;
       case 'leaderboard': {
         leaderboardData = msg.entries || [];
         try { if (leaderboardData.length) localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData)); } catch (e) {}
@@ -1652,14 +1850,37 @@ function connectToServer() {
         break;
       }
       case 'npc_sync': {
-        if (msg.npcs) msg.npcs.forEach((nd, idx) => {
-          if (idx < G.npcs.length && !G.npcs[idx].sinking) {
-            G.npcs[idx].x = nd.x; G.npcs[idx].z = nd.z; G.npcs[idx].rotation = nd.r;
-            G.npcs[idx].health = nd.h; G.npcs[idx].aggro = nd.aggro;
+        if (msg.wind && ws?.readyState === 1 && !isMultiplayerHost()) {
+          G.wind.angle = msg.wind.a;
+          G.wind.speed = msg.wind.s;
+        }
+        if (!msg.npcs) break;
+        const seen = new Set();
+        msg.npcs.forEach(nd => {
+          seen.add(nd.id);
+          const npc = G.npcs.find(n => n.syncId === nd.id);
+          if (!npc) return;
+          npc.x = nd.x; npc.z = nd.z; npc.rotation = nd.r;
+          npc.health = nd.h; npc.aggro = !!nd.aggro;
+          if (nd.sinking && !npc.sinking) {
+            npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
           }
         });
+        for (let j = G.npcs.length - 1; j >= 0; j--) {
+          const npc = G.npcs[j];
+          if (!seen.has(npc.syncId)) {
+            if (npc.mesh) { scene.remove(npc.mesh); npc.mesh = null; }
+            G.npcs.splice(j, 1);
+          }
+        }
         break;
       }
+      case 'npc_cannon':
+        fireCannonball(msg.x, msg.z, msg.dx, msg.dz, msg.y, 'npc');
+        break;
+      case 'cannon_fx':
+        spawnCannonMuzzleSmoke(msg.x, msg.y, msg.z, msg.dx, msg.dz);
+        break;
       case 'ship_sunk': {
         if (msg.id !== G.myId) {
           notify(`${msg.name}'s ship is sinking!`);
@@ -1676,6 +1897,12 @@ function connectToServer() {
         const l = msg.loot || {};
         const t = l.type || msg.type;
         if (t) addFloatingLootMesh(msg.x, msg.z, t, l.count);
+        break;
+      }
+      case 'swimmer_spawn': {
+        if (msg.swimmers && Array.isArray(msg.swimmers)) {
+          msg.swimmers.forEach(s => { if (s && s.x != null && s.z != null) spawnNetworkSwimmer(s.x, s.z, s.restore || null); });
+        }
         break;
       }
     }
@@ -1958,8 +2185,12 @@ function doFireSide(fireSide) {
     const wz = G.player.z + localX * sinR + localZ * cosR;
     const dirX = Math.sin(baseAngle), dirZ = Math.cos(baseAngle);
 
-    fireCannonball(wx, wz, dirX, dirZ, cannonY, 'player');
-    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ }));
+    spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
+    fireCannonball(wx, wz, dirX, dirZ, cannonY, 'player', G.myId);
+    if (ws?.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ }));
+      ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
+    }
   }
 }
 
@@ -2267,10 +2498,9 @@ function spawnWorldLootAt(wx, wz, type, count, spread) {
   const lx = wx + (Math.random() - 0.5) * sp;
   const lz = wz + (Math.random() - 0.5) * sp;
   const cnt = Math.max(1, (count == null || Number.isNaN(Number(count))) ? (type === 'gold' ? 15 : 4) : Number(count));
+  addFloatingLootMesh(lx, lz, type, cnt);
   if (ws && ws.readyState === 1) {
     ws.send(JSON.stringify({ type: 'loot_spawn', x: lx, z: lz, loot: { type, count: cnt } }));
-  } else {
-    addFloatingLootMesh(lx, lz, type, cnt);
   }
 }
 function jettisonCargoSlot(slotIdx) {
@@ -2424,6 +2654,7 @@ function throwCrewOverboard(idx) {
   const bx = G.player.x - Math.sin(r) * ast + (Math.random() - 0.5) * 2;
   const bz = G.player.z - Math.cos(r) * ast + (Math.random() - 0.5) * 2;
   spawnSwimmers(bx, bz, 1, [thrown], { rescueRestoresCrew: true });
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'swimmer_spawn', swimmers: [{ x: bx, z: bz, restore: thrown }] }));
   notify(`${m.name} thrown astern!`);
   updateCrewPanel();
   refreshCargoPanelIfOpen();
@@ -3113,8 +3344,10 @@ let lastTime = 0, sendTimer = 0;
 function update(dt) {
   if (G.mode !== 'playing') return;
   G.time += dt; G.dt = dt;
-  G.wind.angle += noise.noise2D(G.time * 0.01, 0) * 0.5 * dt;
-  G.wind.speed = 4 + noise.noise2D(G.time * 0.02, 100) * 3;
+  if (isMultiplayerHost()) {
+    G.wind.angle += noise.noise2D(G.time * 0.01, 0) * 0.5 * dt;
+    G.wind.speed = 4 + noise.noise2D(G.time * 0.02, 100) * 3;
+  }
 
   if (!G.player.anchored) {
     const spec = SHIP_TYPES[G.player.shipType];
@@ -3346,12 +3579,13 @@ function update(dt) {
     b.x += b.dx * dt; b.z += b.dz * dt; b.dy -= 6 * dt; b.y += b.dy * dt; b.life -= dt;
     if (cannonballMeshes[i]) cannonballMeshes[i].position.set(b.x, b.y, b.z);
 
-    if (b.owner !== 'npc') {
+    if (b.owner !== 'npc' && isMultiplayerHost()) {
       G.npcs.forEach(npc => {
         if (npc.sinking || npc.health <= 0) return;
         if (Math.hypot(b.x - npc.x, b.z - npc.z) < 3) {
           npc.health -= 15;
           npc.aggro = true;
+          npc.underFireTimer = 4.6;
           spawnDamageChunks(b.x, b.y, b.z);
           if (npc.health <= 0) {
             notify(`Sinking ${npc.name}! +30 gold`);
@@ -3379,14 +3613,21 @@ function update(dt) {
         G.player.health = Math.max(0, G.player.health - (b.owner === 'other_player' ? 12 : 8));
         spawnDamageChunks(b.x, b.y, b.z);
         if (b.owner === 'other_player') {
-          G.otherPlayers.forEach(op => {
-            if (Math.hypot(b.x - op.x, b.z - op.z) < 60) {
-              const shipN = op.shipName || 'Unknown Ship';
-              const capN = op.name || 'Unknown Captain';
-              G.lastAttacker = `${shipN} (Captain ${capN})`;
-            }
-          });
+          G.lastAttackerId = b.sourcePlayerId != null ? b.sourcePlayerId : null;
+          if (b.sourcePlayerId != null && G.otherPlayers.has(b.sourcePlayerId)) {
+            const op = G.otherPlayers.get(b.sourcePlayerId);
+            G.lastAttacker = `${op.shipName || 'Unknown Ship'} (Captain ${op.name || 'Unknown Captain'})`;
+          } else {
+            G.otherPlayers.forEach(op => {
+              if (Math.hypot(b.x - op.x, b.z - op.z) < 60) {
+                const shipN = op.shipName || 'Unknown Ship';
+                const capN = op.name || 'Unknown Captain';
+                G.lastAttacker = `${shipN} (Captain ${capN})`;
+              }
+            });
+          }
         } else {
+          G.lastAttackerId = null;
           G.npcs.forEach(n => { if (Math.hypot(b.x - n.x, b.z - n.z) < 60) G.lastAttacker = `${n.name} (AI Pirate)`; });
         }
         notify(`Hull hit! HP: ${Math.round(G.player.health)}`);
@@ -3405,8 +3646,20 @@ function update(dt) {
       });
     }
 
-    if (b.y <= SEA_LEVEL || b.life <= 0) {
-      if (b.y <= SEA_LEVEL) splashes.push(createSplash(b.x, b.z));
+    const ty = approxTerrainHeightAt(b.x, b.z);
+    const onIsl = isOnIsland(b.x, b.z);
+    const hitLand = onIsl && b.y <= ty + 0.35;
+    const hitWater = b.y <= SEA_LEVEL + 0.08 && !onIsl;
+    const expired = b.life <= 0;
+    if (hitLand || hitWater || expired) {
+      if (hitLand) {
+        spawnLandCannonImpact(b.x, b.z);
+      } else if (hitWater) {
+        splashes.push(createSplash(b.x, b.z));
+      } else if (expired) {
+        if (onIsl && b.y <= ty + 1.1) spawnLandCannonImpact(b.x, b.z);
+        else if (b.y <= SEA_LEVEL + 0.15) splashes.push(createSplash(b.x, b.z));
+      }
       if (cannonballMeshes[i]) scene.remove(cannonballMeshes[i]);
       G.cannonballs.splice(i, 1); cannonballMeshes.splice(i, 1);
     }
@@ -3473,6 +3726,12 @@ function update(dt) {
   }
 
   if (G.player.health <= 0 && !G.playerSinking) {
+    if (ws?.readyState === 1 && G.lastAttackerId != null) {
+      const goldItem = G.player.inventory.find(i => i.id === 'gold');
+      const goldN = goldItem ? goldItem.count : 0;
+      const lootEst = Math.min(250, Math.floor(goldN * 0.4) + 25);
+      ws.send(JSON.stringify({ type: 'pvp_kill_credit', killerId: G.lastAttackerId, kills: 1, loot: lootEst }));
+    }
     G.playerSinking = true; G.playerSinkTimer = 0;
     G.playerSinkY = playerShipGroup.position.y;
     G.player.speed = 0; G.player.anchored = true;
@@ -3498,17 +3757,15 @@ function update(dt) {
     playerShipGroup.rotation.set(G.playerSinkTimer * 0.06, G.player.rotation, G.playerSinkTimer * 0.12);
     if (G.playerSinkTimer > 8) {
       G.playerSinking = false;
-      G.player.health = 50; G.player.anchored = false;
+      G.player.health = 100; G.player.anchored = false;
       G.player.x += (Math.random() - 0.5) * 100;
       G.player.z += (Math.random() - 0.5) * 100;
       G.player.speed = 1;
-      const goldItem = G.player.inventory.find(i => i.id === 'gold');
-      if (goldItem) goldItem.count = Math.max(0, goldItem.count - 15);
-      reconcileSlotsWithInventory();
-      G.player.crew = G.player.crew.filter(c => c.role !== 'prisoner').slice(0, 4);
-      rebuildPlayerShip();
+      G.lastAttackerId = null;
+      G.lastAttacker = '';
+      applyDefaultStartingLoadout();
       document.getElementById('death-overlay').style.display = 'none';
-      notify('Respawned! Lost 15 gold.');
+      notify('Respawned with a fresh crew and hold.');
     }
   }
 
@@ -3582,12 +3839,21 @@ function update(dt) {
 
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
-  const isHost = G.myId && (!G.otherPlayers.size || G.myId <= Math.min(...Array.from(G.otherPlayers.keys()), G.myId));
-  if (isHost && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
+  if (isMultiplayerHost() && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
     G.npcSyncTimer = 0.5;
-    const npcData = G.npcs.filter(n => !n.sinking).map(n => ({ x: Math.round(n.x), z: Math.round(n.z), r: Math.round(n.rotation * 100) / 100, h: Math.round(n.health), name: n.name, type: n.type, aggro: n.aggro || false }));
-    ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
+    const npcData = G.npcs.filter(n => n.health > -900).map(n => ({
+      id: n.syncId,
+      x: Math.round(n.x * 10) / 10,
+      z: Math.round(n.z * 10) / 10,
+      r: Math.round(n.rotation * 1000) / 1000,
+      h: Math.round(n.health),
+      aggro: !!n.aggro,
+      sinking: !!n.sinking
+    }));
+    ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData, wind: { a: G.wind.angle, s: G.wind.speed } }));
   }
+  updateCannonSmoke(dt);
+  updateWindStreamVisual(dt);
   refreshCargoPanelIfOpen();
 }
 
@@ -4173,6 +4439,36 @@ document.getElementById('settings-scheme-select')?.addEventListener('change', e 
 /* ============================== PERSISTENCE ============================== */
 const SAVE_KEY = 'pirates_save_v1';
 
+function getDefaultStartingInventory() {
+  return [
+    { id: 'food', name: 'Provisions', icon: 'F', count: 24 },
+    { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 36 },
+    { id: 'wood', name: 'Wood Planks', icon: 'W', count: 10 },
+    { id: 'cloth', name: 'Sail Cloth', icon: 'C', count: 5 },
+    { id: 'iron', name: 'Iron Ingot', icon: 'Fe', count: 3 },
+    { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 50 },
+    { id: 'rum', name: 'Rum Barrels', icon: 'R', count: 2 },
+    { id: 'gunpowder', name: 'Gunpowder', icon: 'GP', count: 5 }
+  ];
+}
+function getDefaultStartingCrew() {
+  return [
+    { name: 'Captain Blackwood', role: 'captain', health: 100, task: 'helm', color: '#8b0000', hat: 'none', outfit: 'vest', parrot: false },
+    { name: 'Salty Pete', role: 'gunner', health: 100, task: 'cannons', color: '#cc2222', hat: 'none', outfit: 'vest', parrot: false },
+    { name: 'One-Eye Jack', role: 'sailor', health: 100, task: 'sails', color: '#1a3a6a', hat: 'none', outfit: 'vest', parrot: false },
+    { name: 'Red Mary', role: 'navigator', health: 100, task: 'lookout', color: '#6a1a3a', hat: 'none', outfit: 'vest', parrot: false }
+  ];
+}
+function applyDefaultStartingLoadout() {
+  G.player.shipType = 'sloop';
+  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
+  G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
+  G.player.cargoSlots = [];
+  G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+  reconcileSlotsWithInventory();
+  rebuildPlayerShip();
+}
+
 function saveProgress() {
   try {
     const data = {
@@ -4238,7 +4534,7 @@ function menuRender() {
     const camR = 25;
     camera.position.set(Math.sin(G.time * 0.04) * camR, 15 + Math.sin(G.time * 0.02) * 3, Math.cos(G.time * 0.04) * camR);
     camera.lookAt(0, 1, 0);
-    updateNPCs(0.016);
+    if (!ws || ws.readyState !== 1) updateNPCs(0.016);
     updateSeagulls(0.016);
     updateFish(0.016);
     G.npcs.forEach(npc => {
@@ -4359,16 +4655,7 @@ document.getElementById('new-game-btn').onclick = () => {
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
   G.player.health = 100; G.player.shipName = 'The Black Wave'; G.player.shipType = 'sloop';
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
-  G.player.inventory = [
-    { id: 'food', name: 'Provisions', icon: 'F', count: 24 },
-    { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 36 },
-    { id: 'wood', name: 'Wood Planks', icon: 'W', count: 10 },
-    { id: 'cloth', name: 'Sail Cloth', icon: 'C', count: 5 },
-    { id: 'iron', name: 'Iron Ingot', icon: 'Fe', count: 3 },
-    { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 50 },
-    { id: 'rum', name: 'Rum Barrels', icon: 'R', count: 2 },
-    { id: 'gunpowder', name: 'Gunpowder', icon: 'GP', count: 5 }
-  ];
+  G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('create-screen').style.display = 'block';
