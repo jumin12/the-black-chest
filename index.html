@@ -97,6 +97,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <h1>Pirates of the Procedural Sea</h1>
   <p>Explore, Build, Conquer the Open Seas</p>
   <button id="start-btn">Create Your Crew</button>
+  <button id="new-game-btn" style="display:none;background:transparent;color:#8090a0;border:1px solid rgba(180,140,60,0.4);padding:12px 36px;font-size:15px;border-radius:8px;cursor:pointer;margin-top:12px;touch-action:manipulation;transition:all 0.3s;">Start New Voyage</button>
 </div>
 
 <div id="create-screen">
@@ -227,7 +228,8 @@ const G = {
   camera: { offsetX: 0, offsetZ: 0, zoom: 50, targetZoom: 50, angle: Math.PI / 4, yaw: 0, targetYaw: 0 },
   touch: { joyX: 0, joyY: 0, active: false },
   cannonCooldown: 0,
-  crewReloading: false, crewReloadTimer: 0
+  crewReloading: false, crewReloadTimer: 0,
+  currentSailAngle: 0
 };
 
 const SHIP_TYPES = {
@@ -803,10 +805,11 @@ const cbGeo = new THREE.SphereGeometry(0.2, 6, 6);
 const cbMat = new THREE.MeshPhongMaterial({ color: 0x222222 });
 const splashes = [];
 
-function fireCannonball(x, z, dx, dz) {
-  const b = { x, z, y: 2, dx: dx * 40, dz: dz * 40, dy: 8, life: 3 };
+function fireCannonball(x, z, dx, dz, spawnY) {
+  const y = spawnY || (SEA_LEVEL + 1.2);
+  const b = { x, z, y, dx: dx * 35, dz: dz * 35, dy: 1.5, life: 4 };
   G.cannonballs.push(b);
-  const m = new THREE.Mesh(cbGeo, cbMat); m.position.set(x, 2, z); scene.add(m); cannonballMeshes.push(m);
+  const m = new THREE.Mesh(cbGeo, cbMat); m.position.set(x, y, z); scene.add(m); cannonballMeshes.push(m);
 }
 
 function createSplash(x, z) {
@@ -951,11 +954,14 @@ function doFire() {
   const rot = G.player.rotation;
   const sinR = Math.sin(rot), cosR = Math.cos(rot);
   const cc = spec.cannonSlots || 2;
+  const shipY = playerShipGroup.position.y;
+  const cannonY = shipY + spec.hullH * 0.6;
+
   for (let c = 0; c < cc; c++) {
     const side = c % 2 === 0 ? 1 : -1;
     const idx = Math.floor(c / 2);
     const localZ = (idx - Math.floor(cc / 4) + 0.5) * 1.5;
-    const localX = side * (spec.hullW * 0.55 + 0.3);
+    const localX = side * (spec.hullW * 0.55 + 0.6);
 
     const wx = G.player.x + localX * cosR - localZ * sinR;
     const wz = G.player.z + localX * sinR + localZ * cosR;
@@ -963,7 +969,7 @@ function doFire() {
     const dirX = side * cosR;
     const dirZ = side * sinR;
 
-    fireCannonball(wx, wz, dirX, dirZ);
+    fireCannonball(wx, wz, dirX, dirZ, cannonY);
     if (ws?.readyState === 1) {
       ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ }));
     }
@@ -1250,17 +1256,24 @@ function update(dt) {
   const windPushZ = Math.cos(relWind);
   const windPushX = Math.sin(relWind);
   const windStr = G.wind.speed / 6;
-  const sailAngle = Math.atan2(windPushX, windPushZ) * 0.4;
+
+  let targetSailAngle = relWind * 0.35;
+  targetSailAngle = Math.max(-0.8, Math.min(0.8, targetSailAngle));
+  let angleDiff = targetSailAngle - G.currentSailAngle;
+  while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+  while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+  G.currentSailAngle += angleDiff * 1.5 * dt;
 
   playerShipGroup.traverse(child => {
     if (child.userData.isSail && child.userData.basePositions) {
-      child.rotation.y = sailAngle;
+      child.rotation.y = G.currentSailAngle;
       const p = child.geometry.attributes.position, base = child.userData.basePositions;
+      const billow = Math.abs(windPushZ) * windStr;
       for (let i = 0; i < p.count; i++) {
         const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
-        const billowAmt = (1 - Math.abs(by) / 3) * 0.5;
-        const flutter = Math.sin(G.time * 2.5 + by * 4 + bx * 2) * 0.03;
-        p.setZ(i, bz + windPushZ * billowAmt * windStr + flutter);
+        const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
+        const flutter = Math.sin(G.time * 2.0 + by * 3 + bx * 1.5) * 0.025;
+        p.setZ(i, bz + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
       }
       p.needsUpdate = true; child.geometry.computeVertexNormals();
     }
@@ -1648,7 +1661,26 @@ document.getElementById('start-btn').onclick = () => {
   }
 };
 
+document.getElementById('new-game-btn').onclick = () => {
+  localStorage.removeItem(SAVE_KEY);
+  G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
+  G.player.health = 100; G.player.shipName = 'The Black Wave'; G.player.shipType = 'sloop';
+  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
+  G.player.inventory = [
+    { id: 'wood', name: 'Wood Planks', icon: 'W', count: 10 },
+    { id: 'cloth', name: 'Sail Cloth', icon: 'C', count: 5 },
+    { id: 'iron', name: 'Iron Ingot', icon: 'Fe', count: 3 },
+    { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 50 },
+    { id: 'rum', name: 'Rum Barrels', icon: 'R', count: 2 },
+    { id: 'gunpowder', name: 'Gunpowder', icon: 'GP', count: 5 }
+  ];
+  document.getElementById('start-screen').style.display = 'none';
+  document.getElementById('create-screen').style.display = 'block';
+  buildCreationUI();
+};
+
 document.getElementById('start-btn').textContent = hasSave ? 'Continue Voyage' : 'Create Your Crew';
+if (hasSave) document.getElementById('new-game-btn').style.display = 'block';
 
 document.getElementById('create-launch').onclick = launchGame;
 
