@@ -495,6 +495,12 @@ import * as THREE from 'three';
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const CHUNK_SIZE = 300;
 const RENDER_DIST = 3;
+/** Other ships only appear on the normal minimap / full map when within this distance of you. */
+const MAP_LOCAL_VESSEL_RANGE = 1400;
+function isVesselInLocalMapRange(wx, wz) {
+  const dx = wx - G.player.x, dz = wz - G.player.z;
+  return dx * dx + dz * dz <= MAP_LOCAL_VESSEL_RANGE * MAP_LOCAL_VESSEL_RANGE;
+}
 function mainCanvasPixelRatio() {
   return Math.min(window.devicePixelRatio || 1, 2);
 }
@@ -503,7 +509,7 @@ const SEA_LEVEL = 0;
 const PORT_TOWN_NAMES = ['Port Royal', 'Tortuga', 'Nassau', 'Havana', 'Santiago', 'Bridgetown', 'Maracaibo', 'Cartagena'];
 
 /** Camera zoom level: higher = closer to the ship (deck view); lower = wider (horizon). */
-const CAM_ZOOM_HORIZON = 60;
+const CAM_ZOOM_HORIZON = 70;
 const CAM_ZOOM_DECK = 800;
 /** Orbit distance in world units matching the zoom level range above. */
 const CAM_ORBIT_AT_DECK = 12;
@@ -1652,6 +1658,27 @@ function updateCannonSmoke(dt) {
 
 /* ============================== NPC SHIPS ================================ */
 function seededRand(seed) { seed = ((seed * 16807) % 2147483647 + 2147483647) % 2147483647; return seed / 2147483647; }
+const NPC_SHIP_NAMES = [
+  'Sea Phantom', 'Red Tide', 'Storm Chaser', 'Bone Rattler', 'Shadow Wave', 'Black Serpent', 'Iron Maiden',
+  'Crimson Wake', 'Salt Reaper', 'Drowned Hope', 'Gallows Wind', 'Crow\'s Debt', 'Barbary Ghost', 'Mourning Star',
+  'Cutlass Reef', 'Brine Crown', 'Ashen Gull', 'Fogcutter', 'Rum Runner', 'Corsair\'s Kiss', 'Widow\'s Hull',
+  'Kraken\'s Bane', 'Sable Hook', 'Ember Tide', 'Grim Anchorage', 'Plague Sprite', 'Velvet Cannon', 'Hollow Wake',
+  'Midnight Bargain', 'Siren\'s Ledger', 'Brackish Queen', 'Copper Fin', 'Maroon Marauder', 'Dagger Drift',
+  'Orion\'s Folly', 'Cursed Latitude', 'Barnacle Crown', 'Reef Reaver', 'Tidebreaker', 'Vulture\'s Rest',
+  'Obsidian Trident', 'Gilded Leviathan', 'Shrouded Compass', 'Neptune\'s Spite', 'Harpy\'s Hold', 'Ebon Squall',
+  'Sanguine Shoal', 'Wraithwater', 'Thornwake', 'Ash Brig', 'Pox Privateer', 'Starveling', 'Hollow Mast',
+  'Rime Raider', 'Scourge Petrel', 'Bitter Trade', 'Jagged Mercy', 'Soot Albatross', 'Vermilion Reef',
+  'Dire Flotsam', 'Marrowwind', 'Cinder Hook', 'Pale Horizon', 'Rust Prophet', 'Salted Crown', 'Grim Bilge'
+];
+function pickUniqueNPCShipNames(count, rng) {
+  const n = Math.min(count, NPC_SHIP_NAMES.length);
+  const order = NPC_SHIP_NAMES.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  return order.slice(0, n).map(i => NPC_SHIP_NAMES[i]);
+}
 function isMultiplayerHost() {
   if (!G.myId || !ws || ws.readyState !== 1) return true;
   if (!G.otherPlayers.size) return true;
@@ -1663,21 +1690,26 @@ function spawnNPCs() {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
   const npcSeed = (G.worldSeed | 0) * 7 + 13;
+  let nameRngState = npcSeed + 901;
+  const nameRng = () => { nameRngState = ((nameRngState * 16807) % 2147483647 + 2147483647) % 2147483647; return nameRngState / 2147483647; };
+  const uniqueNames = pickUniqueNPCShipNames(8, nameRng);
   for (let i = 0; i < 8; i++) {
     let s = npcSeed + i * 997;
     const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
-    const a = (i / 8) * Math.PI * 2 + sr() * 0.6, d = 200 + sr() * 1200;
+    const a = sr() * Math.PI * 2;
+    const d = 280 + Math.sqrt(sr()) * 8200;
     let nx = Math.cos(a) * d, nz = Math.sin(a) * d;
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 12; attempt++) {
       if (!isOnIsland(nx, nz)) break;
-      nx += (sr() - 0.5) * 100; nz += (sr() - 0.5) * 100;
+      nx += (sr() - 0.5) * 220; nz += (sr() - 0.5) * 220;
+      if (attempt > 6) { const a2 = sr() * Math.PI * 2, d2 = 280 + Math.sqrt(sr()) * 8200; nx = Math.cos(a2) * d2; nz = Math.sin(a2) * d2; }
     }
     const npc = {
       syncId: i,
       x: nx, z: nz,
       rotation: sr() * Math.PI * 2, speed: 2 + sr() * 3,
       health: 60 + sr() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(sr() * 5)],
-      name: ['Sea Phantom','Red Tide','Storm Chaser','Bone Rattler','Shadow Wave','Black Serpent','Iron Maiden'][Math.floor(sr() * 7)],
+      name: uniqueNames[i],
       wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
       underFireTimer: 0, fireJitter: sr()
     };
@@ -2680,15 +2712,16 @@ function drawDebugWindMap() {
   if (!dbg || !cvs || dbg.style.display !== 'block' || G.mode !== 'playing' || !noise) return;
   const ctx = cvs.getContext('2d');
   const w = cvs.width, h = cvs.height;
+  const hWind = 172;
   const cell = 14;
   const worldR = 380;
   const px = G.player.x, pz = G.player.z;
   ctx.fillStyle = '#070f18';
-  ctx.fillRect(0, 0, w, h);
-  for (let iy = 0; iy < h; iy += cell) {
+  ctx.fillRect(0, 0, w, hWind);
+  for (let iy = 0; iy < hWind; iy += cell) {
     for (let ix = 0; ix < w; ix += cell) {
       const wx = px + ((ix + cell * 0.5) - w * 0.5) / (w * 0.5) * worldR;
-      const wz = pz + ((iy + cell * 0.5) - h * 0.5) / (h * 0.5) * worldR;
+      const wz = pz + ((iy + cell * 0.5) - hWind * 0.5) / (hWind * 0.5) * worldR;
       const wd = getWindAt(wx, wz);
       const hue = (((wd.angle / (Math.PI * 2)) % 1) + 1) % 1;
       ctx.fillStyle = `hsla(${Math.round(hue * 360)}, 62%, 38%, 0.82)`;
@@ -2697,10 +2730,10 @@ function drawDebugWindMap() {
   }
   ctx.strokeStyle = 'rgba(255,255,255,0.45)';
   ctx.lineWidth = 1;
-  for (let iy = cell / 2; iy < h; iy += cell) {
+  for (let iy = cell / 2; iy < hWind; iy += cell) {
     for (let ix = cell / 2; ix < w; ix += cell) {
       const wx = px + (ix - w * 0.5) / (w * 0.5) * worldR;
-      const wz = pz + (iy - h * 0.5) / (h * 0.5) * worldR;
+      const wz = pz + (iy - hWind * 0.5) / (hWind * 0.5) * worldR;
       const wd = getWindAt(wx, wz);
       const len = 4.5 + wd.speed * 0.42;
       ctx.beginPath();
@@ -2709,17 +2742,72 @@ function drawDebugWindMap() {
       ctx.stroke();
     }
   }
+  const cyW = hWind * 0.5;
   ctx.fillStyle = '#ffdd44';
   ctx.beginPath();
-  ctx.arc(w * 0.5, h * 0.5, 4.5, 0, Math.PI * 2);
+  ctx.arc(w * 0.5, cyW, 4.5, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = 'rgba(0,0,0,0.5)';
   ctx.lineWidth = 1;
   ctx.stroke();
+  ctx.strokeStyle = 'rgba(136,184,216,0.45)';
+  ctx.beginPath();
+  ctx.moveTo(0, hWind);
+  ctx.lineTo(w, hWind);
+  ctx.stroke();
+  ctx.fillStyle = '#050a10';
+  ctx.fillRect(0, hWind + 1, w, h - hWind - 1);
+  let minX = px, maxX = px, minZ = pz, maxZ = pz;
+  G.npcs.forEach(n => { if (n.sinking) return; minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x); minZ = Math.min(minZ, n.z); maxZ = Math.max(maxZ, n.z); });
+  G.otherPlayers.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z); });
+  const pad = 420;
+  minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
+  let spanX = maxX - minX, spanZ = maxZ - minZ;
+  const minSpan = 1600;
+  if (spanX < minSpan) { const e = (minSpan - spanX) * 0.5; minX -= e; maxX += e; spanX = minSpan; }
+  if (spanZ < minSpan) { const e = (minSpan - spanZ) * 0.5; minZ -= e; maxZ += e; spanZ = minSpan; }
+  const y0 = hWind + 4, bh = h - y0 - 4, bw = w - 8, x0 = 4;
+  const sx = bw / spanX, sz = bh / spanZ, sMap = Math.min(sx, sz);
+  const ox = x0 + (bw - spanX * sMap) * 0.5, oz = y0 + (bh - spanZ * sMap) * 0.5;
+  const worldToCanvas = (wx, wz) => [ox + (wx - minX) * sMap, oz + (wz - minZ) * sMap];
+  ctx.strokeStyle = 'rgba(80,120,160,0.35)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x0, y0, bw, bh);
+  G.npcs.forEach(n => {
+    if (n.sinking) return;
+    const [cx, cy] = worldToCanvas(n.x, n.z);
+    ctx.fillStyle = '#aa2222';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ff6666';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  });
+  G.otherPlayers.forEach(p => {
+    const [cx, cy] = worldToCanvas(p.x, p.z);
+    ctx.fillStyle = p.color || '#44aaff';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+  });
+  {
+    const [cx, cy] = worldToCanvas(px, pz);
+    ctx.fillStyle = '#ffdd44';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
   const leg = document.getElementById('debug-wind-legend');
   const loc = getWindAt(px, pz);
   if (leg) {
-    leg.textContent = `At ship: ${loc.speed.toFixed(1)} kn · arrows = flow · yellow = you · ~${(worldR * 2).toFixed(0)}m across`;
+    leg.textContent = `Wind: ${loc.speed.toFixed(1)} kn at ship · top ~${(worldR * 2).toFixed(0)}m · bottom = all vessels world-wide (gold you · red AI · blue players)`;
   }
 }
 
@@ -3643,6 +3731,7 @@ function drawFullmap() {
 
   G.npcs.forEach(n => {
     if (n.sinking) return;
+    if (!isVesselInLocalMapRange(n.x, n.z)) return;
     const sx = cx + (n.x - centerX) * s, sy = cy + (n.z - centerZ) * s;
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
     ctx.fillStyle = '#aa2222'; ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fill();
@@ -3654,6 +3743,7 @@ function drawFullmap() {
   });
 
   G.otherPlayers.forEach(p => {
+    if (!isVesselInLocalMapRange(p.x, p.z)) return;
     const sx = cx + (p.x - centerX) * s, sy = cy + (p.z - centerZ) * s;
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
     ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 5, 0, Math.PI * 2); ctx.fill();
@@ -3684,7 +3774,7 @@ function drawFullmap() {
     }
     if (q.type === 'hunt') {
       G.npcs.forEach(n => {
-        if (n.name === q.target && !n.sinking) {
+        if (n.name === q.target && !n.sinking && isVesselInLocalMapRange(n.x, n.z)) {
           const nx = cx + (n.x - centerX) * s, ny = cy + (n.z - centerZ) * s;
           ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
           ctx.beginPath(); ctx.arc(nx, ny, 10, 0, Math.PI * 2); ctx.stroke();
@@ -3786,8 +3876,8 @@ function drawMinimap() {
       }
     }
   }, G.player.x, G.player.z);
-  G.npcs.forEach(n => { if (n.sinking) return; const sx = cx + (n.x - G.player.x) * s, sy = cy + (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
-  G.otherPlayers.forEach(p => { const sx = cx + (p.x - G.player.x) * s, sy = cy + (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
+  G.npcs.forEach(n => { if (n.sinking) return; if (!isVesselInLocalMapRange(n.x, n.z)) return; const sx = cx + (n.x - G.player.x) * s, sy = cy + (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
+  G.otherPlayers.forEach(p => { if (!isVesselInLocalMapRange(p.x, p.z)) return; const sx = cx + (p.x - G.player.x) * s, sy = cy + (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
   ctx.lineTo(cx + Math.sin(G.player.rotation) * 7, cy + Math.cos(G.player.rotation) * 7); ctx.stroke();
