@@ -191,6 +191,14 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 #touch-edge-right{left:auto;right:0;}
 #combat-fire-edges{position:absolute;inset:0;pointer-events:none;display:none;}
 #combat-fire-edges.visible{display:block;}
+#pc-broadside-zones{position:fixed;inset:0;pointer-events:none;z-index:12;display:none;}
+#pc-broadside-zones .pc-broadside-strip{position:absolute;top:max(72px,10vh);bottom:max(52px,10vh);width:22%;pointer-events:auto;cursor:crosshair;background:transparent;}
+#pc-broadside-zones .pc-broadside-strip:hover{background:rgba(200,80,50,0.06);}
+#pc-broadside-left{left:0;}
+#pc-broadside-right{right:0;left:auto;}
+@media(min-width:769px){
+  body.playing-desktop #pc-broadside-zones{display:block;}
+}
 .combat-edge-flash{position:absolute;top:max(72px,9vh);bottom:max(28px,4vh);width:22%;opacity:0;transition:opacity 0.25s;}
 #combat-edge-left{left:0;background:linear-gradient(90deg,rgba(200,80,50,0.45),rgba(200,80,50,0));}
 #combat-edge-right{right:0;left:auto;background:linear-gradient(270deg,rgba(200,80,50,0.45),rgba(200,80,50,0));}
@@ -386,10 +394,21 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div id="log-missions" class="log-content" style="display:none;"><div id="missions-list"></div></div>
     <div id="log-pirates" class="log-content" style="display:none;"><div id="pirates-list"></div></div>
   </div>
-  <div id="debug-panel" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:320px;max-width:90vw;max-height:80vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:2px solid #cc4444;border-radius:8px;padding:14px;z-index:60;pointer-events:auto;">
-    <h3 style="color:#cc4444;font-size:14px;margin-bottom:8px;">DEBUG MENU</h3>
+  <div id="debug-panel" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(440px,94vw);max-width:94vw;max-height:86vh;overflow-y:auto;background:rgba(10,10,10,0.96);border:2px solid #cc4444;border-radius:8px;padding:14px;z-index:60;pointer-events:auto;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+    <h3 style="color:#cc4444;font-size:15px;margin-bottom:6px;">F3 · DEBUG &amp; CHEATS</h3>
+    <p style="color:#7a7060;font-size:10px;margin-bottom:10px;line-height:1.4;">Wind map updates live. Spawn adds to your hold (respects stack cap).</p>
+    <div style="margin-bottom:12px;">
+      <div style="color:#88b8d8;font-size:10px;text-transform:uppercase;margin-bottom:6px;letter-spacing:1px;">Wind map (around your ship)</div>
+      <canvas id="debug-wind-map" width="280" height="280" style="width:100%;max-width:280px;height:auto;display:block;border:1px solid rgba(136,184,216,0.35);border-radius:6px;background:rgba(6,14,22,0.9);"></canvas>
+      <div id="debug-wind-legend" style="color:#9a9a90;font-size:10px;margin-top:6px;"></div>
+    </div>
+    <div id="debug-cheats-items" style="margin-bottom:12px;"></div>
     <div id="debug-ship-builder"><div id="ship-type-selector"></div><div id="ship-parts-list"></div></div>
-    <button onclick="document.getElementById('debug-panel').style.display='none'" style="background:#cc4444;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;margin-top:8px;width:100%;">Close</button>
+    <button type="button" onclick="document.getElementById('debug-panel').style.display='none'" style="background:#cc4444;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;margin-top:8px;width:100%;">Close</button>
+  </div>
+  <div id="pc-broadside-zones" aria-hidden="true">
+    <div class="pc-broadside-strip" id="pc-broadside-left" title="Starboard broadside (click)"></div>
+    <div class="pc-broadside-strip" id="pc-broadside-right" title="Port broadside (click)"></div>
   </div>
   <div id="dock-prompt" style="display:none;position:absolute;top:45px;left:50%;transform:translateX(-50%);background:linear-gradient(180deg,rgba(30,20,12,0.95),rgba(18,12,6,0.98));border:2px solid rgba(180,140,60,0.5);border-radius:8px;padding:10px 18px;text-align:center;z-index:25;pointer-events:auto;">
     <div style="color:#d4a848;font-size:14px;font-weight:bold;" id="dock-town-name"></div>
@@ -418,9 +437,9 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <div id="controls-help">
     <h2>Controls</h2>
     <kbd>W</kbd><kbd>S</kbd> Sail &nbsp; <kbd>A</kbd><kbd>D</kbd> Turn<br>
-    <kbd>X</kbd> Port broadside &nbsp; <kbd>Z</kbd> Starboard &nbsp; <kbd>Space</kbd> Fire both<br>
-    Click the open sea left or right of your hull (same as X / Z)<br>
-    <kbd>Q</kbd><kbd>E</kbd> Rotate Camera &nbsp; <kbd>Scroll</kbd> Zoom &nbsp; <kbd>M</kbd> Map<br>
+    <kbd>Z</kbd> Fire Port &nbsp; <kbd>X</kbd> Fire Starboard &nbsp; <kbd>Space</kbd> Fire Both<br>
+    <span style="color:#a89878;">Sides of screen: click near edges to fire that broadside (PC)</span><br>
+    <kbd>Q</kbd><kbd>E</kbd> Rotate Camera &nbsp; <kbd>Scroll</kbd> Zoom &nbsp; <kbd>M</kbd> Map &nbsp; <kbd>F3</kbd> Wind map / cheats<br>
     <kbd>B</kbd> Ship &nbsp; <kbd>I</kbd> Inventory &nbsp; <kbd>C</kbd> Crew &nbsp; <kbd>T</kbd> Chat
   </div>
 </div>
@@ -491,7 +510,7 @@ const RENDER_DIST = 3;
 function mainCanvasPixelRatio() {
   return Math.min(window.devicePixelRatio || 1, 2);
 }
-const ISLAND_CHANCE = 0.3;
+const ISLAND_CHANCE = 0.25;
 const SEA_LEVEL = 0;
 const PORT_TOWN_NAMES = ['Port Royal', 'Tortuga', 'Nassau', 'Havana', 'Santiago', 'Bridgetown', 'Maracaibo', 'Cartagena'];
 
@@ -584,6 +603,26 @@ function getInvCount(id) {
   return it ? it.count : 0;
 }
 
+function windFieldBase(x, z) {
+  if (!noise) return { angle: G.wind.angle, speed: G.wind.speed };
+  const ux = x * 0.0004 + 401, uz = z * 0.0004 + 203;
+  const e = 220;
+  const n0 = noise.fbm(ux, uz, 4);
+  const dx = noise.fbm(ux + e, uz, 4) - n0;
+  const dz = noise.fbm(ux, uz + e, 4) - n0;
+  const angle = Math.atan2(dx * 14, dz * 14);
+  const speed = 2.4 + noise.fbm(ux * 1.15 + 81, uz * 1.15 - 37, 3) * 9;
+  return { angle, speed: Math.max(0.35, Math.min(14, speed)) };
+}
+
+function getWindAt(x, z) {
+  return windFieldBase(x, z);
+}
+
+function refreshPlayingDesktopClass() {
+  document.body.classList.toggle('playing-desktop', G.mode === 'playing' && !isMobile);
+}
+
 const SHIP_PARTS = {
   hull: [
     { id: 'basic', name: 'Oak Hull', armor: 0, cost: 0 },
@@ -666,19 +705,6 @@ document.body.prepend(renderer.domElement);
 renderer.domElement.style.touchAction = 'none';
 renderer.domElement.tabIndex = 0;
 renderer.domElement.style.outline = 'none';
-renderer.domElement.addEventListener('mousedown', (e) => {
-  if (e.button !== 0 || isMobile || G.mode !== 'playing' || G.playerSinking) return;
-  if (G.docked || fullmapOpen) return;
-  const portPanel = document.getElementById('port-panel');
-  if (portPanel && portPanel.style.display !== 'none' && portPanel.style.display !== '') return;
-  if (e.target !== renderer.domElement) return;
-  camera.updateProjectionMatrix();
-  const rect = renderer.domElement.getBoundingClientRect();
-  const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  const shipNdc = new THREE.Vector3(G.player.x, SEA_LEVEL + 2, G.player.z).project(camera);
-  if (ndcX < shipNdc.x - 0.004) doFireSide(1);
-  else if (ndcX > shipNdc.x + 0.004) doFireSide(-1);
-});
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
@@ -797,7 +823,7 @@ scene.add(water);
 
 let windParticles, windParticleGeo;
 function initWindStreamVisual() {
-  const n = 380;
+  const n = 520;
   const pos = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     pos[i * 3] = (Math.random() - 0.5) * 100;
@@ -816,14 +842,17 @@ function updateWindStreamVisual(dt) {
   if (!windParticles || !windParticleGeo || G.mode !== 'playing') return;
   windParticles.position.set(G.player.x, 0, G.player.z);
   const arr = windParticleGeo.attributes.position.array;
-  const W = G.wind.angle;
-  const dirX = Math.sin(W);
-  const dirZ = Math.cos(W);
-  const perpX = -dirZ;
-  const perpZ = dirX;
-  const baseSpeed = G.wind.speed * 0.42 * dt;
-  const lim = 48;
+  const lim = 48 + (G.camera.zoom / 200) * 165;
   for (let i = 0; i < arr.length; i += 3) {
+    const wx = G.player.x + arr[i];
+    const wz = G.player.z + arr[i + 2];
+    const wdat = getWindAt(wx, wz);
+    const W = wdat.angle;
+    const dirX = Math.sin(W);
+    const dirZ = Math.cos(W);
+    const perpX = -dirZ;
+    const perpZ = dirX;
+    const baseSpeed = wdat.speed * 0.4 * dt;
     const along = 0.88 + 0.12 * Math.sin(G.time * 1.2 + i * 0.02);
     const cross = 0.1 * Math.sin(G.time * 0.95 + i * 0.031);
     arr[i] += (dirX * along + perpX * cross) * baseSpeed;
@@ -894,13 +923,12 @@ function generateIsland(cx, cz) {
   const worldX = cx * CHUNK_SIZE, worldZ = cz * CHUNK_SIZE;
   const sizeNoise = new SimplexNoise(cx * 123 + cz * 456);
   const sizeFactor = sizeNoise.noise2D(cx * 0.5, cz * 0.5) * 0.5 + 0.5;
-  const sizeWobble = sizeNoise.noise2D(cx * 2.1 + 3, cz * 2.1 - 1) * 0.5 + 0.5;
-  const islandRadius = 22 + sizeFactor * 118 + sizeWobble * 42 + h * 38;
-  const islandHeight = 4 + sizeFactor * 26 + sizeWobble * 10 + h * 11;
+  const islandRadius = 15 + sizeFactor * 100 + h * 30;
+  const islandHeight = 3 + sizeFactor * 18 + h * 8;
   const group = new THREE.Group();
   group.userData = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight };
 
-  const seg = Math.max(36, Math.floor(islandRadius * 2.35));
+  const seg = Math.max(28, Math.floor(islandRadius * 2.0));
   const terrainGeo = new THREE.PlaneGeometry(islandRadius * 2.2, islandRadius * 2.2, seg, seg);
   terrainGeo.rotateX(-Math.PI / 2);
   const positions = terrainGeo.attributes.position;
@@ -909,23 +937,18 @@ function generateIsland(cx, cz) {
   const islandNoise = new SimplexNoise(cx * 777 + cz * 333);
   for (let i = 0; i < positions.count; i++) {
     const px = positions.getX(i), pz = positions.getZ(i);
-    const blobLow = islandNoise.noise2D((worldX + px) * 0.011, (worldZ + pz) * 0.011);
-    const blobHigh = islandNoise.noise2D((worldX + px) * 0.034 + 2.1, (worldZ + pz) * 0.034 - 1.4) * 0.55;
-    const effRadius = islandRadius * (0.84 + 0.32 * blobLow + blobHigh);
-    const dist = Math.sqrt(px * px + pz * pz) / Math.max(8, effRadius);
+    const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
 
     const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
     const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
-    const n3 = islandNoise.noise2D((worldX + px) * 0.055, (worldZ + pz) * 0.055) * 0.12;
     const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
-    const combined = n1 * 0.55 + n2 + n3 + ridges;
+    const combined = n1 * 0.6 + n2 + ridges;
 
-    const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.14 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.05
-      + islandNoise.noise2D(px * 0.11 + cx, pz * 0.11 + cz) * 0.035;
+    const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.12 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.04;
     const warpedDist = dist + edgeWarp;
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
-    const isLand = ht > 0.15 && warpedDist < 0.96;
+    const isLand = ht > 0.15 && warpedDist < 0.93;
     if (!isLand) {
       const edgeFade = Math.max(0, 1 - warpedDist) * 2;
       if (edgeFade > 0.1 && ht > 0) {
@@ -979,43 +1002,29 @@ function generateIsland(cx, cz) {
   group.add(terrain);
 
   const ln = new SimplexNoise(cx * 1000 + cz);
-  const treeCount = Math.floor(16 + h * 48);
+  const treeCount = Math.floor(4 + h * 25);
   for (let t = 0; t < treeCount; t++) {
     const a = ln.noise2D(t * 0.7, 0) * Math.PI * 2;
-    const rad = (0.12 + Math.abs(ln.noise2D(t * 0.3, 1)) * 0.72) * islandRadius;
+    const rad = (0.2 + Math.abs(ln.noise2D(t * 0.3, 1)) * 0.55) * islandRadius;
     const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
     const d = Math.sqrt(tx * tx + tz * tz) / islandRadius;
-    if (d > 0.88) continue;
+    if (d > 0.8) continue;
     const ff = Math.max(0, 1 - d * d);
     const nv = noise.fbm((worldX + tx) * 0.02, (worldZ + tz) * 0.02, 4);
     const ty = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
-    if (ty > 0.45 && ty < islandHeight * 0.78) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.15, worldZ + tz));
+    if (ty > 0.8 && ty < islandHeight * 0.65) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.15, worldZ + tz));
   }
 
-  const rockCount = Math.floor(10 + h * 22);
+  const rockCount = Math.floor(2 + h * 8);
   for (let r = 0; r < rockCount; r++) {
     const a = ln.noise2D(r * 0.5, 10) * Math.PI * 2;
-    const rad = (0.22 + Math.abs(ln.noise2D(r * 0.4, 11)) * 0.74) * islandRadius;
+    const rad = (0.3 + Math.abs(ln.noise2D(r * 0.4, 11)) * 0.65) * islandRadius;
     const rx = Math.cos(a) * rad, rz = Math.sin(a) * rad;
     const d = Math.sqrt(rx * rx + rz * rz) / islandRadius;
     const ff = Math.max(0, 1 - d * d);
     const nv = noise.fbm((worldX + rx) * 0.02, (worldZ + rz) * 0.02, 4);
     const ry = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
-    group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.15, worldZ + rz, 0.35 + Math.random() * 1.45));
-  }
-
-  const pebbleN = Math.floor(14 + h * 28);
-  for (let p = 0; p < pebbleN; p++) {
-    const pa = ln.noise2D(p * 0.9 + 40, cz) * Math.PI * 2;
-    const pr = (0.08 + Math.abs(ln.noise2D(cx, p * 0.7 + 50)) * 0.88) * islandRadius;
-    const px = Math.cos(pa) * pr, pz = Math.sin(pa) * pr;
-    const pd = Math.sqrt(px * px + pz * pz) / islandRadius;
-    if (pd > 0.92) continue;
-    const pff = Math.max(0, 1 - pd * pd);
-    const pnv = noise.fbm((worldX + px) * 0.028, (worldZ + pz) * 0.028, 3);
-    const py = Math.max(0, (pnv * 0.5 + 0.5) * islandHeight * pff * pff);
-    if (py < 0.25) continue;
-    group.add(createRock(worldX + px, SEA_LEVEL + py + 0.08, worldZ + pz, 0.12 + Math.random() * 0.38));
+    group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.15, worldZ + rz, 0.4 + Math.random() * 1.2));
   }
 
   if (ln.noise2D(cx, cz) > 0.2) {
@@ -1087,7 +1096,7 @@ function generateIsland(cx, cz) {
 
   islandGroup.add(group);
   G.islands.push(group.userData);
-  if (seagulls.length < 140) spawnSeagulls(worldX, worldZ, 3 + Math.floor(Math.random() * 6));
+  if (seagulls.length < 30) spawnSeagulls(worldX, worldZ, 1 + Math.floor(Math.random() * 2));
   if (fishSchools.length < 150) {
     for (let fi = 0; fi < 2; fi++) {
       const fishAngle = Math.random() * Math.PI * 2;
@@ -1940,10 +1949,6 @@ function connectToServer() {
         break;
       }
       case 'npc_sync': {
-        if (msg.wind && ws?.readyState === 1 && !isMultiplayerHost()) {
-          G.wind.angle = msg.wind.a;
-          G.wind.speed = msg.wind.s;
-        }
         if (!msg.npcs) break;
         const seen = new Set();
         msg.npcs.forEach(nd => {
@@ -2057,10 +2062,11 @@ window.addEventListener('keydown', e => {
   if (k === 'm') toggleFullmap();
   if (e.key === 'F3') {
     e.preventDefault();
-    const pw = prompt('Debug password:');
-    if (pw === 'test123') {
-      const dbg = document.getElementById('debug-panel');
-      if (dbg) { dbg.style.display = dbg.style.display === 'block' ? 'none' : 'block'; if (dbg.style.display === 'block') updateDebugBuilder(); }
+    const dbg = document.getElementById('debug-panel');
+    if (dbg) {
+      const open = dbg.style.display !== 'block';
+      dbg.style.display = open ? 'block' : 'none';
+      if (open) { updateDebugBuilder(); drawDebugWindMap(); }
     }
   }
   if (e.key === ' ' && G.mode === 'playing') { e.preventDefault(); doFire(); }
@@ -2152,6 +2158,20 @@ document.getElementById('touch-edge-right')?.addEventListener('touchstart', e =>
 }, { passive: false });
 document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.max(12, G.camera.targetZoom - 12); }, { passive: false });
 document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.min(200, G.camera.targetZoom + 12); }, { passive: false });
+
+(function setupPCBroadsideZones() {
+  const L = document.getElementById('pc-broadside-left');
+  const R = document.getElementById('pc-broadside-right');
+  if (!L || !R) return;
+  const tryFire = (side, e) => {
+    if (e.button !== 0) return;
+    if (isMobile || G.mode !== 'playing' || fullmapOpen || G.docked || G.playerSinking) return;
+    e.preventDefault();
+    doFireSide(side);
+  };
+  L.addEventListener('mousedown', e => tryFire(1, e));
+  R.addEventListener('mousedown', e => tryFire(-1, e));
+})();
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
@@ -2401,7 +2421,99 @@ function updateShipPanel() {
       }).join('')}
     </div>`;
 }
+window.debugSpawnItem = function (id, qty) {
+  const q = Math.max(1, Math.min(ITEM_MAX_STACK, Math.floor(Number(qty) || 10)));
+  const m = getItemMeta(id);
+  let row = G.player.inventory.find(i => i.id === id);
+  if (!row) {
+    row = { id, name: m.name, icon: m.icon, count: 0 };
+    G.player.inventory.push(row);
+  }
+  row.count = Math.min(ITEM_MAX_STACK, row.count + q);
+  reconcileSlotsWithInventory();
+  notify(`+${q} ${m.name}`);
+  updateDebugBuilder();
+  refreshCargoPanelIfOpen();
+};
+
+function drawDebugWindMap() {
+  const dbg = document.getElementById('debug-panel');
+  const cvs = document.getElementById('debug-wind-map');
+  if (!dbg || !cvs || dbg.style.display !== 'block' || G.mode !== 'playing' || !noise) return;
+  const ctx = cvs.getContext('2d');
+  const w = cvs.width, h = cvs.height;
+  const cell = 14;
+  const worldR = 380;
+  const px = G.player.x, pz = G.player.z;
+  ctx.fillStyle = '#070f18';
+  ctx.fillRect(0, 0, w, h);
+  for (let iy = 0; iy < h; iy += cell) {
+    for (let ix = 0; ix < w; ix += cell) {
+      const wx = px + ((ix + cell * 0.5) - w * 0.5) / (w * 0.5) * worldR;
+      const wz = pz + ((iy + cell * 0.5) - h * 0.5) / (h * 0.5) * worldR;
+      const wd = getWindAt(wx, wz);
+      const hue = (((wd.angle / (Math.PI * 2)) % 1) + 1) % 1;
+      ctx.fillStyle = `hsla(${Math.round(hue * 360)}, 62%, 38%, 0.82)`;
+      ctx.fillRect(ix, iy, cell + 0.5, cell + 0.5);
+    }
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  ctx.lineWidth = 1;
+  for (let iy = cell / 2; iy < h; iy += cell) {
+    for (let ix = cell / 2; ix < w; ix += cell) {
+      const wx = px + (ix - w * 0.5) / (w * 0.5) * worldR;
+      const wz = pz + (iy - h * 0.5) / (h * 0.5) * worldR;
+      const wd = getWindAt(wx, wz);
+      const len = 4.5 + wd.speed * 0.42;
+      ctx.beginPath();
+      ctx.moveTo(ix, iy);
+      ctx.lineTo(ix + Math.sin(wd.angle) * len, iy + Math.cos(wd.angle) * len);
+      ctx.stroke();
+    }
+  }
+  ctx.fillStyle = '#ffdd44';
+  ctx.beginPath();
+  ctx.arc(w * 0.5, h * 0.5, 4.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  const leg = document.getElementById('debug-wind-legend');
+  const loc = getWindAt(px, pz);
+  if (leg) {
+    leg.textContent = `At ship: ${loc.speed.toFixed(1)} kn · arrows = flow · yellow = you · ~${(worldR * 2).toFixed(0)}m across`;
+  }
+}
+
 function updateDebugBuilder() {
+  const cheatWrap = document.getElementById('debug-cheats-items');
+  if (cheatWrap) {
+    cheatWrap.innerHTML = '<div style="color:#6a9a6a;font-size:10px;text-transform:uppercase;margin-bottom:6px;letter-spacing:1px;">Spawn cargo</div>';
+    const qtyRow = document.createElement('div');
+    qtyRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;';
+    qtyRow.innerHTML = '<label style="color:#9a9080;font-size:11px;">Qty</label>';
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.min = '1';
+    inp.max = String(ITEM_MAX_STACK);
+    inp.value = '10';
+    inp.style.cssText = 'width:64px;padding:4px 6px;border-radius:4px;border:1px solid #444;background:#1a1a1a;color:#e0d6c2;font-size:12px;';
+    qtyRow.appendChild(inp);
+    cheatWrap.appendChild(qtyRow);
+    Object.keys(ITEM_DEFS).forEach(id => {
+      const def = ITEM_DEFS[id];
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 6px;background:rgba(35,32,28,0.9);border-radius:5px;margin-bottom:4px;';
+      row.innerHTML = `<span style="color:#d0c8b8;font-size:12px;"><b>${def.icon}</b> ${def.name} <span style="color:#6a6058;font-size:10px;">(${id})</span></span>`;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = 'Spawn';
+      b.style.cssText = 'padding:4px 10px;font-size:11px;border-radius:4px;border:1px solid #5a8a5a;background:#2a4a2a;color:#c8e8c8;cursor:pointer;flex-shrink:0;';
+      b.onclick = () => window.debugSpawnItem(id, inp.value);
+      row.appendChild(b);
+      cheatWrap.appendChild(row);
+    });
+  }
   const td = document.getElementById('ship-type-selector');
   if (!td) return;
   td.innerHTML = '<div style="color:#cc4444;font-size:10px;margin-bottom:6px;">CHANGE SHIP TYPE</div>';
@@ -2425,6 +2537,7 @@ function updateDebugBuilder() {
     });
     pd.appendChild(sd);
   });
+  drawDebugWindMap();
 }
 
 let cargoRenderer, cargoScene, cargoCamera, cargoShipPreview;
@@ -3444,10 +3557,9 @@ let lastTime = 0, sendTimer = 0;
 function update(dt) {
   if (G.mode !== 'playing') return;
   G.time += dt; G.dt = dt;
-  if (isMultiplayerHost()) {
-    G.wind.angle += noise.noise2D(G.time * 0.01, 0) * 0.5 * dt;
-    G.wind.speed = 4 + noise.noise2D(G.time * 0.02, 100) * 3;
-  }
+  const wHere = getWindAt(G.player.x, G.player.z);
+  G.wind.angle = wHere.angle;
+  G.wind.speed = wHere.speed;
 
   if (!G.player.anchored) {
     const spec = SHIP_TYPES[G.player.shipType];
@@ -3953,7 +4065,7 @@ function update(dt) {
       n: n.name,
       fc: n.flagColor
     }));
-    ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData, wind: { a: G.wind.angle, s: G.wind.speed } }));
+    ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
   }
   updateCannonSmoke(dt);
   updateWindStreamVisual(dt);
@@ -3989,6 +4101,8 @@ function gameLoop(time) {
   update(dt); render();
   updateCombatFireEdgesUI();
   if (G.mode === 'playing') {
+    const dp = document.getElementById('debug-panel');
+    if (dp && dp.style.display === 'block') drawDebugWindMap();
     if (Math.floor(G.time * 4) !== Math.floor((G.time - dt) * 4)) { updateHUD(); drawMinimap(); if (fullmapOpen) drawFullmap(); }
     autoSaveTimer += dt;
     if (autoSaveTimer > 15) { saveProgress(); autoSaveTimer = 0; }
@@ -4341,7 +4455,7 @@ function buildTutorialSteps() {
     steps.push({
       sel: '#btn-help',
       title: 'Keyboard',
-      body: 'W and S trim sail, A and D turn. X fires port, Z starboard; Space fires both. You can also click the sea left or right of your ship. Q and E swing the camera; scroll wheel zooms.'
+      body: 'W and S trim sail, A and D turn. Z and X fire port and starboard; Space fires both. Q and E swing the camera; scroll wheel zooms.'
     });
   }
   steps.push({
@@ -4449,6 +4563,7 @@ function beginVoyageAfterCharacter() {
     setTimeout(() => { document.getElementById('controls-help').style.display = 'none'; }, 5000);
   }
   G.mode = 'playing';
+  refreshPlayingDesktopClass();
   G.player.speed = 1;
   document.getElementById('ui-layer').style.display = '';
   if (isMobile) {
@@ -4735,6 +4850,7 @@ document.getElementById('start-btn').onclick = () => {
   if (hasSave) {
     document.getElementById('create-screen').style.display = 'none';
     G.mode = 'playing';
+    refreshPlayingDesktopClass();
     G.player.speed = Math.max(G.player.speed, 1);
     document.getElementById('ui-layer').style.display = '';
     if (isMobile) {
