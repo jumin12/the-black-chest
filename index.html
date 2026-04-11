@@ -563,6 +563,35 @@ const playerShipGroup = new THREE.Group();
 scene.add(playerShipGroup);
 const otherShipGroups = new Map();
 
+const BROADSIDE_ANGLE = Math.PI * 0.22;
+const BROADSIDE_RANGE = 40;
+
+function createArcMesh(color) {
+  const geo = new THREE.BufferGeometry();
+  const segments = 16;
+  const verts = [0, 0.1, 0];
+  for (let i = 0; i <= segments; i++) {
+    const a = -BROADSIDE_ANGLE + (i / segments) * BROADSIDE_ANGLE * 2;
+    verts.push(Math.sin(a) * BROADSIDE_RANGE, 0.1, Math.cos(a) * BROADSIDE_RANGE);
+  }
+  const indices = [];
+  for (let i = 0; i < segments; i++) { indices.push(0, i + 1, i + 2); }
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.08, side: THREE.DoubleSide, depthWrite: false }));
+}
+
+const arcLeft = createArcMesh(0xff4444);
+arcLeft.rotation.y = Math.PI / 2;
+arcLeft.visible = false;
+scene.add(arcLeft);
+
+const arcRight = createArcMesh(0xff4444);
+arcRight.rotation.y = -Math.PI / 2;
+arcRight.visible = false;
+scene.add(arcRight);
+
 function buildShipMesh(type, parts, flagColor, shipName) {
   const g = new THREE.Group(), spec = SHIP_TYPES[type];
   let hc = 0x6b3a1f;
@@ -834,7 +863,11 @@ function getServerUrl() {
 function connectToServer() {
   const url = getServerUrl();
   try { ws = new WebSocket(url); } catch (e) { return; }
-  ws.onopen = () => notify('Connected to server');
+  ws.onopen = () => {
+    notify('Connected to server');
+    const capName = G.player.crew[0]?.name || 'Pirate';
+    ws.send(JSON.stringify({ type: 'set_name', name: capName }));
+  };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     switch (msg.type) {
@@ -866,7 +899,7 @@ let pinchDist = 0;
 
 window.addEventListener('keydown', e => {
   if (document.activeElement?.id === 'chat-input') {
-    if (e.key === 'Enter') { const inp = document.getElementById('chat-input'); if (inp.value.trim()) { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'chat', text: inp.value.trim() })); addChatMessage('You', inp.value.trim()); inp.value = ''; } inp.blur(); e.preventDefault(); }
+    if (e.key === 'Enter') { const inp = document.getElementById('chat-input'); if (inp.value.trim()) { const capName = G.player.crew[0]?.name || 'Pirate'; if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'chat', text: inp.value.trim() })); else addChatMessage(capName, inp.value.trim()); inp.value = ''; } inp.blur(); e.preventDefault(); }
     else if (e.key === 'Escape') { document.getElementById('chat-input').blur(); document.getElementById('chat-box').style.display = 'none'; }
     return;
   }
@@ -945,14 +978,13 @@ function doFire() {
   const spec = SHIP_TYPES[G.player.shipType];
   const cp = SHIP_PARTS.cannon.find(c => c.id === G.player.shipParts.cannon);
   if (!cp || cp.damage <= 0) { notify('No cannons equipped!'); return; }
-  if (G.cannonCooldown > 0) { notify(`Reloading... ${G.cannonCooldown.toFixed(1)}s`); return; }
+  if (G.cannonCooldown > 0) return;
 
   G.cannonCooldown = 2.0;
   G.crewReloading = true;
   G.crewReloadTimer = 1.5;
 
   const rot = G.player.rotation;
-  const sinR = Math.sin(rot), cosR = Math.cos(rot);
   const cc = spec.cannonSlots || 2;
   const shipY = playerShipGroup.position.y;
   const cannonY = shipY + spec.hullH * 0.6;
@@ -960,14 +992,19 @@ function doFire() {
   for (let c = 0; c < cc; c++) {
     const side = c % 2 === 0 ? 1 : -1;
     const idx = Math.floor(c / 2);
+    const cannonCount = Math.ceil(cc / 2);
+    const spread = cannonCount > 1 ? ((idx / (cannonCount - 1)) - 0.5) * BROADSIDE_ANGLE * 2 : 0;
+
+    const baseAngle = rot + side * Math.PI / 2 + spread;
     const localZ = (idx - Math.floor(cc / 4) + 0.5) * 1.5;
     const localX = side * (spec.hullW * 0.55 + 0.6);
+    const cosR = Math.cos(rot), sinR = Math.sin(rot);
 
     const wx = G.player.x + localX * cosR - localZ * sinR;
     const wz = G.player.z + localX * sinR + localZ * cosR;
 
-    const dirX = side * cosR;
-    const dirZ = side * sinR;
+    const dirX = Math.sin(baseAngle);
+    const dirZ = Math.cos(baseAngle);
 
     fireCannonball(wx, wz, dirX, dirZ, cannonY);
     if (ws?.readyState === 1) {
@@ -1251,6 +1288,21 @@ function update(dt) {
 
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4 + Math.sin(G.time * 1.5) * 0.25, G.player.z);
   playerShipGroup.rotation.set(Math.sin(G.time * 1.2) * 0.02, G.player.rotation, Math.sin(G.time * 0.8) * 0.03);
+
+  const hasGuns = G.player.shipParts.cannon && G.player.shipParts.cannon !== 'none';
+  arcLeft.visible = hasGuns;
+  arcRight.visible = hasGuns;
+  if (hasGuns) {
+    arcLeft.position.set(G.player.x, SEA_LEVEL + 0.15, G.player.z);
+    arcLeft.rotation.y = G.player.rotation + Math.PI / 2;
+    arcRight.position.set(G.player.x, SEA_LEVEL + 0.15, G.player.z);
+    arcRight.rotation.y = G.player.rotation - Math.PI / 2;
+    const coolPct = Math.max(0, G.cannonCooldown / 2);
+    arcLeft.material.opacity = coolPct > 0 ? 0.03 : 0.1;
+    arcRight.material.opacity = coolPct > 0 ? 0.03 : 0.1;
+    arcLeft.material.color.set(coolPct > 0 ? 0x888888 : 0xff4444);
+    arcRight.material.color.set(coolPct > 0 ? 0x888888 : 0xff4444);
+  }
 
   const relWind = G.wind.angle - G.player.rotation;
   const windPushZ = Math.cos(relWind);

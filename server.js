@@ -99,6 +99,11 @@ wss.on('connection', (ws) => {
           if (msg.health !== undefined) p.health = msg.health;
           break;
         }
+        case 'set_name': {
+          const p = players.get(id);
+          if (p && msg.name) p.name = msg.name.slice(0, 28);
+          break;
+        }
         case 'ship_update': {
           const p = players.get(id);
           if (!p) break;
