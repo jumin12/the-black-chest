@@ -17,6 +17,8 @@ try {
 
 const players = new Map();
 let nextId = 1;
+let nextLootNetId = 1;
+let nextSwimmerNetId = 1;
 
 const LB_FILE = path.join(__dirname, 'leaderboard.json');
 let leaderboardHistory = [];
@@ -62,6 +64,13 @@ function broadcast(data, excludeId) {
     if (client.readyState === 1 && client.playerId !== excludeId) {
       client.send(msg);
     }
+  });
+}
+
+function broadcastAll(data) {
+  const msg = JSON.stringify(data);
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) client.send(msg);
   });
 }
 
@@ -149,17 +158,53 @@ wss.on('connection', (ws) => {
           break;
         }
         case 'ship_sunk': {
-          broadcast({ type: 'ship_sunk', id, x: msg.x, z: msg.z, loot: msg.loot, name: players.get(id)?.name || 'Unknown' }, id);
+          const victimId = id;
+          const loot = (msg.loot || []).map(l => ({
+            type: l.type,
+            x: l.x,
+            z: l.z,
+            count: l.count,
+            id: nextLootNetId++
+          }));
+          broadcastAll({
+            type: 'ship_sunk',
+            victimId,
+            x: msg.x,
+            z: msg.z,
+            loot,
+            name: players.get(victimId)?.name || msg.name || 'Unknown'
+          });
           break;
         }
         case 'loot_spawn': {
-          broadcast({ type: 'loot_spawn', x: msg.x, z: msg.z, loot: msg.loot || { type: msg.type, count: msg.count } }, id);
+          const lid = nextLootNetId++;
+          broadcastAll({
+            type: 'loot_spawn',
+            id: lid,
+            x: msg.x,
+            z: msg.z,
+            loot: msg.loot || { type: msg.type, count: msg.count }
+          });
+          break;
+        }
+        case 'loot_collect': {
+          if (msg.id != null) broadcastAll({ type: 'loot_collect', id: msg.id });
           break;
         }
         case 'swimmer_spawn': {
           if (msg.swimmers && Array.isArray(msg.swimmers)) {
-            broadcast({ type: 'swimmer_spawn', swimmers: msg.swimmers }, id);
+            const swimmers = msg.swimmers.map(s => ({
+              x: s.x,
+              z: s.z,
+              restore: s.restore || null,
+              id: nextSwimmerNetId++
+            }));
+            broadcastAll({ type: 'swimmer_spawn', swimmers });
           }
+          break;
+        }
+        case 'swimmer_collect': {
+          if (msg.id != null) broadcastAll({ type: 'swimmer_collect', id: msg.id });
           break;
         }
         case 'pvp_kill_credit': {
