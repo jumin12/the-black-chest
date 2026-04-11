@@ -135,7 +135,11 @@ wss.on('connection', (ws) => {
           break;
         }
         case 'ship_sunk': {
-          broadcast({ type: 'ship_sunk', id, x: msg.x, z: msg.z, loot: msg.loot, name: players.get(id)?.name || 'Unknown' });
+          broadcast({ type: 'ship_sunk', id, x: msg.x, z: msg.z, loot: msg.loot, name: players.get(id)?.name || 'Unknown' }, id);
+          break;
+        }
+        case 'loot_spawn': {
+          broadcast({ type: 'loot_spawn', x: msg.x, z: msg.z, loot: msg.loot || { type: msg.type, count: msg.count } });
           break;
         }
         case 'leaderboard_update': {
