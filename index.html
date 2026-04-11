@@ -79,12 +79,13 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 @media(max-width:768px){
   .hud-box{font-size:11px;padding:4px 8px;}
   #compass{width:70px;height:70px;}
-  #minimap{width:100px;height:100px;bottom:70px;}
+  #minimap{width:90px;height:90px;bottom:auto;top:8px;right:8px;}
   .side-panel{width:85vw;max-width:300px;}
   #crew-panel{width:85vw;max-width:300px;}
   .toolbar{bottom:8px;gap:6px;}
   .tb-btn{width:40px;height:40px;font-size:17px;}
   #touch-controls{display:block;}
+  #touch-actions{bottom:auto;top:50%;right:auto;left:20px;transform:translateY(-50%);}
   #controls-help{display:none !important;}
 }
 @media(hover:none) and (pointer:coarse){
@@ -96,6 +97,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 <div id="start-screen">
   <h1>Pirates of the Procedural Sea</h1>
   <p>Explore, Build, Conquer the Open Seas</p>
+  <div id="save-info" style="display:none;background:rgba(20,12,8,0.85);border:1px solid rgba(180,140,60,0.5);border-radius:10px;padding:16px 24px;margin-bottom:20px;max-width:340px;width:90vw;text-align:left;backdrop-filter:blur(4px);">
+    <div style="color:#d4a848;font-size:14px;font-weight:bold;margin-bottom:8px;" id="save-ship-name"></div>
+    <div style="font-size:12px;color:#a09080;line-height:1.7;" id="save-details"></div>
+  </div>
   <button id="start-btn">Create Your Crew</button>
   <button id="new-game-btn" style="display:none;background:transparent;color:#8090a0;border:1px solid rgba(180,140,60,0.4);padding:12px 36px;font-size:15px;border-radius:8px;cursor:pointer;margin-top:12px;touch-action:manipulation;transition:all 0.3s;">Start New Voyage</button>
 </div>
@@ -320,6 +325,8 @@ renderer.shadowMap.enabled = !isMobile;
 if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.prepend(renderer.domElement);
 renderer.domElement.style.touchAction = 'none';
+renderer.domElement.tabIndex = 0;
+renderer.domElement.style.outline = 'none';
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
@@ -1438,7 +1445,11 @@ function update(dt) {
   });
 
   G.otherPlayers.forEach((p, id) => {
-    if (!otherShipGroups.has(id)) { const sm = buildShipMesh(p.shipType || 'sloop', p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'none', figurehead: 'none' }, p.color); otherShipGroups.set(id, sm); scene.add(sm); }
+    if (!otherShipGroups.has(id)) {
+      const sm = buildShipMesh(p.shipType || 'sloop', p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' }, p.color || '#4488cc', p.name || `Pirate ${id}`);
+      otherShipGroups.set(id, sm);
+      scene.add(sm);
+    }
     const sg = otherShipGroups.get(id);
     sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.4 + Math.sin(G.time * 1.5 + id) * 0.25, p.z), 5 * dt);
     sg.rotation.y = p.rotation || 0;
@@ -1475,6 +1486,16 @@ function update(dt) {
         notify(`Hull hit! HP: ${Math.round(G.player.health)}`);
         b.life = 0;
       }
+    }
+
+    if (b.owner === 'player') {
+      G.otherPlayers.forEach((op, opId) => {
+        if (Math.hypot(b.x - op.x, b.z - op.z) < 3.5) {
+          spawnDamageChunks(b.x, b.y, b.z);
+          notify(`Hit ${op.name || 'enemy ship'}!`);
+          b.life = 0;
+        }
+      });
     }
 
     if (b.y <= SEA_LEVEL || b.life <= 0) {
@@ -1783,8 +1804,10 @@ function launchGame() {
     setTimeout(() => document.getElementById('controls-help').style.display = 'none', 5000);
   }
   G.mode = 'playing';
+  G.player.speed = 1;
   noise = new SimplexNoise(G.seed);
   rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
+  renderer.domElement.focus(); document.body.focus();
 }
 
 /* ============================== PERSISTENCE ============================== */
@@ -1834,8 +1857,10 @@ document.getElementById('start-btn').onclick = () => {
   if (hasSave) {
     document.getElementById('create-screen').style.display = 'none';
     G.mode = 'playing';
+    G.player.speed = Math.max(G.player.speed, 1);
     noise = new SimplexNoise(G.seed);
     rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
+    renderer.domElement.focus(); document.body.focus();
     notify('Progress restored');
     if (!isMobile) { document.getElementById('controls-help').style.display = 'block'; setTimeout(() => document.getElementById('controls-help').style.display = 'none', 4000); }
   } else {
@@ -1863,7 +1888,21 @@ document.getElementById('new-game-btn').onclick = () => {
 };
 
 document.getElementById('start-btn').textContent = hasSave ? 'Continue Voyage' : 'Create Your Crew';
-if (hasSave) document.getElementById('new-game-btn').style.display = 'block';
+if (hasSave) {
+  document.getElementById('new-game-btn').style.display = 'block';
+  document.getElementById('save-info').style.display = 'block';
+  document.getElementById('save-ship-name').textContent = G.player.shipName || 'Unknown Ship';
+  const capName = G.player.crew[0]?.name || 'Unknown Captain';
+  const gold = G.player.inventory.find(i => i.id === 'gold')?.count || 0;
+  const shipSpec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  document.getElementById('save-details').innerHTML =
+    `Captain: <span style="color:#e0d6c2">${capName}</span><br>` +
+    `Ship: <span style="color:#e0d6c2">${shipSpec.name}</span> | ` +
+    `HP: <span style="color:#e0d6c2">${Math.round(G.player.health)}</span><br>` +
+    `Crew: <span style="color:#e0d6c2">${G.player.crew.length}</span> | ` +
+    `Gold: <span style="color:#e0d6c2">${gold}</span><br>` +
+    `Position: <span style="color:#e0d6c2">${Math.round(G.player.x)}, ${Math.round(G.player.z)}</span>`;
+}
 
 document.getElementById('create-launch').onclick = launchGame;
 
