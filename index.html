@@ -76,10 +76,23 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 #create-footer{display:flex;justify-content:center;padding:10px;border-top:1px solid rgba(140,100,40,0.2);flex-shrink:0;}
 @media(max-width:800px){
   #create-body{flex-direction:column;}
-  #create-opts{width:100%;border-right:none;border-bottom:1px solid rgba(140,100,40,0.15);max-height:35vh;flex-shrink:0;}
-  #preview-3d-wrap{min-height:200px;}
-  #create-crew-opts{width:100%;border-left:none;border-top:1px solid rgba(140,100,40,0.15);max-height:30vh;}
+  #create-opts{width:100%;border-right:none;border-bottom:none;max-height:none;overflow-y:auto;padding:8px 12px;flex:1;min-height:0;display:none;}
+  #create-opts.mob-active{display:block;}
+  #preview-3d-wrap{min-height:180px;flex:0 0 180px;}
+  #create-crew-opts{width:100%;border-left:none;border-top:none;max-height:none;overflow-y:auto;flex:1;min-height:0;display:none;padding:8px 12px;}
+  #create-crew-opts.mob-active{display:block;}
+  #create-preview{flex:0 0 auto;}
+  #create-header{padding:6px 10px;}
+  #create-header h2{font-size:15px;}
+  #create-footer{padding:6px;}
+  #create-launch{padding:12px 30px;font-size:16px;min-height:42px;margin:0 auto;}
+  .color-swatch{width:28px;height:28px;}
+  .crew-edit{padding:10px;margin-bottom:8px;}
+  #create-mob-tabs{display:flex;border-bottom:1px solid rgba(140,100,40,0.2);flex-shrink:0;}
+  #create-mob-tabs .mob-tab{flex:1;padding:8px;text-align:center;font-size:11px;color:#8a7a60;cursor:pointer;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;transition:all 0.15s;}
+  #create-mob-tabs .mob-tab.active{color:#d4a848;border-bottom:2px solid #d4a848;}
 }
+@media(min-width:801px){#create-mob-tabs{display:none;}#create-opts{display:block !important;}#create-crew-opts{display:block !important;}}
 .color-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;}
 .color-swatch{width:34px;height:34px;border-radius:50%;border:3px solid rgba(60,45,25,0.5);cursor:pointer;transition:all 0.2s;touch-action:manipulation;box-shadow:0 1px 3px rgba(0,0,0,0.3);}
 .color-swatch:hover{border-color:rgba(212,168,72,0.6);transform:scale(1.1);}
@@ -142,8 +155,12 @@ input,textarea{-webkit-user-select:text;user-select:text;}
       <h2>Assemble Your Crew</h2>
       <div style="width:60px;"></div>
     </div>
+    <div id="create-mob-tabs">
+      <div class="mob-tab active" data-panel="create-opts">Ship</div>
+      <div class="mob-tab" data-panel="create-crew-opts">Crew</div>
+    </div>
     <div id="create-body">
-      <div id="create-opts">
+      <div id="create-opts" class="mob-active">
         <label>Ship Name</label>
         <input type="text" id="ship-name-input" value="The Black Wave" maxlength="28" />
         <label>Captain Name</label>
@@ -2454,6 +2471,43 @@ function updatePreviewShip() {
 }
 
 let previewAutoRotate = true, previewDragX = 0, previewRotY = 0;
+let highlightedCrewIdx = -1;
+const highlightMat = new THREE.MeshBasicMaterial({ color: 0xffdd44, transparent: true, opacity: 0.5 });
+
+function highlightCrewMember(idx) {
+  highlightedCrewIdx = idx;
+  if (!previewShip) return;
+  previewShip.traverse(child => {
+    if (child.userData.isCrew) {
+      const isSelected = child.userData.crewIdx === idx;
+      child.traverse(mesh => {
+        if (mesh.isMesh && mesh.userData._origMat === undefined) mesh.userData._origMat = mesh.material;
+        if (mesh.isMesh) mesh.material = isSelected ? highlightMat : mesh.userData._origMat;
+      });
+      if (isSelected) {
+        if (!child.userData._ring) {
+          const ring = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.45, 16), new THREE.MeshBasicMaterial({ color: 0xffdd44, transparent: true, opacity: 0.6, side: THREE.DoubleSide }));
+          ring.rotation.x = -Math.PI / 2; ring.position.y = 0.02;
+          child.add(ring); child.userData._ring = ring;
+        }
+        child.userData._ring.visible = true;
+      } else if (child.userData._ring) {
+        child.userData._ring.visible = false;
+      }
+    }
+  });
+}
+
+function clearCrewHighlight() {
+  if (!previewShip) return;
+  previewShip.traverse(child => {
+    if (child.userData.isCrew) {
+      child.traverse(mesh => { if (mesh.isMesh && mesh.userData._origMat) mesh.material = mesh.userData._origMat; });
+      if (child.userData._ring) child.userData._ring.visible = false;
+    }
+  });
+  highlightedCrewIdx = -1;
+}
 function renderPreview() {
   if (!previewRenderer || !previewScene) return;
   if (previewShip) {
@@ -2526,6 +2580,7 @@ function buildCreationUI() {
       tab.onclick = () => {
         crewBar.querySelectorAll('.crew-tab').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
+        highlightCrewMember(idx);
       };
       crewBar.appendChild(tab);
     });
@@ -2536,6 +2591,7 @@ function buildCreationUI() {
 }
 
 function launchGame() {
+  clearCrewHighlight();
   G.player.shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
   G.player.flagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
   const allCrew = getCrewFromUI();
@@ -2552,6 +2608,7 @@ function launchGame() {
   G.mode = 'playing';
   G.player.speed = 1;
   document.getElementById('ui-layer').style.display = '';
+  if (isMobile) document.getElementById('touch-controls').style.display = 'block';
   noise = new SimplexNoise(G.seed);
   rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
   renderer.domElement.focus(); document.body.focus();
@@ -2603,6 +2660,7 @@ updateChunks();
 spawnNPCs();
 
 document.getElementById('ui-layer').style.display = 'none';
+document.getElementById('touch-controls').style.display = 'none';
 
 function menuRender() {
   if (G.mode !== 'playing') {
@@ -2710,6 +2768,7 @@ document.getElementById('start-btn').onclick = () => {
     G.mode = 'playing';
     G.player.speed = Math.max(G.player.speed, 1);
     document.getElementById('ui-layer').style.display = '';
+    if (isMobile) document.getElementById('touch-controls').style.display = 'block';
     noise = new SimplexNoise(G.seed);
     rebuildPlayerShip(); updateChunks(); spawnNPCs(); connectToServer();
     renderer.domElement.focus(); document.body.focus();
@@ -2761,6 +2820,15 @@ document.getElementById('create-back').onclick = () => {
   document.getElementById('create-screen').style.display = 'none';
   document.getElementById('start-screen').style.display = 'flex';
 };
+
+document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    document.querySelectorAll('#create-opts,#create-crew-opts').forEach(p => p.classList.remove('mob-active'));
+    document.getElementById(tab.dataset.panel)?.classList.add('mob-active');
+  };
+});
 
 requestAnimationFrame(gameLoop);
 
