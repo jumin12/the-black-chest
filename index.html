@@ -246,7 +246,7 @@ const G = {
   damageChunks: [],
   swimmers: [],
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '',
-  camera: { offsetX: 0, offsetZ: 0, zoom: isMobile ? 80 : 50, targetZoom: isMobile ? 80 : 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
+  camera: { offsetX: 0, offsetZ: 0, zoom: isMobile ? 150 : 50, targetZoom: isMobile ? 150 : 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
   crewReloading: false, crewReloadTimer: 0,
@@ -424,14 +424,12 @@ const waterFS = `
     float NdL = max(dot(N,L),0.0);
     vec3 diff = wc*(0.35+0.65*NdL);
     vec3 H=normalize(L+V);
-    float spec=pow(max(dot(N,H),0.0),900.0);
-    float sn1 = sin(vWorldPos.x*0.37+vWorldPos.z*0.23+uTime*0.09);
-    float sn2 = sin(vWorldPos.x*0.71-vWorldPos.z*0.53+uTime*0.13)*0.7;
-    float sn3 = sin(vWorldPos.x*1.37+vWorldPos.z*1.71-uTime*0.07)*0.4;
-    float sn4 = sin(vWorldPos.x*2.91-vWorldPos.z*2.37+uTime*0.17)*0.2;
-    float specMask = clamp((sn1+sn2+sn3+sn4)*0.22+0.5, 0.1, 1.0);
-    vec3 specC = vec3(1.0,0.96,0.88)*spec*0.8*specMask;
-    vec3 R=reflect(-V,N); float er=pow(max(R.y*0.5+0.5,0.0),0.4);
+    vec3 R=reflect(-L,vec3(0.0,1.0,0.0));
+    float sunReflDist = length(vWorldPos.xz - uCamPos.xz + R.xz * dot(vWorldPos-uCamPos,R)/dot(R,R));
+    float sunArea = exp(-sunReflDist * sunReflDist * 0.0003);
+    float spec = pow(max(dot(N,H),0.0), 1200.0) * sunArea;
+    vec3 specC = vec3(1.0,0.97,0.90) * spec * 2.0;
+    vec3 Rv=reflect(-V,N); float er=pow(max(Rv.y*0.5+0.5,0.0),0.4);
     vec3 refl = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er)*fresnel;
     float sss = pow(max(dot(V,-L+N*0.4),0.0),2.5)*0.3;
     vec3 sub = vec3(0.0,0.45,0.35)*sss;
@@ -1567,7 +1565,7 @@ function drawCompass() {
 /* ============================== MINIMAP ================================== */
 const mmCanvas = document.getElementById('minimap-canvas');
 const mmCtx = mmCanvas.getContext('2d');
-let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = 0.04, fmDragging = false, fmLastX = 0, fmLastY = 0;
+let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = 0.012, fmDragging = false, fmLastX = 0, fmLastY = 0;
 function toggleFullmap() {
   fullmapOpen = !fullmapOpen;
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
@@ -1647,10 +1645,33 @@ fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = Math.max(
 fmCanvas.addEventListener('mousedown', e => { fmDragging = true; fmLastX = e.clientX; fmLastY = e.clientY; fmCanvas.style.cursor = 'grabbing'; });
 window.addEventListener('mousemove', e => { if (fmDragging) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ -= (e.clientY - fmLastY) * scale / fmZoom; fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap(); } });
 window.addEventListener('mouseup', () => { fmDragging = false; fmCanvas.style.cursor = 'grab'; });
-let fmTouchId = null, fmTouchX = 0, fmTouchY = 0;
-fmCanvas.addEventListener('touchstart', e => { e.preventDefault(); const t = e.touches[0]; fmTouchId = t.identifier; fmTouchX = t.clientX; fmTouchY = t.clientY; }, { passive: false });
-fmCanvas.addEventListener('touchmove', e => { e.preventDefault(); for (let i = 0; i < e.changedTouches.length; i++) { const t = e.changedTouches[i]; if (t.identifier === fmTouchId) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (t.clientX - fmTouchX) * scale / fmZoom; fmPanZ -= (t.clientY - fmTouchY) * scale / fmZoom; fmTouchX = t.clientX; fmTouchY = t.clientY; if (fullmapOpen) drawFullmap(); } } }, { passive: false });
-fmCanvas.addEventListener('touchend', () => { fmTouchId = null; });
+let fmTouchId = null, fmTouchX = 0, fmTouchY = 0, fmPinchDist = 0;
+fmCanvas.addEventListener('touchstart', e => {
+  e.preventDefault(); e.stopPropagation();
+  if (e.touches.length === 1) { const t = e.touches[0]; fmTouchId = t.identifier; fmTouchX = t.clientX; fmTouchY = t.clientY; }
+  if (e.touches.length === 2) { fmPinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
+}, { passive: false });
+fmCanvas.addEventListener('touchmove', e => {
+  e.preventDefault(); e.stopPropagation();
+  if (e.touches.length === 2) {
+    const nd = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    if (fmPinchDist > 0) { fmZoom = Math.max(0.005, Math.min(0.3, fmZoom * (nd / fmPinchDist))); }
+    fmPinchDist = nd;
+    if (fullmapOpen) drawFullmap();
+    return;
+  }
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const t = e.changedTouches[i];
+    if (t.identifier === fmTouchId) {
+      const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width;
+      fmPanX -= (t.clientX - fmTouchX) * scale / fmZoom;
+      fmPanZ -= (t.clientY - fmTouchY) * scale / fmZoom;
+      fmTouchX = t.clientX; fmTouchY = t.clientY;
+      if (fullmapOpen) drawFullmap();
+    }
+  }
+}, { passive: false });
+fmCanvas.addEventListener('touchend', e => { e.stopPropagation(); fmTouchId = null; if (e.touches.length < 2) fmPinchDist = 0; });
 document.getElementById('minimap').onclick = toggleFullmap;
 document.getElementById('fullmap-close').onclick = toggleFullmap;
 
