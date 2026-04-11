@@ -103,6 +103,7 @@ wss.on('connection', (ws) => {
           const p = players.get(id);
           if (p && msg.name) p.name = msg.name.slice(0, 28);
           if (p && msg.shipName) p.shipName = msg.shipName.slice(0, 28);
+          if (p && msg.crew) p.crewData = msg.crew.slice(0, 6);
           break;
         }
         case 'ship_update': {
@@ -143,7 +144,7 @@ setInterval(() => {
   if (players.size === 0) return;
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
-    name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName
+    name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName, crewData: p.crewData
   }));
   broadcast({ type: 'state', players: snapshot });
 }, 1000 / TICK_RATE);
