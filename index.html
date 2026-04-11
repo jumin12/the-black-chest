@@ -233,6 +233,25 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div id="log-inv" class="log-content" style="display:none;"><div id="inv-list"></div></div>
     <div id="log-crew" class="log-content" style="display:none;"><div id="crew-list"></div></div>
   </div>
+  <div id="dock-prompt" style="display:none;position:absolute;bottom:70px;left:50%;transform:translateX(-50%);background:linear-gradient(180deg,rgba(30,20,12,0.95),rgba(18,12,6,0.98));border:2px solid rgba(180,140,60,0.5);border-radius:8px;padding:12px 20px;text-align:center;z-index:25;pointer-events:auto;">
+    <div style="color:#d4a848;font-size:14px;font-weight:bold;" id="dock-town-name"></div>
+    <div style="color:#a09070;font-size:11px;margin:4px 0 8px;">Press E or tap to dock</div>
+    <button id="dock-btn" style="background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;border:1px solid #b8942a;padding:8px 24px;border-radius:5px;cursor:pointer;font-family:Georgia,serif;font-size:14px;touch-action:manipulation;">Dock</button>
+  </div>
+  <div id="port-panel" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(6,4,2,0.94);z-index:55;overflow:hidden;">
+    <div style="max-width:500px;margin:0 auto;height:100%;display:flex;flex-direction:column;padding:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:8px;border-bottom:1px solid rgba(140,100,40,0.25);">
+        <h3 style="color:#d4a848;font-size:18px;margin:0;font-family:Georgia,serif;" id="port-title">Port Royal</h3>
+        <button id="port-leave" style="background:none;border:1px solid rgba(140,100,40,0.4);color:#a09070;padding:6px 16px;border-radius:5px;cursor:pointer;font-family:Georgia,serif;">Set Sail</button>
+      </div>
+      <div style="display:flex;gap:0;border-bottom:1px solid rgba(140,100,40,0.2);margin-top:8px;">
+        <div class="port-tab active" data-ptab="trade" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#d4a848;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;border-bottom:2px solid #d4a848;">Trade</div>
+        <div class="port-tab" data-ptab="recruit" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Recruit</div>
+        <div class="port-tab" data-ptab="quests" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Quests</div>
+      </div>
+      <div id="port-content" style="flex:1;overflow-y:auto;padding:10px 0;"></div>
+    </div>
+  </div>
   <div id="chat-box">
     <div id="chat-log"></div>
     <input id="chat-input" placeholder="Type message, press Enter..." />
@@ -265,9 +284,9 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 import * as THREE from 'three';
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
-const CHUNK_SIZE = 200;
+const CHUNK_SIZE = 300;
 const RENDER_DIST = isMobile ? 2 : 3;
-const ISLAND_CHANCE = 0.22;
+const ISLAND_CHANCE = 0.25;
 const SEA_LEVEL = 0;
 
 const G = {
@@ -309,6 +328,7 @@ const G = {
   damageChunks: [],
   swimmers: [],
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '',
+  nearDock: null, docked: false, quests: [],
   camera: { offsetX: 0, offsetZ: 0, zoom: isMobile ? 150 : 50, targetZoom: isMobile ? 150 : 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
@@ -574,8 +594,8 @@ function generateIsland(cx, cz) {
   const worldX = cx * CHUNK_SIZE, worldZ = cz * CHUNK_SIZE;
   const sizeNoise = new SimplexNoise(cx * 123 + cz * 456);
   const sizeFactor = sizeNoise.noise2D(cx * 0.5, cz * 0.5) * 0.5 + 0.5;
-  const islandRadius = 10 + sizeFactor * 70 + h * 20;
-  const islandHeight = 2 + sizeFactor * 16 + h * 6;
+  const islandRadius = 15 + sizeFactor * 100 + h * 30;
+  const islandHeight = 3 + sizeFactor * 18 + h * 8;
   const group = new THREE.Group();
   group.userData = { cx, cz, worldX, worldZ, radius: islandRadius };
 
@@ -675,6 +695,46 @@ function generateIsland(cx, cz) {
     const crate = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
     crate.position.set(fi.x, SEA_LEVEL + 1.5, fi.z); crate.castShadow = true; crate.userData.floatItem = fi;
     group.add(crate);
+  }
+
+  const hasTown = islandRadius > 50 && h < 0.12;
+  if (hasTown) {
+    group.userData.hasTown = true;
+    group.userData.townName = ['Port Royal','Tortuga','Nassau','Havana','Santiago','Bridgetown','Maracaibo','Cartagena'][Math.floor(h * 80) % 8];
+    const dockAngle = ln.noise2D(cx + 99, cz + 99) * Math.PI;
+    const dockDist = islandRadius * 0.8;
+    const dockX = worldX + Math.cos(dockAngle) * dockDist;
+    const dockZ = worldZ + Math.sin(dockAngle) * dockDist;
+    group.userData.dockX = dockX; group.userData.dockZ = dockZ;
+
+    const dockGeo = new THREE.BoxGeometry(4, 0.3, 12);
+    const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
+    const dock = new THREE.Mesh(dockGeo, dockMat);
+    dock.position.set(dockX, SEA_LEVEL + 0.4, dockZ);
+    dock.rotation.y = dockAngle; dock.receiveShadow = true;
+    group.add(dock);
+
+    for (let pi = 0; pi < 4; pi++) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.5, 4), dockMat);
+      post.position.set(dockX + Math.cos(dockAngle + Math.PI/2) * 1.8 * (pi < 2 ? 1 : -1), SEA_LEVEL + 0.7, dockZ + Math.sin(dockAngle + Math.PI/2) * 1.8 * (pi < 2 ? 1 : -1) + (pi % 2) * 8 - 4);
+      group.add(post);
+    }
+
+    for (let bi = 0; bi < 3; bi++) {
+      const ba = dockAngle + Math.PI + (bi - 1) * 0.4;
+      const bd = islandRadius * 0.55;
+      const bx = worldX + Math.cos(ba) * bd, bz = worldZ + Math.sin(ba) * bd;
+      const bldg = new THREE.Mesh(new THREE.BoxGeometry(3 + Math.random() * 2, 2 + Math.random() * 2, 3 + Math.random() * 2),
+        new THREE.MeshLambertMaterial({ color: [0xc8b890, 0xa08860, 0x8a7050][bi] }));
+      bldg.position.set(bx, SEA_LEVEL + 2 + Math.random() * 2, bz); bldg.castShadow = true;
+      group.add(bldg);
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(2.5, 1.5, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
+      roof.position.set(bx, bldg.position.y + 2, bz); roof.rotation.y = Math.PI / 4; group.add(roof);
+    }
+
+    const townLabel = makeTextSprite(group.userData.townName, '#e8d090', 'Trading Port');
+    townLabel.position.set(dockX, SEA_LEVEL + 8, dockZ);
+    group.add(townLabel);
   }
 
   islandGroup.add(group);
@@ -1077,11 +1137,13 @@ function rebuildPlayerShip() {
 /* ============================== NPC SHIPS ================================ */
 function seededRand(seed) { seed = ((seed * 16807) % 2147483647 + 2147483647) % 2147483647; return seed / 2147483647; }
 function spawnNPCs() {
+  G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
+  G.npcs = [];
   const npcSeed = G.seed * 7 + 13;
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 8; i++) {
     let s = npcSeed + i * 997;
     const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
-    const a = (i / 5) * Math.PI * 2 + sr() * 0.8, d = 120 + sr() * 600;
+    const a = (i / 8) * Math.PI * 2 + sr() * 0.6, d = 150 + sr() * 1000;
     const npc = {
       x: Math.cos(a) * d, z: Math.sin(a) * d,
       rotation: sr() * Math.PI * 2, speed: 2 + sr() * 3,
@@ -1330,6 +1392,7 @@ window.addEventListener('keydown', e => {
   if (k === 't') { togglePanel('chat-box'); if (document.getElementById('chat-box').style.display !== 'none') { setTimeout(() => document.getElementById('chat-input').focus(), 50); unreadChat = 0; const badge = document.getElementById('chat-badge'); if (badge) badge.style.display = 'none'; } }
   if (k === 'f') { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
   if (k === 'v') doAnchor();
+  if (k === 'e' && G.nearDock && !G.docked) dockAtPort();
   if (k === 'm') toggleFullmap();
   if (e.key === ' ' && G.mode === 'playing') { e.preventDefault(); doFire(); }
   if (k === 'z' && G.mode === 'playing') doFireSide(-1);
@@ -1549,6 +1612,146 @@ document.getElementById('btn-chat').onclick = () => {
   if (badge) badge.style.display = 'none';
 };
 document.getElementById('btn-anchor').onclick = () => doAnchor();
+
+/* ============================== PORT SYSTEM ============================== */
+const TRADE_GOODS = [
+  { id: 'wood', name: 'Wood Planks', buy: 5, sell: 3 },
+  { id: 'cloth', name: 'Sail Cloth', buy: 8, sell: 5 },
+  { id: 'iron', name: 'Iron Ingot', buy: 12, sell: 8 },
+  { id: 'rum', name: 'Rum Barrels', buy: 15, sell: 10 },
+  { id: 'gunpowder', name: 'Gunpowder', buy: 10, sell: 7 }
+];
+
+const QUEST_TEMPLATES = [
+  { type: 'hunt', desc: 'Sink {target}', reward: 40, target: '' },
+  { type: 'delivery', desc: 'Deliver {count} {item} to {dest}', reward: 30, item: '', count: 0 },
+  { type: 'explore', desc: 'Explore coordinates ({x}, {z})', reward: 25, x: 0, z: 0 }
+];
+
+const RECRUIT_NAMES = ['Barnacle Bob','Jolly Roger','Peg-Leg Pete','Scarlet Jane','Ironjaw Mike','Black Beth','Cutlass Charlie','Storm Sarah'];
+const RECRUIT_ROLES = ['gunner','sailor','navigator'];
+
+function dockAtPort() {
+  if (!G.nearDock) return;
+  G.docked = true; G.player.anchored = true; G.player.speed = 0;
+  document.getElementById('dock-prompt').style.display = 'none';
+  document.getElementById('port-panel').style.display = 'block';
+  document.getElementById('port-title').textContent = G.nearDock.townName;
+  showPortTab('trade');
+}
+
+function leavePort() {
+  G.docked = false; G.player.anchored = false; G.player.speed = 1;
+  document.getElementById('port-panel').style.display = 'none';
+}
+
+function showPortTab(tab) {
+  document.querySelectorAll('.port-tab').forEach(t => { t.classList.remove('active'); t.style.color = '#8a7a60'; t.style.borderBottom = 'none'; });
+  const at = document.querySelector(`.port-tab[data-ptab="${tab}"]`);
+  if (at) { at.classList.add('active'); at.style.color = '#d4a848'; at.style.borderBottom = '2px solid #d4a848'; }
+  const content = document.getElementById('port-content');
+  content.innerHTML = '';
+
+  if (tab === 'trade') {
+    const gold = G.player.inventory.find(i => i.id === 'gold');
+    content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gold?.count || 0}</div>`;
+    TRADE_GOODS.forEach(g => {
+      const inv = G.player.inventory.find(i => i.id === g.id);
+      const d = document.createElement('div');
+      d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
+      d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${g.name}</div><div style="color:#8a7a60;font-size:10px;">Have: ${inv?.count || 0}</div></div>
+        <div style="display:flex;gap:6px;">
+          <button onclick="portBuy('${g.id}',${g.buy})" style="background:rgba(40,80,40,0.4);border:1px solid rgba(80,160,80,0.4);color:#88cc88;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Buy ${g.buy}g</button>
+          <button onclick="portSell('${g.id}',${g.sell})" style="background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Sell ${g.sell}g</button>
+        </div>`;
+      content.appendChild(d);
+    });
+  } else if (tab === 'recruit') {
+    const spec = SHIP_TYPES[G.player.shipType];
+    content.innerHTML = `<div style="color:#8a7a60;font-size:11px;margin-bottom:8px;">Crew: ${G.player.crew.length}/${spec.maxCrew} | Cost: 25 gold each</div>`;
+    for (let i = 0; i < 3; i++) {
+      const rName = RECRUIT_NAMES[Math.floor(Math.random() * RECRUIT_NAMES.length)];
+      const rRole = RECRUIT_ROLES[Math.floor(Math.random() * RECRUIT_ROLES.length)];
+      const d = document.createElement('div');
+      d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
+      d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${rName}</div><div style="color:#d4a848;font-size:10px;text-transform:uppercase;">${rRole}</div></div>
+        <button onclick="portRecruit('${rName}','${rRole}')" style="background:rgba(40,60,80,0.4);border:1px solid rgba(80,120,160,0.4);color:#88aacc;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Hire 25g</button>`;
+      content.appendChild(d);
+    }
+  } else if (tab === 'quests') {
+    if (G.quests.length === 0) generateQuests();
+    G.quests.forEach((q, qi) => {
+      const d = document.createElement('div');
+      d.style.cssText = `padding:10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;${q.accepted ? 'border-color:rgba(80,160,80,0.4);' : ''}`;
+      d.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${q.desc}</div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px;">
+          <span style="color:#d4a848;font-size:11px;">Reward: ${q.reward} gold</span>
+          ${q.accepted ? '<span style="color:#88cc88;font-size:11px;">ACTIVE</span>' : `<button onclick="acceptQuest(${qi})" style="background:rgba(60,50,20,0.5);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:3px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Accept</button>`}
+        </div>`;
+      content.appendChild(d);
+    });
+  }
+}
+
+window.portBuy = function(id, cost) {
+  const gold = G.player.inventory.find(i => i.id === 'gold');
+  if (!gold || gold.count < cost) { notify('Not enough gold!'); return; }
+  gold.count -= cost;
+  const item = G.player.inventory.find(i => i.id === id);
+  if (item) item.count += 1;
+  notify(`Bought 1 ${id}`);
+  showPortTab('trade');
+};
+
+window.portSell = function(id, price) {
+  const item = G.player.inventory.find(i => i.id === id);
+  if (!item || item.count < 1) { notify('None to sell!'); return; }
+  item.count -= 1;
+  const gold = G.player.inventory.find(i => i.id === 'gold');
+  if (gold) gold.count += price;
+  notify(`Sold 1 ${id} for ${price}g`);
+  showPortTab('trade');
+};
+
+window.portRecruit = function(name, role) {
+  const spec = SHIP_TYPES[G.player.shipType];
+  if (G.player.crew.length >= spec.maxCrew) { notify('Crew full!'); return; }
+  const gold = G.player.inventory.find(i => i.id === 'gold');
+  if (!gold || gold.count < 25) { notify('Not enough gold!'); return; }
+  gold.count -= 25;
+  G.player.crew.push({ name, role, health: 100, task: 'idle', color: '#5a5a5a' });
+  notify(`${name} joined your crew!`);
+  rebuildPlayerShip();
+  showPortTab('recruit');
+};
+
+function generateQuests() {
+  G.quests = [];
+  const npcNames = ['Sea Phantom','Red Tide','Storm Chaser','Bone Rattler','Shadow Wave'];
+  for (let i = 0; i < 3; i++) {
+    const t = Math.floor(Math.random() * 3);
+    if (t === 0) {
+      const target = npcNames[Math.floor(Math.random() * npcNames.length)];
+      G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(Math.random() * 30), target, accepted: false });
+    } else if (t === 1) {
+      const items = ['wood','cloth','iron','rum'];
+      const item = items[Math.floor(Math.random() * items.length)];
+      const count = 3 + Math.floor(Math.random() * 5);
+      G.quests.push({ type: 'delivery', desc: `Deliver ${count} ${item} to this port`, reward: 20 + count * 5, item, count, accepted: false });
+    } else {
+      const x = Math.floor((Math.random() - 0.5) * 800), z = Math.floor((Math.random() - 0.5) * 800);
+      G.quests.push({ type: 'explore', desc: `Explore coordinates (${x}, ${z})`, reward: 20 + Math.floor(Math.random() * 20), x, z, accepted: false });
+    }
+  }
+}
+
+window.acceptQuest = function(idx) {
+  if (G.quests[idx]) { G.quests[idx].accepted = true; notify('Quest accepted!'); showPortTab('quests'); }
+};
+
+document.getElementById('dock-btn').onclick = dockAtPort;
+document.getElementById('port-leave').onclick = leavePort;
+document.querySelectorAll('.port-tab').forEach(t => { t.onclick = () => showPortTab(t.dataset.ptab); });
 document.getElementById('btn-help').onclick = () => {
   const h = document.getElementById('controls-help');
   h.style.display = h.style.display === 'block' ? 'none' : 'block';
@@ -2229,6 +2432,21 @@ function update(dt) {
     }
   });
 
+  let nearestDock = null, nearestDockDist = 20;
+  G.islands.forEach(isl => {
+    if (!isl.hasTown) return;
+    const dd = Math.hypot(G.player.x - isl.dockX, G.player.z - isl.dockZ);
+    if (dd < nearestDockDist) { nearestDock = isl; nearestDockDist = dd; }
+  });
+  G.nearDock = nearestDock;
+  const dockPrompt = document.getElementById('dock-prompt');
+  if (nearestDock && !G.docked) {
+    dockPrompt.style.display = 'block';
+    document.getElementById('dock-town-name').textContent = nearestDock.townName;
+  } else {
+    dockPrompt.style.display = 'none';
+  }
+
   water.position.set(G.player.x, SEA_LEVEL - 0.3, G.player.z);
   if (isMobile) {
     const targetY = G.player.rotation + Math.PI;
@@ -2626,7 +2844,8 @@ function saveProgress() {
       shipParts: G.player.shipParts,
       inventory: G.player.inventory,
       crew: G.player.crew,
-      gold: G.player.inventory.find(i => i.id === 'gold')?.count || 0
+      gold: G.player.inventory.find(i => i.id === 'gold')?.count || 0,
+      quests: G.quests
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
   } catch (e) {}
