@@ -233,11 +233,16 @@ input,textarea{-webkit-user-select:text;user-select:text;}
       <div class="log-tab" data-tab="missions" style="flex:1;text-align:center;padding:8px 4px;cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Missions</div>
       <div class="log-tab" data-tab="pirates" style="flex:1;text-align:center;padding:8px 4px;cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Pirates</div>
     </div>
-    <div id="log-ship" class="log-content"><div id="ship-type-selector"></div><div id="ship-parts-list"></div></div>
-    <div id="log-inv" class="log-content" style="display:none;"><div id="inv-list"></div></div>
+    <div id="log-ship" class="log-content"><div id="ship-info"></div></div>
+    <div id="log-inv" class="log-content" style="display:none;"><canvas id="cargo-canvas" width="280" height="200" style="width:100%;border-radius:6px;border:1px solid rgba(140,100,40,0.2);margin-bottom:8px;"></canvas><div id="inv-list"></div></div>
     <div id="log-crew" class="log-content" style="display:none;"><div id="crew-list"></div></div>
     <div id="log-missions" class="log-content" style="display:none;"><div id="missions-list"></div></div>
     <div id="log-pirates" class="log-content" style="display:none;"><div id="pirates-list"></div></div>
+  </div>
+  <div id="debug-panel" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:320px;max-width:90vw;max-height:80vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:2px solid #cc4444;border-radius:8px;padding:14px;z-index:60;pointer-events:auto;">
+    <h3 style="color:#cc4444;font-size:14px;margin-bottom:8px;">DEBUG MENU</h3>
+    <div id="debug-ship-builder"><div id="ship-type-selector"></div><div id="ship-parts-list"></div></div>
+    <button onclick="document.getElementById('debug-panel').style.display='none'" style="background:#cc4444;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;margin-top:8px;width:100%;">Close</button>
   </div>
   <div id="dock-prompt" style="display:none;position:absolute;top:45px;left:50%;transform:translateX(-50%);background:linear-gradient(180deg,rgba(30,20,12,0.95),rgba(18,12,6,0.98));border:2px solid rgba(180,140,60,0.5);border-radius:8px;padding:10px 18px;text-align:center;z-index:25;pointer-events:auto;">
     <div style="color:#d4a848;font-size:14px;font-weight:bold;" id="dock-town-name"></div>
@@ -733,13 +738,15 @@ function generateIsland(cx, cz) {
     group.add(dock);
     group.userData.dockAngle = dockAngle;
 
-    for (let pi = 0; pi < 6; pi++) {
+    const perpX = Math.cos(dockAngle + Math.PI/2), perpZ = Math.sin(dockAngle + Math.PI/2);
+    const alongX = Math.cos(dockAngle), alongZ = Math.sin(dockAngle);
+    for (let pi = 0; pi < 8; pi++) {
       const side = pi % 2 === 0 ? 1 : -1;
-      const along = (Math.floor(pi / 2) - 1) * 5;
-      const ppx = dockX + Math.cos(dockAngle) * along + Math.cos(dockAngle + Math.PI/2) * 2.3 * side;
-      const ppz = dockZ + Math.sin(dockAngle) * along + Math.sin(dockAngle + Math.PI/2) * 2.3 * side;
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, 2.5, 5), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
-      post.position.set(ppx, SEA_LEVEL - 0.2, ppz);
+      const along = (Math.floor(pi / 2) - 1.5) * 4;
+      const ppx = dockX + alongX * along + perpX * 2.3 * side;
+      const ppz = dockZ + alongZ * along + perpZ * 2.3 * side;
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.15, 3, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
+      post.position.set(ppx, SEA_LEVEL - 0.5, ppz);
       group.add(post);
     }
 
@@ -1447,6 +1454,14 @@ window.addEventListener('keydown', e => {
   if (k === 'v') doAnchor();
   if (k === 'e' && G.nearDock && !G.docked) dockAtPort();
   if (k === 'm') toggleFullmap();
+  if (e.key === 'F3') {
+    e.preventDefault();
+    const pw = prompt('Debug password:');
+    if (pw === 'test123') {
+      const dbg = document.getElementById('debug-panel');
+      if (dbg) { dbg.style.display = dbg.style.display === 'block' ? 'none' : 'block'; if (dbg.style.display === 'block') updateDebugBuilder(); }
+    }
+  }
   if (e.key === ' ' && G.mode === 'playing') { e.preventDefault(); doFire(); }
   if (k === 'z' && G.mode === 'playing') doFireSide(-1);
   if (k === 'x' && G.mode === 'playing') doFireSide(1);
@@ -1597,34 +1612,108 @@ function addChatMessage(name, text) {
 }
 
 function updateShipPanel() {
+  const info = document.getElementById('ship-info');
+  const spec = SHIP_TYPES[G.player.shipType];
+  const gold = G.player.inventory.find(i => i.id === 'gold')?.count || 0;
+  info.innerHTML = `
+    <div style="text-align:center;color:#d4a848;font-size:16px;font-weight:bold;margin-bottom:4px;">${G.player.shipName}</div>
+    <div style="text-align:center;color:#8a7a60;font-size:11px;margin-bottom:10px;">${spec.name} - ${spec.desc}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+      <div style="background:rgba(30,20,12,0.5);padding:8px;border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
+        <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">Captain</div>
+        <div style="color:#e0d6c2;font-size:12px;">${G.player.crew[0]?.name || 'Unknown'}</div>
+      </div>
+      <div style="background:rgba(30,20,12,0.5);padding:8px;border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
+        <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">Crew</div>
+        <div style="color:#e0d6c2;font-size:12px;">${G.player.crew.length} / ${spec.maxCrew}</div>
+      </div>
+      <div style="background:rgba(30,20,12,0.5);padding:8px;border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
+        <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">Hull</div>
+        <div style="color:#e0d6c2;font-size:12px;">${G.player.health} HP</div>
+      </div>
+      <div style="background:rgba(30,20,12,0.5);padding:8px;border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
+        <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">Gold</div>
+        <div style="color:#d4a848;font-size:12px;">${gold}</div>
+      </div>
+      <div style="background:rgba(30,20,12,0.5);padding:8px;border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
+        <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">Speed</div>
+        <div style="color:#e0d6c2;font-size:12px;">${spec.speed}x</div>
+      </div>
+      <div style="background:rgba(30,20,12,0.5);padding:8px;border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
+        <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">Cannons</div>
+        <div style="color:#e0d6c2;font-size:12px;">${spec.cannonSlots} guns</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;padding:8px;background:rgba(30,20,12,0.5);border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
+      <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;margin-bottom:4px;">Equipment</div>
+      <div style="color:#e0d6c2;font-size:11px;">Hull: ${SHIP_PARTS.hull.find(h=>h.id===G.player.shipParts.hull)?.name || 'Basic'}</div>
+      <div style="color:#e0d6c2;font-size:11px;">Sails: ${SHIP_PARTS.sail.find(s=>s.id===G.player.shipParts.sail)?.name || 'Basic'}</div>
+      <div style="color:#e0d6c2;font-size:11px;">Guns: ${SHIP_PARTS.cannon.find(c=>c.id===G.player.shipParts.cannon)?.name || 'None'}</div>
+    </div>`;
+}
+function updateDebugBuilder() {
   const td = document.getElementById('ship-type-selector');
-  td.innerHTML = '<div class="label" style="margin-bottom:6px;font-size:11px;color:#a09080;">HULL TYPE</div>';
+  if (!td) return;
+  td.innerHTML = '<div style="color:#cc4444;font-size:10px;margin-bottom:6px;">CHANGE SHIP TYPE</div>';
   Object.entries(SHIP_TYPES).forEach(([key, spec]) => {
     const b = document.createElement('div'); b.className = 'part-slot' + (key === G.player.shipType ? ' active' : '');
-    b.innerHTML = `<div class="value">${spec.name}</div><div class="label">${spec.desc} | Crew: ${spec.maxCrew} | Speed: ${spec.speed}x | Guns: ${spec.cannonSlots}</div>`;
-    b.onclick = () => { G.player.shipType = key; rebuildPlayerShip(); updateShipPanel(); if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_update', shipType: key, shipParts: G.player.shipParts })); };
+    b.innerHTML = `<div class="value">${spec.name}</div><div class="label">${spec.desc}</div>`;
+    b.onclick = () => { G.player.shipType = key; rebuildPlayerShip(); updateDebugBuilder(); updateShipPanel(); };
     td.appendChild(b);
   });
-  const pd = document.getElementById('ship-parts-list'); pd.innerHTML = '';
+  const pd = document.getElementById('ship-parts-list');
+  if (!pd) return;
+  pd.innerHTML = '';
   Object.entries(SHIP_PARTS).forEach(([slot, opts]) => {
     const sd = document.createElement('div');
-    sd.innerHTML = `<div class="label" style="margin:10px 0 4px;font-size:11px;color:#a09080;">${slot.toUpperCase()}</div>`;
+    sd.innerHTML = `<div style="color:#cc4444;font-size:10px;margin:8px 0 4px;">${slot.toUpperCase()}</div>`;
     opts.forEach(opt => {
       const b = document.createElement('div'); b.className = 'part-slot' + (G.player.shipParts[slot] === opt.id ? ' active' : '');
-      b.innerHTML = `<div class="value">${opt.name}</div><div class="label">${opt.cost > 0 ? 'Cost: ' + opt.cost + ' iron' : 'Free'}</div>`;
-      b.onclick = () => {
-        const iron = G.player.inventory.find(i => i.id === 'iron');
-        if (opt.cost > 0 && (!iron || iron.count < opt.cost)) { notify('Not enough iron!'); return; }
-        if (opt.cost > 0 && iron) iron.count -= opt.cost;
-        G.player.shipParts[slot] = opt.id; rebuildPlayerShip(); updateShipPanel(); notify(`Equipped ${opt.name}`);
-        if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_update', shipType: G.player.shipType, shipParts: G.player.shipParts }));
-      };
+      b.innerHTML = `<div class="value">${opt.name}</div>`;
+      b.onclick = () => { G.player.shipParts[slot] = opt.id; rebuildPlayerShip(); updateDebugBuilder(); };
       sd.appendChild(b);
     });
     pd.appendChild(sd);
   });
 }
+
+function drawCargoCanvas() {
+  const cv = document.getElementById('cargo-canvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d'), w = 280, h = 200;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0a1420'; ctx.fillRect(0, 0, w, h);
+  const spec = SHIP_TYPES[G.player.shipType];
+  const shipW = w * 0.7, shipH = h * 0.3, sx = (w - shipW) / 2, sy = h * 0.3;
+  ctx.fillStyle = '#5a3a1a'; ctx.beginPath();
+  ctx.moveTo(sx, sy + shipH); ctx.lineTo(sx + shipW * 0.1, sy); ctx.lineTo(sx + shipW * 0.9, sy);
+  ctx.lineTo(sx + shipW, sy + shipH * 0.8); ctx.lineTo(sx + shipW * 0.95, sy + shipH); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#8a6a3a'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = '#3a2a10'; ctx.fillRect(sx + 5, sy + shipH - 3, shipW - 10, 3);
+  const slots = Math.min(spec.maxCrew + 2, 10);
+  const slotW = (shipW - 20) / Math.min(slots, 5), slotH = 22;
+  const rows = Math.ceil(slots / 5);
+  let si = 0;
+  G.player.inventory.forEach((item, idx) => {
+    if (si >= slots || item.count <= 0) return;
+    const col = si % 5, row = Math.floor(si / 5);
+    const ix = sx + 10 + col * slotW, iy = sy + shipH + 8 + row * (slotH + 4);
+    ctx.fillStyle = 'rgba(40,30,18,0.7)'; ctx.fillRect(ix, iy, slotW - 3, slotH);
+    ctx.strokeStyle = 'rgba(140,100,40,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(ix, iy, slotW - 3, slotH);
+    ctx.fillStyle = '#d4a848'; ctx.font = '9px Georgia'; ctx.textAlign = 'left';
+    ctx.fillText(item.icon, ix + 3, iy + 10);
+    ctx.fillStyle = '#e0d6c2'; ctx.font = '9px Georgia';
+    ctx.fillText(`${item.count}`, ix + 18, iy + 10);
+    ctx.fillStyle = '#8a7a60'; ctx.font = '7px Georgia';
+    ctx.fillText(item.name.split(' ')[0], ix + 3, iy + 19);
+    si++;
+  });
+  ctx.fillStyle = '#8a7a60'; ctx.font = '9px Georgia'; ctx.textAlign = 'center';
+  ctx.fillText(`${G.player.shipName} - ${spec.name} (${slots} cargo slots)`, w / 2, h - 6);
+}
+
 function updateInventoryPanel() {
+  drawCargoCanvas();
   const l = document.getElementById('inv-list'); l.innerHTML = '';
   G.player.inventory.forEach(item => {
     const d = document.createElement('div'); d.className = 'inv-item';
@@ -1753,9 +1842,12 @@ function dockAtPort() {
   if (!G.nearDock) return;
   G.docked = true; G.player.anchored = true; G.player.speed = 0;
   const da = G.nearDock.dockAngle || 0;
-  const sideOffset = 4;
-  const targetX = G.nearDock.dockX + Math.cos(da + Math.PI/2) * sideOffset;
-  const targetZ = G.nearDock.dockZ + Math.sin(da + Math.PI/2) * sideOffset;
+  const perpX = Math.cos(da + Math.PI/2), perpZ = Math.sin(da + Math.PI/2);
+  const playerSide = (G.player.x - G.nearDock.dockX) * perpX + (G.player.z - G.nearDock.dockZ) * perpZ;
+  const sideSign = playerSide >= 0 ? 1 : -1;
+  const sideOffset = 5;
+  const targetX = G.nearDock.dockX + perpX * sideOffset * sideSign;
+  const targetZ = G.nearDock.dockZ + perpZ * sideOffset * sideSign;
   G.dockingAnim = { timer: 0, targetX, targetZ, dockX: G.nearDock.dockX, dockZ: G.nearDock.dockZ, phase: 'approach' };
   G.sailsFurled = true;
   document.getElementById('dock-prompt').style.display = 'none';
@@ -2398,20 +2490,19 @@ function update(dt) {
 
   playerShipGroup.traverse(child => {
     if (child.userData.isSail && child.userData.basePositions) {
-      child.rotation.y = G.sailsFurled ? 0 : G.currentSailAngle;
+      if (!child.userData._furlAmt) child.userData._furlAmt = 0;
+      const furlTarget = G.sailsFurled ? 1 : 0;
+      child.userData._furlAmt += (furlTarget - child.userData._furlAmt) * 0.8 * dt;
+      const furl = child.userData._furlAmt;
+      child.rotation.y = G.currentSailAngle * (1 - furl);
       const p = child.geometry.attributes.position, base = child.userData.basePositions;
-      const billow = G.sailsFurled ? 0 : Math.abs(windPushZ) * windStr;
+      const billow = Math.abs(windPushZ) * windStr * (1 - furl);
       for (let i = 0; i < p.count; i++) {
         const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
-        if (G.sailsFurled) {
-          p.setY(i, by * 0.15);
-          p.setZ(i, bz * 0.1);
-        } else {
-          const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
-          const flutter = Math.sin(G.time * 2.0 + by * 3 + bx * 1.5) * 0.025;
-          p.setY(i, by);
-          p.setZ(i, bz + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
-        }
+        const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
+        const flutter = Math.sin(G.time * 2.0 + by * 3 + bx * 1.5) * 0.025 * (1 - furl);
+        p.setY(i, by * (1 - furl * 0.85));
+        p.setZ(i, bz * (1 - furl * 0.9) + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
       }
       p.needsUpdate = true; child.geometry.computeVertexNormals();
     }
