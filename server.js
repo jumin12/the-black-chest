@@ -9,6 +9,7 @@ const WORLD_SEED = Math.floor(Math.random() * 999999);
 
 const players = new Map();
 let nextId = 1;
+let leaderboardHistory = [];
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -128,6 +129,21 @@ wss.on('connection', (ws) => {
         }
         case 'ship_sunk': {
           broadcast({ type: 'ship_sunk', id, x: msg.x, z: msg.z, loot: msg.loot, name: players.get(id)?.name || 'Unknown' });
+          break;
+        }
+        case 'leaderboard_update': {
+          const p = players.get(id);
+          if (p) { p.kills = (p.kills || 0) + (msg.kills || 0); p.loot = (p.loot || 0) + (msg.loot || 0); }
+          const lb = Array.from(players.values()).map(pl => ({ name: pl.name || pl.shipName || 'Pirate', kills: pl.kills || 0, loot: pl.loot || 0 }));
+          leaderboardHistory = leaderboardHistory.filter(e => !lb.find(l => l.name === e.name));
+          leaderboardHistory.push(...lb);
+          leaderboardHistory.sort((a, b) => b.kills - a.kills || b.loot - a.loot);
+          leaderboardHistory = leaderboardHistory.slice(0, 20);
+          broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          break;
+        }
+        case 'get_leaderboard': {
+          ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
           break;
         }
       }
