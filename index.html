@@ -259,6 +259,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
         <div class="port-tab active" data-ptab="trade" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#d4a848;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;border-bottom:2px solid #d4a848;">Trade</div>
         <div class="port-tab" data-ptab="recruit" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Recruit</div>
         <div class="port-tab" data-ptab="quests" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Quests</div>
+        <div class="port-tab" data-ptab="upgrades" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Upgrades</div>
       </div>
       <div id="port-content" style="flex:1;overflow-y:auto;padding:10px 0;"></div>
     </div>
@@ -738,13 +739,13 @@ function generateIsland(cx, cz) {
     group.add(dock);
     group.userData.dockAngle = dockAngle;
 
-    const perpX = Math.cos(dockAngle + Math.PI/2), perpZ = Math.sin(dockAngle + Math.PI/2);
-    const alongX = Math.cos(dockAngle), alongZ = Math.sin(dockAngle);
+    const dockLongX = Math.sin(dockAngle), dockLongZ = Math.cos(dockAngle);
+    const dockWidX = Math.cos(dockAngle), dockWidZ = -Math.sin(dockAngle);
     for (let pi = 0; pi < 8; pi++) {
       const side = pi % 2 === 0 ? 1 : -1;
       const along = (Math.floor(pi / 2) - 1.5) * 4;
-      const ppx = dockX + alongX * along + perpX * 2.3 * side;
-      const ppz = dockZ + alongZ * along + perpZ * 2.3 * side;
+      const ppx = dockX + dockLongX * along + dockWidX * 2.3 * side;
+      const ppz = dockZ + dockLongZ * along + dockWidZ * 2.3 * side;
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.15, 3, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
       post.position.set(ppx, SEA_LEVEL - 0.5, ppz);
       group.add(post);
@@ -1644,11 +1645,15 @@ function updateShipPanel() {
         <div style="color:#e0d6c2;font-size:12px;">${spec.cannonSlots} guns</div>
       </div>
     </div>
-    <div style="margin-top:10px;padding:8px;background:rgba(30,20,12,0.5);border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
-      <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;margin-bottom:4px;">Equipment</div>
-      <div style="color:#e0d6c2;font-size:11px;">Hull: ${SHIP_PARTS.hull.find(h=>h.id===G.player.shipParts.hull)?.name || 'Basic'}</div>
-      <div style="color:#e0d6c2;font-size:11px;">Sails: ${SHIP_PARTS.sail.find(s=>s.id===G.player.shipParts.sail)?.name || 'Basic'}</div>
-      <div style="color:#e0d6c2;font-size:11px;">Guns: ${SHIP_PARTS.cannon.find(c=>c.id===G.player.shipParts.cannon)?.name || 'None'}</div>
+    <div style="margin-top:10px;">
+      <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;margin-bottom:6px;letter-spacing:1px;">Equipment Slots</div>
+      ${Object.entries(SHIP_PARTS).map(([slot, opts]) => {
+        const current = opts.find(o => o.id === G.player.shipParts[slot]);
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.15);border-radius:5px;margin-bottom:4px;">
+          <div><div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">${slot}</div><div style="color:#e0d6c2;font-size:12px;">${current?.name || 'None'}</div></div>
+          <div style="color:#4a8a4a;font-size:9px;">${current?.id === 'none' || current?.id === 'basic' ? '' : 'EQUIPPED'}</div>
+        </div>`;
+      }).join('')}
     </div>`;
 }
 function updateDebugBuilder() {
@@ -1680,36 +1685,75 @@ function updateDebugBuilder() {
 function drawCargoCanvas() {
   const cv = document.getElementById('cargo-canvas');
   if (!cv) return;
-  const ctx = cv.getContext('2d'), w = 280, h = 200;
+  const ctx = cv.getContext('2d'), w = 280, h = 220;
+  cv.height = 220;
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#0a1420'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#080e18'; ctx.fillRect(0, 0, w, h);
+
   const spec = SHIP_TYPES[G.player.shipType];
-  const shipW = w * 0.7, shipH = h * 0.3, sx = (w - shipW) / 2, sy = h * 0.3;
-  ctx.fillStyle = '#5a3a1a'; ctx.beginPath();
-  ctx.moveTo(sx, sy + shipH); ctx.lineTo(sx + shipW * 0.1, sy); ctx.lineTo(sx + shipW * 0.9, sy);
-  ctx.lineTo(sx + shipW, sy + shipH * 0.8); ctx.lineTo(sx + shipW * 0.95, sy + shipH); ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = '#8a6a3a'; ctx.lineWidth = 1.5; ctx.stroke();
-  ctx.fillStyle = '#3a2a10'; ctx.fillRect(sx + 5, sy + shipH - 3, shipW - 10, 3);
-  const slots = Math.min(spec.maxCrew + 2, 10);
-  const slotW = (shipW - 20) / Math.min(slots, 5), slotH = 22;
-  const rows = Math.ceil(slots / 5);
+  const shipLen = w * 0.85, shipH = h * 0.35;
+  const sx = (w - shipLen) / 2, sy = h * 0.08;
+
+  ctx.fillStyle = '#4a2a10';
+  ctx.beginPath();
+  ctx.moveTo(sx + shipLen, sy + shipH * 0.5);
+  ctx.lineTo(sx + shipLen * 0.85, sy);
+  ctx.lineTo(sx + shipLen * 0.15, sy + shipH * 0.05);
+  ctx.lineTo(sx, sy + shipH * 0.4);
+  ctx.lineTo(sx + shipLen * 0.05, sy + shipH);
+  ctx.lineTo(sx + shipLen * 0.15, sy + shipH * 0.95);
+  ctx.lineTo(sx + shipLen * 0.85, sy + shipH * 0.9);
+  ctx.lineTo(sx + shipLen, sy + shipH * 0.7);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#6a4a20'; ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.fillStyle = '#3a2010';
+  ctx.fillRect(sx + shipLen * 0.08, sy + shipH * 0.92, shipLen * 0.82, 3);
+
+  ctx.strokeStyle = '#5a3a15'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(sx + shipLen * 0.4, sy + shipH * 0.1);
+  ctx.lineTo(sx + shipLen * 0.4, sy - shipH * 0.5); ctx.stroke();
+  ctx.fillStyle = 'rgba(220,210,190,0.4)';
+  ctx.beginPath(); ctx.moveTo(sx + shipLen * 0.41, sy - shipH * 0.45);
+  ctx.lineTo(sx + shipLen * 0.6, sy - shipH * 0.1); ctx.lineTo(sx + shipLen * 0.41, sy + shipH * 0.05);
+  ctx.closePath(); ctx.fill();
+
+  const slots = Math.min(spec.maxCrew + 2, 12);
+  const cols = Math.min(slots, 4);
+  const rows = Math.ceil(slots / cols);
+  const cargoZoneX = sx + shipLen * 0.1, cargoZoneW = shipLen * 0.75;
+  const cargoZoneY = sy + shipH * 0.2, cargoZoneH = shipH * 0.65;
+  const slotW = cargoZoneW / cols, slotH = cargoZoneH / rows;
+
+  ctx.fillStyle = 'rgba(20,12,6,0.5)';
+  ctx.fillRect(cargoZoneX, cargoZoneY, cargoZoneW, cargoZoneH);
+  ctx.strokeStyle = 'rgba(100,70,30,0.3)'; ctx.lineWidth = 0.5;
+  ctx.strokeRect(cargoZoneX, cargoZoneY, cargoZoneW, cargoZoneH);
+
   let si = 0;
-  G.player.inventory.forEach((item, idx) => {
+  G.player.inventory.forEach(item => {
     if (si >= slots || item.count <= 0) return;
-    const col = si % 5, row = Math.floor(si / 5);
-    const ix = sx + 10 + col * slotW, iy = sy + shipH + 8 + row * (slotH + 4);
-    ctx.fillStyle = 'rgba(40,30,18,0.7)'; ctx.fillRect(ix, iy, slotW - 3, slotH);
-    ctx.strokeStyle = 'rgba(140,100,40,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(ix, iy, slotW - 3, slotH);
-    ctx.fillStyle = '#d4a848'; ctx.font = '9px Georgia'; ctx.textAlign = 'left';
-    ctx.fillText(item.icon, ix + 3, iy + 10);
+    const col = si % cols, row = Math.floor(si / cols);
+    const ix = cargoZoneX + col * slotW + 1, iy = cargoZoneY + row * slotH + 1;
+    const sw = slotW - 2, sh = slotH - 2;
+    ctx.fillStyle = 'rgba(50,35,18,0.6)'; ctx.fillRect(ix, iy, sw, sh);
+    ctx.strokeStyle = 'rgba(140,100,40,0.25)'; ctx.lineWidth = 0.5; ctx.strokeRect(ix, iy, sw, sh);
+    ctx.fillStyle = '#d4a848'; ctx.font = 'bold 10px Georgia'; ctx.textAlign = 'center';
+    ctx.fillText(item.icon, ix + sw / 2, iy + sh * 0.4);
     ctx.fillStyle = '#e0d6c2'; ctx.font = '9px Georgia';
-    ctx.fillText(`${item.count}`, ix + 18, iy + 10);
-    ctx.fillStyle = '#8a7a60'; ctx.font = '7px Georgia';
-    ctx.fillText(item.name.split(' ')[0], ix + 3, iy + 19);
+    ctx.fillText(`x${item.count}`, ix + sw / 2, iy + sh * 0.7);
     si++;
   });
-  ctx.fillStyle = '#8a7a60'; ctx.font = '9px Georgia'; ctx.textAlign = 'center';
-  ctx.fillText(`${G.player.shipName} - ${spec.name} (${slots} cargo slots)`, w / 2, h - 6);
+
+  for (let i = si; i < slots; i++) {
+    const col = i % cols, row = Math.floor(i / cols);
+    const ix = cargoZoneX + col * slotW + 1, iy = cargoZoneY + row * slotH + 1;
+    ctx.fillStyle = 'rgba(30,20,10,0.3)'; ctx.fillRect(ix, iy, slotW - 2, slotH - 2);
+    ctx.strokeStyle = 'rgba(80,60,25,0.15)'; ctx.strokeRect(ix, iy, slotW - 2, slotH - 2);
+  }
+
+  ctx.fillStyle = '#8a7a60'; ctx.font = '10px Georgia'; ctx.textAlign = 'center';
+  ctx.fillText(`${G.player.shipName} - ${slots} hold`, w / 2, h - 6);
 }
 
 function updateInventoryPanel() {
@@ -1842,12 +1886,12 @@ function dockAtPort() {
   if (!G.nearDock) return;
   G.docked = true; G.player.anchored = true; G.player.speed = 0;
   const da = G.nearDock.dockAngle || 0;
-  const perpX = Math.cos(da + Math.PI/2), perpZ = Math.sin(da + Math.PI/2);
-  const playerSide = (G.player.x - G.nearDock.dockX) * perpX + (G.player.z - G.nearDock.dockZ) * perpZ;
+  const dWidX = Math.cos(da), dWidZ = -Math.sin(da);
+  const playerSide = (G.player.x - G.nearDock.dockX) * dWidX + (G.player.z - G.nearDock.dockZ) * dWidZ;
   const sideSign = playerSide >= 0 ? 1 : -1;
   const sideOffset = 5;
-  const targetX = G.nearDock.dockX + perpX * sideOffset * sideSign;
-  const targetZ = G.nearDock.dockZ + perpZ * sideOffset * sideSign;
+  const targetX = G.nearDock.dockX + dWidX * sideOffset * sideSign;
+  const targetZ = G.nearDock.dockZ + dWidZ * sideOffset * sideSign;
   G.dockingAnim = { timer: 0, targetX, targetZ, dockX: G.nearDock.dockX, dockZ: G.nearDock.dockZ, phase: 'approach' };
   G.sailsFurled = true;
   document.getElementById('dock-prompt').style.display = 'none';
@@ -1940,8 +1984,37 @@ function showPortTab(tab) {
         </div>`;
       content.appendChild(d);
     });
+  } else if (tab === 'upgrades') {
+    const gold = G.player.inventory.find(i => i.id === 'gold');
+    content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gold?.count || 0} | Shipwright Services</div>`;
+    Object.entries(SHIP_PARTS).forEach(([slot, opts]) => {
+      const current = G.player.shipParts[slot];
+      const sd = document.createElement('div');
+      sd.innerHTML = `<div style="color:#d4a848;font-size:11px;text-transform:uppercase;margin:10px 0 6px;letter-spacing:1px;">${slot}</div>`;
+      opts.forEach(opt => {
+        if (opt.id === current) return;
+        const upgCost = opt.cost * 3 + 10;
+        const d = document.createElement('div');
+        d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:4px;';
+        d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${opt.name}</div><div style="color:#8a7a60;font-size:10px;">${opt.armor ? 'Armor +' + opt.armor : opt.speedBonus ? 'Speed +' + opt.speedBonus : opt.damage ? 'Damage ' + opt.damage : ''}</div></div>
+          <button onclick="portUpgrade('${slot}','${opt.id}',${upgCost})" style="background:rgba(50,40,20,0.5);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">${upgCost}g</button>`;
+        sd.appendChild(d);
+      });
+      content.appendChild(sd);
+    });
   }
 }
+
+window.portUpgrade = function(slot, id, cost) {
+  const gold = G.player.inventory.find(i => i.id === 'gold');
+  if (!gold || gold.count < cost) { notify('Not enough gold!'); return; }
+  gold.count -= cost;
+  G.player.shipParts[slot] = id;
+  rebuildPlayerShip();
+  notify(`Upgraded ${slot}!`);
+  showPortTab('upgrades');
+  updateShipPanel();
+};
 
 window.portBuy = function(id, cost) {
   const gold = G.player.inventory.find(i => i.id === 'gold');
