@@ -102,6 +102,7 @@ wss.on('connection', (ws) => {
         case 'set_name': {
           const p = players.get(id);
           if (p && msg.name) p.name = msg.name.slice(0, 28);
+          if (p && msg.shipName) p.shipName = msg.shipName.slice(0, 28);
           break;
         }
         case 'ship_update': {
@@ -118,6 +119,10 @@ wss.on('connection', (ws) => {
         }
         case 'cannonball': {
           broadcast({ type: 'cannonball', id, x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz }, id);
+          break;
+        }
+        case 'npc_sync': {
+          broadcast({ type: 'npc_sync', npcs: msg.npcs }, id);
           break;
         }
         case 'ship_sunk': {
@@ -137,7 +142,8 @@ wss.on('connection', (ws) => {
 setInterval(() => {
   if (players.size === 0) return;
   const snapshot = Array.from(players.values()).map(p => ({
-    id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health
+    id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
+    name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName
   }));
   broadcast({ type: 'state', players: snapshot });
 }, 1000 / TICK_RATE);
