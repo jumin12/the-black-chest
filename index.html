@@ -507,7 +507,8 @@ const CAM_ZOOM_HORIZON = 60;
 const CAM_ZOOM_DECK = 800;
 /** Orbit distance in world units matching the zoom level range above. */
 const CAM_ORBIT_AT_DECK = 12;
-const CAM_ORBIT_AT_HORIZON = 200;
+/** Max camera pull-back (smaller = cannot zoom out as far). */
+const CAM_ORBIT_AT_HORIZON = 148;
 
 function clampCameraZoomLevel(z) {
   return Math.max(CAM_ZOOM_HORIZON, Math.min(CAM_ZOOM_DECK, z));
@@ -1794,6 +1795,15 @@ function updateNPCs(dt) {
           npc.wanderAngle = escAngle;
         }
       }
+    } else if (!npc.sinking) {
+      if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
+      const k = Math.min(1, 14 * dt);
+      npc.x += (npc.syncX - npc.x) * k;
+      npc.z += (npc.syncZ - npc.z) * k;
+      let dr = npc.syncR - npc.rotation;
+      while (dr > Math.PI) dr -= Math.PI * 2;
+      while (dr < -Math.PI) dr += Math.PI * 2;
+      npc.rotation += dr * k;
     }
 
     if (npc.sinking) {
@@ -1864,7 +1874,7 @@ function swimmerStreamHash(wx, wz, salt) {
   h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
   return (h >>> 0) / 4294967296;
 }
-function spawnNetworkSwimmer(wx, wz, crewRestore) {
+function spawnNetworkSwimmer(wx, wz, crewRestore, netId) {
   const sg = new THREE.Group();
   const crewColor = crewRestore ? new THREE.Color(crewRestore.color || '#4a4a4a') : new THREE.Color(0x8b0000);
   const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.3, 3, 4), new THREE.MeshLambertMaterial({ color: crewColor }));
@@ -1889,6 +1899,7 @@ function spawnNetworkSwimmer(wx, wz, crewRestore) {
       color: crewRestore.color || '#4a4a4a', hat: crewRestore.hat || 'none', outfit: crewRestore.outfit || 'vest', parrot: !!crewRestore.parrot
     };
   }
+  if (netId != null) sg.userData.netId = netId;
   scene.add(sg);
   G.swimmers.push(sg);
 }
@@ -1945,15 +1956,34 @@ function spawnLandCannonImpact(x, z) {
   }
 }
 
-function addFloatingLootMesh(x, z, type, count) {
+function addFloatingLootMesh(x, z, type, count, netId) {
   const cnt = count != null ? count : (type === 'gold' ? 15 : type === 'cannonballs' ? 6 : type === 'food' ? 8 : 4);
   const li = { type, count: cnt, x, z, collected: false };
+  if (netId != null) li.netId = netId;
   G.floatingItems.push(li);
   const crate = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
   crate.position.set(li.x, SEA_LEVEL + 0.5, li.z);
   crate.userData.floatItem = li;
   crate.userData.isLoot = true;
   scene.add(crate);
+}
+
+function removeFloatingLootVisuals(item) {
+  islandGroup.traverse(c => { if (c.userData.floatItem === item) c.visible = false; });
+  const toRemove = [];
+  scene.traverse(c => { if (c.userData.floatItem === item) toRemove.push(c); });
+  toRemove.forEach(c => { scene.remove(c); if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
+}
+
+function removeLootByNetId(netId) {
+  for (let i = G.floatingItems.length - 1; i >= 0; i--) {
+    const item = G.floatingItems[i];
+    if (item.netId === netId) {
+      item.collected = true;
+      removeFloatingLootVisuals(item);
+      G.floatingItems.splice(i, 1);
+    }
+  }
 }
 
 /* ============================== NETWORK =================================== */
@@ -2107,7 +2137,7 @@ function connectToServer() {
             if (nd.fc) npc.flagColor = nd.fc;
             rebuildNPCShipMesh(npc);
           }
-          npc.x = nd.x; npc.z = nd.z; npc.rotation = nd.r;
+          npc.syncX = nd.x; npc.syncZ = nd.z; npc.syncR = nd.r;
           npc.health = nd.h; npc.aggro = !!nd.aggro;
           if (nd.sinking && !npc.sinking) {
             npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
@@ -2129,26 +2159,52 @@ function connectToServer() {
         spawnCannonMuzzleSmoke(msg.x, msg.y, msg.z, msg.dx, msg.dz);
         break;
       case 'ship_sunk': {
-        if (msg.id !== G.myId) {
+        const vid = msg.victimId != null ? msg.victimId : msg.id;
+        if (vid !== G.myId) {
           notify(`${msg.name}'s ship is sinking!`);
           spawnSwimmers(msg.x, msg.z, 3);
-          if (msg.loot) msg.loot.forEach(l => addFloatingLootMesh(l.x, l.z, l.type, l.count));
         }
-        if (otherShipGroups.has(msg.id)) {
-          const sg = otherShipGroups.get(msg.id);
+        if (otherShipGroups.has(vid)) {
+          const sg = otherShipGroups.get(vid);
           sg.userData.sinking = true; sg.userData.sinkY = sg.position.y;
+        }
+        if (msg.loot && msg.loot.length) {
+          msg.loot.forEach(l => {
+            if (l.id != null && G.floatingItems.some(f => f.netId === l.id)) return;
+            if (l.type) addFloatingLootMesh(l.x, l.z, l.type, l.count, l.id);
+          });
         }
         break;
       }
       case 'loot_spawn': {
+        if (msg.id != null && G.floatingItems.some(f => f.netId === msg.id)) break;
         const l = msg.loot || {};
         const t = l.type || msg.type;
-        if (t) addFloatingLootMesh(msg.x, msg.z, t, l.count);
+        if (t) addFloatingLootMesh(msg.x, msg.z, t, l.count, msg.id);
+        break;
+      }
+      case 'loot_collect': {
+        if (msg.id != null) removeLootByNetId(msg.id);
         break;
       }
       case 'swimmer_spawn': {
         if (msg.swimmers && Array.isArray(msg.swimmers)) {
-          msg.swimmers.forEach(s => { if (s && s.x != null && s.z != null) spawnNetworkSwimmer(s.x, s.z, s.restore || null); });
+          msg.swimmers.forEach(s => {
+            if (!s || s.x == null || s.z == null) return;
+            if (s.id != null && G.swimmers.some(sw => sw.userData.netId === s.id)) return;
+            spawnNetworkSwimmer(s.x, s.z, s.restore || null, s.id);
+          });
+        }
+        break;
+      }
+      case 'swimmer_collect': {
+        if (msg.id == null) break;
+        for (let si = G.swimmers.length - 1; si >= 0; si--) {
+          const sw = G.swimmers[si];
+          if (sw.userData.netId === msg.id) {
+            scene.remove(sw);
+            G.swimmers.splice(si, 1);
+          }
         }
         break;
       }
@@ -2892,10 +2948,11 @@ function spawnWorldLootAt(wx, wz, type, count, spread) {
   const sp = spread == null ? 2.5 : spread;
   const lx = wx + (Math.random() - 0.5) * sp;
   const lz = wz + (Math.random() - 0.5) * sp;
-  const cnt = Math.max(1, (count == null || Number.isNaN(Number(count))) ? (type === 'gold' ? 15 : 4) : Number(count));
-  addFloatingLootMesh(lx, lz, type, cnt);
+  const cnt = Math.max(1, (count == null || Number.isNaN(Number(count))) ? (type === 'gold' ? 15 : type === 'cannonballs' ? 6 : type === 'food' ? 8 : 4) : Number(count));
   if (ws && ws.readyState === 1) {
     ws.send(JSON.stringify({ type: 'loot_spawn', x: lx, z: lz, loot: { type, count: cnt } }));
+  } else {
+    addFloatingLootMesh(lx, lz, type, cnt);
   }
 }
 function jettisonCargoSlot(slotIdx) {
@@ -3048,8 +3105,11 @@ function throwCrewOverboard(idx) {
   const r = G.player.rotation;
   const bx = G.player.x - Math.sin(r) * ast + (Math.random() - 0.5) * 2;
   const bz = G.player.z - Math.cos(r) * ast + (Math.random() - 0.5) * 2;
-  spawnSwimmers(bx, bz, 1, [thrown], { rescueRestoresCrew: true });
-  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'swimmer_spawn', swimmers: [{ x: bx, z: bz, restore: thrown }] }));
+  if (ws?.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'swimmer_spawn', swimmers: [{ x: bx, z: bz, restore: thrown }] }));
+  } else {
+    spawnSwimmers(bx, bz, 1, [thrown], { rescueRestoresCrew: true });
+  }
   notify(`${m.name} thrown astern!`);
   updateCrewPanel();
   refreshCargoPanelIfOpen();
@@ -4111,6 +4171,7 @@ function update(dt) {
         updateCrewPanel();
         refreshCargoPanelIfOpen();
       }
+      if (sw.userData.netId != null && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'swimmer_collect', id: sw.userData.netId }));
       scene.remove(sw);
       G.swimmers.splice(i, 1);
       continue;
@@ -4138,9 +4199,11 @@ function update(dt) {
       const c = t === 'gold' ? 10 + Math.floor(Math.random() * 12) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
       const lx = G.player.x + (Math.random()-0.5)*10, lz = G.player.z + (Math.random()-0.5)*10;
       lootDrops.push({ type: t, x: lx, z: lz, count: c });
-      addFloatingLootMesh(lx, lz, t, c);
     }
     if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_sunk', x: G.player.x, z: G.player.z, loot: lootDrops }));
+    else {
+      lootDrops.forEach(l => addFloatingLootMesh(l.x, l.z, l.type, l.count));
+    }
     document.getElementById('death-overlay').style.display = 'flex';
     document.getElementById('death-killer').textContent = G.lastAttacker ? `Sunk by: ${G.lastAttacker}` : 'Lost at sea';
   }
@@ -4171,8 +4234,9 @@ function update(dt) {
     if (s.userData.life <= 0) { scene.remove(s); s.children.forEach(c => { c.geometry.dispose(); c.material.dispose(); }); splashes.splice(i, 1); }
   }
 
-  G.floatingItems.forEach(item => {
-    if (item.collected) return;
+  for (let fi = G.floatingItems.length - 1; fi >= 0; fi--) {
+    const item = G.floatingItems[fi];
+    if (item.collected) continue;
     if (Math.hypot(G.player.x - item.x, G.player.z - item.z) < 8) {
       item.collected = true;
       const amt = item.count != null && !Number.isNaN(Number(item.count))
@@ -4187,12 +4251,11 @@ function update(dt) {
       ex.count += amt;
       reconcileSlotsWithInventory();
       notify(`Collected ${item.type} ×${amt}!`);
-      islandGroup.traverse(c => { if (c.userData.floatItem === item) c.visible = false; });
-      const toRemove = [];
-      scene.traverse(c => { if (c.userData.floatItem === item) toRemove.push(c); });
-      toRemove.forEach(c => { scene.remove(c); if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
+      removeFloatingLootVisuals(item);
+      if (item.netId != null && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'loot_collect', id: item.netId }));
+      G.floatingItems.splice(fi, 1);
     }
-  });
+  }
 
   let nearestDock = null, nearestDockDist = 20;
   G.islands.forEach(isl => {
@@ -4236,7 +4299,7 @@ function update(dt) {
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
   if (isMultiplayerHost() && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
-    G.npcSyncTimer = 0.5;
+    G.npcSyncTimer = 0.125;
     const npcData = G.npcs.filter(n => n.health > -900).map(n => ({
       id: n.syncId,
       x: Math.round(n.x * 10) / 10,
