@@ -427,7 +427,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <kbd>W</kbd><kbd>S</kbd> Sail &nbsp; <kbd>A</kbd><kbd>D</kbd> Turn<br>
     <kbd>Z</kbd> Fire Port &nbsp; <kbd>X</kbd> Fire Starboard &nbsp; <kbd>Space</kbd> Fire Both<br>
     <span style="color:#a89878;">PC: click the sea view to the left or right of your ship to fire that broadside (not on HUD)</span><br>
-    <kbd>Q</kbd><kbd>E</kbd> Rotate Camera &nbsp; <kbd>Scroll</kbd> Zoom &nbsp; <kbd>M</kbd> Map &nbsp; <kbd>F3</kbd> Wind map / cheats<br>
+    <kbd>Q</kbd><kbd>E</kbd> Rotate Camera &nbsp; <kbd>Scroll</kbd> Horizon ↔ Deck &nbsp; <kbd>M</kbd> Map &nbsp; <kbd>F3</kbd> Wind map / cheats<br>
     <kbd>B</kbd> Ship &nbsp; <kbd>I</kbd> Inventory &nbsp; <kbd>C</kbd> Crew &nbsp; <kbd>T</kbd> Chat
   </div>
 </div>
@@ -481,8 +481,8 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <div class="touch-btn" id="touch-port" title="Fire Port" style="position:absolute;bottom:95px;left:calc(50% - 110px);width:50px;height:50px;font-size:9px;font-weight:bold;pointer-events:auto;z-index:15;">PORT</div>
   <div class="touch-btn" id="touch-starboard" title="Fire Starboard" style="position:absolute;bottom:95px;right:calc(50% - 110px);width:50px;height:50px;font-size:9px;font-weight:bold;pointer-events:auto;z-index:15;">STAR</div>
   <div id="touch-zoom" style="position:absolute;top:90px;right:6px;display:flex;flex-direction:column;gap:6px;pointer-events:auto;">
-    <div class="touch-btn" id="touch-zoom-in" title="Zoom In" style="width:36px;height:36px;font-size:16px;">+</div>
-    <div class="touch-btn" id="touch-zoom-out" title="Zoom Out" style="width:36px;height:36px;font-size:16px;">&minus;</div>
+    <div class="touch-btn" id="touch-zoom-in" title="Closer (deck)" style="width:36px;height:36px;font-size:16px;">+</div>
+    <div class="touch-btn" id="touch-zoom-out" title="Wider (horizon)" style="width:36px;height:36px;font-size:16px;">&minus;</div>
   </div>
 </div>
 
@@ -501,6 +501,33 @@ function mainCanvasPixelRatio() {
 const ISLAND_CHANCE = 0.25;
 const SEA_LEVEL = 0;
 const PORT_TOWN_NAMES = ['Port Royal', 'Tortuga', 'Nassau', 'Havana', 'Santiago', 'Bridgetown', 'Maracaibo', 'Cartagena'];
+
+/** Camera zoom level: higher = closer to the ship (deck view); lower = wider (horizon). */
+const CAM_ZOOM_HORIZON = 60;
+const CAM_ZOOM_DECK = 800;
+/** Orbit distance in world units matching the zoom level range above. */
+const CAM_ORBIT_AT_DECK = 12;
+const CAM_ORBIT_AT_HORIZON = 200;
+
+function clampCameraZoomLevel(z) {
+  return Math.max(CAM_ZOOM_HORIZON, Math.min(CAM_ZOOM_DECK, z));
+}
+function orbitDistanceFromZoomLevel(zoomLevel) {
+  const z = clampCameraZoomLevel(zoomLevel);
+  const t = (z - CAM_ZOOM_HORIZON) / (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON);
+  return CAM_ORBIT_AT_HORIZON - t * (CAM_ORBIT_AT_HORIZON - CAM_ORBIT_AT_DECK);
+}
+function zoomLevelFromOrbitDistance(dist) {
+  const d = Math.max(CAM_ORBIT_AT_DECK, Math.min(CAM_ORBIT_AT_HORIZON, dist));
+  const t = (CAM_ORBIT_AT_HORIZON - d) / (CAM_ORBIT_AT_HORIZON - CAM_ORBIT_AT_DECK);
+  return CAM_ZOOM_HORIZON + t * (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON);
+}
+
+const CAM_ZOOM_DEFAULT = Math.round(
+  CAM_ZOOM_HORIZON
+ + ((CAM_ORBIT_AT_HORIZON - (isMobile ? 150 : 50)) / (CAM_ORBIT_AT_HORIZON - CAM_ORBIT_AT_DECK))
+  * (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON)
+);
 
 const G = {
   mode: 'start',
@@ -547,7 +574,7 @@ const G = {
   swimmers: [],
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
   nearDock: null, docked: false, quests: [],
-  camera: { offsetX: 0, offsetZ: 0, zoom: isMobile ? 150 : 50, targetZoom: isMobile ? 150 : 50, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
+  camera: { offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
   crewReloading: false, crewReloadTimer: 0,
@@ -828,7 +855,8 @@ function scatterWindStreaksNearPlayer() {
   if (!windParticleGeo) return;
   const arr = windParticleGeo.attributes.position.array;
   const px = G.player.x, pz = G.player.z;
-  const spread = 340 + (G.camera.zoom / 200) * 120;
+  const orbit = orbitDistanceFromZoomLevel(G.camera.zoom);
+  const spread = 340 + (orbit / CAM_ORBIT_AT_HORIZON) * 120;
   for (let i = 0; i < arr.length; i += 3) {
     arr[i] = px + (Math.random() - 0.5) * spread * 2;
     arr[i + 1] = 5 + Math.random() * 32;
@@ -840,7 +868,8 @@ function updateWindStreamVisual(dt) {
   if (!windParticles || !windParticleGeo || G.mode !== 'playing') return;
   const arr = windParticleGeo.attributes.position.array;
   const px = G.player.x, pz = G.player.z;
-  const recycleR = 480 + (G.camera.zoom / 200) * 100;
+  const orbitZ = orbitDistanceFromZoomLevel(G.camera.zoom);
+  const recycleR = 480 + (orbitZ / CAM_ORBIT_AT_HORIZON) * 100;
   const recycleR2 = recycleR * recycleR;
   for (let i = 0; i < arr.length; i += 3) {
     let wx = arr[i], wz = arr[i + 2];
@@ -2211,7 +2240,9 @@ window.addEventListener('keydown', e => {
   }
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-window.addEventListener('wheel', e => { G.camera.targetZoom = Math.max(12, Math.min(200, G.camera.targetZoom + e.deltaY * 0.08)); }, { passive: true });
+window.addEventListener('wheel', e => {
+  G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom - e.deltaY * 0.32);
+}, { passive: true });
 
 window.addEventListener('mousedown', e => { if (e.button === 1) { middleDown = true; lastMX = e.clientX; lastMY = e.clientY; e.preventDefault(); } });
 window.addEventListener('mouseup', e => { if (e.button === 1) middleDown = false; });
@@ -2250,7 +2281,11 @@ window.addEventListener('touchmove', e => {
   }
   if (e.touches.length === 2) {
     const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    if (pinchDist > 0) { G.camera.targetZoom = Math.max(12, Math.min(200, G.camera.targetZoom - (d - pinchDist) * 0.2)); }
+    if (pinchDist > 0) {
+      let od = orbitDistanceFromZoomLevel(G.camera.targetZoom);
+      od = Math.max(CAM_ORBIT_AT_DECK, Math.min(CAM_ORBIT_AT_HORIZON, od - (d - pinchDist) * 0.2));
+      G.camera.targetZoom = zoomLevelFromOrbitDistance(od);
+    }
     pinchDist = d; e.preventDefault();
   }
 }, { passive: false });
@@ -2277,8 +2312,8 @@ document.getElementById('touch-edge-right')?.addEventListener('touchstart', e =>
   e.preventDefault();
   doFireSide(1);
 }, { passive: false });
-document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.max(12, G.camera.targetZoom - 12); }, { passive: false });
-document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = Math.min(200, G.camera.targetZoom + 12); }, { passive: false });
+document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom + 55); }, { passive: false });
+document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom - 55); }, { passive: false });
 
 const _pcProj = new THREE.Vector3();
 function worldToScreenClient(wx, wy, wz) {
@@ -4183,7 +4218,7 @@ function update(dt) {
     G.camera.yaw += camDiff * 2.5 * dt;
     G.camera.targetYaw = G.camera.yaw;
   }
-  const cDist = G.camera.zoom, cAng = G.camera.angle, cYaw = G.camera.yaw;
+  const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
   camera.position.set(
     G.player.x + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
     cDist * Math.sin(cAng),
@@ -4598,13 +4633,13 @@ function buildTutorialSteps() {
     steps.push({
       sel: '#touch-zoom',
       title: 'Spyglass',
-      body: 'Pinch the sea or use these buttons to haul the camera nearer or farther.'
+      body: 'Pinch the sea or use + / − to bring the camera from horizon view down to the deck.'
     });
   } else {
     steps.push({
       sel: '#btn-help',
       title: 'Keyboard',
-      body: 'W and S trim sail, A and D turn. Z and X fire port and starboard; Space fires both. Q and E swing the camera; scroll wheel zooms.'
+      body: 'W and S trim sail, A and D turn. Z and X fire port and starboard; Space fires both. Q and E swing the camera; scroll from horizon to deck view.'
     });
   }
   steps.push({
@@ -5125,7 +5160,7 @@ document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(tab => {
 requestAnimationFrame(gameLoop);
 
 window.render_game_to_text = function () {
-  return JSON.stringify({ mode: G.mode, player: { x: Math.round(G.player.x * 10) / 10, z: Math.round(G.player.z * 10) / 10, rotation: Math.round(G.player.rotation * 100) / 100, speed: Math.round(G.player.speed * 100) / 100, health: G.player.health, anchored: G.player.anchored, shipType: G.player.shipType, shipParts: G.player.shipParts, crewCount: G.player.crew.length, inventoryCount: G.player.inventory.reduce((a, b) => a + b.count, 0) }, world: { chunksLoaded: G.chunks.size, islandsVisible: G.islands.length, otherPlayers: G.otherPlayers.size, cannonballs: G.cannonballs.length, npcs: G.npcs.length }, camera: { zoom: Math.round(G.camera.zoom) }, wind: { angle: Math.round(G.wind.angle * 100) / 100, speed: Math.round(G.wind.speed * 10) / 10 } });
+   return JSON.stringify({ mode: G.mode, player: { x: Math.round(G.player.x * 10) / 10, z: Math.round(G.player.z * 10) / 10, rotation: Math.round(G.player.rotation * 100) / 100, speed: Math.round(G.player.speed * 100) / 100, health: G.player.health, anchored: G.player.anchored, shipType: G.player.shipType, shipParts: G.player.shipParts, crewCount: G.player.crew.length, inventoryCount: G.player.inventory.reduce((a, b) => a + b.count, 0) }, world: { chunksLoaded: G.chunks.size, islandsVisible: G.islands.length, otherPlayers: G.otherPlayers.size, cannonballs: G.cannonballs.length, npcs: G.npcs.length }, camera: { zoomLevel: Math.round(G.camera.zoom), zoomHorizon: CAM_ZOOM_HORIZON, zoomDeck: CAM_ZOOM_DECK }, wind: { angle: Math.round(G.wind.angle * 100) / 100, speed: Math.round(G.wind.speed * 10) / 10 } });
 };
 window.advanceTime = (ms) => { const s = Math.max(1, Math.round(ms / (1000 / 60))); for (let i = 0; i < s; i++) update(1 / 60); render(); };
 </script>
