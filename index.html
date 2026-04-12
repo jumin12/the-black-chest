@@ -825,6 +825,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
 renderer.shadowMap.enabled = !isMobile;
 if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setClearColor(0x152a45, 1);
 document.body.prepend(renderer.domElement);
 renderer.domElement.style.touchAction = 'none';
 renderer.domElement.tabIndex = 0;
@@ -2755,6 +2756,9 @@ function sendUpdate() {
 const keys = {};
 let middleDown = false, lastMX = 0, lastMY = 0;
 let pinchDist = 0;
+/** Edge-broadside tap (scheme 3): fire on release so pinch-zoom never triggers cannons. */
+let edgeCannonGesture = null;
+function clearEdgeCannonGesture() { edgeCannonGesture = null; }
 
 window.addEventListener('keydown', e => {
   if (document.activeElement?.id === 'chat-input') {
@@ -2889,18 +2893,48 @@ window.addEventListener('touchend', e => {
   if (e.touches.length < 2) pinchDist = 0;
 });
 
+window.addEventListener('touchstart', e => {
+  if (e.touches.length >= 2) clearEdgeCannonGesture();
+}, { capture: true, passive: true });
+window.addEventListener('touchmove', e => {
+  if (e.touches.length >= 2) clearEdgeCannonGesture();
+  else if (edgeCannonGesture && e.touches.length === 1) {
+    const t = e.touches[0];
+    if (t.identifier === edgeCannonGesture.touchId) {
+      const dx = t.clientX - edgeCannonGesture.x0, dy = t.clientY - edgeCannonGesture.y0;
+      if (dx * dx + dy * dy > 400) clearEdgeCannonGesture();
+    }
+  }
+}, { capture: true, passive: true });
+
 document.getElementById('touch-port')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(-1); }, { passive: false });
 document.getElementById('touch-starboard')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(1); }, { passive: false });
-document.getElementById('touch-edge-left')?.addEventListener('touchstart', e => {
-  if (G.mobileControlScheme !== 3 || G.mode !== 'playing') return;
-  e.preventDefault();
-  doFireSide(1);
-}, { passive: false });
-document.getElementById('touch-edge-right')?.addEventListener('touchstart', e => {
-  if (G.mobileControlScheme !== 3 || G.mode !== 'playing') return;
-  e.preventDefault();
-  doFireSide(-1);
-}, { passive: false });
+
+function bindEdgeBroadsideTap(el, fireSide) {
+  if (!el) return;
+  el.addEventListener('touchstart', e => {
+    if (G.mobileControlScheme !== 3 || G.mode !== 'playing') return;
+    if (e.touches.length !== 1) return;
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    edgeCannonGesture = { fireSide, touchId: t.identifier, x0: t.clientX, y0: t.clientY, t0: performance.now() };
+  }, { passive: false });
+  el.addEventListener('touchend', e => {
+    if (!edgeCannonGesture || edgeCannonGesture.fireSide !== fireSide) return;
+    const t = e.changedTouches[0];
+    if (t.identifier !== edgeCannonGesture.touchId) return;
+    if (e.touches.length > 0) { clearEdgeCannonGesture(); return; }
+    const g = edgeCannonGesture;
+    clearEdgeCannonGesture();
+    const dt = performance.now() - g.t0;
+    if (dt >= 20 && dt < 750) doFireSide(g.fireSide);
+  }, { passive: false });
+  el.addEventListener('touchcancel', () => {
+    if (edgeCannonGesture && edgeCannonGesture.fireSide === fireSide) clearEdgeCannonGesture();
+  }, { passive: true });
+}
+bindEdgeBroadsideTap(document.getElementById('touch-edge-left'), 1);
+bindEdgeBroadsideTap(document.getElementById('touch-edge-right'), -1);
 document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom + 55); }, { passive: false });
 document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom - 55); }, { passive: false });
 
@@ -5103,7 +5137,10 @@ function flushGameViewRender() {
 function storyChapterRowState(i, sq) {
   if (sq.phase === 'complete') return 'done';
   if (i < sq.step) return 'done';
-  if (i > sq.step) return 'locked';
+  if (i > sq.step) {
+    if (sq.phase === 'intro') return 'locked';
+    return 'upcoming';
+  }
   if (sq.phase === 'intro') return 'pending_briefing';
   if (sq.phase === 'active') return 'active';
   if (sq.phase === 'report') return 'report';
@@ -5120,6 +5157,7 @@ function buildMainStoryChainHtml(sq) {
     let badge = '';
     if (state === 'done') badge = '<span style="color:#8ab896;">Done</span>';
     else if (state === 'locked') badge = '<span style="color:#5a5048;">Locked</span>';
+    else if (state === 'upcoming') badge = '<span style="color:#98a8b8;">In campaign</span>';
     else if (state === 'pending_briefing') badge = '<span style="color:#b8a878;">At any port → Quests</span>';
     else if (state === 'active') badge = '<span style="color:#d4a848;">Active bounty</span>';
     else if (state === 'report') badge = '<span style="color:#a8d8c8;">Turn in (Quests)</span>';
@@ -5849,8 +5887,6 @@ const origUpdate = update;
 /* ============================== INIT ===================================== */
 const hasSave = loadProgress();
 noise = new SimplexNoise(G.worldSeed);
-updateChunks();
-spawnNPCs();
 
 document.getElementById('ui-layer').style.display = 'none';
 document.getElementById('touch-controls').style.display = 'none';
@@ -5881,6 +5917,10 @@ function menuRender() {
   }
 }
 menuRender();
+requestAnimationFrame(() => {
+  updateChunks();
+  spawnNPCs();
+});
 
 const menuIslands = [];
 for (let i = 0; i < 15; i++) menuIslands.push({ x: Math.random(), y: 0.2 + Math.random() * 0.6, r: 8 + Math.random() * 25, seed: Math.random() * 100 });
