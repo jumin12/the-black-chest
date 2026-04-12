@@ -329,6 +329,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div class="hud-box" id="hud-speed">Speed: 0</div>
     <div class="hud-box" id="hud-health">Hull 100</div>
     <div class="hud-box" id="hud-food">Food 0</div>
+    <div class="hud-box" id="hud-crew">Crew 0</div>
     <div class="hud-box" id="hud-ammo">Shot 0</div>
   </div>
   <div id="compass"><canvas id="compass-canvas" width="180" height="180"></canvas></div>
@@ -993,6 +994,40 @@ function createRock(x, y, z, s) {
   const r = new THREE.Mesh(geo, matRock); r.position.set(x, y, z); r.castShadow = true; r.receiveShadow = true; return r;
 }
 
+function createBush(x, y, z, s) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color: [0x2d5016, 0x3a6b28, 0x25603a, 0x3d6b2a][Math.floor(Math.random() * 4)] });
+  for (let i = 0; i < 4; i++) {
+    const b = new THREE.Mesh(new THREE.SphereGeometry(s * (0.45 + Math.random() * 0.55), 4, 4), mat);
+    b.position.set((Math.random() - 0.5) * s * 1.4, s * 0.35 + Math.random() * s * 0.45, (Math.random() - 0.5) * s * 1.4);
+    b.castShadow = true;
+    g.add(b);
+  }
+  g.position.set(x, y, z);
+  return g;
+}
+
+function createBarrel(x, y, z) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.85, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
+  body.position.y = 0.42; body.castShadow = true; g.add(body);
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.35, 0.035, 4, 10), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+  band.position.y = 0.32; band.rotation.x = Math.PI / 2; g.add(band);
+  g.position.set(x, y, z); g.rotation.y = Math.random() * Math.PI * 2;
+  return g;
+}
+
+function createDriftwood(x, y, z) {
+  const log = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.07, 0.11, 1.1 + Math.random() * 0.9, 5),
+    new THREE.MeshLambertMaterial({ color: [0x5a4030, 0x6a5040, 0x4a3828][Math.floor(Math.random() * 3)] })
+  );
+  log.rotation.z = Math.PI / 2 * (0.82 + Math.random() * 0.28);
+  log.rotation.y = Math.random() * Math.PI * 2;
+  log.position.set(x, y, z); log.castShadow = true;
+  return log;
+}
+
 function generateIsland(cx, cz) {
   const key = `${cx},${cz}`;
   if (G.chunks.has(key)) return;
@@ -1084,20 +1119,34 @@ function generateIsland(cx, cz) {
   group.add(terrain);
 
   const ln = new SimplexNoise(cx * 1000 + cz);
-  const treeCount = Math.floor(4 + h * 25);
+  const treeCount = Math.floor(16 + h * 58);
   for (let t = 0; t < treeCount; t++) {
     const a = ln.noise2D(t * 0.7, 0) * Math.PI * 2;
-    const rad = (0.2 + Math.abs(ln.noise2D(t * 0.3, 1)) * 0.55) * islandRadius;
+    const rad = (0.15 + Math.abs(ln.noise2D(t * 0.3, 1)) * 0.72) * islandRadius;
     const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
     const d = Math.sqrt(tx * tx + tz * tz) / islandRadius;
-    if (d > 0.8) continue;
+    if (d > 0.93) continue;
     const ff = Math.max(0, 1 - d * d);
     const nv = noise.fbm((worldX + tx) * 0.02, (worldZ + tz) * 0.02, 4);
     const ty = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
-    if (ty > 0.8 && ty < islandHeight * 0.65) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.15, worldZ + tz));
+    if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.15, worldZ + tz));
   }
 
-  const rockCount = Math.floor(2 + h * 8);
+  const bushCount = Math.floor(14 + h * 38);
+  for (let bi = 0; bi < bushCount; bi++) {
+    const a = ln.noise2D(bi * 0.88, 50) * Math.PI * 2;
+    const rad = (0.18 + Math.abs(ln.noise2D(bi * 0.33, 51)) * 0.68) * islandRadius;
+    const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
+    const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
+    if (d > 0.94 || d < 0.12) continue;
+    const ff = Math.max(0, 1 - d * d);
+    const nv = noise.fbm((worldX + bx) * 0.022, (worldZ + bz) * 0.022, 4);
+    const by = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
+    if (by < 0.2 || by > islandHeight * 0.78) continue;
+    group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.04, worldZ + bz, 0.28 + Math.random() * 0.42));
+  }
+
+  const rockCount = Math.floor(7 + h * 22);
   for (let r = 0; r < rockCount; r++) {
     const a = ln.noise2D(r * 0.5, 10) * Math.PI * 2;
     const rad = (0.3 + Math.abs(ln.noise2D(r * 0.4, 11)) * 0.65) * islandRadius;
@@ -1107,6 +1156,33 @@ function generateIsland(cx, cz) {
     const nv = noise.fbm((worldX + rx) * 0.02, (worldZ + rz) * 0.02, 4);
     const ry = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
     group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.15, worldZ + rz, 0.4 + Math.random() * 1.2));
+  }
+
+  const driftN = Math.floor(3 + h * 10 + islandRadius * 0.06);
+  for (let di = 0; di < driftN; di++) {
+    const a = ln.noise2D(di * 0.6, 60) * Math.PI * 2;
+    const rad = (0.72 + Math.abs(ln.noise2D(di * 0.4, 61)) * 0.22) * islandRadius;
+    const dx = Math.cos(a) * rad, dz = Math.sin(a) * rad;
+    const d = Math.sqrt(dx * dx + dz * dz) / islandRadius;
+    if (d < 0.62 || d > 0.98) continue;
+    const ff = Math.max(0, 1 - d * d);
+    const nv = noise.fbm((worldX + dx) * 0.025, (worldZ + dz) * 0.025, 3);
+    const dy = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff * 0.45);
+    group.add(createDriftwood(worldX + dx, SEA_LEVEL + Math.max(0.15, dy) + 0.08, worldZ + dz));
+  }
+
+  const barrelN = Math.floor(2 + h * 5 + (meta0.hasTown ? 5 : 0));
+  for (let bi = 0; bi < barrelN; bi++) {
+    const a = ln.noise2D(bi * 1.1, 70) * Math.PI * 2;
+    const rad = (0.2 + Math.abs(ln.noise2D(bi * 0.5, 71)) * 0.5) * islandRadius;
+    const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
+    const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
+    if (d > 0.88) continue;
+    const ff = Math.max(0, 1 - d * d);
+    const nv = noise.fbm((worldX + bx) * 0.02, (worldZ + bz) * 0.02, 4);
+    const by = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
+    if (by > islandHeight * 0.42) continue;
+    group.add(createBarrel(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz));
   }
 
   if (ln.noise2D(cx, cz) > 0.2) {
@@ -1175,19 +1251,19 @@ function generateIsland(cx, cz) {
 
   islandGroup.add(group);
   G.islands.push(group.userData);
-  const sgN = 2 + Math.floor(Math.random() * 3) + (meta0.hasTown ? 2 : 0) + Math.min(4, Math.floor(islandRadius / 40));
+  const sgN = 3 + Math.floor(Math.random() * 4) + (meta0.hasTown ? 3 : 0) + Math.min(6, Math.floor(islandRadius / 32));
   spawnSeagulls(worldX, worldZ, sgN);
-  if (fishSchools.length < 900) {
-    for (let fi = 0; fi < 5; fi++) {
-      const fishAngle = Math.random() * Math.PI * 2;
-      const fishDist = islandRadius + 8 + Math.random() * 55;
-      spawnFish(worldX + Math.cos(fishAngle) * fishDist, worldZ + Math.sin(fishAngle) * fishDist, 4 + Math.floor(Math.random() * 7));
-    }
-    for (let oi = 0; oi < 6; oi++) {
-      const openAngle = Math.random() * Math.PI * 2;
-      const openDist = 35 + Math.random() * 220;
-      spawnFish(worldX + Math.cos(openAngle) * openDist, worldZ + Math.sin(openAngle) * openDist, 3 + Math.floor(Math.random() * 8));
-    }
+  for (let fi = 0; fi < 8; fi++) {
+    const fishAngle = Math.random() * Math.PI * 2;
+    const fishDist = islandRadius + 6 + Math.random() * 70;
+    spawnFish(worldX + Math.cos(fishAngle) * fishDist, worldZ + Math.sin(fishAngle) * fishDist, 5 + Math.floor(Math.random() * 9));
+  }
+  for (let oi = 0; oi < 12; oi++) {
+    const openAngle = Math.random() * Math.PI * 2;
+    const openDist = Math.max(islandRadius * 0.28, 22) + Math.random() * 340;
+    const fx = worldX + Math.cos(openAngle) * openDist;
+    const fz = worldZ + Math.sin(openAngle) * openDist;
+    if (!isOnIsland(fx, fz)) spawnFish(fx, fz, 4 + Math.floor(Math.random() * 10));
   }
 }
 
@@ -1243,6 +1319,56 @@ const FISH_SPECIES = [
   { color: 0x483d8b, size: 0.08, len: 0.27, name: 'tilefish' },
   { color: 0x20b2aa, size: 0.055, len: 0.2, name: 'pilchard' }
 ];
+
+const WILDLIFE_FISH_CAP = 2800;
+const WILDLIFE_SEAGULL_CAP = 900;
+const WILDLIFE_PRUNE_DIST = 9200;
+
+function removeFishSchoolByLeader(leader) {
+  const li = schoolLeaders.indexOf(leader);
+  if (li >= 0) schoolLeaders.splice(li, 1);
+  for (let i = fishSchools.length - 1; i >= 0; i--) {
+    const f = fishSchools[i];
+    if (f.userData.leader === leader) {
+      scene.remove(f);
+      f.children.forEach(ch => {
+        if (ch.geometry) ch.geometry.dispose();
+        if (ch.material) ch.material.dispose();
+      });
+      fishSchools.splice(i, 1);
+    }
+  }
+}
+
+function pruneWildlifeAwayFromPlayer() {
+  if (G.mode !== 'playing') return;
+  const px = G.player.x, pz = G.player.z;
+  const d2Cut = WILDLIFE_PRUNE_DIST * WILDLIFE_PRUNE_DIST;
+  for (let i = seagulls.length - 1; i >= 0; i--) {
+    const sg = seagulls[i];
+    const d2 = (sg.userData.cx - px) ** 2 + (sg.userData.cz - pz) ** 2;
+    if (d2 > d2Cut) { scene.remove(sg); seagulls.splice(i, 1); }
+  }
+  const leaders = [...schoolLeaders];
+  leaders.sort((a, b) => {
+    const ad = (a.x - px) ** 2 + (a.z - pz) ** 2;
+    const bd = (b.x - px) ** 2 + (b.z - pz) ** 2;
+    return bd - ad;
+  });
+  while (fishSchools.length > WILDLIFE_FISH_CAP && leaders.length) {
+    removeFishSchoolByLeader(leaders.shift());
+  }
+  while (seagulls.length > WILDLIFE_SEAGULL_CAP) {
+    let farI = -1, farD = -1;
+    seagulls.forEach((sg, idx) => {
+      const d2 = (sg.userData.cx - px) ** 2 + (sg.userData.cz - pz) ** 2;
+      if (d2 > farD) { farD = d2; farI = idx; }
+    });
+    if (farI < 0) break;
+    scene.remove(seagulls[farI]);
+    seagulls.splice(farI, 1);
+  }
+}
 
 function spawnFish(wx, wz, count) {
   const species = FISH_SPECIES[Math.floor(Math.random() * FISH_SPECIES.length)];
@@ -3962,7 +4088,7 @@ function drawMinimap() {
 document.getElementById('minimap').addEventListener('wheel', e => { e.preventDefault(); e.stopPropagation(); mmZoom = Math.max(0.02, Math.min(0.3, mmZoom + e.deltaY * 0.0002)); drawMinimap(); }, { passive: false });
 
 /* ============================== GAME LOOP ================================ */
-let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0;
+let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0, wildlifePruneAcc = 0;
 
 function update(dt) {
   if (G.mode !== 'playing') return;
@@ -4030,14 +4156,19 @@ function update(dt) {
   updateNPCs(dt);
   updateSeagulls(dt);
   updateFish(dt);
+  wildlifePruneAcc += dt;
+  if (wildlifePruneAcc >= 2.1) {
+    wildlifePruneAcc = 0;
+    pruneWildlifeAwayFromPlayer();
+  }
   oceanFishSpawnAcc += dt;
-  if (fishSchools.length < 1100 && oceanFishSpawnAcc >= 0.22) {
+  if (fishSchools.length < WILDLIFE_FISH_CAP && oceanFishSpawnAcc >= 0.12) {
     oceanFishSpawnAcc = 0;
-    for (let k = 0; k < 4; k++) {
-      const ox = G.player.x + (Math.random() - 0.5) * 3600;
-      const oz = G.player.z + (Math.random() - 0.5) * 3600;
+    for (let k = 0; k < 7; k++) {
+      const ox = G.player.x + (Math.random() - 0.5) * 5600;
+      const oz = G.player.z + (Math.random() - 0.5) * 5600;
       if (isOnIsland(ox, oz)) continue;
-      spawnFish(ox, oz, 4 + Math.floor(Math.random() * 10));
+      spawnFish(ox, oz, 5 + Math.floor(Math.random() * 11));
     }
   }
 
@@ -4515,6 +4646,7 @@ function updateHUD() {
    document.getElementById('hud-speed').textContent = `${effectiveKn.toFixed(1)} kn (${windLabel})`;
   document.getElementById('hud-health').textContent = `Hull ${Math.round(G.player.health)}`;
   document.getElementById('hud-food').textContent = `Food ${getInvCount('food')}`;
+  document.getElementById('hud-crew').textContent = `Crew ${G.player.crew ? G.player.crew.length : 0}`;
   document.getElementById('hud-ammo').textContent = `Shot ${getInvCount('cannonballs')}`;
   drawCompass();
 }
@@ -5002,6 +5134,10 @@ function beginVoyageAfterCharacter() {
   G.chunks.clear();
   islandGroup.clear();
   G.islands = [];
+  destroyAmbientWildlife();
+  noise = new SimplexNoise(G.worldSeed);
+  updateChunks();
+  spawnNPCs();
   rebuildPlayerShip();
   startServerSeedPrefetch();
   connectToServer();
@@ -5287,6 +5423,10 @@ document.getElementById('start-btn').onclick = () => {
     G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
     G.npcs = [];
     G.chunks.clear(); islandGroup.clear(); G.islands = [];
+    destroyAmbientWildlife();
+    noise = new SimplexNoise(G.worldSeed);
+    updateChunks();
+    spawnNPCs();
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
     water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
     sky.position.set(G.player.x, 0, G.player.z);
