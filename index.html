@@ -1053,6 +1053,45 @@ function getProceduralIslandMeta(cx, cz) {
   return meta;
 }
 
+/** True if (wx,wz) lies inside any procedural island footprint (no loaded meshes required). */
+function isPointInsideProceduralIsland(wx, wz) {
+  const ccx = Math.floor(wx / CHUNK_SIZE), ccz = Math.floor(wz / CHUNK_SIZE);
+  for (let dcx = -1; dcx <= 1; dcx++)
+    for (let dcz = -1; dcz <= 1; dcz++) {
+      const meta = getProceduralIslandMeta(ccx + dcx, ccz + dcz);
+      if (!meta) continue;
+      const dx = wx - meta.worldX, dz = wz - meta.worldZ;
+      const r = meta.radius * 0.85;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+  return false;
+}
+
+/** Move the player to open ocean if the current seed would place them on land. */
+function ensurePlayerInOpenOcean() {
+  if (!isPointInsideProceduralIsland(G.player.x, G.player.z)) return;
+  let s = ((G.worldSeed | 0) ^ 0x2f9f3ed1) >>> 0;
+  const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  for (let a = 0; a < 72; a++) {
+    const ang = rnd() * Math.PI * 2;
+    const dist = 200 + rnd() * 7200;
+    const nx = Math.cos(ang) * dist, nz = Math.sin(ang) * dist;
+    if (!isPointInsideProceduralIsland(nx, nz)) {
+      G.player.x = nx;
+      G.player.z = nz;
+      return;
+    }
+  }
+  for (let k = 1; k < 120; k++) {
+    const nx = k * CHUNK_SIZE * 1.1, nz = k * CHUNK_SIZE * 0.37;
+    if (!isPointInsideProceduralIsland(nx, nz)) {
+      G.player.x = nx;
+      G.player.z = nz;
+      return;
+    }
+  }
+}
+
 function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, centerWx, centerWz) {
   let minCx = Math.floor(minWx / CHUNK_SIZE), maxCx = Math.floor(maxWx / CHUNK_SIZE);
   let minCz = Math.floor(minWz / CHUNK_SIZE), maxCz = Math.floor(maxWz / CHUNK_SIZE);
@@ -2520,6 +2559,7 @@ function applySharedWorldFromServerSeed(s) {
   islandGroup.clear();
   G.islands = [];
   destroyAmbientWildlife();
+  ensurePlayerInOpenOcean();
   updateChunks();
   spawnNPCs();
   scatterWindStreaksNearPlayer();
@@ -2608,6 +2648,7 @@ function connectToServer() {
           G.player.color = msg.player.color; G.player.name = msg.player.name;
         }
         if (msg.players) msg.players.forEach(p => G.otherPlayers.set(p.id, p));
+        if (G.mode === 'playing' && !hasSave) ensurePlayerInOpenOcean();
         if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
         break;
       case 'player_join': G.otherPlayers.set(msg.player.id, msg.player); notify(`${msg.player.name} joined`); break;
@@ -4994,6 +5035,7 @@ function update(dt) {
       G.player.health = 100; G.player.anchored = false;
       G.player.x += (Math.random() - 0.5) * 100;
       G.player.z += (Math.random() - 0.5) * 100;
+      ensurePlayerInOpenOcean();
       G.player.speed = 1;
       G.lastAttackerId = null;
       G.lastAttacker = '';
@@ -5693,6 +5735,7 @@ function beginVoyageAfterCharacter() {
   G.islands = [];
   destroyAmbientWildlife();
   noise = new SimplexNoise(G.worldSeed);
+  ensurePlayerInOpenOcean();
   updateChunks();
   spawnNPCs();
   rebuildPlayerShip();
@@ -5877,6 +5920,7 @@ function loadProgress() {
     }
     if (data.flagColor) G.player.flagColor = data.flagColor;
     if (data.worldSeed != null && data.worldSeed !== '') G.worldSeed = Number(data.worldSeed) >>> 0;
+    ensurePlayerInOpenOcean();
     return true;
   } catch (e) { return false; }
 }
@@ -5887,6 +5931,9 @@ const origUpdate = update;
 /* ============================== INIT ===================================== */
 const hasSave = loadProgress();
 noise = new SimplexNoise(G.worldSeed);
+if (!hasSave) ensurePlayerInOpenOcean();
+updateChunks();
+spawnNPCs();
 
 document.getElementById('ui-layer').style.display = 'none';
 document.getElementById('touch-controls').style.display = 'none';
@@ -5917,10 +5964,6 @@ function menuRender() {
   }
 }
 menuRender();
-requestAnimationFrame(() => {
-  updateChunks();
-  spawnNPCs();
-});
 
 const menuIslands = [];
 for (let i = 0; i < 15; i++) menuIslands.push({ x: Math.random(), y: 0.2 + Math.random() * 0.6, r: 8 + Math.random() * 25, seed: Math.random() * 100 });
@@ -6007,6 +6050,7 @@ document.getElementById('start-btn').onclick = () => {
     G.chunks.clear(); islandGroup.clear(); G.islands = [];
     destroyAmbientWildlife();
     noise = new SimplexNoise(G.worldSeed);
+    ensurePlayerInOpenOcean();
     updateChunks();
     spawnNPCs();
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
