@@ -1082,7 +1082,7 @@ function getProceduralIslandMeta(cx, cz) {
     const tagIdx = th % TOWN_NAME_TAGS.length;
     meta.townName = TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx];
     meta.dockAngle = (hashChunk(cx + 99, cz + 99) * 2 - 1) * Math.PI;
-    const dockDist = islandRadius * 1.04 + 18;
+    const dockDist = islandRadius * 0.95;
     meta.dockX = worldX + Math.cos(meta.dockAngle) * dockDist;
     meta.dockZ = worldZ + Math.sin(meta.dockAngle) * dockDist;
   }
@@ -2067,6 +2067,47 @@ function buildCrewMeshes(group, crewList, shipType) {
   });
 }
 
+function clampCrewToShipDeck(sm, spec, member) {
+  const hw = spec.hullW;
+  const L = spec.hullLen;
+  const deckBase = spec.hullH * 0.65;
+  let minX, maxX, minZ, maxZ, minY, maxY;
+  if (member.role === 'prisoner') {
+    minX = -hw * 0.3; maxX = hw * 0.3;
+    minZ = L * 0.22; maxZ = L * 0.44;
+    minY = deckBase; maxY = deckBase + 0.07;
+  } else if (member.task === 'helm') {
+    const qd = spec.hullH * 0.55 + 0.05;
+    const yHelm = deckBase + qd;
+    minX = -hw * 0.18; maxX = hw * 0.18;
+    minZ = -L * 0.5; maxZ = -L * 0.36;
+    minY = yHelm - 0.02; maxY = yHelm + 0.07;
+  } else if (member.task === 'lookout') {
+    minX = -hw * 0.2; maxX = hw * 0.2;
+    minZ = L * 0.24; maxZ = L * 0.38;
+    minY = deckBase; maxY = deckBase + 0.12;
+  } else if (member.task === 'cannons') {
+    minX = -hw * 0.4; maxX = hw * 0.4;
+    minZ = -L * 0.4; maxZ = L * 0.1;
+    minY = deckBase; maxY = deckBase + 0.09;
+  } else if (member.task === 'sails') {
+    minX = -hw * 0.32; maxX = hw * 0.32;
+    minZ = -L * 0.18; maxZ = L * 0.26;
+    minY = deckBase; maxY = deckBase + 0.08;
+  } else if (member.task === 'clean') {
+    minX = -hw * 0.34; maxX = hw * 0.34;
+    minZ = -L * 0.26; maxZ = L * 0.06;
+    minY = deckBase; maxY = deckBase + 0.08;
+  } else {
+    minX = -hw * 0.36; maxX = hw * 0.36;
+    minZ = -L * 0.4; maxZ = L * 0.28;
+    minY = deckBase; maxY = deckBase + 0.08;
+  }
+  sm.x = Math.max(minX, Math.min(maxX, sm.x));
+  sm.z = Math.max(minZ, Math.min(maxZ, sm.z));
+  sm.y = Math.max(minY, Math.min(maxY, sm.y));
+}
+
 function updateCrewDeckAnimations(dt) {
   if (G.mode !== 'playing' || G.playerSinking) return;
   const ship = playerShipGroup.children[0];
@@ -2074,16 +2115,17 @@ function updateCrewDeckAnimations(dt) {
   if (G.crewDeckCombatT > 0) G.crewDeckCombatT = Math.max(0, G.crewDeckCombatT - dt * 1.25);
   const spec = SHIP_TYPES[G.player.shipType];
   const t = G.time;
-  const broadsideBusy = (G.starboardCooldown > 0 || G.portCooldown > 0) ? 1 : 0;
-  const reloadBusy = G.crewReloading ? 1 : 0;
-  const gunRun = broadsideBusy || reloadBusy || G.crewDeckCombatT > 0.08;
-  const speedStress = Math.min(1, Math.abs(G.player.speed) / 9);
-  const calm = Math.max(0, 1 - 0.55 * speedStress - 0.35 * broadsideBusy - 0.25 * reloadBusy - 0.35 * G.crewDeckCombatT);
-  const ampScale = 0.55 + 0.5 * calm;
-  const lerpPos = 1 - Math.exp(-6.2 * dt);
-  const lerpRot = 1 - Math.exp(-4.6 * dt);
-  const spd = Math.abs(G.player.speed);
-  const sailHeave = Math.min(0.04, spd / 14) * Math.sin(t * 2.1);
+  const cd = Math.max(G.starboardCooldown, G.portCooldown);
+  const broadsideBusy = cd > 0 ? 1 : 0;
+  const reloadT = G.crewReloading ? 1 : 0;
+  const reloadPhase = broadsideBusy ? cd / PLAYER_BROADSIDE_COOLDOWN : 0;
+  const seaLean = Math.min(1, Math.abs(G.player.speed) / 11);
+  const ampBase = 0.78 + (1 - seaLean) * 0.22;
+  const gunAmp = (broadsideBusy || reloadT || G.crewDeckCombatT > 0.05) ? 1.08 : 0.94;
+  const posLerp = 1 - Math.exp(-(6.2 + broadsideBusy * 2.2 + reloadT * 1.5) * dt);
+  const rotLerp = 1 - Math.exp(-(4.8 + broadsideBusy * 1.2) * dt);
+  const fireKick = Math.min(1, G.crewDeckCombatT * 2.2);
+
   ship.children.forEach(ch => {
     if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx == null) return;
     const member = G.player.crew[ch.userData.crewIdx];
@@ -2094,69 +2136,58 @@ function updateCrewDeckAnimations(dt) {
     const sm = ch.userData.crewSm;
     let tx, ty, tz, tryRot;
     if (member.role === 'prisoner') {
-      tx = b.x + Math.sin(t * 0.38 + k) * 0.08 * ampScale;
-      tz = b.z + Math.cos(t * 0.35 + k) * 0.07 * ampScale;
-      ty = b.y + sailHeave * 0.35;
-      tryRot = Math.sin(t * 0.24 + k) * 0.26;
+      tx = b.x + Math.sin(t * 0.4 + k) * 0.08 * ampBase;
+      tz = b.z + Math.cos(t * 0.38 + k) * 0.06 * ampBase;
+      ty = b.y;
+      tryRot = Math.sin(t * 0.26 + k) * 0.28;
     } else if (member.task === 'cannons') {
-      const work = gunRun ? 0.72 : 1;
-      const recoil = G.crewDeckCombatT * 0.14 * Math.sin(t * 18 + k);
-      tx = b.x + Math.sin(t * 0.55 + k) * 0.11 * ampScale * work + recoil * (Math.sin(k) > 0 ? 1 : -1);
-      tz = b.z + Math.cos(t * 0.48 + k) * 0.1 * ampScale * work;
-      ty = b.y + Math.abs(Math.sin(t * (gunRun ? 2.4 : 1.1) + k)) * (gunRun ? 0.035 : 0.022) * ampScale + sailHeave * 0.55;
-      tryRot = Math.sin(t * (gunRun ? 0.95 : 0.48) + k) * (gunRun ? 0.16 : 0.14);
+      const run = Math.sin(t * 0.55 + k * 1.3);
+      const ram = Math.sin(t * 0.48 + k) * 0.09 * gunAmp * ampBase;
+      const sway = Math.cos(t * 0.38 + k * 0.7) * 0.07 * gunAmp * ampBase;
+      const kick = fireKick * 0.07 * Math.sin(t * 22 + k);
+      tx = b.x + ram + kick;
+      tz = b.z + sway + run * 0.05 * (0.65 + reloadPhase * 0.35);
+      ty = b.y + Math.abs(Math.sin(t * 1.25 + k)) * 0.035 * gunAmp * ampBase + fireKick * 0.025;
+      tryRot = Math.sin(t * 0.85 + k) * 0.18 * gunAmp + run * 0.08;
     } else if (member.task === 'sails') {
-      const pull = 1 + spd / 11;
-      tx = b.x + Math.cos(t * 0.52 + k) * (spec.hullW * 0.11 * ampScale * pull);
-      tz = b.z + Math.sin(t * 0.46 + k) * (0.14 * ampScale * pull);
-      ty = b.y + Math.sin(t * 0.88 + k) * 0.025 * ampScale + sailHeave * 0.85;
-      tryRot = Math.sin(t * 0.38 + k) * 0.26;
+      const pull = Math.sin(t * 0.42 + k);
+      const haul = Math.cos(t * 0.33 + k * 1.1);
+      tx = b.x + haul * spec.hullW * 0.11 * ampBase * (0.92 + seaLean * 0.35);
+      tz = b.z + pull * spec.hullLen * 0.1 * ampBase;
+      ty = b.y + Math.sin(t * 0.88 + k) * 0.025 * ampBase;
+      tryRot = Math.sin(t * 0.44 + k) * 0.26 + pull * 0.06;
     } else if (member.task === 'helm') {
-      tx = b.x + Math.sin(t * 0.28 + k) * 0.05 * ampScale;
-      tz = b.z;
-      ty = b.y + sailHeave * 0.25;
-      tryRot = Math.sin(t * 0.42 + k) * 0.22;
+      tx = b.x + Math.sin(t * 0.32 + k) * 0.05 * ampBase;
+      tz = b.z + Math.sin(t * 0.28 + k) * 0.03 * seaLean;
+      ty = b.y;
+      tryRot = Math.sin(t * 0.5 + k) * 0.24 + Math.sin(t * 0.9) * 0.04 * seaLean;
     } else if (member.task === 'lookout') {
-      tx = b.x + Math.sin(t * 0.4 + k) * 0.09 * ampScale;
+      tx = b.x + Math.sin(t * 0.4 + k) * 0.09 * ampBase;
       tz = b.z;
-      ty = b.y + sailHeave * 0.4;
-      tryRot = Math.sin(t * 0.38 + k) * 0.32;
+      ty = b.y;
+      tryRot = Math.sin(t * 0.38 + k) * 0.36;
     } else if (member.task === 'clean') {
-      tx = b.x + Math.sin(t * 0.58 + k) * (spec.hullW * 0.13 * ampScale);
-      tz = b.z + Math.cos(t * 0.5 + k) * 0.12 * ampScale;
-      ty = b.y + Math.abs(Math.sin(t * 1.6 + k)) * 0.038 * ampScale + sailHeave * 0.5;
-      tryRot = Math.sin(t * 0.58 + k) * 0.22;
+      tx = b.x + Math.sin(t * 0.62 + k) * spec.hullW * 0.12 * ampBase;
+      tz = b.z + Math.cos(t * 0.52 + k) * spec.hullLen * 0.08 * ampBase;
+      ty = b.y + Math.abs(Math.sin(t * 1.65 + k)) * 0.04 * ampBase;
+      tryRot = Math.sin(t * 0.65 + k) * 0.22;
     } else {
-      tx = b.x + Math.sin(t * 0.45 + k) * (spec.hullW * 0.15 * ampScale);
-      tz = b.z + Math.cos(t * 0.42 + k) * (spec.hullLen * 0.11 * ampScale);
-      ty = b.y + sailHeave * 0.45;
-      tryRot = Math.sin(t * 0.32 + k) * 0.38;
+      tx = b.x + Math.sin(t * 0.48 + k) * spec.hullW * 0.14 * ampBase;
+      tz = b.z + Math.cos(t * 0.44 + k) * spec.hullLen * 0.1 * ampBase;
+      ty = b.y;
+      tryRot = Math.sin(t * 0.35 + k) * 0.42;
     }
-    const mastSide = (Math.sin(k * 1.71 + t * 0.2) >= 0 ? 1 : -1);
-    let cx = tx, cz = tz;
-    if (member.role !== 'prisoner') {
-      const maxX = spec.hullW * 0.36;
-      const zMin = -spec.hullLen * 0.48;
-      const zMax = spec.hullLen * 0.38;
-      cx = Math.max(b.x - maxX, Math.min(b.x + maxX, tx));
-      cz = Math.max(b.z + zMin, Math.min(b.z + zMax, tz));
-      const mHalf = spec.hullW * 0.11;
-      const zM0 = b.z - spec.hullLen * 0.25;
-      const zM1 = b.z + spec.hullLen * 0.12;
-      if (Math.abs(cx - b.x) < mHalf && cz > zM0 && cz < zM1) cx = b.x + mastSide * spec.hullW * 0.34;
-    } else {
-      const pMaxX = spec.hullW * 0.32;
-      const pzMin = b.z + spec.hullLen * 0.22;
-      const pzMax = b.z + spec.hullLen * 0.42;
-      cx = Math.max(b.x - pMaxX, Math.min(b.x + pMaxX, tx));
-      cz = Math.max(pzMin, Math.min(pzMax, tz));
-    }
-    sm.x += (cx - sm.x) * lerpPos;
-    sm.y += (ty - sm.y) * lerpPos;
-    sm.z += (cz - sm.z) * lerpPos;
-    sm.ry += (tryRot - sm.ry) * lerpRot;
+    tryRot = Math.max(-0.55, Math.min(0.55, tryRot));
+    sm.x += (tx - sm.x) * posLerp;
+    sm.y += (ty - sm.y) * posLerp;
+    sm.z += (tz - sm.z) * posLerp;
+    sm.ry += (tryRot - sm.ry) * rotLerp;
+    clampCrewToShipDeck(sm, spec, member);
     ch.position.set(sm.x, sm.y, sm.z);
-    ch.rotation.x = member.task === 'clean' ? Math.sin(t * 0.72 + k) * 0.045 * ampScale : 0;
+    let leanX = 0;
+    if (member.task === 'clean') leanX = Math.sin(t * 0.72 + k) * 0.05 * ampBase;
+    else if (member.task === 'cannons') leanX = Math.sin(t * 0.5 + k) * 0.04 * gunAmp * ampBase + fireKick * 0.06;
+    ch.rotation.x = leanX;
     ch.rotation.z = 0;
     ch.rotation.y = sm.ry;
   });
@@ -2391,71 +2422,101 @@ function isMultiplayerHost() {
   ids.push(G.myId);
   return G.myId <= Math.min(...ids);
 }
-/** Push point away from nearest island center so spawns sit in deeper open water. */
-function nudgePointOffshore(wx, wz, rng) {
-  const ccx = Math.floor(wx / CHUNK_SIZE), ccz = Math.floor(wz / CHUNK_SIZE);
-  let best = null, bestD = 1e9;
-  for (let dcx = -2; dcx <= 2; dcx++) for (let dcz = -2; dcz <= 2; dcz++) {
-    const meta = getProceduralIslandMeta(ccx + dcx, ccz + dcz);
-    if (!meta) continue;
-    const dx = wx - meta.worldX, dz = wz - meta.worldZ;
-    const d = Math.hypot(dx, dz);
-    if (d < bestD) { bestD = d; best = meta; }
+/** True if (wx,wz) is open sea and most compass bearings stay in water at ~clear units (off beaches, still works in channels). */
+function hasMinClearanceFromLand(wx, wz, clear) {
+  if (isSeaObstructed(wx, wz)) return false;
+  const rays = 10;
+  let open = 0;
+  for (let i = 0; i < rays; i++) {
+    const ang = (i / rays) * Math.PI * 2;
+    if (!isSeaObstructed(wx + Math.cos(ang) * clear, wz + Math.sin(ang) * clear)) open++;
   }
-  if (!best) return { nx: wx, nz: wz };
-  const dx = wx - best.worldX, dz = wz - best.worldZ;
-  const dist = Math.hypot(dx, dz) || 1;
-  const want = best.radius * 0.85 + 32 + rng() * 22;
-  if (dist >= want) return { nx: wx, nz: wz };
-  const push = want - dist;
-  const inv = 1 / dist;
-  return { nx: wx + dx * inv * push, nz: wz + dz * inv * push };
+  return open >= 6;
 }
 function sampleOpenOceanPointInWorld(rng) {
-  const lim = WORLD_EDGE_CLAMP * 0.88;
-  for (let attempt = 0; attempt < 72; attempt++) {
-    let nx = (rng() * 2 - 1) * lim;
-    let nz = (rng() * 2 - 1) * lim;
-    if (isSeaObstructed(nx, nz)) continue;
-    const off = nudgePointOffshore(nx, nz, rng);
-    nx = off.nx; nz = off.nz;
-    nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nx));
-    nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nz));
-    if (!isSeaObstructed(nx, nz)) return { nx, nz };
+  const lim = WORLD_EDGE_CLAMP * 0.86;
+  const minClear = 62;
+  for (let attempt = 0; attempt < 110; attempt++) {
+    const bias = 0.42 + rng() * 0.58;
+    const nx = (rng() * 2 - 1) * lim * bias;
+    const nz = (rng() * 2 - 1) * lim * bias;
+    if (!hasMinClearanceFromLand(nx, nz, minClear)) continue;
+    return { nx, nz };
+  }
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const nx = (rng() * 2 - 1) * lim;
+    const nz = (rng() * 2 - 1) * lim;
+    if (!isSeaObstructed(nx, nz) && hasMinClearanceFromLand(nx, nz, 38)) return { nx, nz };
   }
   return { nx: (rng() * 2 - 1) * 600, nz: (rng() * 2 - 1) * 600 };
 }
-function getOffshoreHeadingFromNearestIsland(wx, wz) {
-  const ccx = Math.floor(wx / CHUNK_SIZE), ccz = Math.floor(wz / CHUNK_SIZE);
-  let best = null, bestD = 1e9;
-  for (let dcx = -2; dcx <= 2; dcx++) for (let dcz = -2; dcz <= 2; dcz++) {
-    const meta = getProceduralIslandMeta(ccx + dcx, ccz + dcz);
-    if (!meta) continue;
-    const dx = wx - meta.worldX, dz = wz - meta.worldZ;
-    const d = Math.hypot(dx, dz);
-    if (d < bestD) { bestD = d; best = meta; }
+/** Best yaw (world) to sail toward open water from a blocked or coastal position. */
+function findNpcOpenWaterHeading(npc, testStep) {
+  const step = testStep || 32;
+  let bestA = null, best = -1;
+  for (let i = 0; i < 24; i++) {
+    const ang = (i / 24) * Math.PI * 2;
+    let ok = 0;
+    for (let s = 1; s <= 4; s++) {
+      const tx = npc.x + Math.sin(ang) * step * s;
+      const tz = npc.z + Math.cos(ang) * step * s;
+      if (!isSeaObstructed(tx, tz)) ok++;
+      else break;
+    }
+    if (ok > best) { best = ok; bestA = ang; }
   }
-  if (!best) return null;
-  const dx = wx - best.worldX, dz = wz - best.worldZ;
-  const dist = Math.hypot(dx, dz) || 1e-6;
-  return Math.atan2(dx / dist, dz / dist);
+  return best >= 1 ? bestA : null;
 }
-function npcApplyLandBlockedSteer(npc, dt) {
-  const seaH = getOffshoreHeadingFromNearestIsland(npc.x, npc.z);
-  if (seaH != null) {
-    npc.wanderAngle = seaH;
-    let diff = seaH - npc.rotation;
+function nudgeNpcOffIsland(npc) {
+  if (!isSeaObstructed(npc.x, npc.z)) return;
+  const esc = findNpcOpenWaterHeading(npc, 22);
+  if (esc != null) {
+    npc.x += Math.sin(esc) * 4;
+    npc.z += Math.cos(esc) * 4;
+    npc.rotation = esc;
+    npc.wanderAngle = esc;
+    return;
+  }
+  const lim = WORLD_EDGE_CLAMP * 0.95;
+  const cx = Math.max(-lim, Math.min(lim, npc.x * 0.92));
+  const cz = Math.max(-lim, Math.min(lim, npc.z * 0.92));
+  npc.x = cx; npc.z = cz;
+}
+function applyNpcMoveWithIslandEscape(npc, dt, cruiseSpeed, turnSharp) {
+  const spd = cruiseSpeed != null ? cruiseSpeed : npc.speed;
+  const turn = turnSharp != null ? turnSharp : 2.35;
+  const nNewX = npc.x + Math.sin(npc.rotation) * spd * dt;
+  const nNewZ = npc.z + Math.cos(npc.rotation) * spd * dt;
+  if (!isSeaObstructed(nNewX, nNewZ)) {
+    npc.x = nNewX;
+    npc.z = nNewZ;
+    return;
+  }
+  const open = findNpcOpenWaterHeading(npc, 28);
+  if (open != null) {
+    let diff = open - npc.rotation;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
-    npc.rotation += Math.sign(diff) * Math.min(Math.abs(diff), 3.2 * dt);
-    npc.x += Math.sin(seaH) * 3.8 * dt;
-    npc.z += Math.cos(seaH) * 3.8 * dt;
+    npc.rotation += diff * turn * dt;
+    npc.wanderAngle = open;
   } else {
-    npc.rotation += (Math.random() - 0.5) * 2.4 * dt;
-    const back = npc.rotation + Math.PI;
-    npc.x += Math.sin(back) * 2.5 * dt;
-    npc.z += Math.cos(back) * 2.5 * dt;
+    const dir = (((npc.x * 641 + npc.z * 919 + (npc.syncId | 0)) | 0) & 1) ? 1 : -1;
+    npc.rotation += dir * 1.25 * dt;
   }
+  const bump = Math.min(8, 2.5 + spd * dt * 2.2);
+  const back = Math.atan2(npc.x - nNewX, npc.z - nNewZ);
+  let bx = npc.x + Math.sin(back) * bump;
+  let bz = npc.z + Math.cos(back) * bump;
+  if (!isSeaObstructed(bx, bz)) {
+    npc.x = bx;
+    npc.z = bz;
+  } else {
+    const side = npc.rotation + Math.PI / 2;
+    bx = npc.x + Math.sin(side) * bump * 0.75;
+    bz = npc.z + Math.cos(side) * bump * 0.75;
+    if (!isSeaObstructed(bx, bz)) { npc.x = bx; npc.z = bz; }
+  }
+  nudgeNpcOffIsland(npc);
 }
 function spawnTradeShips() {
   const tBase = ((G.worldSeed | 0) * 31 + 22411) >>> 0;
@@ -2477,18 +2538,14 @@ function spawnTradeShips() {
     const dest = pickTradeDestination(home, list, sr);
     if (!dest) continue;
     const outward = home.dockAngle + Math.PI;
-    const distOff = 24 + sr() * 22;
-    let nx = home.dockX + Math.cos(outward) * distOff;
-    let nz = home.dockZ + Math.sin(outward) * distOff;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      if (!isSeaObstructed(nx, nz)) break;
-      const ang = outward + (sr() - 0.5) * 1.1;
-      const d = 18 + sr() * 18;
-      nx = home.dockX + Math.cos(ang) * d;
-      nz = home.dockZ + Math.sin(ang) * d;
+    let nx = home.dockX, nz = home.dockZ;
+    for (let attempt = 0; attempt < 22; attempt++) {
+      const distOff = 16 + sr() * 18 + attempt * 1.2;
+      const ang = outward + (sr() - 0.5) * (0.35 + attempt * 0.04);
+      nx = home.dockX + Math.cos(ang) * distOff;
+      nz = home.dockZ + Math.sin(ang) * distOff;
+      if (!isSeaObstructed(nx, nz) && hasMinClearanceFromLand(nx, nz, 28)) break;
     }
-    const offEmb = nudgePointOffshore(nx, nz, sr);
-    nx = offEmb.nx; nz = offEmb.nz;
     nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nx));
     nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nz));
     const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
@@ -2717,10 +2774,8 @@ function updateNPCs(dt) {
             }
           }
         }
-        const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
-        const nNewZ = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
-        if (!isSeaObstructed(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
-        else { npcApplyLandBlockedSteer(npc, dt); }
+        if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+        applyNpcMoveWithIslandEscape(npc, dt, npc.speed, 2.45);
       } else {
       if (!npc.fireCooldown) npc.fireCooldown = 0;
       npc.fireCooldown -= dt;
@@ -2760,20 +2815,9 @@ function updateNPCs(dt) {
         npc.rotation += diff * 0.5 * dt;
       }
 
-      const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
-      const nNewZ = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
-      if (!isSeaObstructed(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
-      else {
-        npcApplyLandBlockedSteer(npc, dt);
-        if (isSeaObstructed(npc.x, npc.z)) {
-          const h = getOffshoreHeadingFromNearestIsland(npc.x, npc.z);
-          if (h != null) {
-            npc.x += Math.sin(h) * 4.5 * dt;
-            npc.z += Math.cos(h) * 4.5 * dt;
-            npc.wanderAngle = h;
-          }
-        }
-      }
+      if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+      const sharp = npc.aggro && distToPlayer < 110 ? 2.55 : 2.05;
+      applyNpcMoveWithIslandEscape(npc, dt, npc.speed, sharp);
       }
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
