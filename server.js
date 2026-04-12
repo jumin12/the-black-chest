@@ -104,14 +104,42 @@ let nextSwimmerNetId = 1;
 
 const LB_FILE = path.join(__dirname, 'leaderboard.json');
 let leaderboardHistory = [];
+
+function normalizeLbEntry(e) {
+  if (!e || typeof e !== 'object') {
+    return { name: 'Unknown', gold: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+  }
+  const name = String(e.name || 'Pirate').slice(0, 28);
+  const gold = Math.max(0, Math.floor(
+    e.gold != null ? Number(e.gold) : (e.loot != null ? Number(e.loot) : 0)
+  ));
+  const sinksAi = Math.max(0, Math.floor(
+    e.sinksAi != null ? Number(e.sinksAi) : (e.kills != null ? Number(e.kills) : 0)
+  ));
+  const sinksPlayer = Math.max(0, Math.floor(Number(e.sinksPlayer) || 0));
+  const ransoms = Math.max(0, Math.floor(Number(e.ransoms) || 0));
+  const deaths = Math.max(0, Math.floor(Number(e.deaths) || 0));
+  return { name, gold, sinksAi, sinksPlayer, ransoms, deaths };
+}
+function sortLeaderboardHistory() {
+  leaderboardHistory.sort((a, b) => {
+    const ta = a.sinksAi + a.sinksPlayer + a.ransoms * 0.25;
+    const tb = b.sinksAi + b.sinksPlayer + b.ransoms * 0.25;
+    if (tb !== ta) return tb - ta;
+    if (b.gold !== a.gold) return b.gold - a.gold;
+    return String(a.name).localeCompare(String(b.name));
+  });
+}
+
 try {
   const lbRaw = fs.readFileSync(LB_FILE, 'utf-8');
   const parsed = JSON.parse(lbRaw);
-  if (Array.isArray(parsed)) leaderboardHistory = parsed;
+  if (Array.isArray(parsed)) leaderboardHistory = parsed.map(normalizeLbEntry);
 } catch (e) {
   leaderboardHistory = [];
   try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e2) {}
 }
+sortLeaderboardHistory();
 function saveLeaderboard() {
   try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e) {}
 }
@@ -363,22 +391,21 @@ wss.on('connection', (ws) => {
         case 'pvp_kill_credit': {
           const killerId = msg.killerId;
           if (!killerId || killerId === id) break;
-          const dk = Math.max(0, Math.floor(msg.kills || 0));
-          const dl = Math.max(0, Math.floor(msg.loot || 0));
+          const dk = Math.max(0, Math.floor(Number(msg.sinksPlayer != null ? msg.sinksPlayer : msg.kills) || 0));
+          const dl = Math.max(0, Math.floor(Number(msg.gold != null ? msg.gold : msg.loot) || 0));
           if (dk === 0 && dl === 0) break;
           const kp = players.get(killerId);
           if (!kp) break;
           kp.kills = (kp.kills || 0) + dk;
           kp.loot = (kp.loot || 0) + dl;
           const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
-          let row = leaderboardHistory.find(e => e.name === capName);
-          if (!row) {
-            row = { name: capName, kills: 0, loot: 0 };
-            leaderboardHistory.push(row);
-          }
-          row.kills += dk;
-          row.loot += dl;
-          leaderboardHistory.sort((a, b) => b.kills - a.kills || b.loot - a.loot);
+          let idx = leaderboardHistory.findIndex(e => e.name === capName);
+          let row = idx >= 0 ? normalizeLbEntry(leaderboardHistory[idx]) : normalizeLbEntry({ name: capName });
+          row.sinksPlayer += dk;
+          row.gold += dl;
+          if (idx >= 0) leaderboardHistory[idx] = row;
+          else leaderboardHistory.push(row);
+          sortLeaderboardHistory();
           leaderboardHistory = leaderboardHistory.slice(0, 50);
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
@@ -387,19 +414,24 @@ wss.on('connection', (ws) => {
         case 'leaderboard_update': {
           const p = players.get(id);
           if (!p) break;
-          const dk = msg.kills || 0;
-          const dl = msg.loot || 0;
-          p.kills = (p.kills || 0) + dk;
-          p.loot = (p.loot || 0) + dl;
+          const dg = Math.max(0, Math.floor(Number(msg.gold != null ? msg.gold : msg.loot) || 0));
+          const dAi = Math.max(0, Math.floor(Number(msg.sinksAi != null ? msg.sinksAi : msg.kills) || 0));
+          const dPl = Math.max(0, Math.floor(Number(msg.sinksPlayer) || 0));
+          const dr = Math.max(0, Math.floor(Number(msg.ransoms) || 0));
+          const dd = Math.max(0, Math.floor(Number(msg.deaths) || 0));
+          p.kills = (p.kills || 0) + dAi + dPl;
+          p.loot = (p.loot || 0) + dg;
           const capName = (p.name || p.shipName || 'Pirate').slice(0, 28);
-          let row = leaderboardHistory.find(e => e.name === capName);
-          if (!row) {
-            row = { name: capName, kills: 0, loot: 0 };
-            leaderboardHistory.push(row);
-          }
-          row.kills += dk;
-          row.loot += dl;
-          leaderboardHistory.sort((a, b) => b.kills - a.kills || b.loot - a.loot);
+          let idx = leaderboardHistory.findIndex(e => e.name === capName);
+          let row = idx >= 0 ? normalizeLbEntry(leaderboardHistory[idx]) : normalizeLbEntry({ name: capName });
+          row.gold += dg;
+          row.sinksAi += dAi;
+          row.sinksPlayer += dPl;
+          row.ransoms += dr;
+          row.deaths += dd;
+          if (idx >= 0) leaderboardHistory[idx] = row;
+          else leaderboardHistory.push(row);
+          sortLeaderboardHistory();
           leaderboardHistory = leaderboardHistory.slice(0, 50);
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
