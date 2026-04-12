@@ -648,9 +648,8 @@ const STORY_PIRATE_NAMES = {
   warship: 'Admiral Scarlett Graves'
 };
 const STORY_REWARDS = [55, 75, 100, 140, 200];
-/** NPC sync ids: pirates 0–7, story bounties ~90+, merchantmen 200+. */
+/** NPC sync ids: pirates 0–7, story bounties ~90+, merchants from 200 (one per charted port). */
 const TRADE_NPC_SYNC_START = 200;
-const TRADE_SHIP_COUNT = 96;
 
 function nearestPortIslandHint() {
   const best = findNearestPortDock(G.player.x, G.player.z);
@@ -1307,6 +1306,38 @@ function collectPortsInArea(wx, wz, half) {
     if (m.hasTown && m.dockX != null) out.push(m);
   }, wx, wz);
   return out;
+}
+/** Every charted port in the world (for one merchant per town). */
+function collectAllTradingPorts() {
+  const out = [];
+  const lim = WORLD_EDGE_CLAMP;
+  forEachProceduralIslandInWorldBounds(-lim, lim, -lim, lim, m => {
+    if (m.hasTown && m.dockX != null) out.push(m);
+  }, 0, 0);
+  return out;
+}
+/** Open sea off the home dock, far enough from the beach for sailing AI. */
+function findMerchantSpawnOffCoast(home, sr) {
+  const outward = home.dockAngle + Math.PI;
+  for (let attempt = 0; attempt < 48; attempt++) {
+    const distOff = 32 + sr() * 28 + (attempt % 14) * 2.4;
+    const ang = outward + (sr() - 0.5) * 0.65 + (attempt * 0.041);
+    const nx = home.dockX + Math.cos(ang) * distOff;
+    const nz = home.dockZ + Math.sin(ang) * distOff;
+    if (!isSeaObstructed(nx, nz) && hasMinClearanceFromLand(nx, nz, 38)) {
+      return { nx, nz };
+    }
+  }
+  for (let ring = 0; ring < 22; ring++) {
+    const distOff = 52 + ring * 9;
+    for (let k = 0; k < 20; k++) {
+      const ang = outward + (k / 20) * Math.PI * 2;
+      const nx = home.dockX + Math.cos(ang) * distOff;
+      const nz = home.dockZ + Math.sin(ang) * distOff;
+      if (!isSeaObstructed(nx, nz) && hasMinClearanceFromLand(nx, nz, 32)) return { nx, nz };
+    }
+  }
+  return null;
 }
 /** Prefer same faction + complementary export; rng is () => 0..1 */
 function pickTradeDestination(home, list, rng) {
@@ -2605,10 +2636,12 @@ function findNpcOpenWaterHeading(npc, testStep) {
 }
 function nudgeNpcOffIsland(npc) {
   if (!isSeaObstructed(npc.x, npc.z)) return;
-  const esc = findNpcOpenWaterHeading(npc, 22);
+  const step = npc.isTradeShip ? 34 : 22;
+  const push = npc.isTradeShip ? 11 : 4;
+  const esc = findNpcOpenWaterHeading(npc, step);
   if (esc != null) {
-    npc.x += Math.sin(esc) * 4;
-    npc.z += Math.cos(esc) * 4;
+    npc.x += Math.sin(esc) * push;
+    npc.z += Math.cos(esc) * push;
     npc.rotation = esc;
     npc.wanderAngle = esc;
     return;
@@ -2666,26 +2699,30 @@ function npcForwardRayClear(npc, dist, segments) {
 function steerNpcClearanceAhead(npc, dt, turnSharp) {
   if (npc.escapeMode) return;
   if (isSeaObstructed(npc.x, npc.z)) return;
-  const look = 40;
-  if (npcForwardRayClear(npc, look, 9)) return;
+  const look = npc.isTradeShip ? 50 : 40;
+  if (npcForwardRayClear(npc, look, npc.isTradeShip ? 11 : 9)) return;
   const turn = turnSharp != null ? turnSharp : 2.35;
+  const arc = npc.isTradeShip ? 1.22 : 1.15;
+  const turnMul = npc.isTradeShip ? 0.82 : 0.72;
   let bestAng = npc.rotation, bestScore = 0;
   for (let i = -14; i <= 14; i++) {
-    const a = npc.rotation + (i / 14) * 1.15;
+    const a = npc.rotation + (i / 14) * arc;
     let score = 0;
-    for (let s = 1; s <= 7; s++) {
-      const x = npc.x + Math.sin(a) * 8.5 * s;
-      const z = npc.z + Math.cos(a) * 8.5 * s;
+    const rayStep = npc.isTradeShip ? 9.2 : 8.5;
+    const rayLen = npc.isTradeShip ? 8 : 7;
+    for (let s = 1; s <= rayLen; s++) {
+      const x = npc.x + Math.sin(a) * rayStep * s;
+      const z = npc.z + Math.cos(a) * rayStep * s;
       if (!isSeaObstructed(x, z)) score++;
       else break;
     }
     if (score > bestScore) { bestScore = score; bestAng = a; }
   }
-  if (bestScore >= 3) {
+  if (bestScore >= (npc.isTradeShip ? 4 : 3)) {
     let diff = bestAng - npc.rotation;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
-    npc.rotation += diff * turn * dt * 0.72;
+    npc.rotation += diff * turn * dt * turnMul;
     npc.wanderAngle = npc.rotation;
   }
 }
@@ -2769,39 +2806,32 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
 }
 function spawnTradeShips() {
   const tBase = ((G.worldSeed | 0) * 31 + 22411) >>> 0;
-  const portPool = collectPortsInArea(0, 0, 12000);
-  if (portPool.length < 2) return;
-  const order = portPool.map((_, i) => i);
+  const allPorts = collectAllTradingPorts();
+  if (allPorts.length < 2) return;
+  const portsSorted = allPorts.slice().sort((a, b) => a.cx - b.cx || a.cz - b.cz || String(a.townName || '').localeCompare(String(b.townName || '')));
+  const order = portsSorted.map((_, i) => i);
   let shuf = (tBase ^ 0x9e3779b9) >>> 0;
   for (let ii = order.length - 1; ii > 0; ii--) {
     shuf = (Math.imul(shuf, 1664525) + 1013904223) >>> 0;
     const jj = shuf % (ii + 1);
     const tmp = order[ii]; order[ii] = order[jj]; order[jj] = tmp;
   }
-  for (let i = 0; i < TRADE_SHIP_COUNT; i++) {
-    let s = (tBase + Math.imul(i, 2654435761)) >>> 0;
+  let tradeSyncIdx = 0;
+  for (let pi = 0; pi < order.length; pi++) {
+    const home = portsSorted[order[pi]];
+    let s = (tBase + Math.imul(home.cx * 7919 + home.cz * 9341, 2654435761)) >>> 0;
     const sr = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-    const home = portPool[order[i % order.length]];
-    let list = collectPortsInArea(home.worldX, home.worldZ, 32000);
-    if (list.length < 2) list = portPool;
-    const dest = pickTradeDestination(home, list, sr);
+    const dest = pickTradeDestination(home, allPorts, sr);
     if (!dest) continue;
-    const outward = home.dockAngle + Math.PI;
-    let nx = home.dockX, nz = home.dockZ;
-    for (let attempt = 0; attempt < 22; attempt++) {
-      const distOff = 16 + sr() * 18 + attempt * 1.2;
-      const ang = outward + (sr() - 0.5) * (0.35 + attempt * 0.04);
-      nx = home.dockX + Math.cos(ang) * distOff;
-      nz = home.dockZ + Math.sin(ang) * distOff;
-      if (!isSeaObstructed(nx, nz) && hasMinClearanceFromLand(nx, nz, 28)) break;
-    }
-    nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nx));
-    nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nz));
+    const spawn = findMerchantSpawnOffCoast(home, sr);
+    if (!spawn) continue;
+    let nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nx));
+    let nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nz));
     const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
     const st = shipTypes[Math.floor(sr() * shipTypes.length)];
     const sailPick = sr() > 0.55 ? 'silk' : 'basic';
     const npc = {
-      syncId: TRADE_NPC_SYNC_START + i,
+      syncId: TRADE_NPC_SYNC_START + tradeSyncIdx,
       x: nx, z: nz,
       rotation: 0,
       speed: 0,
@@ -2819,7 +2849,7 @@ function spawnTradeShips() {
       sailBonus: sailPick === 'silk' ? 0.3 : 0,
       wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0
     };
-    assignTradeRouteFromHome(npc, home, list, sr);
+    assignTradeRouteFromHome(npc, home, allPorts, sr);
     npc.homeEmbarkX = nx;
     npc.homeEmbarkZ = nz;
     npc.rotation = Math.atan2(npc.tradeDestX - nx, npc.tradeDestZ - nz);
@@ -2835,6 +2865,7 @@ function spawnTradeShips() {
     npc.mesh = mesh;
     scene.add(mesh);
     G.npcs.push(npc);
+    tradeSyncIdx++;
   }
 }
 function spawnNPCs() {
