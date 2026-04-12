@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
@@ -22,6 +23,51 @@ try {
   try { fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); } catch (e2) {}
 }
 
+/** Set `NAVIGATOR_ADMIN_PASSWORD` in the environment so F3 / navigator tools can authenticate without embedding secrets in the client. */
+const NAVIGATOR_ADMIN_PASSWORD = process.env.NAVIGATOR_ADMIN_PASSWORD || '';
+const ADMIN_SESSION_MS = 8 * 60 * 60 * 1000;
+const adminSessions = new Map();
+
+function verifyNavigatorPassword(pw) {
+  if (!NAVIGATOR_ADMIN_PASSWORD || String(NAVIGATOR_ADMIN_PASSWORD).length === 0) return false;
+  const a = crypto.createHash('sha256').update(String(pw || ''), 'utf8').digest();
+  const b = crypto.createHash('sha256').update(String(NAVIGATOR_ADMIN_PASSWORD), 'utf8').digest();
+  try {
+    return crypto.timingSafeEqual(a, b);
+  } catch (e) {
+    return false;
+  }
+}
+
+function pruneAdminSessions() {
+  const now = Date.now();
+  for (const [tok, exp] of adminSessions) {
+    if (exp <= now) adminSessions.delete(tok);
+  }
+}
+setInterval(pruneAdminSessions, 120000);
+
+function readJsonBody(req, limit = 65536) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', chunk => {
+      raw += chunk;
+      if (raw.length > limit) {
+        reject(new Error('body too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      try {
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
 const players = new Map();
 let nextId = 1;
 let nextLootNetId = 1;
@@ -29,14 +75,35 @@ let nextSwimmerNetId = 1;
 
 const LB_FILE = path.join(__dirname, 'leaderboard.json');
 let leaderboardHistory = [];
-try { leaderboardHistory = JSON.parse(fs.readFileSync(LB_FILE, 'utf-8')); } catch (e) {}
-function saveLeaderboard() { try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e) {} }
+try {
+  const lbRaw = fs.readFileSync(LB_FILE, 'utf-8');
+  const parsed = JSON.parse(lbRaw);
+  if (Array.isArray(parsed)) leaderboardHistory = parsed;
+} catch (e) {
+  leaderboardHistory = [];
+  try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e2) {}
+}
+function saveLeaderboard() {
+  try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e) {}
+}
+setInterval(() => { saveLeaderboard(); }, 60000);
+function persistLeaderboardShutdown() {
+  saveLeaderboard();
+}
+process.on('SIGINT', persistLeaderboardShutdown);
+process.on('SIGTERM', persistLeaderboardShutdown);
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type'
 };
+
+function setWorldSeedAndPersist(newSeed) {
+  WORLD_SEED = Number(newSeed) >>> 0;
+  try { fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); } catch (e) {}
+  broadcastAll({ type: 'world_seed', seed: WORLD_SEED });
+}
 
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
@@ -45,9 +112,59 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && req.url === '/api/navigator-auth') {
+    readJsonBody(req).then(body => {
+      if (!verifyNavigatorPassword(body.password)) {
+        res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid password or navigator admin not configured on server.' }));
+        return;
+      }
+      pruneAdminSessions();
+      const token = crypto.randomBytes(32).toString('hex');
+      adminSessions.set(token, Date.now() + ADMIN_SESSION_MS);
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: true, token, expiresInSec: Math.floor(ADMIN_SESSION_MS / 1000) }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: false, error: 'Bad request' }));
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/world-seed') {
+    readJsonBody(req).then(body => {
+      pruneAdminSessions();
+      const token = body.token;
+      const exp = token ? adminSessions.get(token) : 0;
+      if (!token || !exp || exp <= Date.now()) {
+        res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Session expired or missing. Unlock the navigator console again.' }));
+        return;
+      }
+      const seed = Number(body.seed);
+      if (!Number.isFinite(seed)) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid seed' }));
+        return;
+      }
+      setWorldSeedAndPersist(seed >>> 0);
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: true, seed: WORLD_SEED }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: false, error: 'Bad request' }));
+    });
+    return;
+  }
+
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-    res.end(JSON.stringify({ status: 'ok', players: players.size, seed: WORLD_SEED }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      players: players.size,
+      seed: WORLD_SEED,
+      navigatorAuthConfigured: !!(NAVIGATOR_ADMIN_PASSWORD && String(NAVIGATOR_ADMIN_PASSWORD).length > 0)
+    }));
     return;
   }
 
@@ -285,4 +402,5 @@ setInterval(() => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Pirate game server running on port ${PORT}`);
   console.log(`World seed: ${WORLD_SEED}`);
+  console.log(`Navigator admin: ${NAVIGATOR_ADMIN_PASSWORD ? 'password configured (env)' : 'NOT SET — set NAVIGATOR_ADMIN_PASSWORD for F3'}`);
 });
