@@ -2523,6 +2523,7 @@ function applySharedWorldFromServerSeed(s) {
   updateChunks();
   spawnNPCs();
   scatterWindStreaksNearPlayer();
+  flushGameViewRender();
 }
 function startServerSeedPrefetch() {
   prefetchedServerSeed = null;
@@ -2544,6 +2545,7 @@ function startServerSeedPrefetch() {
             updateChunks();
             spawnNPCs();
             scatterWindStreaksNearPlayer();
+            flushGameViewRender();
           }
         }
       }
@@ -2606,6 +2608,7 @@ function connectToServer() {
           G.player.color = msg.player.color; G.player.name = msg.player.name;
         }
         if (msg.players) msg.players.forEach(p => G.otherPlayers.set(p.id, p));
+        if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
         break;
       case 'player_join': G.otherPlayers.set(msg.player.id, msg.player); notify(`${msg.player.name} joined`); break;
       case 'player_leave': G.otherPlayers.delete(msg.id); if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } break;
@@ -3774,13 +3777,15 @@ function updateMissionsPanel() {
       <div style="color:#e8b8d8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story</div>
       <div style="color:#e0d6c2;font-size:12px;line-height:1.45;">Dock at any port → <strong>Quests</strong> and speak with the Harbormaster to begin hunting the notorious pirate captains.</div>
       <div style="color:#9a8a78;font-size:10px;margin-top:6px;">${nearestPortIslandHint()}</div></div>`;
-  } else if (sq.phase === 'active' && sq.step < STORY_SHIP_ORDER.length) {
-    const st = STORY_SHIP_ORDER[sq.step];
+  } else if (sq.phase === 'active') {
+    const si = Math.min(Math.max(0, sq.step), STORY_SHIP_ORDER.length - 1);
+    const st = STORY_SHIP_ORDER[si];
     const cap = STORY_PIRATE_NAMES[st] || 'Target';
+    const rew = STORY_REWARDS[si] != null ? STORY_REWARDS[si] : 0;
     storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(180,100,160,0.35);border-radius:6px;margin-bottom:10px;">
       <div style="color:#e8b8d8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story — bounty</div>
       <div style="color:#e0d6c2;font-size:12px;">Sink <strong>${cap}</strong> (${SHIP_TYPES[st]?.name || st}).</div>
-      <div style="color:#d4a848;font-size:10px;margin-top:4px;">Turn in at any port when done.</div></div>`;
+      <div style="color:#d4a848;font-size:10px;margin-top:4px;">Turn in at any port when done. Reward: ${rew}g.</div></div>`;
   } else if (sq.phase === 'report') {
     storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(120,180,120,0.4);border-radius:6px;margin-bottom:10px;">
       <div style="color:#a8e8b8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story — report</div>
@@ -3789,7 +3794,12 @@ function updateMissionsPanel() {
     storyHtml = `<div style="padding:10px;background:rgba(30,40,30,0.5);border:1px solid rgba(120,160,100,0.35);border-radius:6px;margin-bottom:10px;">
       <div style="color:#b8d8a8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story</div>
       <div style="color:#e0d6c2;font-size:12px;">You have defeated every notorious captain. The seas are safer — for now.</div></div>`;
+  } else {
+    storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(180,100,160,0.35);border-radius:6px;margin-bottom:10px;">
+      <div style="color:#e8b8d8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story</div>
+      <div style="color:#e0d6c2;font-size:12px;line-height:1.45;">Check <strong>Port → Quests</strong> for your letter of marque.</div></div>`;
   }
+  if (storyHtml && sq.phase !== 'intro') storyHtml += buildMainStoryChainHtml(sq);
   const active = G.quests.filter(q => q.accepted);
   if (!storyHtml && active.length === 0) {
     l.innerHTML = '<div style="color:#8a7a60;font-size:12px;text-align:center;padding:20px;">No active missions. Visit a port to find quests.</div>';
@@ -3975,23 +3985,26 @@ function showPortTab(tab) {
         <div style="color:#e0d6c2;font-size:13px;line-height:1.5;margin-bottom:10px;">Word is five pirate captains rule the outer lanes — each flies a different class of ship. The Crown posted bounties, but only captains who clear them <em>in order</em> may claim the purse. Start here: I need a sailor willing to cut them down one hull at a time.</div>
         <div style="color:#9a8a78;font-size:11px;margin-bottom:10px;"><strong>Nearest port:</strong> ${nearestPortIslandHint()}</div>
         <button type="button" onclick="acceptMainStory()" style="background:rgba(80,40,90,0.55);border:1px solid rgba(200,140,200,0.5);color:#e8c8e8;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-family:Georgia,serif;">Accept briefing &amp; first bounty</button>`;
-    } else if (sq.phase === 'active' && sq.step < STORY_SHIP_ORDER.length) {
-      const st = STORY_SHIP_ORDER[sq.step];
+    } else if (sq.phase === 'active') {
+      const si = Math.min(Math.max(0, sq.step), STORY_SHIP_ORDER.length - 1);
+      const st = STORY_SHIP_ORDER[si];
       const cap = STORY_PIRATE_NAMES[st] || 'Target';
+      const rew = STORY_REWARDS[si] != null ? STORY_REWARDS[si] : 0;
       storyBox.innerHTML = `<div style="color:#e8b8d8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — ACTIVE BOUNTY</div>
         <div style="color:#e0d6c2;font-size:13px;line-height:1.5;">Hunt <strong>${cap}</strong> (${SHIP_TYPES[st]?.name || st}). Sink them at sea, then return to <strong>any port</strong> and open Quests to report.</div>
-        <div style="color:#d4a848;font-size:11px;margin-top:8px;">Reward for this mark: ${STORY_REWARDS[sq.step]}g (paid on turn-in).</div>`;
+        <div style="color:#d4a848;font-size:11px;margin-top:8px;">Reward for this mark: ${rew}g (paid on turn-in).</div>${buildMainStoryChainHtml(sq)}`;
     } else if (sq.phase === 'report') {
       const prevStep = Math.max(0, sq.step);
       const reward = STORY_REWARDS[prevStep] != null ? STORY_REWARDS[prevStep] : 0;
       storyBox.innerHTML = `<div style="color:#a8e8c8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — REPORT</div>
         <div style="color:#e0d6c2;font-size:13px;line-height:1.5;margin-bottom:10px;">You sank the bounty. Claim <strong>${reward}g</strong> and receive your next letter of marque.</div>
-        <button type="button" onclick="reportStoryBountyTurnIn()" style="background:rgba(40,70,50,0.55);border:1px solid rgba(120,180,120,0.45);color:#c8e8c8;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-family:Georgia,serif;">Claim bounty &amp; continue</button>`;
+        <button type="button" onclick="reportStoryBountyTurnIn()" style="background:rgba(40,70,50,0.55);border:1px solid rgba(120,180,120,0.45);color:#c8e8c8;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-family:Georgia,serif;">Claim bounty &amp; continue</button>${buildMainStoryChainHtml(sq)}`;
     } else if (sq.phase === 'complete') {
       storyBox.innerHTML = `<div style="color:#b8d8a8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — COMPLETE</div>
-        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;">Every notorious captain has been brought to account. You are legend on this ocean.</div>`;
+        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;">Every notorious captain has been brought to account. You are legend on this ocean.</div>${buildMainStoryChainHtml(sq)}`;
     } else {
-      storyBox.innerHTML = '';
+      storyBox.innerHTML = `<div style="color:#e8b8d8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY</div>
+        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;">Use <strong>Quests</strong> here when docked to continue your letter of marque.</div>${buildMainStoryChainHtml(sq)}`;
     }
     if (storyBox.innerHTML) content.appendChild(storyBox);
 
@@ -5056,6 +5069,66 @@ function render() {
   renderCargoPreviewIfOpen();
 }
 
+/** Align sea, sky, sun, and camera to the player and draw once — avoids a black frame when menus hide or the world reloads. */
+function warmUpGameView() {
+  if (G.mode !== 'playing') return;
+  water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
+  if (isMobile) {
+    G.camera.yaw = G.player.rotation + Math.PI;
+    G.camera.targetYaw = G.camera.yaw;
+  }
+  const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
+  camera.position.set(
+    G.player.x + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
+    cDist * Math.sin(cAng),
+    G.player.z + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
+  );
+  camera.lookAt(G.player.x + G.camera.offsetX, SEA_LEVEL + 2, G.player.z + G.camera.offsetZ);
+  sunLight.position.set(G.player.x + 200, 300, G.player.z + 100);
+  sunLight.target.position.set(G.player.x, 0, G.player.z);
+  sunLight.target.updateMatrixWorld();
+  sky.position.set(G.player.x, 0, G.player.z);
+  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
+  waterUniforms.uTime.value = G.time;
+  waterUniforms.uCamPos.value.copy(camera.position);
+  sky.material.uniforms.uTime.value = G.time;
+  renderer.render(scene, camera);
+}
+
+/** After world swaps or leaving menus, one rAF later can still present black; paint twice into the compositor. */
+function flushGameViewRender() {
+  warmUpGameView();
+  requestAnimationFrame(() => { warmUpGameView(); });
+}
+
+function storyChapterRowState(i, sq) {
+  if (sq.phase === 'complete') return 'done';
+  if (i < sq.step) return 'done';
+  if (i > sq.step) return 'locked';
+  if (sq.phase === 'intro') return 'pending_briefing';
+  if (sq.phase === 'active') return 'active';
+  if (sq.phase === 'report') return 'report';
+  return 'locked';
+}
+
+function buildMainStoryChainHtml(sq) {
+  let rows = '';
+  for (let i = 0; i < STORY_SHIP_ORDER.length; i++) {
+    const st = STORY_SHIP_ORDER[i];
+    const cap = STORY_PIRATE_NAMES[st] || st;
+    const shipN = SHIP_TYPES[st]?.name || st;
+    const state = storyChapterRowState(i, sq);
+    let badge = '';
+    if (state === 'done') badge = '<span style="color:#8ab896;">Done</span>';
+    else if (state === 'locked') badge = '<span style="color:#5a5048;">Locked</span>';
+    else if (state === 'pending_briefing') badge = '<span style="color:#b8a878;">At any port → Quests</span>';
+    else if (state === 'active') badge = '<span style="color:#d4a848;">Active bounty</span>';
+    else if (state === 'report') badge = '<span style="color:#a8d8c8;">Turn in (Quests)</span>';
+    rows += `<div style="font-size:11px;color:#c8c0b0;margin:5px 0;line-height:1.35;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;"><span><strong style="color:#e0d6c2;">${i + 1}.</strong> ${cap} <span style="color:#8a7a68;font-size:10px;">(${shipN})</span></span>${badge}</div>`;
+  }
+  return `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(200,120,180,0.28);"><div style="color:#c8a8d8;font-size:10px;letter-spacing:0.1em;margin-bottom:6px;">MAIN STORY — ALL MARKS (IN ORDER)</div>${rows}</div>`;
+}
+
 function isCaptainHudObscured() {
   const shown = (id) => {
     const el = document.getElementById(id);
@@ -5570,19 +5643,10 @@ document.getElementById('tutorial-skip')?.addEventListener('click', () => {
 });
 
 function beginVoyageAfterCharacter() {
-  document.getElementById('create-screen').style.display = 'none';
-  document.getElementById('mobile-layout-picker').style.display = 'none';
-  if (!isMobile) {
-    document.getElementById('controls-help').style.display = 'block';
-    setTimeout(() => { document.getElementById('controls-help').style.display = 'none'; }, 5000);
-  }
+  G.storyQuest = { phase: 'intro', step: 0 };
+  G.quests = [];
   G.mode = 'playing';
   G.player.speed = 1;
-  document.getElementById('ui-layer').style.display = 'block';
-  if (isMobile) {
-    document.getElementById('touch-controls').style.display = 'block';
-    applyMobileControlScheme(G.mobileControlScheme);
-  }
   G.fallbackWorldSeed = (Math.floor(Math.random() * 0x100000000) ^ (Date.now() >>> 0)) >>> 0;
   G.playWorldAwaitingNetInit = true;
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
@@ -5595,6 +5659,19 @@ function beginVoyageAfterCharacter() {
   updateChunks();
   spawnNPCs();
   rebuildPlayerShip();
+  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
+  flushGameViewRender();
+  document.getElementById('create-screen').style.display = 'none';
+  document.getElementById('mobile-layout-picker').style.display = 'none';
+  document.getElementById('ui-layer').style.display = 'block';
+  if (isMobile) {
+    document.getElementById('touch-controls').style.display = 'block';
+    applyMobileControlScheme(G.mobileControlScheme);
+  }
+  if (!isMobile) {
+    document.getElementById('controls-help').style.display = 'block';
+    setTimeout(() => { document.getElementById('controls-help').style.display = 'none'; }, 5000);
+  }
   startServerSeedPrefetch();
   connectToServer();
   schedulePlayWorldNetFallback();
@@ -5750,9 +5827,13 @@ function loadProgress() {
       const ph = data.storyQuest.phase;
       const st = data.storyQuest.step | 0;
       const okPh = ph === 'intro' || ph === 'active' || ph === 'report' || ph === 'complete';
+      const maxIdx = STORY_SHIP_ORDER.length - 1;
+      const stepClamped = ph === 'complete'
+        ? Math.min(Math.max(0, st), STORY_SHIP_ORDER.length)
+        : Math.max(0, Math.min(maxIdx, st));
       G.storyQuest = {
         phase: okPh ? ph : 'intro',
-        step: Math.max(0, Math.min(STORY_SHIP_ORDER.length, st))
+        step: stepClamped
       };
     } else {
       G.storyQuest = { phase: 'intro', step: 0 };
@@ -5876,16 +5957,10 @@ function drawMenuBg() {
 }
 
 document.getElementById('start-btn').onclick = () => {
-  document.getElementById('start-screen').style.display = 'none';
   if (hasSave) {
     document.getElementById('create-screen').style.display = 'none';
     G.mode = 'playing';
     G.player.speed = Math.max(G.player.speed, 1);
-    document.getElementById('ui-layer').style.display = 'block';
-    if (isMobile) {
-      document.getElementById('touch-controls').style.display = 'block';
-      applyMobileControlScheme(G.mobileControlScheme);
-    }
     G.fallbackWorldSeed = (Math.floor(Math.random() * 0x100000000) ^ (Date.now() >>> 0)) >>> 0;
     G.playWorldAwaitingNetInit = true;
     G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
@@ -5896,9 +5971,14 @@ document.getElementById('start-btn').onclick = () => {
     updateChunks();
     spawnNPCs();
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
-    water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
-    sky.position.set(G.player.x, 0, G.player.z);
     rebuildPlayerShip();
+    flushGameViewRender();
+    document.getElementById('start-screen').style.display = 'none';
+    document.getElementById('ui-layer').style.display = 'block';
+    if (isMobile) {
+      document.getElementById('touch-controls').style.display = 'block';
+      applyMobileControlScheme(G.mobileControlScheme);
+    }
     startServerSeedPrefetch();
     connectToServer();
     schedulePlayWorldNetFallback();
@@ -5907,6 +5987,7 @@ document.getElementById('start-btn').onclick = () => {
     notify('Progress restored');
     if (!isMobile) { document.getElementById('controls-help').style.display = 'block'; setTimeout(() => document.getElementById('controls-help').style.display = 'none', 4000); }
   } else {
+    document.getElementById('start-screen').style.display = 'none';
     document.getElementById('create-screen').style.display = 'block';
     buildCreationUI();
   }
@@ -5919,6 +6000,8 @@ document.getElementById('new-game-btn').onclick = () => {
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
+  G.storyQuest = { phase: 'intro', step: 0 };
+  G.quests = [];
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('create-screen').style.display = 'block';
   buildCreationUI();
