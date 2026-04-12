@@ -68,12 +68,12 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 @media(max-width:768px){.tb-label{display:none;}}
 #compass{position:absolute;top:8px;left:10px;width:90px;height:90px;pointer-events:none;}
 #compass canvas{width:100%;height:100%;}
-#story-brief-hud{display:none;position:absolute;top:102px;left:10px;max-width:min(340px,calc(100vw - 100px));z-index:8;pointer-events:none;}
+#story-brief-hud{display:none;position:absolute;top:102px;left:10px;max-width:min(280px,calc(100vw - 120px));z-index:8;pointer-events:none;}
 #story-brief-hud .story-brief-inner{background:linear-gradient(180deg,rgba(42,26,48,0.92),rgba(22,14,28,0.95));border:1px solid rgba(200,140,200,0.4);border-radius:8px;padding:8px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.35);}
 #story-brief-hud .story-brief-title{color:#e8b8d8;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;margin:0 0 4px;font-family:Georgia,serif;}
 #story-brief-hud .story-brief-text{color:#e0d6c2;font-size:11px;line-height:1.4;margin:0;font-family:Georgia,serif;}
 @media(max-width:768px){
-  #story-brief-hud{top:72px;left:4px;max-width:min(300px,calc(100vw - 96px));}
+  #story-brief-hud{top:72px;left:4px;max-width:min(240px,calc(100vw - 110px));}
   #story-brief-hud .story-brief-inner{padding:7px 8px;}
   #story-brief-hud .story-brief-text{font-size:10px;}
 }
@@ -509,10 +509,6 @@ import * as THREE from 'three';
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const CHUNK_SIZE = 300;
 const RENDER_DIST = 3;
-/** Keep ships/fish outside surf + beach ring (larger than dry land 0.85*radius). */
-/** Beach vertices can warp past 1.1R; keep ships and surf damp outside the full sand ring. */
-const SHIP_NAV_COAST_MUL = 1.24;
-const SHIP_NAV_COAST_EXTRA = 54;
 /** Other ships only appear on the normal minimap / full map when within this distance of you. */
 const MAP_LOCAL_VESSEL_RANGE = 1400;
 function isVesselInLocalMapRange(wx, wz) {
@@ -702,6 +698,7 @@ function onStoryBountySunkByPlayer(npc) {
   if (!npc.isStoryBounty || npc.storyStep !== G.storyQuest.step || G.storyQuest.phase !== 'active') return;
   G.storyQuest.phase = 'report';
   notify('Pirate defeated! Dock at any port — Quests — to report and collect the bounty.');
+  updateStoryBriefHud();
 }
 
 function tryRestoreStoryBountyAfterNpcReset() {
@@ -880,58 +877,30 @@ scene.add(sky);
 /* =============================== WATER =================================== */
 const waterUniforms = {
   uTime: { value: 0 }, uSunDir: { value: new THREE.Vector3(0.4, 0.6, 0.2).normalize() },
-  uCamPos: { value: new THREE.Vector3() },
-  uShore0: { value: new THREE.Vector4(0, 0, -1, 0) },
-  uShore1: { value: new THREE.Vector4(0, 0, -1, 0) },
-  uShore2: { value: new THREE.Vector4(0, 0, -1, 0) },
-  uShore3: { value: new THREE.Vector4(0, 0, -1, 0) },
-  uShore4: { value: new THREE.Vector4(0, 0, -1, 0) },
-  uShore5: { value: new THREE.Vector4(0, 0, -1, 0) }
+  uCamPos: { value: new THREE.Vector3() }
 };
 const waterVS = `
-  uniform float uTime;
-  uniform vec4 uShore0; uniform vec4 uShore1; uniform vec4 uShore2;
-  uniform vec4 uShore3; uniform vec4 uShore4; uniform vec4 uShore5;
-  varying vec3 vWorldPos; varying vec3 vNormal; varying float vNearShore;
+  uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
   vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
     float k=6.2831853/wl; float c=sqrt(9.8/k); float a=s/k; vec2 dn=normalize(d);
     float f=k*(dot(dn,p.xz)-c*sp*uTime);
     return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
-  }
-  float shoreInfl(vec4 sh, vec2 wp) {
-    if (sh.z < 0.0) return 0.0;
-    float d = length(wp - sh.xy);
-    return 1.0 - smoothstep(sh.z, sh.w, d);
-  }
-  float shoreAccum(vec2 wp) {
-    float s = shoreInfl(uShore0, wp);
-    s = max(s, shoreInfl(uShore1, wp));
-    s = max(s, shoreInfl(uShore2, wp));
-    s = max(s, shoreInfl(uShore3, wp));
-    s = max(s, shoreInfl(uShore4, wp));
-    s = max(s, shoreInfl(uShore5, wp));
-    return s;
   }
   void main(){
     vec3 pos=position;
     pos += gw(pos,0.05,65.0,vec2(1,.2),0.6) + gw(pos,0.03,40.0,vec2(.35,1),.45)
          + gw(pos,0.02,22.0,vec2(-.55,.75),0.7) + gw(pos,0.015,13.0,vec2(.8,-.35),0.85)
          + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4);
-    vec3 posW = pos;
-    vec3 wpPre = (modelMatrix * vec4(posW, 1.0)).xyz;
-    float shore = shoreAccum(wpPre.xz);
-    vNearShore = shore;
-    pos.y *= mix(1.0, 0.04, shore);
     vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
     float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
     pX += gw(pX,.05,65.,vec2(1,.2),.6) + gw(pX,.03,40.,vec2(.35,1),.45) + gw(pX,.02,22.,vec2(-.55,.75),.7) + gw(pX,.015,13.,vec2(.8,-.35),.85);
     pZ += gw(pZ,.05,65.,vec2(1,.2),.6) + gw(pZ,.03,40.,vec2(.35,1),.45) + gw(pZ,.02,22.,vec2(-.55,.75),.7) + gw(pZ,.015,13.,vec2(.8,-.35),.85);
-    vNormal = normalize(cross(pZ-posW, pX-posW));
+    vNormal = normalize(cross(pZ-pos, pX-pos));
     gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
   }`;
 const waterFS = `
   uniform float uTime; uniform vec3 uSunDir; uniform vec3 uCamPos;
-  varying vec3 vWorldPos; varying vec3 vNormal; varying float vNearShore;
+  varying vec3 vWorldPos; varying vec3 vNormal;
   void main(){
     vec3 N=normalize(vNormal); vec3 V=normalize(uCamPos-vWorldPos); vec3 L=normalize(uSunDir);
     float fresnel = pow(1.0-max(dot(N,V),0.0),4.0); fresnel = mix(0.03,0.65,fresnel);
@@ -962,9 +931,7 @@ const waterFS = `
     float foamPattern = (fn1+fn2+fn3)*0.25+0.5;
     foam += smoothstep(0.55,0.75,foamPattern)*smoothstep(0.05,0.2,wh)*0.2;
     foam += smoothstep(0.7,0.9,foamPattern)*0.1;
-    foam += vNearShore * (0.38 + 0.22 * sin(fx*6.2+fz*5.1+uTime*0.12));
     vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
-    color = mix(color, vec3(0.72,0.82,0.78), vNearShore * 0.22);
     color = mix(color,vec3(0.92,0.95,0.98),foam*0.5);
     color = pow(color,vec3(1.0/2.2));
     gl_FragColor = vec4(color,1.0);
@@ -1087,32 +1054,23 @@ function getProceduralIslandMeta(cx, cz) {
   return meta;
 }
 
-/** Surf / coast ring where ships must not enter (matches expanded water damp zone). */
-function isPointInProceduralCoastBlock(wx, wz) {
+/** True if (wx,wz) lies inside any procedural island footprint (no loaded meshes required). */
+function isPointInsideProceduralIsland(wx, wz) {
   const ccx = Math.floor(wx / CHUNK_SIZE), ccz = Math.floor(wz / CHUNK_SIZE);
-  for (let dcx = -2; dcx <= 2; dcx++)
-    for (let dcz = -2; dcz <= 2; dcz++) {
+  for (let dcx = -1; dcx <= 1; dcx++)
+    for (let dcz = -1; dcz <= 1; dcz++) {
       const meta = getProceduralIslandMeta(ccx + dcx, ccz + dcz);
       if (!meta) continue;
       const dx = wx - meta.worldX, dz = wz - meta.worldZ;
-      const r = meta.radius * SHIP_NAV_COAST_MUL + SHIP_NAV_COAST_EXTRA;
+      const r = meta.radius * 0.85;
       if (dx * dx + dz * dz < r * r) return true;
     }
   return false;
 }
 
-function isMeshCoastBlock(x, z) {
-  for (const isl of G.islands) {
-    const dx = x - isl.worldX, dz = z - isl.worldZ;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < isl.radius * SHIP_NAV_COAST_MUL + SHIP_NAV_COAST_EXTRA) return true;
-  }
-  return false;
-}
-
-/** Land, beach, and shallow surf — blocks player, AI, and fish. */
+/** Land / beach footprint for ships and fish (procedural + any loaded mesh). */
 function isSeaObstructed(x, z) {
-  return isPointInProceduralCoastBlock(x, z) || isMeshCoastBlock(x, z);
+  return isPointInsideProceduralIsland(x, z) || isOnIsland(x, z);
 }
 
 /** Move the player to open ocean if the current seed would place them on land. */
@@ -4261,6 +4219,7 @@ window.acceptMainStory = function() {
   notify('Your first mark is sailing nearby. Hunt them down, then return to any port to report.');
   showPortTab('quests');
   updateMissionsPanel();
+  updateStoryBriefHud();
 };
 
 window.reportStoryBountyTurnIn = function() {
@@ -4287,6 +4246,7 @@ window.reportStoryBountyTurnIn = function() {
   saveProgress();
   showPortTab('quests');
   updateMissionsPanel();
+  updateStoryBriefHud();
 };
 
 document.getElementById('dock-btn').onclick = dockAtPort;
@@ -5196,42 +5156,7 @@ function update(dt) {
   refreshCargoPanelIfOpen();
 }
 
-/** Feed nearest islands into the water shader so waves flatten and foam near shore. */
-function updateWaterShoreUniforms() {
-  const wx = water.position.x, wz = water.position.z;
-  const ccx = Math.floor(wx / CHUNK_SIZE), ccz = Math.floor(wz / CHUNK_SIZE);
-  const candidates = [];
-  for (let dcx = -4; dcx <= 4; dcx++)
-    for (let dcz = -4; dcz <= 4; dcz++) {
-      const meta = getProceduralIslandMeta(ccx + dcx, ccz + dcz);
-      if (!meta) continue;
-      const d = Math.hypot(meta.worldX - wx, meta.worldZ - wz);
-      const reach = meta.radius * SHIP_NAV_COAST_MUL + SHIP_NAV_COAST_EXTRA + 95;
-      if (d > reach) continue;
-      candidates.push({ worldX: meta.worldX, worldZ: meta.worldZ, radius: meta.radius, d });
-    }
-  candidates.sort((a, b) => a.d - b.d);
-  const uniq = [];
-  for (const c of candidates) {
-    if (uniq.some(u => Math.hypot(u.worldX - c.worldX, u.worldZ - c.worldZ) < 14)) continue;
-    uniq.push(c);
-    if (uniq.length >= 20) break;
-  }
-  const nearest = uniq.slice(0, 6);
-  for (let i = 0; i < 6; i++) {
-    const u = waterUniforms['uShore' + i];
-    if (i < nearest.length) {
-      const isl = nearest[i];
-      const R = isl.radius;
-      const inner = R * 0.72 + 8;
-      const outer = R * SHIP_NAV_COAST_MUL + SHIP_NAV_COAST_EXTRA + 92;
-      u.value.set(isl.worldX, isl.worldZ, inner, outer);
-    } else u.value.set(0, 0, -1, 0);
-  }
-}
-
 function render() {
-  updateWaterShoreUniforms();
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
   sky.material.uniforms.uTime.value = G.time;
@@ -5259,7 +5184,6 @@ function warmUpGameView() {
   sunLight.target.updateMatrixWorld();
   sky.position.set(G.player.x, 0, G.player.z);
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
-  updateWaterShoreUniforms();
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
   sky.material.uniforms.uTime.value = G.time;
@@ -5340,41 +5264,45 @@ function isCaptainHudObscured() {
 function updateStoryBriefHud() {
   const wrap = document.getElementById('story-brief-hud');
   const txt = document.getElementById('story-brief-text');
-  const titleEl = wrap && wrap.querySelector ? wrap.querySelector('.story-brief-title') : null;
+  const titleEl = wrap?.querySelector('.story-brief-title');
   if (!wrap || !txt) return;
-  const sq = G.storyQuest;
-  const showHud =
-    G.mode === 'playing' &&
-    !isCaptainHudObscured() &&
-    (sq.phase === 'intro' || sq.phase === 'active' || sq.phase === 'report' || sq.phase === 'complete');
-  if (!showHud) {
+  if (G.mode !== 'playing' || isCaptainHudObscured()) {
     wrap.style.display = 'none';
     return;
   }
-  wrap.style.display = 'block';
-  if (titleEl) {
-    if (sq.phase === 'intro') titleEl.textContent = 'Main story';
-    else if (sq.phase === 'active') titleEl.textContent = 'Active bounty';
-    else if (sq.phase === 'report') titleEl.textContent = 'Turn in';
-    else if (sq.phase === 'complete') titleEl.textContent = 'Campaign complete';
-    else titleEl.textContent = 'Quest';
-  }
+  const sq = G.storyQuest;
   if (sq.phase === 'intro') {
-    txt.textContent = `Dock at any port, open Quests, and speak with the Harbormaster. Nearest: ${nearestPortIslandHint()}`;
-  } else if (sq.phase === 'active') {
+    if (titleEl) titleEl.textContent = 'MAIN STORY';
+    wrap.style.display = 'block';
+    const hint = nearestPortIslandHint();
+    txt.textContent = `Dock at any port → Quests. Speak with the Harbormaster. Nearest: ${hint}`;
+    return;
+  }
+  if (sq.phase === 'active') {
     const si = Math.min(Math.max(0, sq.step), STORY_SHIP_ORDER.length - 1);
     const st = STORY_SHIP_ORDER[si];
     const cap = STORY_PIRATE_NAMES[st] || 'Target';
-    const shipN = SHIP_TYPES[st]?.name || st;
     const rew = STORY_REWARDS[si] != null ? STORY_REWARDS[si] : 0;
-    txt.textContent = `Sink ${cap} (${shipN}). Reward ${rew}g — turn in at any port when done.`;
-  } else if (sq.phase === 'report') {
-    txt.textContent = 'Dock and open Port → Quests to claim your bounty and receive the next target.';
-  } else if (sq.phase === 'complete') {
-    txt.textContent = 'Every notorious captain is defeated. The seas are safer — for now.';
-  } else {
-    wrap.style.display = 'none';
+    if (titleEl) titleEl.textContent = 'MAIN STORY — BOUNTY';
+    wrap.style.display = 'block';
+    txt.textContent = `Hunt ${cap} (${SHIP_TYPES[st]?.name || st}). Sink at sea, then any port → Quests to report. Bounty: ${rew}g.`;
+    return;
   }
+  if (sq.phase === 'report') {
+    const prev = Math.max(0, Math.min(sq.step, STORY_SHIP_ORDER.length - 1));
+    const reward = STORY_REWARDS[prev] != null ? STORY_REWARDS[prev] : 0;
+    if (titleEl) titleEl.textContent = 'MAIN STORY — REPORT';
+    wrap.style.display = 'block';
+    txt.textContent = `Target cleared. Dock → Quests to claim ${reward}g and your next letter of marque.`;
+    return;
+  }
+  if (sq.phase === 'complete') {
+    if (titleEl) titleEl.textContent = 'MAIN STORY';
+    wrap.style.display = 'block';
+    txt.textContent = 'Campaign complete — all five captains brought to account.';
+    return;
+  }
+  wrap.style.display = 'none';
 }
 
 function updateHUD() {
