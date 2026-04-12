@@ -3737,14 +3737,21 @@ function drawCompass() {
 /* ============================== MINIMAP ================================== */
 const mmCanvas = document.getElementById('minimap-canvas');
 const mmCtx = mmCanvas.getContext('2d');
-let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = 0.15, fmDragging = false, fmLastX = 0, fmLastY = 0;
+/** Full map scale label is `fmZoom * 1000` (e.g. 70 → "70x"). Max zoom-out = 70x, same floor as main camera horizon. */
+const FULLMAP_ZOOM_MIN = 0.07;
+const FULLMAP_ZOOM_MAX = 0.8;
+function clampFullmapZoom(z) {
+  return Math.max(FULLMAP_ZOOM_MIN, Math.min(FULLMAP_ZOOM_MAX, z));
+}
+let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = clampFullmapZoom(0.15), fmDragging = false, fmLastX = 0, fmLastY = 0;
 function toggleFullmap() {
   fullmapOpen = !fullmapOpen;
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
-  if (fullmapOpen) { fmPanX = 0; fmPanZ = 0; drawFullmap(); hideMobileControls(); }
+  if (fullmapOpen) { fmPanX = 0; fmPanZ = 0; fmZoom = clampFullmapZoom(fmZoom); drawFullmap(); hideMobileControls(); }
   else restoreMobileGameControls();
 }
 function drawFullmap() {
+  fmZoom = clampFullmapZoom(fmZoom);
   const cv = document.getElementById('fullmap-canvas');
   const ctx = cv.getContext('2d'), w = 800, h = 800, s = fmZoom;
   const centerX = G.player.x + fmPanX, centerZ = G.player.z + fmPanZ;
@@ -3864,7 +3871,7 @@ function drawFullmap() {
   ctx.fillText(`Zoom: ${(fmZoom * 1000).toFixed(0)}x`, w - 12, h - 10);
 }
 const fmCanvas = document.getElementById('fullmap-canvas');
-fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = Math.max(0.005, Math.min(0.8, fmZoom * (1 - e.deltaY * 0.001))); if (fullmapOpen) drawFullmap(); }, { passive: false });
+fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = clampFullmapZoom(fmZoom * (1 - e.deltaY * 0.001)); if (fullmapOpen) drawFullmap(); }, { passive: false });
 fmCanvas.addEventListener('mousedown', e => { fmDragging = true; fmLastX = e.clientX; fmLastY = e.clientY; fmCanvas.style.cursor = 'grabbing'; });
 window.addEventListener('mousemove', e => { if (fmDragging) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ -= (e.clientY - fmLastY) * scale / fmZoom; fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap(); } });
 window.addEventListener('mouseup', () => { fmDragging = false; fmCanvas.style.cursor = 'grab'; });
@@ -3878,7 +3885,7 @@ fmCanvas.addEventListener('touchmove', e => {
   e.preventDefault(); e.stopPropagation();
   if (e.touches.length === 2) {
     const nd = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    if (fmPinchDist > 0) { fmZoom = Math.max(0.005, Math.min(0.8, fmZoom * (nd / fmPinchDist))); }
+    if (fmPinchDist > 0) { fmZoom = clampFullmapZoom(fmZoom * (nd / fmPinchDist)); }
     fmPinchDist = nd;
     if (fullmapOpen) drawFullmap();
     return;
