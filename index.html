@@ -68,10 +68,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 @media(max-width:768px){.tb-label{display:none;}}
 #compass{position:absolute;top:8px;left:10px;width:90px;height:90px;pointer-events:none;}
 #compass canvas{width:100%;height:100%;}
-#story-brief-hud{display:none;position:absolute;top:102px;left:10px;max-width:min(280px,calc(100vw - 120px));z-index:8;pointer-events:none;}
+#story-brief-hud{display:none;position:absolute;top:102px;left:10px;max-width:min(280px,calc(100vw - 120px));z-index:56;pointer-events:none;}
 #story-brief-hud .story-brief-inner{background:linear-gradient(180deg,rgba(42,26,48,0.92),rgba(22,14,28,0.95));border:1px solid rgba(200,140,200,0.4);border-radius:8px;padding:8px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.35);}
 #story-brief-hud .story-brief-title{color:#e8b8d8;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;margin:0 0 4px;font-family:Georgia,serif;}
-#story-brief-hud .story-brief-text{color:#e0d6c2;font-size:11px;line-height:1.4;margin:0;font-family:Georgia,serif;}
+#story-brief-hud .story-brief-text{color:#e0d6c2;font-size:11px;line-height:1.4;margin:0;font-family:Georgia,serif;white-space:pre-wrap;}
 @media(max-width:768px){
   #story-brief-hud{top:72px;left:4px;max-width:min(240px,calc(100vw - 110px));}
   #story-brief-hud .story-brief-inner{padding:7px 8px;}
@@ -353,7 +353,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div id="death-timer" style="color:#d4a848;font-size:18px;margin-top:12px;">Respawning in 8s</div>
   </div>
   <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,12,25,0.97);z-index:50;pointer-events:auto;">
-    <canvas id="fullmap-canvas" width="800" height="800" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(95vw,95vh);height:min(95vw,95vh);border:2px solid rgba(180,140,60,0.4);border-radius:8px;touch-action:none;cursor:grab;"></canvas>
+    <canvas id="fullmap-canvas" width="800" height="800" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:calc(min(95vw,95vh) / 3);height:calc(min(95vw,95vh) / 3);border:2px solid rgba(180,140,60,0.4);border-radius:8px;touch-action:none;cursor:grab;"></canvas>
     <div style="position:absolute;top:10px;right:14px;color:#d4a848;font-size:14px;cursor:pointer;background:rgba(20,12,8,0.8);padding:6px 14px;border-radius:6px;border:1px solid rgba(180,140,60,0.4);" id="fullmap-close">CLOSE</div>
     <div id="map-hint" style="position:absolute;top:10px;left:14px;color:#8090a0;font-size:11px;">Scroll to zoom / Drag to pan / M to close</div>
   </div>
@@ -520,7 +520,21 @@ function mainCanvasPixelRatio() {
 }
 const ISLAND_CHANCE = 0.25;
 const SEA_LEVEL = 0;
-const PORT_TOWN_NAMES = ['Port Royal', 'Tortuga', 'Nassau', 'Havana', 'Santiago', 'Bridgetown', 'Maracaibo', 'Cartagena'];
+/** Large deterministic pool of port-style names (prefix + suffix); avoids repeats from a tiny fixed list. */
+const TOWN_NAME_LEXICON = (() => {
+  const p = ['Port','Cape','New','Fort','East','West','North','South','Great','Little','Lost','Fair','Grim','High','Low',"Sailor's","Pirate's","Crow's",'Keel','Black','Red','White','Gold','Silver','Grey','Storm','Salt','Brine','Tide','Wave','Moon','Drift','Wreck','Anchor',"Smuggler's",'Barnacle',"King's","Queen's",'Rum','Dead','Lone','Free','Noble','Wild','Drowned','Hidden','Morrow','Sable','Ashen','Velvet','Iron','Coral','Pearl','Cursed','Blessed','Jolly','Misty','Crimson','Azure','Bitter','Sweet','Broken','Hollow','Proud','Humble','Fallow','Green','Blue','Northern','Southern','Eastern','Western'];
+  const b = ['haven','bay','ford','mouth','wick','burg','ton','by','mere','stead','harbor','cove','reef','point','reach','gate','watch','rest','cross','helm','ship','hold','water','rock','sand','cliff','springs','marsh','isle','banks','deep','shoals','landing','quay','jetty','yard','moor','lagoon','atoll','sound','gulf','strait','cut','channel','pass','roads','bayou','delta','head','bluff','knoll','ridge','strand','stairs','steps','den','nest','roost','perch'];
+  const out = [];
+  const seen = new Set();
+  for (const x of p) {
+    for (const y of b) {
+      const n = x + ' ' + y.charAt(0).toUpperCase() + y.slice(1);
+      if (!seen.has(n)) { seen.add(n); out.push(n); }
+    }
+  }
+  return out;
+})();
+const TOWN_NAME_TAGS = ['', ' Reach', ' Roads', ' Moor', ' Cross', ' End', ' Vale', ' March', ' Gate', ' Stairs', ' Steps', ' Downs'];
 
 /** Camera zoom level: higher = closer to the ship (deck view); lower = wider (horizon). */
 const CAM_ZOOM_HORIZON = 70;
@@ -1045,7 +1059,11 @@ function getProceduralIslandMeta(cx, cz) {
   const meta = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
   if (islandRadius > 50 && h < 0.12) {
     meta.hasTown = true;
-    meta.townName = PORT_TOWN_NAMES[((cx * 73856093 ^ cz * 19349663 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_TOWN_NAMES.length];
+    let th = (cx * 73856093 ^ cz * 19349663 ^ (G.worldSeed >>> 0) ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
+    const baseIdx = th % TOWN_NAME_LEXICON.length;
+    th = Math.imul(th, 1103515245) + 12345 >>> 0;
+    const tagIdx = th % TOWN_NAME_TAGS.length;
+    meta.townName = TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx];
     meta.dockAngle = (hashChunk(cx + 99, cz + 99) * 2 - 1) * Math.PI;
     const dockDist = islandRadius * 0.95;
     meta.dockX = worldX + Math.cos(meta.dockAngle) * dockDist;
@@ -4017,6 +4035,7 @@ function leavePort() {
   dockRopes.length = 0;
   document.getElementById('port-panel').style.display = 'none';
   restoreMobileGameControls();
+  updateStoryBriefHud();
   setTimeout(() => { G.player.speed = 2; }, 500);
 }
 
@@ -4207,7 +4226,7 @@ function generateQuests() {
 }
 
 window.acceptQuest = function(idx) {
-  if (G.quests[idx]) { G.quests[idx].accepted = true; notify('Quest accepted!'); showPortTab('quests'); }
+  if (G.quests[idx]) { G.quests[idx].accepted = true; notify('Quest accepted!'); showPortTab('quests'); updateStoryBriefHud(); }
 };
 
 window.acceptMainStory = function() {
@@ -5261,12 +5280,41 @@ function isCaptainHudObscured() {
   return false;
 }
 
+/** Like captain HUD, but the story/contract brief can stay visible while sailing (not gated on G.docked). Port UI does not obscure it (z-index); missions update as soon as they are accepted. */
+function isStoryBriefHudObscured() {
+  const shown = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return false;
+    const st = window.getComputedStyle(el);
+    return st.display !== 'none' && st.visibility !== 'hidden' && parseFloat(st.opacity || '1') > 0.02;
+  };
+  if (typeof fullmapOpen !== 'undefined' && fullmapOpen) return true;
+  if (shown('dock-prompt')) return true;
+  if (shown('log-panel')) return true;
+  if (shown('chat-box')) return true;
+  if (shown('settings-modal')) return true;
+  if (shown('credits-modal')) return true;
+  if (shown('tutorial-overlay')) return true;
+  if (shown('mobile-layout-picker')) return true;
+  if (shown('death-overlay')) return true;
+  if (shown('debug-panel')) return true;
+  if (shown('create-screen')) return true;
+  return false;
+}
+
+function storyBriefAppendContracts(main) {
+  const side = G.quests.filter(q => q.accepted);
+  if (!side.length) return main;
+  const lines = side.map(q => `• ${q.desc} (${q.reward}g)`);
+  return `${main}\n\nCONTRACTS\n${lines.join('\n')}`;
+}
+
 function updateStoryBriefHud() {
   const wrap = document.getElementById('story-brief-hud');
   const txt = document.getElementById('story-brief-text');
   const titleEl = wrap?.querySelector('.story-brief-title');
   if (!wrap || !txt) return;
-  if (G.mode !== 'playing' || isCaptainHudObscured()) {
+  if (G.mode !== 'playing' || isStoryBriefHudObscured()) {
     wrap.style.display = 'none';
     return;
   }
@@ -5275,7 +5323,7 @@ function updateStoryBriefHud() {
     if (titleEl) titleEl.textContent = 'MAIN STORY';
     wrap.style.display = 'block';
     const hint = nearestPortIslandHint();
-    txt.textContent = `Dock at any port → Quests. Speak with the Harbormaster. Nearest: ${hint}`;
+    txt.textContent = storyBriefAppendContracts(`Dock at any port → Quests. Speak with the Harbormaster. Nearest: ${hint}`);
     return;
   }
   if (sq.phase === 'active') {
@@ -5285,7 +5333,7 @@ function updateStoryBriefHud() {
     const rew = STORY_REWARDS[si] != null ? STORY_REWARDS[si] : 0;
     if (titleEl) titleEl.textContent = 'MAIN STORY — BOUNTY';
     wrap.style.display = 'block';
-    txt.textContent = `Hunt ${cap} (${SHIP_TYPES[st]?.name || st}). Sink at sea, then any port → Quests to report. Bounty: ${rew}g.`;
+    txt.textContent = storyBriefAppendContracts(`Hunt ${cap} (${SHIP_TYPES[st]?.name || st}). Sink at sea, then any port → Quests to report. Bounty: ${rew}g.`);
     return;
   }
   if (sq.phase === 'report') {
@@ -5293,13 +5341,13 @@ function updateStoryBriefHud() {
     const reward = STORY_REWARDS[prev] != null ? STORY_REWARDS[prev] : 0;
     if (titleEl) titleEl.textContent = 'MAIN STORY — REPORT';
     wrap.style.display = 'block';
-    txt.textContent = `Target cleared. Dock → Quests to claim ${reward}g and your next letter of marque.`;
+    txt.textContent = storyBriefAppendContracts(`Target cleared. Dock → Quests to claim ${reward}g and your next letter of marque.`);
     return;
   }
   if (sq.phase === 'complete') {
     if (titleEl) titleEl.textContent = 'MAIN STORY';
     wrap.style.display = 'block';
-    txt.textContent = 'Campaign complete — all five captains brought to account.';
+    txt.textContent = storyBriefAppendContracts('Campaign complete — all five captains brought to account.');
     return;
   }
   wrap.style.display = 'none';
