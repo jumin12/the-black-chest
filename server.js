@@ -23,8 +23,37 @@ try {
   try { fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); } catch (e2) {}
 }
 
-/** Set `NAVIGATOR_ADMIN_PASSWORD` in the environment so F3 / navigator tools can authenticate without embedding secrets in the client. */
-const NAVIGATOR_ADMIN_PASSWORD = process.env.NAVIGATOR_ADMIN_PASSWORD || '';
+/**
+ * Navigator unlock password: prefer `NAVIGATOR_ADMIN_PASSWORD` (hosting secret / env).
+ * Otherwise read the first non-comment line from `navigator_admin.secret` next to this file,
+ * or from `NAVIGATOR_ADMIN_SECRET_FILE` (absolute or relative to this directory).
+ * Keep the secret file out of git; copy it onto the production machine beside server.js.
+ */
+function resolveNavigatorSecretPath() {
+  const p = process.env.NAVIGATOR_ADMIN_SECRET_FILE;
+  if (!p || String(p).trim() === '') return path.join(__dirname, 'navigator_admin.secret');
+  return path.isAbsolute(p) ? p : path.join(__dirname, p);
+}
+
+function readNavigatorAdminPassword() {
+  const env = process.env.NAVIGATOR_ADMIN_PASSWORD;
+  if (env != null && String(env).trim() !== '') return { pw: String(env).trim(), src: 'env' };
+  const secretPath = resolveNavigatorSecretPath();
+  try {
+    if (!fs.existsSync(secretPath)) return { pw: '', src: 'none' };
+    const lines = fs.readFileSync(secretPath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const t = String(line || '').trim();
+      if (!t || t.startsWith('#')) continue;
+      return { pw: t, src: 'file' };
+    }
+  } catch (e) {}
+  return { pw: '', src: 'none' };
+}
+
+const _nav = readNavigatorAdminPassword();
+const NAVIGATOR_ADMIN_PASSWORD = _nav.pw;
+const NAVIGATOR_ADMIN_PASSWORD_SOURCE = _nav.src;
 const ADMIN_SESSION_MS = 8 * 60 * 60 * 1000;
 const adminSessions = new Map();
 
@@ -402,5 +431,8 @@ setInterval(() => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Pirate game server running on port ${PORT}`);
   console.log(`World seed: ${WORLD_SEED}`);
-  console.log(`Navigator admin: ${NAVIGATOR_ADMIN_PASSWORD ? 'password configured (env)' : 'NOT SET — set NAVIGATOR_ADMIN_PASSWORD for F3'}`);
+  const navMsg = NAVIGATOR_ADMIN_PASSWORD
+    ? `password configured (${NAVIGATOR_ADMIN_PASSWORD_SOURCE === 'env' ? 'NAVIGATOR_ADMIN_PASSWORD' : 'navigator_admin.secret'})`
+    : 'NOT SET — set NAVIGATOR_ADMIN_PASSWORD or add navigator_admin.secret beside server.js for F3';
+  console.log(`Navigator admin: ${navMsg}`);
 });
