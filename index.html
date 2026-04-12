@@ -625,24 +625,10 @@ const STORY_PIRATE_NAMES = {
 };
 const STORY_REWARDS = [55, 75, 100, 140, 200];
 
-function getNearestPortIsland() {
-  let best = null, bd = 1e15;
-  function consider(isl) {
-    if (!isl || !isl.hasTown || isl.dockX == null) return;
-    const dx = G.player.x - isl.dockX, dz = G.player.z - isl.dockZ;
-    const d2 = dx * dx + dz * dz;
-    if (d2 < bd) { bd = d2; best = isl; }
-  }
-  for (const isl of G.islands) consider(isl);
-  const r = 14000;
-  forEachProceduralIslandInWorldBounds(G.player.x - r, G.player.x + r, G.player.z - r, G.player.z + r, consider, G.player.x, G.player.z);
-  return best;
-}
-
 function nearestPortIslandHint() {
-  const best = getNearestPortIsland();
-  if (!best) return 'Sail to any marked port on your chart.';
-  return `${best.townName} — dock near (${Math.round(best.dockX)}, ${Math.round(best.dockZ)})`;
+  const best = findNearestPortDock(G.player.x, G.player.z);
+  if (!best) return 'Sail toward a charted port (gold square on an island).';
+  return `${best.townName} — harbor / dock (${Math.round(best.dockX)}, ${Math.round(best.dockZ)})`;
 }
 
 function removeStoryBountyFromWorld() {
@@ -1080,6 +1066,23 @@ function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, ce
       if (meta) fn(meta);
     }
   }
+}
+
+/** Nearest trading port by procedural data (matches chart), not only loaded chunks — keeps story hint and markers aligned with the map. */
+const NEAREST_PORT_SEARCH_HALF = 9000;
+function findNearestPortDock(wx, wz) {
+  let best = null, bestD2 = 1e18;
+  forEachProceduralIslandInWorldBounds(
+    wx - NEAREST_PORT_SEARCH_HALF, wx + NEAREST_PORT_SEARCH_HALF,
+    wz - NEAREST_PORT_SEARCH_HALF, wz + NEAREST_PORT_SEARCH_HALF,
+    meta => {
+      if (!meta.hasTown || meta.dockX == null) return;
+      const dx = wx - meta.dockX, dz = wz - meta.dockZ;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) { bestD2 = d2; best = meta; }
+    }, wx, wz
+  );
+  return best;
 }
 
 function createPalmTree(x, y, z) {
@@ -4138,7 +4141,7 @@ function drawFullmap() {
   const gs = CHUNK_SIZE * s;
   if (gs > 4) {
     ctx.strokeStyle = 'rgba(40,60,90,0.2)'; ctx.lineWidth = 0.5;
-    const ox = (cx - (centerX * s) % gs + gs) % gs, oz = (cy + (centerZ * s) % gs + gs) % gs;
+    const ox = (cx - (centerX * s) % gs + gs) % gs, oz = (cy - (centerZ * s) % gs + gs) % gs;
     for (let i = -1; i < w / gs + 2; i++) { ctx.beginPath(); ctx.moveTo(ox + i * gs, 0); ctx.lineTo(ox + i * gs, h); ctx.stroke(); }
     for (let i = -1; i < h / gs + 2; i++) { ctx.beginPath(); ctx.moveTo(0, oz + i * gs); ctx.lineTo(w, oz + i * gs); ctx.stroke(); }
   }
@@ -4202,7 +4205,7 @@ function drawFullmap() {
     ctx.fillText(p.shipName || p.name || 'Player', sx, sy - 10);
   });
 
-  const px = cx - fmPanX * s, py = cy + fmPanZ * s;
+  const px = cx + (G.player.x - centerX) * s, py = cy - (G.player.z - centerZ) * s;
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
   const pr = G.player.rotation;
@@ -4210,23 +4213,6 @@ function drawFullmap() {
   ctx.moveTo(px, py); ctx.lineTo(px + Math.sin(pr) * 14, py - Math.cos(pr) * 14); ctx.stroke();
   ctx.fillStyle = '#d4a848'; ctx.font = 'bold 12px Georgia,serif'; ctx.textAlign = 'center';
   ctx.fillText(G.player.shipName || 'You', px, py + 18);
-
-  const sqPh = G.storyQuest && G.storyQuest.phase;
-  if (sqPh === 'intro' || sqPh === 'report') {
-    const port = getNearestPortIsland();
-    if (port) {
-      const hx = cx + (port.dockX - centerX) * s, hy = cy - (port.dockZ - centerZ) * s;
-      if (hx > -14 && hx < w + 14 && hy > -14 && hy < h + 14) {
-        ctx.strokeStyle = '#e8c050'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 4]);
-        ctx.beginPath(); ctx.arc(hx, hy, 11, 0, Math.PI * 2); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = '#f8e8a0'; ctx.font = 'bold 10px Georgia,serif'; ctx.textAlign = 'center';
-        ctx.fillText(sqPh === 'intro' ? 'HARBOR' : 'TURN IN', hx, hy - 15);
-        ctx.fillStyle = 'rgba(232,192,80,0.95)'; ctx.font = '9px Georgia,serif';
-        ctx.fillText(port.townName, hx, hy + 16);
-      }
-    }
-  }
 
   G.quests.filter(q => q.accepted).forEach(q => {
     if (q.type === 'explore') {
@@ -4253,6 +4239,20 @@ function drawFullmap() {
     }
   });
 
+  if (G.storyQuest.phase === 'intro') {
+    const port = findNearestPortDock(G.player.x, G.player.z);
+    if (port) {
+      const qx = cx + (port.dockX - centerX) * s, qy = cy - (port.dockZ - centerZ) * s;
+      if (qx > -14 && qx < w + 14 && qy > -14 && qy < h + 14) {
+        ctx.strokeStyle = 'rgba(220,160,255,0.95)'; ctx.lineWidth = 2.5; ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.arc(qx, qy, 12, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#e8c8f8'; ctx.font = 'bold 11px Georgia'; ctx.textAlign = 'center';
+        ctx.fillText('Harbor — ' + (port.townName || 'Port'), qx, qy - 16);
+      }
+    }
+  }
+
   ctx.strokeStyle = 'rgba(180,140,60,0.25)'; ctx.lineWidth = 3;
   ctx.strokeRect(2, 2, w - 4, h - 4);
   ctx.strokeStyle = 'rgba(180,140,60,0.1)'; ctx.lineWidth = 1;
@@ -4264,7 +4264,7 @@ function drawFullmap() {
 const fmCanvas = document.getElementById('fullmap-canvas');
 fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = clampFullmapZoom(fmZoom * (1 - e.deltaY * 0.001)); if (fullmapOpen) drawFullmap(); }, { passive: false });
 fmCanvas.addEventListener('mousedown', e => { fmDragging = true; fmLastX = e.clientX; fmLastY = e.clientY; fmCanvas.style.cursor = 'grabbing'; });
-window.addEventListener('mousemove', e => { if (fmDragging) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ += (e.clientY - fmLastY) * scale / fmZoom; fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap(); } });
+window.addEventListener('mousemove', e => { if (fmDragging) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ -= (e.clientY - fmLastY) * scale / fmZoom; fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap(); } });
 window.addEventListener('mouseup', () => { fmDragging = false; fmCanvas.style.cursor = 'grab'; });
 let fmTouchId = null, fmTouchX = 0, fmTouchY = 0, fmPinchDist = 0;
 fmCanvas.addEventListener('touchstart', e => {
@@ -4286,7 +4286,7 @@ fmCanvas.addEventListener('touchmove', e => {
     if (t.identifier === fmTouchId) {
       const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width;
       fmPanX -= (t.clientX - fmTouchX) * scale / fmZoom;
-      fmPanZ += (t.clientY - fmTouchY) * scale / fmZoom;
+      fmPanZ -= (t.clientY - fmTouchY) * scale / fmZoom;
       fmTouchX = t.clientX; fmTouchY = t.clientY;
       if (fullmapOpen) drawFullmap();
     }
@@ -4304,15 +4304,10 @@ function drawMinimap() {
   const gridSize = CHUNK_SIZE * s;
   if (gridSize > 8) {
     ctx.strokeStyle = 'rgba(30,50,70,0.4)'; ctx.lineWidth = 0.5;
-    const bx = Math.floor(G.player.x / CHUNK_SIZE) * CHUNK_SIZE;
-    const bz = Math.floor(G.player.z / CHUNK_SIZE) * CHUNK_SIZE;
     for (let gx = -10; gx <= 10; gx++) {
-      const lx = cx + (bx + gx * CHUNK_SIZE - G.player.x) * s;
+      const lx = cx + (gx * CHUNK_SIZE - G.player.x % CHUNK_SIZE) * s;
+      const ly = cy + (gx * CHUNK_SIZE - G.player.z % CHUNK_SIZE) * s;
       ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, h); ctx.stroke();
-    }
-    for (let gz = -10; gz <= 10; gz++) {
-      const Z0 = bz + gz * CHUNK_SIZE;
-      const ly = cy - (Z0 - G.player.z) * s;
       ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w, ly); ctx.stroke();
     }
   }
@@ -4348,31 +4343,21 @@ function drawMinimap() {
       }
     }
   }, G.player.x, G.player.z);
-  const sqPhMm = G.storyQuest && G.storyQuest.phase;
-  if (sqPhMm === 'intro' || sqPhMm === 'report') {
-    const port = getNearestPortIsland();
+  G.npcs.forEach(n => { if (n.sinking) return; if (!isVesselInLocalMapRange(n.x, n.z)) return; const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
+  G.otherPlayers.forEach(p => { if (!isVesselInLocalMapRange(p.x, p.z)) return; const sx = cx + (p.x - G.player.x) * s, sy = cy - (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
+  if (G.storyQuest.phase === 'intro') {
+    const port = findNearestPortDock(G.player.x, G.player.z);
     if (port) {
-      const hx = cx + (port.dockX - G.player.x) * s, hy = cy - (port.dockZ - G.player.z) * s;
-      if (hx > -8 && hx < w + 8 && hy > -8 && hy < h + 8) {
-        ctx.strokeStyle = '#e8c050'; ctx.lineWidth = 1.8; ctx.setLineDash([4, 3]);
-        ctx.beginPath(); ctx.arc(hx, hy, 6, 0, Math.PI * 2); ctx.stroke();
+      const qx = cx + (port.dockX - G.player.x) * s, qy = cy - (port.dockZ - G.player.z) * s;
+      if (qx > 0 && qx < w && qy > 0 && qy < h) {
+        ctx.strokeStyle = 'rgba(200,140,240,0.9)'; ctx.lineWidth = 1.8; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.arc(qx, qy, 8, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = '#f8e8a0'; ctx.font = (w >= 220 ? '8px' : '7px') + ' Georgia,serif'; ctx.textAlign = 'center';
-        ctx.fillText(sqPhMm === 'intro' ? 'HARBOR' : 'PORT', hx, hy - 9);
+        ctx.fillStyle = '#e8c8f8'; ctx.font = (w >= 220 ? '8px' : '7px') + ' Georgia'; ctx.textAlign = 'center';
+        ctx.fillText('Harbor', qx, qy - 10);
       }
     }
   }
-  G.quests.filter(q => q.accepted).forEach(q => {
-    if (q.type !== 'explore') return;
-    const qx = cx + (q.x - G.player.x) * s, qy = cy - (q.z - G.player.z) * s;
-    if (qx > 2 && qx < w - 2 && qy > 2 && qy < h - 2) {
-      ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.2; ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.arc(qx, qy, 5, 0, Math.PI * 2); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-  });
-  G.npcs.forEach(n => { if (n.sinking) return; if (!isVesselInLocalMapRange(n.x, n.z)) return; const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
-  G.otherPlayers.forEach(p => { if (!isVesselInLocalMapRange(p.x, p.z)) return; const sx = cx + (p.x - G.player.x) * s, sy = cy - (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
   ctx.lineTo(cx + Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
@@ -5829,6 +5814,7 @@ document.getElementById('create-back').onclick = () => {
   if (mp) mp.style.display = 'none';
   document.getElementById('create-screen').style.display = 'none';
   document.getElementById('start-screen').style.display = 'flex';
+  document.getElementById('ui-layer').style.display = 'none';
 };
 
 document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(tab => {
