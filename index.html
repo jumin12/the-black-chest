@@ -582,8 +582,7 @@ const G = {
   swimmers: [],
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
   nearDock: null, docked: false, quests: [],
-  mainQuest: { phase: 'unstarted', stage: 0 },
-  _mqRewardPulse: 0,
+  storyQuest: { phase: 'intro', step: 0 },
   camera: { offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
@@ -601,16 +600,99 @@ try {
   if (_ps != null) G.mobileControlScheme = Math.max(0, Math.min(3, parseInt(_ps, 10)));
 } catch (e) {}
 
-const MAIN_QUEST_SHIP_ORDER = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
-const MAIN_QUEST_CAPTAINS = [
-  '"Ripcurrent" Silas Vex',
-  'Mara "Saltfang" Kett',
-  'Commodore Thorn Blackwater',
-  'Admiral Ignatius Graves',
-  'The Dread Captain Morwen Ash'
-];
-const MAIN_QUEST_REWARDS = [85, 110, 140, 190, 280];
-const MAIN_QUEST_BOUNTY_SYNC_ID = 8;
+/** Main story: defeat five notorious pirates, one per ship class, in order (any port for briefing / turn-in). */
+const STORY_SHIP_ORDER = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
+const STORY_NPC_SYNC_BASE = 90;
+const STORY_PIRATE_NAMES = {
+  cutter: 'Silas "Shiv" Rackham',
+  sloop: 'Mara Duskwind',
+  brigantine: 'Iron Tom Corsair',
+  galleon: 'Vex Blackwater',
+  warship: 'Admiral Scarlett Graves'
+};
+const STORY_REWARDS = [55, 75, 100, 140, 200];
+
+function nearestPortIslandHint() {
+  let best = null, bd = 1e15;
+  for (const isl of G.islands) {
+    if (!isl.hasTown || isl.dockX == null) continue;
+    const dx = G.player.x - isl.dockX, dz = G.player.z - isl.dockZ;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bd) { bd = d2; best = isl; }
+  }
+  if (!best) return 'Sail to any marked port on your chart.';
+  return `${best.townName} — dock near (${Math.round(best.dockX)}, ${Math.round(best.dockZ)})`;
+}
+
+function removeStoryBountyFromWorld() {
+  for (let j = G.npcs.length - 1; j >= 0; j--) {
+    const n = G.npcs[j];
+    if (n.isStoryBounty) {
+      if (n.mesh) { scene.remove(n.mesh); n.mesh = null; }
+      G.npcs.splice(j, 1);
+    }
+  }
+}
+
+function sampleOpenOceanNearPlayer(minD, maxD) {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = minD + Math.random() * (maxD - minD);
+    const x = G.player.x + Math.cos(a) * d;
+    const z = G.player.z + Math.sin(a) * d;
+    if (!isOnIsland(x, z)) return { x, z };
+  }
+  return { x: G.player.x + 400, z: G.player.z + 200 };
+}
+
+function spawnStoryBountyNpc() {
+  if (!isMultiplayerHost()) return;
+  const sq = G.storyQuest;
+  if (sq.phase !== 'active' || sq.step >= STORY_SHIP_ORDER.length) return;
+  removeStoryBountyFromWorld();
+  const shipType = STORY_SHIP_ORDER[sq.step];
+  const name = STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
+  const pt = sampleOpenOceanNearPlayer(240, 620);
+  let nx = pt.x, nz = pt.z;
+  const sr = () => Math.random();
+  const hp = shipType === 'warship' ? 125 : shipType === 'galleon' ? 105 : shipType === 'brigantine' ? 90 : 72;
+  const npc = {
+    syncId: STORY_NPC_SYNC_BASE + sq.step,
+    x: nx, z: nz,
+    rotation: sr() * Math.PI * 2,
+    speed: 2.1 + sr() * 2.2,
+    health: hp,
+    type: shipType,
+    name,
+    wanderAngle: sr() * Math.PI * 2, wanderTimer: 4 + sr() * 8,
+    underFireTimer: 0, fireJitter: sr(),
+    isStoryBounty: true,
+    storyStep: sq.step,
+    aggro: true,
+    flagColor: '#5a0808'
+  };
+  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, npc.flagColor, npc.name);
+  const npcCrew = [
+    { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
+    { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
+    { name: 'Mate', role: 'sailor', task: 'sails', color: '#2a4a2a' }
+  ];
+  buildCrewMeshes(mesh, npcCrew, npc.type);
+  npc.mesh = mesh;
+  scene.add(mesh);
+  G.npcs.push(npc);
+  notify(`Wanted: ${name} — ${SHIP_TYPES[shipType]?.name || shipType} class.`);
+}
+
+function onStoryBountySunkByPlayer(npc) {
+  if (!npc.isStoryBounty || npc.storyStep !== G.storyQuest.step || G.storyQuest.phase !== 'active') return;
+  G.storyQuest.phase = 'report';
+  notify('Pirate defeated! Dock at any port — Quests — to report and collect the bounty.');
+}
+
+function tryRestoreStoryBountyAfterNpcReset() {
+  if (G.storyQuest.phase === 'active' && isMultiplayerHost()) spawnStoryBountyNpc();
+}
 
 const SHIP_TYPES = {
   cutter: { name: 'Cutter', desc: 'Nimble scout', hullLen: 5, hullW: 1.6, hullH: 1.0, masts: 1, maxCrew: 3, speed: 1.4, turnRate: 1.6, cannonSlots: 1, cargoSlots: 4, bowStyle: 'pointed' },
@@ -1218,10 +1300,28 @@ function generateIsland(cx, cz) {
     group.userData.townName = meta0.townName;
     group.userData.dockX = dockX; group.userData.dockZ = dockZ;
 
+    const terrainYWorld = (wx, wz) => {
+      const px = wx - worldX, pz = wz - worldZ;
+      const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+      const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.12 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.04;
+      const warpedDist = dist + edgeWarp;
+      const falloff = Math.max(0, 1 - warpedDist * warpedDist);
+      const n1 = noise.fbm(wx * 0.015, wz * 0.015, 4);
+      const n2 = islandNoise.noise2D(wx * 0.025, wz * 0.025) * 0.25;
+      const ridges = Math.abs(islandNoise.noise2D(wx * 0.04, wz * 0.04)) * 0.2;
+      const combined = n1 * 0.6 + n2 + ridges;
+      let ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
+      const isLand = ht > 0.15 && warpedDist < 0.93;
+      if (!isLand && falloff > 0 && ht > 0) return Math.max(0.1, ht * Math.max(0, 1 - warpedDist) * 2 * 0.35);
+      if (!isLand) return 0.1;
+      return Math.max(0.35, ht);
+    };
+
+    const dockGround = terrainYWorld(dockX, dockZ);
     const dockGeo = new THREE.BoxGeometry(5, 0.4, 14);
     const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
     const dock = new THREE.Mesh(dockGeo, dockMat);
-    dock.position.set(dockX, SEA_LEVEL + 0.8, dockZ);
+    dock.position.set(dockX, SEA_LEVEL + dockGround + 0.45, dockZ);
     dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
     group.add(dock);
     group.userData.dockAngle = dockAngle;
@@ -1233,8 +1333,9 @@ function generateIsland(cx, cz) {
       const along = (Math.floor(pi / 2) - 1.5) * 4;
       const ppx = dockX + dockLongX * along + dockWidX * 2.3 * side;
       const ppz = dockZ + dockLongZ * along + dockWidZ * 2.3 * side;
+      const gPost = terrainYWorld(ppx, ppz);
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.15, 3, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
-      post.position.set(ppx, SEA_LEVEL - 0.5, ppz);
+      post.position.set(ppx, SEA_LEVEL + gPost + 1.45, ppz);
       group.add(post);
     }
 
@@ -1248,22 +1349,18 @@ function generateIsland(cx, cz) {
       const bW = 2.5 + Math.random() * 2;
       const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW),
         new THREE.MeshLambertMaterial({ color: [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868][bi] }));
-      const bdx = bx - worldX, bdz = bz - worldZ;
-      const bd = Math.sqrt(bdx * bdx + bdz * bdz) / islandRadius;
-      const bff = Math.max(0, 1 - bd * bd);
-      const bnv = noise.fbm(bx * 0.02, bz * 0.022, 4);
-      const bty = Math.max(0, (bnv * 0.5 + 0.5) * islandHeight * bff * bff);
-      const baseY = SEA_LEVEL + bty + 0.05;
+      const gy = terrainYWorld(bx, bz);
+      const baseY = SEA_LEVEL + gy + 0.08;
       bldg.position.set(bx, baseY + bH / 2, bz); bldg.castShadow = true;
       group.add(bldg);
       const foundation = new THREE.Mesh(new THREE.BoxGeometry(bW + 0.5, 0.3, bW + 0.5), new THREE.MeshLambertMaterial({ color: 0x5a4a38 }));
-      foundation.position.set(bx, baseY, bz); group.add(foundation);
+      foundation.position.set(bx, baseY - 0.12, bz); group.add(foundation);
       const roof = new THREE.Mesh(new THREE.ConeGeometry(bW * 0.8, 1.5, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
       roof.position.set(bx, baseY + bH + 0.7, bz); roof.rotation.y = Math.PI / 4; group.add(roof);
     }
 
     const townLabel = makeTextSprite(group.userData.townName, '#e8d090', 'Trading Port');
-    townLabel.position.set(dockX, SEA_LEVEL + 8, dockZ);
+    townLabel.position.set(dockX, SEA_LEVEL + dockGround + 7.5, dockZ);
     group.add(townLabel);
   }
 
@@ -1295,11 +1392,9 @@ function spawnSeagulls(wx, wz, count) {
     wingL.position.set(-0.2, 0, 0); sg.add(wingL);
     const wingR = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
     wingR.position.set(0.2, 0, 0); sg.add(wingR);
-    const ph = Math.random() * Math.PI * 2;
-    const orbitR = 22 + Math.random() * 38;
-    sg.position.set(wx + Math.cos(ph) * orbitR, 18 + Math.random() * 10, wz + Math.sin(ph) * orbitR);
-    sg.userData.cx = wx; sg.userData.cz = wz; sg.userData.phase = ph;
-    sg.userData.radius = orbitR; sg.userData.speed = 0.22 + Math.random() * 0.32;
+    sg.position.set(wx + (Math.random() - 0.5) * 52, 24 + Math.random() * 10, wz + (Math.random() - 0.5) * 52);
+    sg.userData.cx = wx; sg.userData.cz = wz; sg.userData.phase = Math.random() * Math.PI * 2;
+    sg.userData.radius = 26 + Math.random() * 42; sg.userData.speed = 0.28 + Math.random() * 0.38;
     sg.userData.wingL = wingL; sg.userData.wingR = wingR;
     scene.add(sg); seagulls.push(sg);
   }
@@ -1441,7 +1536,7 @@ function updateSeagulls(dt) {
     const p = sg.userData.phase;
     sg.position.x = sg.userData.cx + Math.cos(p) * sg.userData.radius;
     sg.position.z = sg.userData.cz + Math.sin(p) * sg.userData.radius;
-    sg.position.y = 17 + Math.sin(p * 2) * 2.2;
+    sg.position.y = 22 + Math.sin(p * 2) * 4;
     sg.rotation.y = p + Math.PI / 2;
     const wingFlap = Math.sin(G.time * 4 + sg.userData.phase * 3) * 0.4;
     sg.userData.wingL.rotation.z = wingFlap;
@@ -1871,55 +1966,6 @@ function isMultiplayerHost() {
   ids.push(G.myId);
   return G.myId <= Math.min(...ids);
 }
-function mainQuestHostActionsOk() {
-  return !ws || ws.readyState !== 1 || isMultiplayerHost();
-}
-function removeNpcBySyncId(sid) {
-  const i = G.npcs.findIndex(n => n.syncId === sid);
-  if (i < 0) return;
-  const n = G.npcs[i];
-  if (n.mesh) { scene.remove(n.mesh); n.mesh = null; }
-  G.npcs.splice(i, 1);
-}
-function ensureMainQuestBounty() {
-  if (!isMultiplayerHost()) return;
-  removeNpcBySyncId(MAIN_QUEST_BOUNTY_SYNC_ID);
-  if (G.mainQuest.phase !== 'hunting' || G.mainQuest.stage >= MAIN_QUEST_SHIP_ORDER.length) return;
-  const targetType = MAIN_QUEST_SHIP_ORDER[G.mainQuest.stage];
-  const captainName = MAIN_QUEST_CAPTAINS[G.mainQuest.stage];
-  const npcSeed = (G.worldSeed | 0) * 7 + 13 + 999;
-  let s = npcSeed + 888;
-  const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
-  let nx = 0, nz = 0;
-  for (let attempt = 0; attempt < 22; attempt++) {
-    const a = sr() * Math.PI * 2;
-    const d = 420 + Math.sqrt(sr()) * 7800;
-    nx = Math.cos(a) * d; nz = Math.sin(a) * d;
-    if (!isOnIsland(nx, nz)) break;
-  }
-  const npc = {
-    syncId: MAIN_QUEST_BOUNTY_SYNC_ID,
-    x: nx, z: nz,
-    rotation: sr() * Math.PI * 2, speed: 2.2 + sr() * 2.8,
-    health: 95 + sr() * 55, type: targetType,
-    name: captainName,
-    wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
-    underFireTimer: 0, fireJitter: sr(),
-    aggro: false, sinking: false, sinkTimer: 0,
-    isMainBounty: true,
-    fireCooldown: 0,
-    flagColor: '#c9a227'
-  };
-  const npcCrew = [
-    { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
-    { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
-    { name: 'Mate', role: 'sailor', task: 'sails', color: '#2a4a2a' }
-  ];
-  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, npc.flagColor, npc.name);
-  buildCrewMeshes(mesh, npcCrew, npc.type);
-  npc.mesh = mesh; scene.add(mesh);
-  G.npcs.push(npc);
-}
 function spawnNPCs() {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
@@ -1945,8 +1991,7 @@ function spawnNPCs() {
       health: 60 + sr() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(sr() * 5)],
       name: uniqueNames[i],
       wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
-      underFireTimer: 0, fireJitter: sr(),
-      isMainBounty: false
+      underFireTimer: 0, fireJitter: sr()
     };
     const npcFlags = ['#8b0000','#1a1a4a','#4a0a2a','#2a4a1a','#6a3a0a','#3a1a3a','#0a3a3a'];
     const npcFlagColor = npcFlags[Math.floor(sr() * npcFlags.length)];
@@ -1961,7 +2006,7 @@ function spawnNPCs() {
     npc.mesh = mesh; scene.add(mesh);
     G.npcs.push(npc);
   }
-  ensureMainQuestBounty();
+  tryRestoreStoryBountyAfterNpcReset();
 }
 
 function rebuildNPCShipMesh(npc) {
@@ -2420,40 +2465,43 @@ function connectToServer() {
       }
       case 'npc_sync': {
         if (!msg.npcs) break;
-        if (msg.mainQuest && typeof msg.mainQuest.phase === 'string' && ws && ws.readyState === 1 && !isMultiplayerHost()) {
-          G.mainQuest = { phase: msg.mainQuest.phase, stage: msg.mainQuest.stage | 0 };
-        }
-        if (msg.mqReward && !isMultiplayerHost()) {
-          const gi = G.player.inventory.find(x => x.id === 'gold');
-          if (gi) gi.count += msg.mqReward;
-          notify(`Saga reward: +${msg.mqReward} gold`);
-          reconcileSlotsWithInventory();
-        }
         const seen = new Set();
         msg.npcs.forEach(nd => {
           seen.add(nd.id);
           let npc = G.npcs.find(n => n.syncId === nd.id);
-          if (!npc) {
+          if (!npc && nd.id >= STORY_NPC_SYNC_BASE && nd.id < STORY_NPC_SYNC_BASE + STORY_SHIP_ORDER.length) {
+            const step = nd.id - STORY_NPC_SYNC_BASE;
+            const shipType = nd.t && SHIP_TYPES[nd.t] ? nd.t : STORY_SHIP_ORDER[step];
+            const name = nd.n || STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
+            const flagColor = nd.fc || '#5a0808';
             npc = {
               syncId: nd.id,
               x: nd.x, z: nd.z,
               rotation: nd.r,
               health: nd.h,
-              type: nd.t && SHIP_TYPES[nd.t] ? nd.t : 'sloop',
-              name: nd.n || 'Pirate',
-              flagColor: nd.fc || '#8b0000',
-              speed: 2.5, wanderAngle: 0, wanderTimer: 5,
-              underFireTimer: 0, fireJitter: 0.5,
+              type: shipType,
+              name,
+              flagColor,
+              wanderAngle: 0, wanderTimer: 5,
+              underFireTimer: 0, fireJitter: 0,
+              isStoryBounty: true,
+              storyStep: step,
               aggro: !!nd.aggro,
               sinking: !!nd.sinking,
-              sinkTimer: 0,
-              isMainBounty: nd.id === MAIN_QUEST_BOUNTY_SYNC_ID,
-              fireCooldown: 0
+              syncX: nd.x, syncZ: nd.z, syncR: nd.r
             };
-            rebuildNPCShipMesh(npc);
+            const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, npc.flagColor, npc.name);
+            const npcCrew = [
+              { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
+              { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
+              { name: 'Mate', role: 'sailor', task: 'sails', color: '#2a4a2a' }
+            ];
+            buildCrewMeshes(mesh, npcCrew, npc.type);
+            npc.mesh = mesh;
+            scene.add(mesh);
             G.npcs.push(npc);
           }
-          npc.isMainBounty = nd.id === MAIN_QUEST_BOUNTY_SYNC_ID;
+          if (!npc) return;
           if (nd.t && SHIP_TYPES[nd.t] && (
             nd.t !== npc.type ||
             (nd.fc && nd.fc !== npc.flagColor) ||
@@ -3563,31 +3611,35 @@ window.ransomPrisoner = function(idx) {
 
 function updateMissionsPanel() {
   const l = document.getElementById('missions-list'); l.innerHTML = '';
-  const mq = G.mainQuest;
-  if (mq.phase === 'hunting' || mq.phase === 'report') {
-    const st = MAIN_QUEST_SHIP_ORDER[Math.min(mq.stage, MAIN_QUEST_SHIP_ORDER.length - 1)];
-    const cap = MAIN_QUEST_CAPTAINS[Math.min(mq.stage, MAIN_QUEST_CAPTAINS.length - 1)];
-    const spec = SHIP_TYPES[st];
-    const huntTxt = mq.phase === 'report' ? 'Return to any port to report your victory.' : `Hunt ${cap} (${spec.name}).`;
-    const story = document.createElement('div');
-    story.style.cssText = 'padding:10px;background:rgba(60,30,18,0.45);border:1px solid rgba(200,160,60,0.35);border-radius:6px;margin-bottom:10px;';
-    story.innerHTML = `<div style="color:#e8c060;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main saga</div>
-      <div style="color:#e8dcc8;font-size:13px;line-height:1.4;">${huntTxt}</div>`;
-    l.appendChild(story);
-  } else if (mq.phase === 'done') {
-    const done = document.createElement('div');
-    done.style.cssText = 'padding:10px;background:rgba(40,50,30,0.4);border:1px solid rgba(120,160,80,0.3);border-radius:6px;margin-bottom:10px;';
-    done.innerHTML = `<div style="color:#a8d070;font-size:12px;">Main saga complete — the pirate admiralty is broken.</div>`;
-    l.appendChild(done);
+  const sq = G.storyQuest;
+  let storyHtml = '';
+  if (sq.phase === 'intro') {
+    storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(180,100,160,0.35);border-radius:6px;margin-bottom:10px;">
+      <div style="color:#e8b8d8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story</div>
+      <div style="color:#e0d6c2;font-size:12px;line-height:1.45;">Dock at any port → <strong>Quests</strong> and speak with the Harbormaster to begin hunting the notorious pirate captains.</div>
+      <div style="color:#9a8a78;font-size:10px;margin-top:6px;">${nearestPortIslandHint()}</div></div>`;
+  } else if (sq.phase === 'active' && sq.step < STORY_SHIP_ORDER.length) {
+    const st = STORY_SHIP_ORDER[sq.step];
+    const cap = STORY_PIRATE_NAMES[st] || 'Target';
+    storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(180,100,160,0.35);border-radius:6px;margin-bottom:10px;">
+      <div style="color:#e8b8d8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story — bounty</div>
+      <div style="color:#e0d6c2;font-size:12px;">Sink <strong>${cap}</strong> (${SHIP_TYPES[st]?.name || st}).</div>
+      <div style="color:#d4a848;font-size:10px;margin-top:4px;">Turn in at any port when done.</div></div>`;
+  } else if (sq.phase === 'report') {
+    storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(120,180,120,0.4);border-radius:6px;margin-bottom:10px;">
+      <div style="color:#a8e8b8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story — report</div>
+      <div style="color:#e0d6c2;font-size:12px;">Dock and open <strong>Port → Quests</strong> to claim your bounty and receive the next target.</div></div>`;
+  } else if (sq.phase === 'complete') {
+    storyHtml = `<div style="padding:10px;background:rgba(30,40,30,0.5);border:1px solid rgba(120,160,100,0.35);border-radius:6px;margin-bottom:10px;">
+      <div style="color:#b8d8a8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story</div>
+      <div style="color:#e0d6c2;font-size:12px;">You have defeated every notorious captain. The seas are safer — for now.</div></div>`;
   }
   const active = G.quests.filter(q => q.accepted);
-  if (active.length === 0) {
-    const msg = document.createElement('div');
-    msg.style.cssText = 'color:#8a7a60;font-size:12px;text-align:center;padding:' + (l.children.length ? '12px' : '20px');
-    msg.textContent = l.children.length ? 'No side contracts active.' : 'No active missions. Visit a port to find quests.';
-    l.appendChild(msg);
+  if (!storyHtml && active.length === 0) {
+    l.innerHTML = '<div style="color:#8a7a60;font-size:12px;text-align:center;padding:20px;">No active missions. Visit a port to find quests.</div>';
     return;
   }
+  if (storyHtml) l.innerHTML = storyHtml;
   active.forEach((q, qi) => {
     const d = document.createElement('div');
     d.style.cssText = 'padding:10px;background:rgba(30,20,12,0.5);border:1px solid rgba(80,160,80,0.3);border-radius:6px;margin-bottom:8px;';
@@ -3600,6 +3652,13 @@ function updateMissionsPanel() {
       <div style="color:#d4a848;font-size:11px;margin-top:4px;">Reward: ${q.reward} gold</div>`;
     l.appendChild(d);
   });
+  if (storyHtml && active.length === 0 && !l.querySelector('[data-side-missions-empty]')) {
+    const empty = document.createElement('div');
+    empty.setAttribute('data-side-missions-empty', '1');
+    empty.style.cssText = 'color:#8a7a60;font-size:11px;text-align:center;padding:8px;';
+    empty.textContent = 'No active side contracts.';
+    l.appendChild(empty);
+  }
 }
 
 document.getElementById('btn-log').onclick = () => {
@@ -3752,42 +3811,40 @@ function showPortTab(tab) {
       content.appendChild(d);
     }
   } else if (tab === 'quests') {
-    if (G.quests.length === 0) generateQuests();
-    const mq = G.mainQuest;
-    const hostNote = !mainQuestHostActionsOk() ? '<div style="color:#aa8866;font-size:10px;margin-bottom:8px;">In multiplayer, the fleet host advances the main saga.</div>' : '';
-    if (mq.phase === 'unstarted') {
-      const intro = document.createElement('div');
-      intro.style.cssText = 'padding:12px;background:rgba(50,22,22,0.5);border:1px solid rgba(180,100,80,0.35);border-radius:8px;margin-bottom:12px;';
-      intro.innerHTML = `${hostNote}<div style="color:#e8c060;font-size:12px;font-weight:bold;margin-bottom:6px;">The Notorious Captains</div>
-        <div style="color:#d8c8b8;font-size:12px;line-height:1.45;margin-bottom:10px;">Five pirate lords rule the outer charts. Sink them in order—cutter to man-o\'-war—and break their chain. You may begin or report at <strong>any</strong> trading port.</div>
-        <button onclick="mainQuestBeginSaga()" style="background:rgba(120,40,30,0.5);border:1px solid rgba(200,120,80,0.5);color:#f0c8a0;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-family:Georgia,serif;">Begin saga</button>`;
-      content.appendChild(intro);
-    } else if (mq.phase === 'hunting') {
-      const st = MAIN_QUEST_SHIP_ORDER[mq.stage];
-      const cap = MAIN_QUEST_CAPTAINS[mq.stage];
-      const spec = SHIP_TYPES[st];
-      const hunt = document.createElement('div');
-      hunt.style.cssText = 'padding:12px;background:rgba(50,22,22,0.5);border:1px solid rgba(180,100,80,0.35);border-radius:8px;margin-bottom:12px;';
-      hunt.innerHTML = `${hostNote}<div style="color:#e8c060;font-size:12px;font-weight:bold;margin-bottom:6px;">Bounty: ${cap}</div>
-        <div style="color:#d8c8b8;font-size:12px;line-height:1.45;">Sink their <strong>${spec.name}</strong>. Check your chart for the marked prey.</div>`;
-      content.appendChild(hunt);
-    } else if (mq.phase === 'report') {
-      const rep = document.createElement('div');
-      rep.style.cssText = 'padding:12px;background:rgba(30,45,35,0.5);border:1px solid rgba(100,160,100,0.35);border-radius:8px;margin-bottom:12px;';
-      rep.innerHTML = `${hostNote}<div style="color:#a8e898;font-size:12px;font-weight:bold;margin-bottom:6px;">Victory</div>
-        <div style="color:#d8c8b8;font-size:12px;line-height:1.45;margin-bottom:10px;">The harbour master records your deed. Claim your reward.</div>
-        <button onclick="mainQuestTurnIn()" style="background:rgba(40,80,40,0.5);border:1px solid rgba(100,180,100,0.5);color:#a8e8a8;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-family:Georgia,serif;">Turn in saga</button>`;
-      content.appendChild(rep);
-    } else if (mq.phase === 'done') {
-      const fin = document.createElement('div');
-      fin.style.cssText = 'padding:12px;background:rgba(40,50,30,0.45);border:1px solid rgba(140,160,90,0.35);border-radius:8px;margin-bottom:12px;';
-      fin.innerHTML = '<div style="color:#c8e090;font-size:12px;font-weight:bold;margin-bottom:6px;">Saga complete</div><div style="color:#d8c8b8;font-size:12px;line-height:1.45;">The last of the pirate admirals is gone. The trade lanes are safer—until the next storm gathers.</div>';
-      content.appendChild(fin);
+    const sq = G.storyQuest;
+    const storyBox = document.createElement('div');
+    storyBox.style.cssText = 'padding:12px;background:rgba(45,22,55,0.55);border:1px solid rgba(200,120,180,0.35);border-radius:8px;margin-bottom:14px;';
+    if (sq.phase === 'intro') {
+      storyBox.innerHTML = `<div style="color:#e8b8d8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — THE HARBORMASTER</div>
+        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;margin-bottom:10px;">Word is five pirate captains rule the outer lanes — each flies a different class of ship. The Crown posted bounties, but only captains who clear them <em>in order</em> may claim the purse. Start here: I need a sailor willing to cut them down one hull at a time.</div>
+        <div style="color:#9a8a78;font-size:11px;margin-bottom:10px;"><strong>Nearest port:</strong> ${nearestPortIslandHint()}</div>
+        <button type="button" onclick="acceptMainStory()" style="background:rgba(80,40,90,0.55);border:1px solid rgba(200,140,200,0.5);color:#e8c8e8;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-family:Georgia,serif;">Accept briefing &amp; first bounty</button>`;
+    } else if (sq.phase === 'active' && sq.step < STORY_SHIP_ORDER.length) {
+      const st = STORY_SHIP_ORDER[sq.step];
+      const cap = STORY_PIRATE_NAMES[st] || 'Target';
+      storyBox.innerHTML = `<div style="color:#e8b8d8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — ACTIVE BOUNTY</div>
+        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;">Hunt <strong>${cap}</strong> (${SHIP_TYPES[st]?.name || st}). Sink them at sea, then return to <strong>any port</strong> and open Quests to report.</div>
+        <div style="color:#d4a848;font-size:11px;margin-top:8px;">Reward for this mark: ${STORY_REWARDS[sq.step]}g (paid on turn-in).</div>`;
+    } else if (sq.phase === 'report') {
+      const prevStep = Math.max(0, sq.step);
+      const reward = STORY_REWARDS[prevStep] != null ? STORY_REWARDS[prevStep] : 0;
+      storyBox.innerHTML = `<div style="color:#a8e8c8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — REPORT</div>
+        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;margin-bottom:10px;">You sank the bounty. Claim <strong>${reward}g</strong> and receive your next letter of marque.</div>
+        <button type="button" onclick="reportStoryBountyTurnIn()" style="background:rgba(40,70,50,0.55);border:1px solid rgba(120,180,120,0.45);color:#c8e8c8;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-family:Georgia,serif;">Claim bounty &amp; continue</button>`;
+    } else if (sq.phase === 'complete') {
+      storyBox.innerHTML = `<div style="color:#b8d8a8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — COMPLETE</div>
+        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;">Every notorious captain has been brought to account. You are legend on this ocean.</div>`;
+    } else {
+      storyBox.innerHTML = '';
     }
+    if (storyBox.innerHTML) content.appendChild(storyBox);
+
     const sideHdr = document.createElement('div');
-    sideHdr.style.cssText = 'color:#b8a078;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;';
-    sideHdr.textContent = 'Side contracts';
+    sideHdr.style.cssText = 'color:#d4a848;font-size:11px;letter-spacing:1px;margin-bottom:8px;';
+    sideHdr.textContent = 'SIDE CONTRACTS';
     content.appendChild(sideHdr);
+
+    if (G.quests.length === 0) generateQuests();
     G.quests.forEach((q, qi) => {
       const d = document.createElement('div');
       d.style.cssText = `padding:10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;${q.accepted ? 'border-color:rgba(80,160,80,0.4);' : ''}`;
@@ -3892,36 +3949,38 @@ window.acceptQuest = function(idx) {
   if (G.quests[idx]) { G.quests[idx].accepted = true; notify('Quest accepted!'); showPortTab('quests'); }
 };
 
-window.mainQuestBeginSaga = function() {
-  if (!mainQuestHostActionsOk()) { notify('Only the fleet host can begin the saga in multiplayer.'); return; }
-  if (G.mainQuest.phase !== 'unstarted') { notify('The saga has already begun.'); return; }
-  G.mainQuest = { phase: 'hunting', stage: 0 };
-  ensureMainQuestBounty();
+window.acceptMainStory = function() {
+  if (!G.docked) { notify('Dock at a port first.'); return; }
+  if (G.storyQuest.phase !== 'intro') { showPortTab('quests'); return; }
+  G.storyQuest.phase = 'active';
+  spawnStoryBountyNpc();
   saveProgress();
-  notify('The first notorious captain is sailing the outer charts. Hunt them down!');
+  notify('Your first mark is sailing nearby. Hunt them down, then return to any port to report.');
   showPortTab('quests');
   updateMissionsPanel();
 };
 
-window.mainQuestTurnIn = function() {
-  if (!G.docked) { notify('Dock at a port to turn in.'); return; }
-  if (!mainQuestHostActionsOk()) { notify('Only the fleet host can turn in the saga in multiplayer.'); return; }
-  if (G.mainQuest.phase !== 'report') return;
-  const goldAmt = MAIN_QUEST_REWARDS[G.mainQuest.stage];
+window.reportStoryBountyTurnIn = function() {
+  if (!G.docked) { notify('Dock at a port.'); return; }
+  const sq = G.storyQuest;
+  if (sq.phase !== 'report') return;
+  if (sq.step < 0 || sq.step >= STORY_SHIP_ORDER.length) return;
+  const reward = STORY_REWARDS[sq.step];
   const gi = G.player.inventory.find(x => x.id === 'gold');
-  if (gi) gi.count += goldAmt;
-  if (ws?.readyState === 1 && isMultiplayerHost()) G._mqRewardPulse = goldAmt;
-  notify(`Saga reward: +${goldAmt} gold`);
-  reconcileSlotsWithInventory();
-  G.mainQuest.stage++;
-  if (G.mainQuest.stage >= MAIN_QUEST_SHIP_ORDER.length) {
-    G.mainQuest.phase = 'done';
-    notify('The notorious captains are finished. The seas are yours!');
+  if (gi) gi.count += reward;
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'leaderboard_update', kills: 0, loot: reward }));
+  sq.step += 1;
+  if (sq.step >= STORY_SHIP_ORDER.length) {
+    sq.phase = 'complete';
+    removeStoryBountyFromWorld();
+    notify('Main story complete! The five captains are finished.');
   } else {
-    G.mainQuest.phase = 'hunting';
-    ensureMainQuestBounty();
-    notify('The next captain has weighed anchor. Find and sink them!');
+    sq.phase = 'active';
+    spawnStoryBountyNpc();
+    const st = STORY_SHIP_ORDER[sq.step];
+    notify(`Next bounty: ${STORY_PIRATE_NAMES[st] || st} (${SHIP_TYPES[st]?.name || st}).`);
   }
+  reconcileSlotsWithInventory();
   saveProgress();
   showPortTab('quests');
   updateMissionsPanel();
@@ -4177,17 +4236,6 @@ function drawFullmap() {
       });
     }
   });
-  if (G.mainQuest.phase === 'hunting') {
-    const bn = G.npcs.find(n => n.isMainBounty && !n.sinking);
-    if (bn && isVesselInLocalMapRange(bn.x, bn.z)) {
-      const nx = cx + (bn.x - centerX) * s, ny = cy + (bn.z - centerZ) * s;
-      ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 2.5; ctx.setLineDash([5, 4]);
-      ctx.beginPath(); ctx.arc(nx, ny, 12, 0, Math.PI * 2); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#ffd700'; ctx.font = 'bold 10px Georgia'; ctx.textAlign = 'center';
-      ctx.fillText('SAGA', nx, ny - 15);
-    }
-  }
 
   ctx.strokeStyle = 'rgba(180,140,60,0.25)'; ctx.lineWidth = 3;
   ctx.strokeRect(2, 2, w - 4, h - 4);
@@ -4287,10 +4335,9 @@ function drawMinimap() {
   ctx.strokeStyle = 'rgba(180,140,60,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(1, 1, w - 2, h - 2);
 }
 document.getElementById('minimap').addEventListener('wheel', e => {
-  e.preventDefault(); e.stopPropagation();
   if (!fullmapOpen) return;
-  mmZoom = Math.max(0.02, Math.min(0.3, mmZoom + e.deltaY * 0.0002));
-  drawMinimap();
+  e.preventDefault(); e.stopPropagation();
+  mmZoom = Math.max(0.02, Math.min(0.3, mmZoom + e.deltaY * 0.0002)); drawMinimap();
 }, { passive: false });
 
 /* ============================== GAME LOOP ================================ */
@@ -4559,14 +4606,13 @@ function update(dt) {
           npc.underFireTimer = 4.6;
           spawnDamageChunks(b.x, b.y, b.z);
           if (npc.health <= 0) {
-            notify(`Sinking ${npc.name}! +30 gold`);
-            const gi = G.player.inventory.find(x => x.id === 'gold');
-            if (gi) gi.count += 30;
-            if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'leaderboard_update', kills: 1, loot: 30 }));
-            if (isMultiplayerHost() && npc.isMainBounty && G.mainQuest.phase === 'hunting' && npc.type === MAIN_QUEST_SHIP_ORDER[G.mainQuest.stage]) {
-              G.mainQuest.phase = 'report';
-              saveProgress();
-              notify('Notorious captain defeated! Dock at any port to report.');
+            const storySink = npc.isStoryBounty && npc.storyStep === G.storyQuest.step && G.storyQuest.phase === 'active';
+            if (storySink) onStoryBountySunkByPlayer(npc);
+            else {
+              notify(`Sinking ${npc.name}! +30 gold`);
+              const gi = G.player.inventory.find(x => x.id === 'gold');
+              if (gi) gi.count += 30;
+              if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'leaderboard_update', kills: 1, loot: 30 }));
             }
             npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
             spawnSwimmers(npc.x, npc.z, 2 + Math.floor(Math.random() * 3));
@@ -4833,9 +4879,7 @@ function update(dt) {
       n: n.name,
       fc: n.flagColor
     }));
-    const npcPayload = { type: 'npc_sync', npcs: npcData, mainQuest: { phase: G.mainQuest.phase, stage: G.mainQuest.stage | 0 } };
-    if (G._mqRewardPulse) { npcPayload.mqReward = G._mqRewardPulse; G._mqRewardPulse = 0; }
-    ws.send(JSON.stringify(npcPayload));
+    ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
   }
   updateCannonSmoke(dt);
   updateWindStreamVisual(dt);
@@ -5479,7 +5523,7 @@ function saveProgress() {
       crew: G.player.crew,
       gold: G.player.inventory.find(i => i.id === 'gold')?.count || 0,
       quests: G.quests,
-      mainQuest: G.mainQuest,
+      storyQuest: G.storyQuest,
       worldSeed: G.worldSeed
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
@@ -5503,7 +5547,15 @@ function loadProgress() {
     if (data.cargoSlots && data.cargoSlots.some(Boolean)) syncInventoryFromCargoSlots();
     if (data.crew) G.player.crew = data.crew;
     if (data.quests) G.quests = data.quests;
-    if (data.mainQuest && data.mainQuest.phase) G.mainQuest = { phase: data.mainQuest.phase, stage: data.mainQuest.stage | 0 };
+    if (data.storyQuest && typeof data.storyQuest === 'object') {
+      const ph = data.storyQuest.phase;
+      const st = data.storyQuest.step | 0;
+      const okPh = ph === 'intro' || ph === 'active' || ph === 'report' || ph === 'complete';
+      G.storyQuest = {
+        phase: okPh ? ph : 'intro',
+        step: Math.max(0, Math.min(STORY_SHIP_ORDER.length, st))
+      };
+    }
     if (data.flagColor) G.player.flagColor = data.flagColor;
     if (data.worldSeed != null && data.worldSeed !== '') G.worldSeed = Number(data.worldSeed) >>> 0;
     return true;
