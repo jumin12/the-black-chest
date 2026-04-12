@@ -1185,54 +1185,6 @@ function townFaction(meta) {
   return meta.faction != null ? meta.faction : (((meta.cx * 7919 ^ meta.cz * 9341 ^ (G.worldSeed >>> 0)) >>> 0) % 4);
 }
 function factionLabel(fid) { return FACTION_NAMES[(fid | 0) % 4] || FACTION_NAMES[0]; }
-/** 2D canvas flag pattern for UI / map key (matches faction colors). */
-function drawFactionFlagCanvas2D(ctx, x, y, w, h, fi) {
-  const i = (fi | 0) % 4;
-  const base = FACTION_TRADE_COLORS[i];
-  ctx.fillStyle = base;
-  ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  if (i === 0) ctx.fillRect(x, y, w, h * 0.38);
-  else if (i === 1) ctx.fillRect(x, y, w * 0.34, h);
-  else if (i === 2) { ctx.fillStyle = 'rgba(0,40,20,0.35)'; ctx.fillRect(x, y + h * 0.52, w, h * 0.35); }
-  else { ctx.fillStyle = 'rgba(60,40,0,0.45)'; ctx.beginPath(); ctx.moveTo(x + w * 0.5, y); ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h); ctx.closePath(); ctx.fill(); }
-}
-function drawFactionMapKey(ctx, originX, originY, title, compact) {
-  ctx.save();
-  ctx.textAlign = 'left';
-  const rowH = compact ? 12 : 16;
-  const titleH = compact ? 10 : 12;
-  const fw = compact ? 14 : 20, fh = compact ? 8 : 12;
-  ctx.font = (compact ? 'bold 9px' : 'bold 11px') + ' Georgia,serif';
-  ctx.fillStyle = 'rgba(212,168,72,0.95)';
-  ctx.fillText(title || 'Factions', originX, originY);
-  for (let fi = 0; fi < 4; fi++) {
-    const yy = originY + titleH + 6 + fi * rowH;
-    drawFactionFlagCanvas2D(ctx, originX, yy - (compact ? 8 : 10), fw, fh, fi);
-    ctx.fillStyle = '#c8b8a8';
-    ctx.font = (compact ? '9px' : '10px') + ' Georgia,serif';
-    ctx.fillText(FACTION_NAMES[fi], originX + fw + 6, yy);
-    ctx.fillStyle = FACTION_TRADE_COLORS[fi];
-    ctx.font = (compact ? '8px' : '9px') + ' Georgia,serif';
-    ctx.fillText('●', originX + (compact ? 138 : 148), yy);
-  }
-  ctx.restore();
-}
-const _factionFlagDataUrlCache = [];
-function factionFlagDataUrl(fi) {
-  const i = (fi | 0) % 4;
-  if (_factionFlagDataUrlCache[i]) return _factionFlagDataUrlCache[i];
-  const c = document.createElement('canvas');
-  c.width = 40; c.height = 24;
-  const xctx = c.getContext('2d');
-  drawFactionFlagCanvas2D(xctx, 0, 0, 40, 24, i);
-  _factionFlagDataUrlCache[i] = c.toDataURL();
-  return _factionFlagDataUrlCache[i];
-}
-function escapeHtml(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
 function portExportsGood(meta) {
   if (!meta || !meta.hasTown) return 'food';
   const idx = ((meta.cx * 5023 ^ meta.cz * 9839 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_EXPORT_POOL.length;
@@ -1275,10 +1227,8 @@ function assignNewTradeRoute(npc) {
   }
   const sr = () => Math.random();
   assignTradeRouteFromHome(npc, nearest, list, sr);
-  const cruise = npc.tradeCruiseSpeed != null ? npc.tradeCruiseSpeed : 0.85;
   npc.tradePhase = 'to_dest';
   npc.tradeTimer = 0;
-  npc.speed = cruise;
 }
 function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   npc.homeDockX = homeMeta.dockX;
@@ -1296,9 +1246,10 @@ function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   npc.destCz = dest.cz;
   npc.tradeDestX = dest.dockX;
   npc.tradeDestZ = dest.dockZ;
-  npc.tradeCruiseSpeed = npc.tradeCruiseSpeed != null ? npc.tradeCruiseSpeed : 0.72 + sr() * 0.65;
   syncTradeShipName(npc, homeMeta);
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta) % 4];
+  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.5 + sr() * 0.28);
+  npc.tradeCruiseSpeed = npc.targetCruise;
 }
 
 function createPalmTree(x, y, z) {
@@ -1580,29 +1531,6 @@ function generateIsland(cx, cz) {
       group.add(post);
     }
 
-    const townFid = townFaction(meta0);
-    const facHex = FACTION_TRADE_COLORS[townFid % 4];
-    const poleH = 6.2;
-    const flagAlong = -5.8;
-    const flagSide = 2.85;
-    const poleGx = dockX + dockLongX * flagAlong + dockWidX * flagSide;
-    const poleGz = dockZ + dockLongZ * flagAlong + dockWidZ * flagSide;
-    const poleGy = terrainYWorld(poleGx, poleGz);
-    const poleM = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, poleH, 6),
-      new THREE.MeshLambertMaterial({ color: 0x4a3520 }));
-    poleM.position.set(poleGx, SEA_LEVEL + poleGy + poleH * 0.5, poleGz);
-    poleM.castShadow = true;
-    group.add(poleM);
-    const flagPlane = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.5),
-      new THREE.MeshLambertMaterial({ color: new THREE.Color(facHex), side: THREE.DoubleSide }));
-    const fy = SEA_LEVEL + poleGy + poleH * 0.88;
-    const fxOff = Math.cos(dockAngle + Math.PI / 2) * 1.15;
-    const fzOff = Math.sin(dockAngle + Math.PI / 2) * 1.15;
-    flagPlane.position.set(poleGx + fxOff, fy, poleGz + fzOff);
-    flagPlane.rotation.y = dockAngle;
-    flagPlane.castShadow = true;
-    group.add(flagPlane);
-
     for (let bi = 0; bi < 5; bi++) {
       const ba = dockAngle + Math.PI + (bi - 2) * 0.3;
       const bd = islandRadius * (0.5 + bi * 0.06);
@@ -1623,9 +1551,25 @@ function generateIsland(cx, cz) {
       roof.position.set(bx, baseY + bH + 0.7, bz); roof.rotation.y = Math.PI / 4; group.add(roof);
     }
 
-    const townLabel = makeTownLabelSprite(group.userData.townName, townFid, 'Trading Port');
+    const tf = townFaction(meta0) % 4;
+    const townLabel = makeTextSprite(group.userData.townName, '#e8d090', FACTION_NAMES[tf] + ' · Port', FACTION_TRADE_COLORS[tf]);
     townLabel.position.set(dockX, SEA_LEVEL + dockGround + 7.5, dockZ);
     group.add(townLabel);
+
+    const fHex = FACTION_TRADE_COLORS[tf];
+    const fcCol = new THREE.Color(fHex);
+    const flagAlong = -4 * 4;
+    const fxx = dockX + dockLongX * flagAlong + dockWidX * 3.6;
+    const fzz = dockZ + dockLongZ * flagAlong + dockWidZ * 3.6;
+    const fyy = SEA_LEVEL + terrainYWorld(fxx, fzz) + 0.35;
+    const poleH = 7.5;
+    const flagPole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, poleH, 6), new THREE.MeshLambertMaterial({ color: 0x4a3a28 }));
+    flagPole.position.set(fxx, fyy + poleH * 0.5, fzz);
+    group.add(flagPole);
+    const dockFlag = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.5), new THREE.MeshBasicMaterial({ color: fcCol, side: THREE.DoubleSide }));
+    dockFlag.position.set(fxx + Math.sin(dockAngle) * 0.55, fyy + poleH + 0.2, fzz + Math.cos(dockAngle) * 0.55);
+    dockFlag.rotation.y = dockAngle + Math.PI * 0.5;
+    group.add(dockFlag);
   }
 
   islandGroup.add(group);
@@ -2049,6 +1993,17 @@ function buildShipMesh(type, parts, flagColor, shipName) {
     fmesh.userData.isFlag = true; g.add(fmesh);
   }
 
+  if (flagColor) {
+    const fc = new THREE.Color(flagColor);
+    g.traverse(ch => {
+      if (ch.userData && ch.userData.isSail && ch.material && ch.material.color) {
+        const b = ch.material.color.clone();
+        b.lerp(fc, 0.2);
+        ch.material.color.copy(b);
+      }
+    });
+  }
+
   if (shipName) {
     const label = makeTextSprite(shipName, flagColor ? '#ff8888' : '#d4a848');
     label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
@@ -2346,7 +2301,7 @@ function processProvisionsDrain(dt) {
 
 let shipNameSprite = null;
 
-function makeTextSprite(text, color = '#d4a848', subtitle = '') {
+function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex = '') {
   const canvas = document.createElement('canvas');
   canvas.width = 512; canvas.height = 80;
   const ctx = canvas.getContext('2d');
@@ -2355,42 +2310,21 @@ function makeTextSprite(text, color = '#d4a848', subtitle = '') {
   ctx.roundRect(8, 4, 496, 72, 10); ctx.fill();
   ctx.strokeStyle = 'rgba(180,140,60,0.4)'; ctx.lineWidth = 1.5;
   ctx.roundRect(8, 4, 496, 72, 10); ctx.stroke();
+  const hasFac = !!factionColorHex;
+  if (hasFac) {
+    ctx.fillStyle = factionColorHex;
+    ctx.roundRect(18, 20, 44, 36, 6); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1;
+    ctx.roundRect(18, 20, 44, 36, 6); ctx.stroke();
+  }
   ctx.font = 'bold 28px Georgia, serif';
   ctx.fillStyle = color;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(text.length > 20 ? text.slice(0,19)+'..' : text, 256, subtitle ? 28 : 40);
+  ctx.textAlign = hasFac ? 'left' : 'center'; ctx.textBaseline = 'middle';
+  const tx = hasFac ? 76 : 256;
+  ctx.fillText(text.length > 20 ? text.slice(0,19)+'..' : text, tx, subtitle ? 28 : 40);
   if (subtitle) {
     ctx.font = '18px sans-serif'; ctx.fillStyle = 'rgba(200,190,170,0.8)';
-    ctx.fillText(subtitle.length > 24 ? subtitle.slice(0,23)+'..' : subtitle, 256, 56);
-  }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, sizeAttenuation: true });
-  const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(8, 1.2, 1);
-  sprite.renderOrder = 100;
-  return sprite;
-}
-
-function makeTownLabelSprite(townName, factionId, subtitle = 'Trading Port') {
-  const fi = (factionId | 0) % 4;
-  const canvas = document.createElement('canvas');
-  canvas.width = 512; canvas.height = 80;
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 512, 80);
-  ctx.fillStyle = 'rgba(10,6,4,0.65)';
-  ctx.roundRect(8, 4, 496, 72, 10); ctx.fill();
-  ctx.strokeStyle = 'rgba(180,140,60,0.4)'; ctx.lineWidth = 1.5;
-  ctx.roundRect(8, 4, 496, 72, 10); ctx.stroke();
-  drawFactionFlagCanvas2D(ctx, 20, 24, 44, 28, fi);
-  const name = townName.length > 20 ? townName.slice(0, 19) + '..' : townName;
-  ctx.font = 'bold 26px Georgia, serif';
-  ctx.fillStyle = '#e8d090';
-  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.fillText(name, 76, subtitle ? 30 : 40);
-  if (subtitle) {
-    ctx.font = '18px sans-serif'; ctx.fillStyle = 'rgba(200,190,170,0.82)';
-    ctx.fillText(subtitle.length > 24 ? subtitle.slice(0, 23) + '..' : subtitle, 76, 54);
+    ctx.fillText(subtitle.length > 24 ? subtitle.slice(0,23)+'..' : subtitle, tx, 56);
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.needsUpdate = true;
@@ -2582,23 +2516,33 @@ function nudgeNpcOffIsland(npc) {
   const cz = Math.max(-lim, Math.min(lim, npc.z * 0.92));
   npc.x = cx; npc.z = cz;
 }
-/** Same wind formula as the player: ship-class speed × sail tier × throttle × wind. */
-function npcWorldMoveSpeed(npc) {
-  if (!npc.speed || npc.speed <= 0) return 0;
+function npcSailBonus(npc) {
+  if (npc.sailBonus != null) return npc.sailBonus;
+  if (npc.isTradeShip) return npc.sailPick === 'silk' ? 0.3 : 0;
+  return 0.1;
+}
+function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
-  const sailBonus = npc.isTradeShip ? 0.15 : 0.1;
-  const speedMult = spec.speed + sailBonus;
+  return 12 * (spec.speed + npcSailBonus(npc));
+}
+function npcWindEffect(npc) {
   const w = getWindAt(npc.x, npc.z);
   const windDot = Math.cos(w.angle - npc.rotation);
-  const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
-  const playerMax = 12 * speedMult;
-  const thrust = npc.isTradeShip
-    ? npc.speed * 0.58 * playerMax
-    : npc.speed * 0.22 * playerMax;
-  return Math.min(thrust, playerMax * 0.95) * windEffect;
+  return Math.max(0.25, windDot * 0.35 + 0.65);
+}
+function npcEffectiveForwardSpeed(npc) {
+  const maxF = npcMaxForwardSpeed(npc);
+  const v = Math.min(Math.abs(npc.speed), maxF);
+  return v * npcWindEffect(npc);
+}
+function accelerateNpcToward(npc, dt, target) {
+  const maxF = npcMaxForwardSpeed(npc);
+  const t = Math.min(maxF, Math.max(0, target));
+  npc.speed += (t - npc.speed) * 4.5 * dt;
+  npc.speed = Math.max(-maxF * 0.2, Math.min(maxF, npc.speed));
 }
 function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
-  const spd = npcWorldMoveSpeed(npc);
+  const spd = npcEffectiveForwardSpeed(npc);
   const turn = turnSharp != null ? turnSharp : 2.35;
   const nNewX = npc.x + Math.sin(npc.rotation) * spd * dt;
   const nNewZ = npc.z + Math.cos(npc.rotation) * spd * dt;
@@ -2618,7 +2562,7 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
     const dir = (((npc.x * 641 + npc.z * 919 + (npc.syncId | 0)) | 0) & 1) ? 1 : -1;
     npc.rotation += dir * 1.25 * dt;
   }
-  const bump = Math.min(8, 2.5 + Math.max(spd, 2) * dt * 2.2);
+  const bump = Math.min(8, 2.5 + spd * dt * 2.2);
   const back = Math.atan2(npc.x - nNewX, npc.z - nNewZ);
   let bx = npc.x + Math.sin(back) * bump;
   let bz = npc.z + Math.cos(back) * bump;
@@ -2665,7 +2609,7 @@ function spawnTradeShips() {
     nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nz));
     const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
     const st = shipTypes[Math.floor(sr() * shipTypes.length)];
-    const cruise = 0.72 + sr() * 0.65;
+    const sailPick = sr() > 0.55 ? 'silk' : 'basic';
     const npc = {
       syncId: TRADE_NPC_SYNC_START + i,
       x: nx, z: nz,
@@ -2681,7 +2625,8 @@ function spawnTradeShips() {
       homeDockZ: home.dockZ,
       homeCx: home.cx,
       homeCz: home.cz,
-      tradeCruiseSpeed: cruise,
+      sailPick,
+      sailBonus: sailPick === 'silk' ? 0.3 : 0,
       wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0
     };
     assignTradeRouteFromHome(npc, home, list, sr);
@@ -2691,7 +2636,6 @@ function spawnTradeShips() {
     npc.tradePhase = 'loading_home';
     npc.tradeTimer = 6 + sr() * 14;
     syncTradeShipName(npc, home);
-    const sailPick = sr() > 0.55 ? 'silk' : 'basic';
     const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: 'none', figurehead: 'none' }, npc.flagColor, npc.name);
     const npcCrew = [
       { name: 'Merchant', role: 'captain', task: 'helm', color: '#3a3020', hat: 'tricorn' },
@@ -2718,15 +2662,19 @@ function spawnNPCs() {
     const npc = {
       syncId: i,
       x: nx, z: nz,
-      rotation: sr() * Math.PI * 2, speed: 2 + sr() * 3,
+      rotation: sr() * Math.PI * 2, speed: 0,
       health: 60 + sr() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(sr() * 5)],
       name: uniqueNames[i],
       wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
       underFireTimer: 0, fireJitter: sr()
     };
-    const npcFlags = ['#8b0000','#1a1a4a','#4a0a2a','#2a4a1a','#6a3a0a','#3a1a3a','#0a3a3a'];
-    const npcFlagColor = npcFlags[Math.floor(sr() * npcFlags.length)];
+    const chunkX = Math.floor(nx / CHUNK_SIZE), chunkZ = Math.floor(nz / CHUNK_SIZE);
+    const pirateFaction = ((chunkX * 31 + chunkZ * 17 + npcSeed * 3 + i * 13) & 0x7fffffff) % 4;
+    const npcFlagColor = FACTION_TRADE_COLORS[pirateFaction];
+    npc.factionId = pirateFaction;
     npc.flagColor = npcFlagColor;
+    npc.sailBonus = 0.1;
+    npc.speed = npcMaxForwardSpeed(npc) * (0.32 + sr() * 0.28);
     const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, npcFlagColor, npc.name);
     const npcCrew = [
       { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
@@ -2752,7 +2700,7 @@ function rebuildNPCShipMesh(npc) {
     { name: 'Mate', role: 'sailor', task: 'sails', color: '#2a4a2a' }
   ];
   const parts = merchant
-    ? { hull: 'basic', sail: 'basic', cannon: 'none', figurehead: 'none' }
+    ? { hull: 'basic', sail: npc.sailPick === 'silk' ? 'silk' : 'basic', cannon: 'none', figurehead: 'none' }
     : { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' };
   if (npc.mesh) {
     scene.remove(npc.mesh);
@@ -2821,7 +2769,7 @@ function updateNPCs(dt) {
     if (host) {
       if (npc.isTradeShip && !npc.sinking) {
         if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
-        const cruise = npc.tradeCruiseSpeed != null ? npc.tradeCruiseSpeed : 0.85;
+        const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.55;
         const phase = npc.tradePhase || 'to_dest';
         const tx = npc.tradeDestX, tz = npc.tradeDestZ;
         if (phase === 'loading_home') {
@@ -2834,7 +2782,6 @@ function updateNPCs(dt) {
           }
           if (npc.tradeTimer <= 0) {
             npc.tradePhase = 'to_dest';
-            npc.speed = cruise;
           }
         } else if (phase === 'to_dest' || phase === 'to_home') {
           if (tx != null && tz != null) {
@@ -2850,7 +2797,7 @@ function updateNPCs(dt) {
               while (tdiff > Math.PI) tdiff -= Math.PI * 2;
               while (tdiff < -Math.PI) tdiff += Math.PI * 2;
               npc.rotation += tdiff * 0.9 * dt;
-              npc.speed = cruise;
+              accelerateNpcToward(npc, dt, tgtC);
             }
           }
         } else if (phase === 'dock_dest' || phase === 'dock_home') {
@@ -2873,7 +2820,6 @@ function updateNPCs(dt) {
               npc.tradeDestX = npc.homeDockX;
               npc.tradeDestZ = npc.homeDockZ;
               npc.tradePhase = 'to_home';
-              npc.speed = cruise;
             } else {
               npc.cargoGood = portExportsGood({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
               const homeFull = getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
@@ -2931,6 +2877,9 @@ function updateNPCs(dt) {
       }
 
       if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+      const maxF = npcMaxForwardSpeed(npc);
+      const tgtSpd = npc.aggro && distToPlayer < 110 ? maxF * 0.82 : maxF * 0.42;
+      accelerateNpcToward(npc, dt, tgtSpd);
       const sharp = npc.aggro && distToPlayer < 110 ? 2.55 : 2.05;
       applyNpcMoveWithIslandEscape(npc, dt, sharp);
       }
@@ -4673,8 +4622,7 @@ function dockAtPort() {
     if (pt && G.nearDock) {
       const fid = townFaction(G.nearDock);
       const fc = FACTION_TRADE_COLORS[fid % 4];
-      pt.innerHTML =
-        `<img src="${factionFlagDataUrl(fid)}" alt="" style="vertical-align:middle;width:24px;height:14px;margin-right:7px;border:1px solid rgba(180,140,60,0.45);border-radius:2px;">${escapeHtml(G.nearDock.townName || 'Port')}<div style="font-size:11px;font-weight:normal;color:${fc};opacity:0.95;margin-top:5px;letter-spacing:0.04em;">${escapeHtml(factionLabel(fid))}</div>`;
+      pt.innerHTML = `${G.nearDock.townName || 'Port'}<div style="font-size:11px;font-weight:normal;color:${fc};opacity:0.95;margin-top:5px;letter-spacing:0.04em;">${factionLabel(fid)}</div>`;
     }
     showPortTab('trade');
     checkPortQuestProgress();
@@ -5143,13 +5091,11 @@ function drawFullmap() {
     if (d.hasTown) {
       const tx = cx + (d.dockX - centerX) * s, ty = cy - (d.dockZ - centerZ) * s;
       if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
-      const tf = townFaction(d);
-      const fcol = FACTION_TRADE_COLORS[tf % 4];
+      const fcol = FACTION_TRADE_COLORS[townFaction(d) % 4];
       ctx.fillStyle = fcol; ctx.fillRect(tx - 3, ty - 3, 6, 6);
       ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
-      drawFactionFlagCanvas2D(ctx, tx - 42, ty - 26, 18, 11, tf);
-      ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'left';
-      ctx.fillText(d.townName, tx - 20, ty - 8);
+      ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
+      ctx.fillText(d.townName, tx, ty - 7);
     }
   }, centerX, centerZ);
 
@@ -5159,12 +5105,13 @@ function drawFullmap() {
     const sx = cx + (n.x - centerX) * s, sy = cy - (n.z - centerZ) * s;
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
     const merchant = !!n.isTradeShip;
-    ctx.fillStyle = merchant ? '#2a7a72' : '#aa2222'; ctx.beginPath(); ctx.arc(sx, sy, merchant ? 3.5 : 4, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = merchant ? '#7ad4c8' : '#ff4444'; ctx.lineWidth = 1; ctx.stroke();
+    const hullCol = n.flagColor || (merchant ? '#2a7a72' : '#aa2222');
+    ctx.fillStyle = hullCol; ctx.beginPath(); ctx.arc(sx, sy, merchant ? 3.5 : 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = merchant ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; ctx.stroke();
     const dirLen = merchant ? 7 : 8;
-    ctx.strokeStyle = merchant ? '#5ab8aa' : '#cc4444'; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.strokeStyle = hullCol; ctx.lineWidth = 1.5; ctx.beginPath();
     ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.sin(n.rotation) * dirLen, sy - Math.cos(n.rotation) * dirLen); ctx.stroke();
-    ctx.fillStyle = merchant ? '#a8e8e0' : '#ff8888'; ctx.font = '10px Georgia,serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 8);
+    ctx.fillStyle = '#e8e0d8'; ctx.font = '10px Georgia,serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 8);
   });
 
   G.otherPlayers.forEach(p => {
@@ -5244,13 +5191,20 @@ function drawFullmap() {
   ctx.strokeStyle = 'rgba(180,140,60,0.1)'; ctx.lineWidth = 1;
   ctx.strokeRect(6, 6, w - 12, h - 12);
 
-  ctx.fillStyle = 'rgba(6,10,18,0.78)';
-  ctx.beginPath();
-  ctx.roundRect(10, h - 100, 172, 92, 8);
-  ctx.fill();
+  const legH = 8 + FACTION_NAMES.length * 18;
+  ctx.fillStyle = 'rgba(6,10,18,0.82)';
+  ctx.beginPath(); ctx.roundRect(12, h - legH - 14, 210, legH, 8); ctx.fill();
   ctx.strokeStyle = 'rgba(180,140,60,0.35)'; ctx.lineWidth = 1;
-  ctx.stroke();
-  drawFactionMapKey(ctx, 22, h - 88, 'Factions', false);
+  ctx.beginPath(); ctx.roundRect(12, h - legH - 14, 210, legH, 8); ctx.stroke();
+  ctx.fillStyle = 'rgba(220,200,160,0.95)'; ctx.font = 'bold 11px Georgia,serif'; ctx.textAlign = 'left';
+  ctx.fillText('Factions', 22, h - legH - 2);
+  for (let fi = 0; fi < FACTION_NAMES.length; fi++) {
+    ctx.fillStyle = FACTION_TRADE_COLORS[fi];
+    ctx.fillRect(22, h - legH + 8 + fi * 18, 16, 12);
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.strokeRect(22, h - legH + 8 + fi * 18, 16, 12);
+    ctx.fillStyle = 'rgba(210,200,185,0.95)'; ctx.font = '11px Georgia,serif';
+    ctx.fillText(FACTION_NAMES[fi], 44, h - legH + 17 + fi * 18);
+  }
 
   ctx.fillStyle = 'rgba(180,140,60,0.6)'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'right';
   ctx.fillText(`Zoom: ${(fmZoom * 1000).toFixed(0)}x`, w - 12, h - 10);
@@ -5332,17 +5286,12 @@ function drawMinimap() {
     if (d.hasTown) {
       const tx = cx + (d.dockX - G.player.x) * s, ty = cy - (d.dockZ - G.player.z) * s;
       if (tx > 0 && tx < w && ty > 0 && ty < h) {
-        const tf = townFaction(d);
-        ctx.fillStyle = FACTION_TRADE_COLORS[tf % 4]; ctx.fillRect(tx - 2, ty - 2, 4, 4);
-        if (s > 0.05) {
-          drawFactionFlagCanvas2D(ctx, tx - 20, ty - 16, 10, 6, tf);
-          ctx.fillStyle = '#e8d090'; ctx.font = (w >= 220 ? '9px' : '7px') + ' Georgia'; ctx.textAlign = 'left';
-          ctx.fillText(d.townName, tx - 7, ty - 5);
-        }
+        ctx.fillStyle = FACTION_TRADE_COLORS[townFaction(d) % 4]; ctx.fillRect(tx - 2, ty - 2, 4, 4);
+        if (s > 0.05) { ctx.fillStyle = '#e8d090'; ctx.font = (w >= 220 ? '9px' : '7px') + ' Georgia'; ctx.textAlign = 'center'; ctx.fillText(d.townName, tx, ty - 5); }
       }
     }
   }, G.player.x, G.player.z);
-  G.npcs.forEach(n => { if (n.sinking) return; if (!isVesselInLocalMapRange(n.x, n.z)) return; const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = n.isTradeShip ? '#3a9a90' : '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
+  G.npcs.forEach(n => { if (n.sinking) return; if (!isVesselInLocalMapRange(n.x, n.z)) return; const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { const mc = n.flagColor || (n.isTradeShip ? '#3a9a90' : '#cc3333'); ctx.fillStyle = mc; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 0.6; ctx.stroke(); } });
   G.otherPlayers.forEach(p => { if (!isVesselInLocalMapRange(p.x, p.z)) return; const sx = cx + (p.x - G.player.x) * s, sy = cy - (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
   if (G.storyQuest.phase === 'intro') {
     const port = findNearestPortDock(G.player.x, G.player.z);
@@ -5374,14 +5323,6 @@ function drawMinimap() {
   ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
   ctx.lineTo(cx + Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
   ctx.strokeStyle = 'rgba(180,140,60,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(1, 1, w - 2, h - 2);
-
-  ctx.fillStyle = 'rgba(4,8,14,0.75)';
-  ctx.beginPath();
-  ctx.roundRect(6, h - 76, 158, 72, 6);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(180,140,60,0.28)'; ctx.lineWidth = 0.8;
-  ctx.stroke();
-  drawFactionMapKey(ctx, 14, h - 66, 'Key', true);
 }
 document.getElementById('minimap').addEventListener('wheel', e => {
   if (!fullmapOpen) return;
@@ -5899,9 +5840,7 @@ function update(dt) {
   const dockPrompt = document.getElementById('dock-prompt');
   if (nearestDock && !G.docked) {
     dockPrompt.style.display = 'block';
-    const df = townFaction(nearestDock);
-    document.getElementById('dock-town-name').innerHTML =
-      `<img src="${factionFlagDataUrl(df)}" alt="" style="vertical-align:middle;width:20px;height:12px;margin-right:5px;border:1px solid rgba(180,140,60,0.45);border-radius:2px;">${escapeHtml(nearestDock.townName)}`;
+    document.getElementById('dock-town-name').textContent = nearestDock.townName;
   } else {
     dockPrompt.style.display = 'none';
   }
