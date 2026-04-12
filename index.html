@@ -301,6 +301,16 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 .debug-roster-kv{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:10px;color:#b8ccd8;padding:4px 0;border-bottom:1px solid rgba(80,110,150,0.14);}
 .debug-roster-kv span:last-child{color:#e8f4fc;font-variant-numeric:tabular-nums;flex-shrink:0;}
 .debug-roster-trades{font-size:9px;line-height:1.55;color:#92b0a0;}
+.debug-roster-toolbar{margin-bottom:10px;}
+.debug-roster-toolbar label{display:block;font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:#6a8ab8;margin-bottom:5px;font-weight:600;}
+#debug-roster-filter{width:100%;padding:9px 11px;border-radius:10px;border:1px solid rgba(100,140,180,0.4);background:rgba(8,12,22,0.95);color:#e8e4dc;font-size:13px;outline:none;font-family:Georgia,serif;}
+#debug-roster-filter:focus{border-color:#5ab0c8;box-shadow:0 0 0 2px rgba(90,176,200,0.2);}
+.debug-roster-actions{display:flex;justify-content:flex-end;margin-top:8px;}
+.debug-locate-btn{padding:5px 12px;border-radius:8px;border:1px solid rgba(100,180,220,0.45);background:linear-gradient(180deg,#2a5a78,#1a4060);color:#d8f0ff;font-size:11px;font-family:Georgia,serif;cursor:pointer;letter-spacing:0.04em;}
+.debug-locate-btn:hover{filter:brightness(1.08);}
+#spectate-return-hud{display:none;position:fixed;bottom:max(18px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:35;pointer-events:auto;}
+#spectate-return-hud button{padding:10px 20px;border-radius:10px;border:1px solid rgba(200,160,80,0.55);background:linear-gradient(180deg,#6a5020,#402810);color:#f8e8c8;font-family:Georgia,serif;font-size:14px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,0.45);}
+#spectate-return-hud button:hover{filter:brightness(1.06);}
 .debug-panel-footer{padding:10px 16px 14px;border-top:1px solid rgba(100,140,180,0.18);background:rgba(8,12,20,0.5);}
 .debug-panel-footer button{width:100%;padding:10px 16px;border-radius:10px;border:1px solid rgba(180,100,100,0.45);
   background:linear-gradient(180deg,rgba(120,48,48,0.95),rgba(70,28,28,0.98));color:#f8e0e0;font-family:Georgia,serif;font-size:13px;cursor:pointer;letter-spacing:0.04em;}
@@ -521,6 +531,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
         </section>
         <section class="debug-section" aria-label="Active AI economy">
           <h4 class="debug-section-head">Ports &amp; AI fleet</h4>
+          <div class="debug-roster-toolbar">
+            <label for="debug-roster-filter">Search ports &amp; ships</label>
+            <input type="search" id="debug-roster-filter" placeholder="Name, ship, or coordinates…" autocomplete="off" />
+          </div>
           <div class="debug-roster-grid">
             <div class="debug-roster-card">
               <h4>Trading ports</h4>
@@ -551,6 +565,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div id="dock-hint" style="color:#a09070;font-size:11px;margin:4px 0 6px;">Press E to dock</div>
     <button id="dock-btn" style="background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;border:1px solid #b8942a;padding:8px 24px;border-radius:5px;cursor:pointer;font-family:Georgia,serif;font-size:14px;touch-action:manipulation;">Dock</button>
   </div>
+  <div id="spectate-return-hud" aria-live="polite"><button type="button" id="spectate-return-btn">Return to your ship</button></div>
   <div id="port-panel" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(6,4,2,0.94);z-index:55;overflow:hidden;">
     <div style="max-width:500px;margin:0 auto;height:100%;display:flex;flex-direction:column;padding:12px;">
       <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:8px;border-bottom:1px solid rgba(140,100,40,0.25);">
@@ -703,6 +718,9 @@ const CAM_ZOOM_DEFAULT = clampCameraZoomLevel(Math.round(
   * (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON)
 ));
 
+/** Must match server `DEFAULT_WORLD_SEED` and `world_seed.json` — stable offline / pre-sync fallback so the archipelago never drifts between sessions. */
+const CANONICAL_DEFAULT_WORLD_SEED = 42;
+
 const G = {
   mode: 'start',
   myId: null,
@@ -756,7 +774,9 @@ const G = {
   townFlagMeshes: [],
   /** Per-port `{ cx,cz }` key → `{ goodId: count }` — trade stockpiles & debug display */
   townStockpiles: null,
-  townEconomyAcc: 0
+  townEconomyAcc: 0,
+  /** Navigator spectate: `null` or `{ kind:'npc'|'player'|'dock', syncId?, playerId?, dockX?, dockZ?, facing? }` */
+  spectate: null
 };
 
 try {
@@ -1591,16 +1611,30 @@ function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   npc.tradeCruiseSpeed = npc.targetCruise;
 }
 
-function createPalmTree(x, y, z) {
+/** Deterministic 0..1 PRNG for one chunk — island decoration matches across reloads for the same world seed. */
+function islandRng(cx, cz) {
+  let s = (G.worldSeed >>> 0) ^ (Math.imul(cx, 73856093) >>> 0) ^ (Math.imul(cz, 19349663) >>> 0) ^ 0x6eed1e5d;
+  if (s === 0) s = 0xa341316c;
+  return function rand() {
+    s = (Math.imul(1664525, s) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+function decoRand(rng) {
+  return typeof rng === 'function' ? rng : Math.random;
+}
+
+function createPalmTree(x, y, z, rng) {
+  const r = decoRand(rng);
   const g = new THREE.Group();
-  const height = 4 + Math.random() * 3;
+  const height = 4 + r() * 3;
   const pts = [];
   for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push(new THREE.Vector3(Math.sin(t * 1.5) * 0.7, t * height, Math.cos(t * 0.5) * 0.25)); }
   const trunk = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 6, 0.13, 5, false), matTrunk);
   trunk.castShadow = true; g.add(trunk);
   for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2 + Math.random() * 0.5;
-    const lg = new THREE.PlaneGeometry(0.5, 2 + Math.random(), 1, 3);
+    const a = (i / 5) * Math.PI * 2 + r() * 0.5;
+    const lg = new THREE.PlaneGeometry(0.5, 2 + r(), 1, 3);
     const lp = lg.attributes.position;
     for (let v = 0; v < lp.count; v++) { const vy = lp.getY(v); lp.setZ(v, lp.getZ(v) - (vy * vy) * 0.4); }
     lp.needsUpdate = true; lg.computeVertexNormals();
@@ -1608,23 +1642,25 @@ function createPalmTree(x, y, z) {
     leaf.position.set(Math.sin(a) * 0.3, height, Math.cos(a) * 0.3);
     leaf.rotation.set(0, a, Math.cos(a) * 0.8); leaf.castShadow = true; g.add(leaf);
   }
-  g.position.set(x, y, z); g.rotation.y = Math.random() * Math.PI * 2; return g;
+  g.position.set(x, y, z); g.rotation.y = r() * Math.PI * 2; return g;
 }
 
-function createRock(x, y, z, s) {
+function createRock(x, y, z, s, rng) {
+  const r = decoRand(rng);
   const geo = new THREE.DodecahedronGeometry(s, 1);
   const p = geo.attributes.position;
-  for (let i = 0; i < p.count; i++) { p.setX(i, p.getX(i) + (Math.random() - 0.5) * s * 0.3); p.setY(i, p.getY(i) * (0.5 + Math.random() * 0.5)); p.setZ(i, p.getZ(i) + (Math.random() - 0.5) * s * 0.3); }
+  for (let i = 0; i < p.count; i++) { p.setX(i, p.getX(i) + (r() - 0.5) * s * 0.3); p.setY(i, p.getY(i) * (0.5 + r() * 0.5)); p.setZ(i, p.getZ(i) + (r() - 0.5) * s * 0.3); }
   p.needsUpdate = true; geo.computeVertexNormals();
-  const r = new THREE.Mesh(geo, matRock); r.position.set(x, y, z); r.castShadow = true; r.receiveShadow = true; return r;
+  const rock = new THREE.Mesh(geo, matRock); rock.position.set(x, y, z); rock.castShadow = true; rock.receiveShadow = true; return rock;
 }
 
-function createBush(x, y, z, s) {
+function createBush(x, y, z, s, rng) {
+  const r = decoRand(rng);
   const g = new THREE.Group();
-  const mat = new THREE.MeshLambertMaterial({ color: [0x2d5016, 0x3a6b28, 0x25603a, 0x3d6b2a][Math.floor(Math.random() * 4)] });
+  const mat = new THREE.MeshLambertMaterial({ color: [0x2d5016, 0x3a6b28, 0x25603a, 0x3d6b2a][Math.floor(r() * 4)] });
   for (let i = 0; i < 4; i++) {
-    const b = new THREE.Mesh(new THREE.SphereGeometry(s * (0.45 + Math.random() * 0.55), 4, 4), mat);
-    b.position.set((Math.random() - 0.5) * s * 1.4, s * 0.35 + Math.random() * s * 0.45, (Math.random() - 0.5) * s * 1.4);
+    const b = new THREE.Mesh(new THREE.SphereGeometry(s * (0.45 + r() * 0.55), 4, 4), mat);
+    b.position.set((r() - 0.5) * s * 1.4, s * 0.35 + r() * s * 0.45, (r() - 0.5) * s * 1.4);
     b.castShadow = true;
     g.add(b);
   }
@@ -1632,23 +1668,25 @@ function createBush(x, y, z, s) {
   return g;
 }
 
-function createBarrel(x, y, z) {
+function createBarrel(x, y, z, rng) {
+  const r = decoRand(rng);
   const g = new THREE.Group();
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.85, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
   body.position.y = 0.42; body.castShadow = true; g.add(body);
   const band = new THREE.Mesh(new THREE.TorusGeometry(0.35, 0.035, 4, 10), new THREE.MeshLambertMaterial({ color: 0x222222 }));
   band.position.y = 0.32; band.rotation.x = Math.PI / 2; g.add(band);
-  g.position.set(x, y, z); g.rotation.y = Math.random() * Math.PI * 2;
+  g.position.set(x, y, z); g.rotation.y = r() * Math.PI * 2;
   return g;
 }
 
-function createDriftwood(x, y, z) {
+function createDriftwood(x, y, z, rng) {
+  const r = decoRand(rng);
   const log = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.07, 0.11, 1.1 + Math.random() * 0.9, 5),
-    new THREE.MeshLambertMaterial({ color: [0x5a4030, 0x6a5040, 0x4a3828][Math.floor(Math.random() * 3)] })
+    new THREE.CylinderGeometry(0.07, 0.11, 1.1 + r() * 0.9, 5),
+    new THREE.MeshLambertMaterial({ color: [0x5a4030, 0x6a5040, 0x4a3828][Math.floor(r() * 3)] })
   );
-  log.rotation.z = Math.PI / 2 * (0.82 + Math.random() * 0.28);
-  log.rotation.y = Math.random() * Math.PI * 2;
+  log.rotation.z = Math.PI / 2 * (0.82 + r() * 0.28);
+  log.rotation.y = r() * Math.PI * 2;
   log.position.set(x, y, z); log.castShadow = true;
   return log;
 }
@@ -1659,6 +1697,7 @@ function generateIsland(cx, cz) {
   G.chunks.set(key, true);
   const meta0 = getProceduralIslandMeta(cx, cz);
   if (!meta0) return;
+  const rng = islandRng(cx, cz);
 
   const worldX = meta0.worldX, worldZ = meta0.worldZ;
   const islandRadius = meta0.radius, islandHeight = meta0.maxH;
@@ -1755,7 +1794,7 @@ function generateIsland(cx, cz) {
     const ff = Math.max(0, 1 - d * d);
     const nv = noise.fbm((worldX + tx) * 0.02, (worldZ + tz) * 0.02, 4);
     const ty = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
-    if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.15, worldZ + tz));
+    if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.15, worldZ + tz, rng));
   }
 
   const bushCount = Math.floor(14 + h * 38);
@@ -1769,7 +1808,7 @@ function generateIsland(cx, cz) {
     const nv = noise.fbm((worldX + bx) * 0.022, (worldZ + bz) * 0.022, 4);
     const by = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
     if (by < 0.2 || by > islandHeight * 0.78) continue;
-    group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.04, worldZ + bz, 0.28 + Math.random() * 0.42));
+    group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.04, worldZ + bz, 0.28 + rng() * 0.42, rng));
   }
 
   const rockCount = Math.floor(7 + h * 22);
@@ -1781,7 +1820,7 @@ function generateIsland(cx, cz) {
     const ff = Math.max(0, 1 - d * d);
     const nv = noise.fbm((worldX + rx) * 0.02, (worldZ + rz) * 0.02, 4);
     const ry = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
-    group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.15, worldZ + rz, 0.4 + Math.random() * 1.2));
+    group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.15, worldZ + rz, 0.4 + rng() * 1.2, rng));
   }
 
   const driftN = Math.floor(3 + h * 10 + islandRadius * 0.06);
@@ -1794,7 +1833,7 @@ function generateIsland(cx, cz) {
     const ff = Math.max(0, 1 - d * d);
     const nv = noise.fbm((worldX + dx) * 0.025, (worldZ + dz) * 0.025, 3);
     const dy = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff * 0.45);
-    group.add(createDriftwood(worldX + dx, SEA_LEVEL + Math.max(0.15, dy) + 0.08, worldZ + dz));
+    group.add(createDriftwood(worldX + dx, SEA_LEVEL + Math.max(0.15, dy) + 0.08, worldZ + dz, rng));
   }
 
   const barrelN = Math.floor(2 + h * 5 + (meta0.hasTown ? 5 : 0));
@@ -1808,7 +1847,7 @@ function generateIsland(cx, cz) {
     const nv = noise.fbm((worldX + bx) * 0.02, (worldZ + bz) * 0.02, 4);
     const by = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
     if (by > islandHeight * 0.42) continue;
-    group.add(createBarrel(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz));
+    group.add(createBarrel(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, rng));
   }
 
   if (ln.noise2D(cx, cz) > 0.2) {
@@ -1876,8 +1915,8 @@ function generateIsland(cx, cz) {
       const bOff = (bi % 2 === 0 ? 1 : -1) * (2 + bi * 1.5);
       const bx = dockX + Math.cos(ba) * (8 + bi * 4) + Math.cos(ba + Math.PI/2) * bOff;
       const bz = dockZ + Math.sin(ba) * (8 + bi * 4) + Math.sin(ba + Math.PI/2) * bOff;
-      const bH = 2.5 + Math.random() * 1.5;
-      const bW = 2.5 + Math.random() * 2;
+      const bH = 2.5 + rng() * 1.5;
+      const bW = 2.5 + rng() * 2;
       const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW),
         new THREE.MeshLambertMaterial({ color: [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868][bi] }));
       const gy = terrainYWorld(bx, bz);
@@ -1904,26 +1943,27 @@ function generateIsland(cx, cz) {
 
   islandGroup.add(group);
   G.islands.push(group.userData);
-  const sgN = 3 + Math.floor(Math.random() * 4) + (meta0.hasTown ? 3 : 0) + Math.min(6, Math.floor(islandRadius / 32));
-  spawnSeagulls(worldX, worldZ, sgN);
+  const sgN = 3 + Math.floor(rng() * 4) + (meta0.hasTown ? 3 : 0) + Math.min(6, Math.floor(islandRadius / 32));
+  spawnSeagulls(worldX, worldZ, sgN, rng);
   for (let fi = 0; fi < 8; fi++) {
-    const fishAngle = Math.random() * Math.PI * 2;
-    const fishDist = islandRadius * 0.92 + 10 + Math.random() * 70;
+    const fishAngle = rng() * Math.PI * 2;
+    const fishDist = islandRadius * 0.92 + 10 + rng() * 70;
     const fxx = worldX + Math.cos(fishAngle) * fishDist, fzz = worldZ + Math.sin(fishAngle) * fishDist;
-    if (!isSeaObstructed(fxx, fzz)) spawnFish(fxx, fzz, 5 + Math.floor(Math.random() * 9));
+    if (!isSeaObstructed(fxx, fzz)) spawnFish(fxx, fzz, 5 + Math.floor(rng() * 9), rng);
   }
   for (let oi = 0; oi < 12; oi++) {
-    const openAngle = Math.random() * Math.PI * 2;
+    const openAngle = rng() * Math.PI * 2;
     const minRing = islandRadius * 0.92 + 14;
-    const openDist = minRing + Math.random() * 340;
+    const openDist = minRing + rng() * 340;
     const fx = worldX + Math.cos(openAngle) * openDist;
     const fz = worldZ + Math.sin(openAngle) * openDist;
-    if (!isSeaObstructed(fx, fz)) spawnFish(fx, fz, 4 + Math.floor(Math.random() * 10));
+    if (!isSeaObstructed(fx, fz)) spawnFish(fx, fz, 4 + Math.floor(rng() * 10), rng);
   }
 }
 
 const seagulls = [];
-function spawnSeagulls(wx, wz, count) {
+function spawnSeagulls(wx, wz, count, rng) {
+  const r = decoRand(rng);
   for (let i = 0; i < count; i++) {
     const sg = new THREE.Group();
     const body = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 3), new THREE.MeshLambertMaterial({ color: 0xeeeeee }));
@@ -1932,9 +1972,9 @@ function spawnSeagulls(wx, wz, count) {
     wingL.position.set(-0.2, 0, 0); sg.add(wingL);
     const wingR = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
     wingR.position.set(0.2, 0, 0); sg.add(wingR);
-    sg.position.set(wx + (Math.random() - 0.5) * 52, 24 + Math.random() * 10, wz + (Math.random() - 0.5) * 52);
-    sg.userData.cx = wx; sg.userData.cz = wz; sg.userData.phase = Math.random() * Math.PI * 2;
-    sg.userData.radius = 26 + Math.random() * 42; sg.userData.speed = 0.12 + Math.random() * 0.16;
+    sg.position.set(wx + (r() - 0.5) * 52, 24 + r() * 10, wz + (r() - 0.5) * 52);
+    sg.userData.cx = wx; sg.userData.cz = wz; sg.userData.phase = r() * Math.PI * 2;
+    sg.userData.radius = 26 + r() * 42; sg.userData.speed = 0.12 + r() * 0.16;
     sg.userData.wingL = wingL; sg.userData.wingR = wingR;
     scene.add(sg); seagulls.push(sg);
   }
@@ -2025,11 +2065,12 @@ function pruneWildlifeAwayFromPlayer() {
   }
 }
 
-function spawnFish(wx, wz, count) {
+function spawnFish(wx, wz, count, rng) {
   if (count <= 0 || isSeaObstructed(wx, wz)) return;
-  const species = FISH_SPECIES[Math.floor(Math.random() * FISH_SPECIES.length)];
-  const depth = SEA_LEVEL - 0.05 - Math.random() * 0.15;
-  const leader = { x: wx, z: wz, dir: Math.random() * Math.PI * 2, speed: 1.5 + Math.random() * 3, turnTimer: 3 + Math.random() * 5, depth };
+  const r = decoRand(rng);
+  const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
+  const depth = SEA_LEVEL - 0.05 - r() * 0.15;
+  const leader = { x: wx, z: wz, dir: r() * Math.PI * 2, speed: 1.5 + r() * 3, turnTimer: 3 + r() * 5, depth };
   schoolLeaders.push(leader);
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
@@ -2041,11 +2082,11 @@ function spawnFish(wx, wz, count) {
       const fin = new THREE.Mesh(new THREE.ConeGeometry(species.size * 0.4, species.size * 1.5, 3), new THREE.MeshBasicMaterial({ color: species.color }));
       fin.position.set(0, species.size * 0.7, -species.len * 0.1); fg.add(fin);
     }
-    fg.position.set(wx + (Math.random() - 0.5) * 3, depth, wz + (Math.random() - 0.5) * 3);
+    fg.position.set(wx + (r() - 0.5) * 3, depth, wz + (r() - 0.5) * 3);
     fg.userData.leader = leader;
-    fg.userData.offsetX = (Math.random() - 0.5) * 2.5;
-    fg.userData.offsetZ = (Math.random() - 0.5) * 2.5;
-    fg.userData.wiggle = Math.random() * Math.PI * 2;
+    fg.userData.offsetX = (r() - 0.5) * 2.5;
+    fg.userData.offsetZ = (r() - 0.5) * 2.5;
+    fg.userData.wiggle = r() * Math.PI * 2;
     scene.add(fg); fishSchools.push(fg);
   }
 }
@@ -3627,9 +3668,9 @@ function schedulePlayWorldNetFallback() {
         }
       } catch (e) {}
     }
-    if (s == null) s = G.fallbackWorldSeed >>> 0;
+    if (s == null) s = (G.worldSeed >>> 0) || (G.fallbackWorldSeed >>> 0);
     applySharedWorldFromServerSeed(s);
-    notify(fromHttp ? 'Shared world synced.' : 'Offline — islands may not match other players.');
+    notify(fromHttp ? 'Shared world synced.' : 'Offline — using your saved world seed.');
   }, 4200);
 }
 function connectToServer() {
@@ -3859,7 +3900,7 @@ window.addEventListener('keydown', e => {
   }
   if (k === 'f') { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
   if (k === 'v') doAnchor();
-  if (k === 'e' && G.nearDock && !G.docked) dockAtPort();
+  if (k === 'e' && G.nearDock && !G.docked && !G.spectate) dockAtPort();
   if (k === 'm') toggleFullmap();
   if (e.key === 'F3') {
     e.preventDefault();
@@ -3882,10 +3923,15 @@ window.addEventListener('keydown', e => {
       if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 30); }
     }
   }
-  if (e.key === ' ' && G.mode === 'playing') { e.preventDefault(); doFire(); }
-  if (k === 'z' && G.mode === 'playing') doFireSide(-1);
-  if (k === 'x' && G.mode === 'playing') doFireSide(1);
+  if (e.key === ' ' && G.mode === 'playing' && !G.spectate) { e.preventDefault(); doFire(); }
+  if (k === 'z' && G.mode === 'playing' && !G.spectate) doFireSide(-1);
+  if (k === 'x' && G.mode === 'playing' && !G.spectate) doFireSide(1);
   if (e.key === 'Escape') {
+    if (G.spectate) {
+      endSpectateMode();
+      e.preventDefault();
+      return;
+    }
     const pm = document.getElementById('debug-password-root');
     if (pm && pm.style.display === 'flex') {
       closeDebugPasswordModal();
@@ -3924,7 +3970,31 @@ window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
   document.getElementById('debug-backdrop')?.addEventListener('click', close);
   document.getElementById('debug-panel-close-x')?.addEventListener('click', close);
   document.getElementById('debug-panel-close-btn')?.addEventListener('click', close);
+  document.getElementById('debug-roster-filter')?.addEventListener('input', () => { _debugRosterLast = -1e9; updateDebugRoster(); });
+  dm.addEventListener('click', e => {
+    const btn = e.target.closest('.debug-locate-btn');
+    if (!btn || !dm.contains(btn)) return;
+    e.preventDefault();
+    const kind = btn.getAttribute('data-locate');
+    if (kind === 'dock') {
+      const dx = parseFloat(btn.getAttribute('data-dock-x'));
+      const dz = parseFloat(btn.getAttribute('data-dock-z'));
+      const facing = parseFloat(btn.getAttribute('data-facing') || '0') || 0;
+      beginSpectate({ kind: 'dock', dockX: dx, dockZ: dz, facing });
+      return;
+    }
+    if (kind === 'npc') {
+      const sid = parseInt(btn.getAttribute('data-sync-id'), 10);
+      if (!Number.isNaN(sid)) beginSpectate({ kind: 'npc', syncId: sid });
+      return;
+    }
+    if (kind === 'player') {
+      const pid = parseInt(btn.getAttribute('data-player-id'), 10);
+      if (!Number.isNaN(pid)) beginSpectate({ kind: 'player', playerId: pid });
+    }
+  });
 })();
+document.getElementById('spectate-return-btn')?.addEventListener('click', () => endSpectateMode());
 function closeDebugPasswordModal() {
   const pm = document.getElementById('debug-password-root');
   if (pm) { pm.style.display = 'none'; pm.setAttribute('aria-hidden', 'true'); }
@@ -4206,6 +4276,7 @@ function updateCombatFireEdgesUI() {
 
 /* ============================== ACTIONS =================================== */
 function doFireSide(fireSide) {
+  if (G.spectate) return;
   const spec = SHIP_TYPES[G.player.shipType];
   const cp = SHIP_PARTS.cannon.find(c => c.id === G.player.shipParts.cannon);
   if (!cp || cp.damage <= 0) { notify('No cannons equipped!'); return; }
@@ -4258,6 +4329,7 @@ function syncAnchorToolbarButton() {
   if (ba) ba.classList.toggle('active', !!G.player.anchored);
 }
 function doAnchor() {
+  if (G.spectate) return;
   G.player.anchored = !G.player.anchored;
   document.getElementById('anchor-status').style.display = G.player.anchored ? 'block' : 'none';
   syncAnchorToolbarButton();
@@ -4415,6 +4487,51 @@ function isDebugModalOpen() {
   const r = document.getElementById('debug-modal-root');
   return !!(r && r.style.display === 'flex');
 }
+function resolveSpectateTargetXZR() {
+  const sp = G.spectate;
+  if (!sp) return null;
+  if (sp.kind === 'npc') {
+    const n = G.npcs.find(x => x.syncId === sp.syncId);
+    if (n && !n.sinking && n.health > -900) return { x: n.x, z: n.z, r: n.rotation };
+    return null;
+  }
+  if (sp.kind === 'player') {
+    const p = G.otherPlayers.get(sp.playerId);
+    if (p) return { x: p.x, z: p.z, r: p.rotation || 0 };
+    return null;
+  }
+  if (sp.kind === 'dock') {
+    return { x: sp.dockX, z: sp.dockZ, r: typeof sp.facing === 'number' ? sp.facing : 0 };
+  }
+  return null;
+}
+function endSpectateMode(hint) {
+  if (!G.spectate) return;
+  G.spectate = null;
+  const hud = document.getElementById('spectate-return-hud');
+  if (hud) hud.style.display = 'none';
+  if (hint) notify(hint);
+  const y = G.player.rotation + Math.PI;
+  G.camera.yaw = y;
+  G.camera.targetYaw = y;
+}
+function beginSpectate(spec) {
+  if (G.mode !== 'playing') return;
+  const dm = document.getElementById('debug-modal-root');
+  if (dm) { dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); }
+  G.spectate = spec;
+  const hud = document.getElementById('spectate-return-hud');
+  if (hud) hud.style.display = 'block';
+  const t = resolveSpectateTargetXZR();
+  if (t) {
+    G.camera.yaw = t.r + Math.PI;
+    G.camera.targetYaw = G.camera.yaw;
+  }
+}
+function debugRosterSearchMatches(haystack, q) {
+  if (!q) return true;
+  return String(haystack).toLowerCase().includes(q);
+}
 function ensureDebugMapLayerListeners() {
   if (debugMapLayerListenersReady) return;
   const wEl = document.getElementById('debug-layer-wind');
@@ -4481,6 +4598,8 @@ function updateDebugRoster() {
   const portsEl = document.getElementById('debug-roster-ports');
   const shipsEl = document.getElementById('debug-roster-ships');
   if (!portsEl || !shipsEl) return;
+  const filterEl = document.getElementById('debug-roster-filter');
+  const q = (filterEl && filterEl.value) ? String(filterEl.value).trim().toLowerCase() : '';
   let ports = [];
   try { ports = collectAllTradingPorts(); } catch (e) { return; }
   ports = ports.slice().sort((a, b) => String(a.townName || '').localeCompare(String(b.townName || '')));
@@ -4491,12 +4610,18 @@ function updateDebugRoster() {
     const fid = townFaction(p);
     const facName = factionLabel(fid);
     const da = p.dockAngle != null ? Math.round((p.dockAngle * 180 / Math.PI + 360) % 360) : null;
+    const dockX = p.dockX != null ? p.dockX : 0;
+    const dockZ = p.dockZ != null ? p.dockZ : 0;
+    const facing = p.dockAngle != null ? p.dockAngle : 0;
+    const portHay = `${p.townName || ''} ${facName} ${p.cx} ${p.cz} ${Math.round(dockX)} ${Math.round(dockZ)} port`;
+    if (!debugRosterSearchMatches(portHay, q)) continue;
     const tradeBlurb = formatDebugPortTradeSummaryHtml();
     const row = document.createElement('div');
     row.className = 'debug-roster-row';
     row.innerHTML = `<div class="debug-roster-name">${escapeDebugHtml(p.townName || 'Port')}</div>
       <div class="debug-roster-badge">${escapeDebugHtml(facName)} (faction ${(fid | 0) % 4 + 1}/4) · chart cell (${p.cx | 0}, ${p.cz | 0})</div>
-      <div class="debug-roster-meta">Dock ${Math.round(p.dockX)}, ${Math.round(p.dockZ)}${da != null ? ` · quay facing ${da}°` : ''}</div>
+      <div class="debug-roster-meta">Dock ${Math.round(dockX)}, ${Math.round(dockZ)}${da != null ? ` · quay facing ${da}°` : ''}</div>
+      <div class="debug-roster-actions"><button type="button" class="debug-locate-btn" data-locate="dock" data-dock-x="${dockX}" data-dock-z="${dockZ}" data-facing="${facing}">Spectate harbor</button></div>
       <div class="debug-roster-section-title">Who controls it</div>
       <div class="debug-roster-inv">Regional power: <strong>${escapeDebugHtml(facName)}</strong> — merchant colors and patrols match this bloc.</div>
       <div class="debug-roster-section-title">Production &amp; specialty</div>
@@ -4516,10 +4641,12 @@ function updateDebugRoster() {
   const npcs = (G.npcs || []).filter(n => !n.sinking).slice();
   npcs.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
   for (const n of npcs) {
-    const row = document.createElement('div');
-    row.className = 'debug-roster-row';
     const spec = SHIP_TYPES[n.type] || SHIP_TYPES.sloop;
     const kind = n.isTradeShip ? 'Merchant' : (n.isStoryBounty ? 'Story bounty' : 'Corsair');
+    const shipHay = `${n.name || ''} ${spec.name || ''} ${n.type || ''} ${kind} ${Math.round(n.x)} ${Math.round(n.z)} ai npc ${n.syncId != null ? n.syncId : ''}`;
+    if (!debugRosterSearchMatches(shipHay, q)) continue;
+    const row = document.createElement('div');
+    row.className = 'debug-roster-row';
     const crewDesc = n.isTradeShip ? 'Merchant captain + deckhand (2 aboard)' : (n.isStoryBounty ? 'Notorious officers — captain, gunner, mate (3)' : 'Pirate captain + gunner + mate (3)');
     const spdNow = Math.round(npcEffectiveForwardSpeed(n) * 100) / 100;
     const spdMax = Math.round(npcMaxForwardSpeed(n) * 100) / 100;
@@ -4544,9 +4671,13 @@ function updateDebugRoster() {
       const fLabel = factionLabel(n.factionId != null ? n.factionId : 0);
       destHtml = `<div class="debug-roster-inv">Patrol: open sea · affinity ${escapeDebugHtml(fLabel)}</div>`;
     }
+    const locBtn = n.syncId != null
+      ? `<div class="debug-roster-actions"><button type="button" class="debug-locate-btn" data-locate="npc" data-sync-id="${n.syncId}">Spectate ship</button></div>`
+      : '';
     row.innerHTML = `<div class="debug-roster-name">${escapeDebugHtml(n.name || spec.name || 'Ship')}</div>
       <div class="debug-roster-badge">${kind} · ${escapeDebugHtml(spec.name || n.type)} · hull ${Math.round(n.health || 0)} / ~${Math.round(spec.maxCrew || 0)} crew cap (class)</div>
       <div class="debug-roster-meta">Position ${Math.round(n.x)}, ${Math.round(n.z)}${n.sailPick ? ` · sails ${escapeDebugHtml(n.sailPick)}` : ''}${n.syncId != null ? ` · net id ${n.syncId}` : ''}</div>
+      ${locBtn}
       <div class="debug-roster-section-title">Crew (roster)</div>
       <div class="debug-roster-inv">${escapeDebugHtml(crewDesc)}</div>
       <div class="debug-roster-section-title">Speed</div>
@@ -4557,6 +4688,22 @@ function updateDebugRoster() {
       ${destHtml}`;
     fragS.appendChild(row);
   }
+  G.otherPlayers.forEach((p, pid) => {
+    if (pid === G.myId) return;
+    const spec = SHIP_TYPES[p.shipType] || SHIP_TYPES.sloop;
+    const nm = p.shipName || p.name || 'Ship';
+    const plyHay = `${nm} ${p.name || ''} ${spec.name || ''} player ${pid} ${Math.round(p.x || 0)} ${Math.round(p.z || 0)}`;
+    if (!debugRosterSearchMatches(plyHay, q)) return;
+    const row = document.createElement('div');
+    row.className = 'debug-roster-row';
+    row.innerHTML = `<div class="debug-roster-name">${escapeDebugHtml(nm)}</div>
+      <div class="debug-roster-badge">Player · ${escapeDebugHtml(spec.name || p.shipType || 'vessel')} · ${escapeDebugHtml(p.name || 'captain')}</div>
+      <div class="debug-roster-meta">Position ${Math.round(p.x || 0)}, ${Math.round(p.z || 0)} · id ${pid}</div>
+      <div class="debug-roster-actions"><button type="button" class="debug-locate-btn" data-locate="player" data-player-id="${pid}">Spectate ship</button></div>
+      <div class="debug-roster-section-title">Note</div>
+      <div class="debug-roster-inv">Live multiplayer hull — camera follows their reported position.</div>`;
+    fragS.appendChild(row);
+  });
   shipsEl.innerHTML = '';
   shipsEl.appendChild(fragS);
 }
@@ -6174,7 +6321,7 @@ function update(dt) {
   G.wind.angle = wHere.angle;
   G.wind.speed = wHere.speed;
 
-  if (!G.player.anchored) {
+  if (!G.player.anchored && !G.spectate) {
     const spec = SHIP_TYPES[G.player.shipType];
     const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
     const speedMult = spec.speed + (sailPart ? sailPart.speedBonus : 0);
@@ -6682,8 +6829,14 @@ function update(dt) {
     dockPrompt.style.display = 'none';
   }
 
+  let camX = G.player.x, camZ = G.player.z;
+  if (G.spectate) {
+    const t = resolveSpectateTargetXZR();
+    if (!t) endSpectateMode('Spectate target lost.');
+    else { camX = t.x; camZ = t.z; }
+  }
   water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
-  if (isMobile) {
+  if (isMobile && !G.spectate) {
     const targetY = G.player.rotation + Math.PI;
     let camDiff = targetY - G.camera.yaw;
     while (camDiff > Math.PI) camDiff -= Math.PI * 2;
@@ -6693,15 +6846,15 @@ function update(dt) {
   }
   const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
   camera.position.set(
-    G.player.x + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
+    camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
     cDist * Math.sin(cAng),
-    G.player.z + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
+    camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
   );
-  camera.lookAt(G.player.x + G.camera.offsetX, SEA_LEVEL + 2, G.player.z + G.camera.offsetZ);
+  camera.lookAt(camX + G.camera.offsetX, SEA_LEVEL + 2, camZ + G.camera.offsetZ);
 
-  sunLight.position.set(G.player.x + 200, 300, G.player.z + 100);
-  sunLight.target.position.set(G.player.x, 0, G.player.z); sunLight.target.updateMatrixWorld();
-  sky.position.set(G.player.x, 0, G.player.z);
+  sunLight.position.set(camX + 200, 300, camZ + 100);
+  sunLight.target.position.set(camX, 0, camZ); sunLight.target.updateMatrixWorld();
+  sky.position.set(camX, 0, camZ);
 
   sendTimer -= dt;
   if (sendTimer <= 0) { sendUpdate(); sendTimer = 0.05; }
@@ -6740,20 +6893,25 @@ function render() {
 /** Align sea, sky, sun, and camera to the player and draw once — avoids a black frame when menus hide or the world reloads. */
 function warmUpGameView() {
   if (G.mode !== 'playing') return;
+  let camX = G.player.x, camZ = G.player.z;
+  if (G.spectate) {
+    const t = resolveSpectateTargetXZR();
+    if (t) { camX = t.x; camZ = t.z; }
+  }
   water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
-  if (isMobile) {
+  if (isMobile && !G.spectate) {
     G.camera.yaw = G.player.rotation + Math.PI;
     G.camera.targetYaw = G.camera.yaw;
   }
   const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
   camera.position.set(
-    G.player.x + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
+    camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
     cDist * Math.sin(cAng),
-    G.player.z + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
+    camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
   );
-  camera.lookAt(G.player.x + G.camera.offsetX, SEA_LEVEL + 2, G.player.z + G.camera.offsetZ);
-  sunLight.position.set(G.player.x + 200, 300, G.player.z + 100);
-  sunLight.target.position.set(G.player.x, 0, G.player.z);
+  camera.lookAt(camX + G.camera.offsetX, SEA_LEVEL + 2, camZ + G.camera.offsetZ);
+  sunLight.position.set(camX + 200, 300, camZ + 100);
+  sunLight.target.position.set(camX, 0, camZ);
   sunLight.target.updateMatrixWorld();
   sky.position.set(G.player.x, 0, G.player.z);
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
@@ -7408,7 +7566,7 @@ function beginVoyageAfterCharacter() {
   G.quests = [];
   G.mode = 'playing';
   G.player.speed = 1;
-  G.fallbackWorldSeed = (Math.floor(Math.random() * 0x100000000) ^ (Date.now() >>> 0)) >>> 0;
+  G.fallbackWorldSeed = CANONICAL_DEFAULT_WORLD_SEED >>> 0;
   G.playWorldAwaitingNetInit = true;
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
@@ -7731,7 +7889,7 @@ document.getElementById('start-btn').onclick = () => {
     document.getElementById('create-screen').style.display = 'none';
     G.mode = 'playing';
     G.player.speed = Math.max(G.player.speed, 1);
-    G.fallbackWorldSeed = (Math.floor(Math.random() * 0x100000000) ^ (Date.now() >>> 0)) >>> 0;
+    G.fallbackWorldSeed = CANONICAL_DEFAULT_WORLD_SEED >>> 0;
     G.playWorldAwaitingNetInit = true;
     G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
     G.npcs = [];

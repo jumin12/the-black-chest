@@ -6,12 +6,19 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 const TICK_RATE = 20;
 const SEED_FILE = path.join(__dirname, 'world_seed.json');
+/** Stable default when no file/env (matches client `CANONICAL_DEFAULT_WORLD_SEED`). Commit `world_seed.json` so restarts and deploys always reload the same archipelago unless you intentionally change the file or set `WORLD_SEED`. */
+const DEFAULT_WORLD_SEED = 42;
 let WORLD_SEED;
 try {
   const raw = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8'));
   WORLD_SEED = Number(raw.seed) >>> 0;
 } catch (e) {
-  WORLD_SEED = (Math.floor(Math.random() * 0x100000000) ^ (Date.now() >>> 0)) >>> 0;
+  const envS = process.env.WORLD_SEED;
+  if (envS != null && String(envS).trim() !== '') {
+    WORLD_SEED = Number(envS) >>> 0;
+  } else {
+    WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
+  }
   try { fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); } catch (e2) {}
 }
 
