@@ -624,6 +624,9 @@ const STORY_PIRATE_NAMES = {
   warship: 'Admiral Scarlett Graves'
 };
 const STORY_REWARDS = [55, 75, 100, 140, 200];
+/** NPC sync ids: pirates 0–7, story bounties ~90+, merchantmen 200+. */
+const TRADE_NPC_SYNC_START = 200;
+const TRADE_SHIP_COUNT = 96;
 
 function nearestPortIslandHint() {
   const best = findNearestPortDock(G.player.x, G.player.z);
@@ -1085,6 +1088,42 @@ function findNearestPortDock(wx, wz) {
   return best;
 }
 
+/** Towns each export one commodity (deterministic from chunk + seed); AI traders run routes to other ports. */
+const PORT_EXPORT_POOL = ['food', 'cannonballs', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
+function portExportsGood(meta) {
+  if (!meta || !meta.hasTown) return 'food';
+  const idx = ((meta.cx * 5023 ^ meta.cz * 9839 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_EXPORT_POOL.length;
+  return PORT_EXPORT_POOL[idx];
+}
+function collectPortsInArea(wx, wz, half) {
+  const out = [];
+  forEachProceduralIslandInWorldBounds(wx - half, wx + half, wz - half, wz + half, m => {
+    if (m.hasTown && m.dockX != null) out.push(m);
+  }, wx, wz);
+  return out;
+}
+function assignNewTradeRoute(npc) {
+  const list = collectPortsInArea(npc.x, npc.z, 24000);
+  if (list.length < 2) return;
+  let nearest = list[0], nd = Infinity;
+  for (const p of list) {
+    const d = Math.hypot(npc.x - p.dockX, npc.z - p.dockZ);
+    if (d < nd) { nd = d; nearest = p; }
+  }
+  npc.cargoGood = portExportsGood(nearest);
+  const nm = getItemMeta(npc.cargoGood);
+  const shortLab = (nm.name || npc.cargoGood).split(/\s+/)[0];
+  npc.name = `${nearest.townName} — ${shortLab}`;
+  if (npc.name.length > 28) npc.name = npc.name.slice(0, 27) + '…';
+  const others = list.filter(p => p.cx !== nearest.cx || p.cz !== nearest.cz);
+  let cand = others.filter(p => portExportsGood(p) !== npc.cargoGood);
+  if (!cand.length) cand = others;
+  if (!cand.length) return;
+  const dest = cand[Math.floor(Math.random() * cand.length)];
+  npc.tradeDestX = dest.dockX;
+  npc.tradeDestZ = dest.dockZ;
+}
+
 function createPalmTree(x, y, z) {
   const g = new THREE.Group();
   const height = 4 + Math.random() * 3;
@@ -1418,7 +1457,7 @@ function spawnSeagulls(wx, wz, count) {
     wingR.position.set(0.2, 0, 0); sg.add(wingR);
     sg.position.set(wx + (Math.random() - 0.5) * 52, 24 + Math.random() * 10, wz + (Math.random() - 0.5) * 52);
     sg.userData.cx = wx; sg.userData.cz = wz; sg.userData.phase = Math.random() * Math.PI * 2;
-    sg.userData.radius = 26 + Math.random() * 42; sg.userData.speed = 0.28 + Math.random() * 0.38;
+    sg.userData.radius = 26 + Math.random() * 42; sg.userData.speed = 0.12 + Math.random() * 0.16;
     sg.userData.wingL = wingL; sg.userData.wingR = wingR;
     scene.add(sg); seagulls.push(sg);
   }
@@ -1562,7 +1601,7 @@ function updateSeagulls(dt) {
     sg.position.z = sg.userData.cz + Math.sin(p) * sg.userData.radius;
     sg.position.y = 22 + Math.sin(p * 2) * 4;
     sg.rotation.y = p + Math.PI / 2;
-    const wingFlap = Math.sin(G.time * 4 + sg.userData.phase * 3) * 0.4;
+    const wingFlap = Math.sin(G.time * 2.6 + sg.userData.phase * 3) * 0.4;
     sg.userData.wingL.rotation.z = wingFlap;
     sg.userData.wingR.rotation.z = -wingFlap;
   });
@@ -1990,6 +2029,66 @@ function isMultiplayerHost() {
   ids.push(G.myId);
   return G.myId <= Math.min(...ids);
 }
+function spawnTradeShips() {
+  const tBase = ((G.worldSeed | 0) * 31 + 22411) >>> 0;
+  for (let i = 0; i < TRADE_SHIP_COUNT; i++) {
+    let s = (tBase + Math.imul(i, 2654435761)) >>> 0;
+    const sr = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const a = sr() * Math.PI * 2;
+    const dist0 = 260 + Math.sqrt(sr()) * 12500;
+    let nx = Math.cos(a) * dist0, nz = Math.sin(a) * dist0;
+    for (let attempt = 0; attempt < 14; attempt++) {
+      if (!isOnIsland(nx, nz)) break;
+      nx += (sr() - 0.5) * 260; nz += (sr() - 0.5) * 260;
+      if (attempt > 7) {
+        const a2 = sr() * Math.PI * 2, d2 = 260 + Math.sqrt(sr()) * 12500;
+        nx = Math.cos(a2) * d2; nz = Math.sin(a2) * d2;
+      }
+    }
+    const home = findNearestPortDock(nx, nz);
+    if (!home) continue;
+    let list = collectPortsInArea(nx, nz, 18000);
+    if (list.length < 2) list = collectPortsInArea(nx, nz, 32000);
+    const others = list.filter(p => p.cx !== home.cx || p.cz !== home.cz);
+    if (!others.length) continue;
+    const homeExport = portExportsGood(home);
+    let cand = others.filter(p => portExportsGood(p) !== homeExport);
+    if (!cand.length) cand = others;
+    const dest = cand[Math.floor(sr() * cand.length)];
+    const nm = getItemMeta(homeExport);
+    const shortLab = (nm.name || homeExport).split(/\s+/)[0];
+    let tradeName = `${home.townName} — ${shortLab}`;
+    if (tradeName.length > 28) tradeName = tradeName.slice(0, 27) + '…';
+    const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
+    const st = shipTypes[Math.floor(sr() * shipTypes.length)];
+    const npc = {
+      syncId: TRADE_NPC_SYNC_START + i,
+      x: nx, z: nz,
+      rotation: Math.atan2(dest.dockX - nx, dest.dockZ - nz),
+      speed: 0.72 + sr() * 0.65,
+      health: 48 + sr() * 42,
+      type: st,
+      name: tradeName,
+      flagColor: ['#c9a227', '#2a5a8a', '#4a7a5a', '#8a6a4a', '#5a6a8a', '#6a5a8a'][Math.floor(sr() * 6)],
+      isTradeShip: true,
+      aggro: false,
+      tradeDestX: dest.dockX,
+      tradeDestZ: dest.dockZ,
+      cargoGood: homeExport,
+      wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0
+    };
+    const sailPick = sr() > 0.55 ? 'silk' : 'basic';
+    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: 'none', figurehead: 'none' }, npc.flagColor, npc.name);
+    const npcCrew = [
+      { name: 'Merchant', role: 'captain', task: 'helm', color: '#3a3020', hat: 'tricorn' },
+      { name: 'Deckhand', role: 'sailor', task: 'sails', color: '#4a4538' }
+    ];
+    buildCrewMeshes(mesh, npcCrew, npc.type);
+    npc.mesh = mesh;
+    scene.add(mesh);
+    G.npcs.push(npc);
+  }
+}
 function spawnNPCs() {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
@@ -2030,20 +2129,28 @@ function spawnNPCs() {
     npc.mesh = mesh; scene.add(mesh);
     G.npcs.push(npc);
   }
+  spawnTradeShips();
   tryRestoreStoryBountyAfterNpcReset();
 }
 
 function rebuildNPCShipMesh(npc) {
-  const npcCrew = [
+  const merchant = !!npc.isTradeShip;
+  const npcCrew = merchant ? [
+    { name: 'Merchant', role: 'captain', task: 'helm', color: '#3a3020', hat: 'tricorn' },
+    { name: 'Deckhand', role: 'sailor', task: 'sails', color: '#4a4538' }
+  ] : [
     { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
     { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
     { name: 'Mate', role: 'sailor', task: 'sails', color: '#2a4a2a' }
   ];
+  const parts = merchant
+    ? { hull: 'basic', sail: 'basic', cannon: 'none', figurehead: 'none' }
+    : { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' };
   if (npc.mesh) {
     scene.remove(npc.mesh);
     npc.mesh = null;
   }
-  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, npc.flagColor, npc.name);
+  const mesh = buildShipMesh(npc.type, parts, npc.flagColor, npc.name);
   buildCrewMeshes(mesh, npcCrew, npc.type);
   npc.mesh = mesh;
   scene.add(mesh);
@@ -2080,6 +2187,30 @@ function updateNPCs(dt) {
   const host = isMultiplayerHost();
   G.npcs.forEach(npc => {
     if (host) {
+      if (npc.isTradeShip && !npc.sinking) {
+        if (npc.tradeDestX == null || npc.tradeDestZ == null) assignNewTradeRoute(npc);
+        const tx = npc.tradeDestX, tz = npc.tradeDestZ;
+        if (tx != null && tz != null) {
+          const dx = tx - npc.x, dz = tz - npc.z;
+          const dist = Math.hypot(dx, dz);
+          if (dist < 92) assignNewTradeRoute(npc);
+          else {
+            const targetAngle = Math.atan2(dx, dz);
+            let tdiff = targetAngle - npc.rotation;
+            while (tdiff > Math.PI) tdiff -= Math.PI * 2;
+            while (tdiff < -Math.PI) tdiff += Math.PI * 2;
+            npc.rotation += tdiff * 0.9 * dt;
+          }
+        }
+        const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
+        const nNewZ = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
+        if (!isOnIsland(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
+        else {
+          npc.rotation += (Math.random() - 0.5) * 1.4;
+          const back = Math.atan2(npc.x - nNewX, npc.z - nNewZ);
+          npc.x += Math.sin(back) * 3; npc.z += Math.cos(back) * 3;
+        }
+      } else {
       if (!npc.fireCooldown) npc.fireCooldown = 0;
       npc.fireCooldown -= dt;
       if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
@@ -2131,6 +2262,7 @@ function updateNPCs(dt) {
           npc.x += Math.sin(escAngle) * 5; npc.z += Math.cos(escAngle) * 5;
           npc.wanderAngle = escAngle;
         }
+      }
       }
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
@@ -4075,7 +4207,7 @@ function drawCompass() {
     { t: 'W', a: Math.PI, c: '#3a2810', s: 12, b: false }
   ];
   labels.forEach(l => {
-    const dr = r * 0.78;
+    const dr = r * 0.56;
     ctx.font = `${l.b ? 'bold ' : ''}${l.s}px "Georgia",serif`;
     ctx.fillStyle = l.c; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(l.t, Math.cos(l.a) * dr, Math.sin(l.a) * dr);
@@ -4187,12 +4319,13 @@ function drawFullmap() {
     if (!isVesselInLocalMapRange(n.x, n.z)) return;
     const sx = cx + (n.x - centerX) * s, sy = cy - (n.z - centerZ) * s;
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
-    ctx.fillStyle = '#aa2222'; ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 1; ctx.stroke();
-    const dirLen = 8;
-    ctx.strokeStyle = '#cc4444'; ctx.lineWidth = 1.5; ctx.beginPath();
+    const merchant = !!n.isTradeShip;
+    ctx.fillStyle = merchant ? '#2a7a72' : '#aa2222'; ctx.beginPath(); ctx.arc(sx, sy, merchant ? 3.5 : 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = merchant ? '#7ad4c8' : '#ff4444'; ctx.lineWidth = 1; ctx.stroke();
+    const dirLen = merchant ? 7 : 8;
+    ctx.strokeStyle = merchant ? '#5ab8aa' : '#cc4444'; ctx.lineWidth = 1.5; ctx.beginPath();
     ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.sin(n.rotation) * dirLen, sy - Math.cos(n.rotation) * dirLen); ctx.stroke();
-    ctx.fillStyle = '#ff8888'; ctx.font = '10px Georgia,serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 8);
+    ctx.fillStyle = merchant ? '#a8e8e0' : '#ff8888'; ctx.font = '10px Georgia,serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 8);
   });
 
   G.otherPlayers.forEach(p => {
@@ -4343,7 +4476,7 @@ function drawMinimap() {
       }
     }
   }, G.player.x, G.player.z);
-  G.npcs.forEach(n => { if (n.sinking) return; if (!isVesselInLocalMapRange(n.x, n.z)) return; const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
+  G.npcs.forEach(n => { if (n.sinking) return; if (!isVesselInLocalMapRange(n.x, n.z)) return; const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = n.isTradeShip ? '#3a9a90' : '#cc3333'; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); } });
   G.otherPlayers.forEach(p => { if (!isVesselInLocalMapRange(p.x, p.z)) return; const sx = cx + (p.x - G.player.x) * s, sy = cy - (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
   if (G.storyQuest.phase === 'intro') {
     const port = findNearestPortDock(G.player.x, G.player.z);
@@ -4679,7 +4812,7 @@ function update(dt) {
           }
         } else {
           G.lastAttackerId = null;
-          G.npcs.forEach(n => { if (Math.hypot(b.x - n.x, b.z - n.z) < 60) G.lastAttacker = `${n.name} (AI Pirate)`; });
+          G.npcs.forEach(n => { if (Math.hypot(b.x - n.x, b.z - n.z) < 60) G.lastAttacker = `${n.name} (${n.isTradeShip ? 'merchant' : 'AI pirate'})`; });
         }
         notify(`Hull hit! HP: ${Math.round(G.player.health)}`);
         triggerCombatFireHint();
