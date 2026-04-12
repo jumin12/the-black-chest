@@ -620,7 +620,7 @@ const G = {
   swimmers: [],
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
   nearDock: null, docked: false, quests: [],
-  storyQuest: { phase: 'intro', step: 0 },
+  storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null },
   camera: { offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
@@ -1072,6 +1072,7 @@ function getProceduralIslandMeta(cx, cz) {
   const meta = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
   if (islandRadius > 50 && h < 0.12) {
     meta.hasTown = true;
+    meta.faction = ((cx * 7919 ^ cz * 9341 ^ (G.worldSeed >>> 0)) >>> 0) % 4;
     let th = (cx * 73856093 ^ cz * 19349663 ^ (G.worldSeed >>> 0) ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
     const baseIdx = th % TOWN_NAME_LEXICON.length;
     th = Math.imul(th, 1103515245) + 12345 >>> 0;
@@ -1172,6 +1173,15 @@ function findNearestPortDock(wx, wz) {
 
 /** Towns each export one commodity (deterministic from chunk + seed); AI traders run routes to other ports. */
 const PORT_EXPORT_POOL = ['food', 'cannonballs', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
+/** Four regional powers — trade routes prefer same-faction ports; merchant colors match. */
+const FACTION_NAMES = ['Crimson Compact', 'Azure Covenant', 'Verdant League', 'Amber Syndicate'];
+const FACTION_TRADE_COLORS = ['#c94a4a', '#4a7ac9', '#4ac97a', '#c9a24a'];
+const FACTION_MAP_COLORS = ['rgba(200,75,75,0.9)', 'rgba(75,120,200,0.9)', 'rgba(75,180,120,0.9)', 'rgba(200,160,75,0.9)'];
+function townFaction(meta) {
+  if (!meta || !meta.hasTown) return 0;
+  return meta.faction != null ? meta.faction : (((meta.cx * 7919 ^ meta.cz * 9341 ^ (G.worldSeed >>> 0)) >>> 0) % 4);
+}
+function factionLabel(fid) { return FACTION_NAMES[(fid | 0) % 4] || FACTION_NAMES[0]; }
 function portExportsGood(meta) {
   if (!meta || !meta.hasTown) return 'food';
   const idx = ((meta.cx * 5023 ^ meta.cz * 9839 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_EXPORT_POOL.length;
@@ -1184,6 +1194,26 @@ function collectPortsInArea(wx, wz, half) {
   }, wx, wz);
   return out;
 }
+/** Prefer same faction + complementary export; rng is () => 0..1 */
+function pickTradeDestination(home, list, rng) {
+  const others = list.filter(p => p.cx !== home.cx || p.cz !== home.cz);
+  if (!others.length) return null;
+  const hf = townFaction(home);
+  let cand = others.filter(p => townFaction(p) === hf && portExportsGood(p) !== portExportsGood(home));
+  if (!cand.length) cand = others.filter(p => townFaction(p) === hf);
+  if (!cand.length) cand = others.filter(p => portExportsGood(p) !== portExportsGood(home));
+  if (!cand.length) cand = others;
+  return cand[Math.floor(rng() * cand.length)];
+}
+const TRADE_DOCK_DIST = 40;
+const TRADE_DOCK_EDGE_SEC = 4.2;
+function syncTradeShipName(npc, homeMeta) {
+  const nm = getItemMeta(npc.cargoGood);
+  const shortLab = (nm.name || npc.cargoGood).split(/\s+/)[0];
+  let tradeName = `${homeMeta.townName} — ${shortLab}`;
+  if (tradeName.length > 28) tradeName = tradeName.slice(0, 27) + '…';
+  npc.name = tradeName;
+}
 function assignNewTradeRoute(npc) {
   const list = collectPortsInArea(npc.x, npc.z, 24000);
   if (list.length < 2) return;
@@ -1192,18 +1222,30 @@ function assignNewTradeRoute(npc) {
     const d = Math.hypot(npc.x - p.dockX, npc.z - p.dockZ);
     if (d < nd) { nd = d; nearest = p; }
   }
-  npc.cargoGood = portExportsGood(nearest);
-  const nm = getItemMeta(npc.cargoGood);
-  const shortLab = (nm.name || npc.cargoGood).split(/\s+/)[0];
-  npc.name = `${nearest.townName} — ${shortLab}`;
-  if (npc.name.length > 28) npc.name = npc.name.slice(0, 27) + '…';
-  const others = list.filter(p => p.cx !== nearest.cx || p.cz !== nearest.cz);
-  let cand = others.filter(p => portExportsGood(p) !== npc.cargoGood);
-  if (!cand.length) cand = others;
-  if (!cand.length) return;
-  const dest = cand[Math.floor(Math.random() * cand.length)];
+  const sr = () => Math.random();
+  assignTradeRouteFromHome(npc, nearest, list, sr);
+}
+function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
+  npc.homeDockX = homeMeta.dockX;
+  npc.homeDockZ = homeMeta.dockZ;
+  npc.homeCx = homeMeta.cx;
+  npc.homeCz = homeMeta.cz;
+  npc.cargoGood = portExportsGood(homeMeta);
+  let dest = pickTradeDestination(homeMeta, list, sr);
+  if (!dest) {
+    const others = list.filter(p => p.cx !== homeMeta.cx || p.cz !== homeMeta.cz);
+    if (others.length) dest = others[Math.floor(sr() * others.length)];
+  }
+  if (!dest) return;
+  npc.destCx = dest.cx;
+  npc.destCz = dest.cz;
   npc.tradeDestX = dest.dockX;
   npc.tradeDestZ = dest.dockZ;
+  npc.tradePhase = 'to_dest';
+  npc.tradeTimer = 0;
+  npc.tradeCruiseSpeed = npc.tradeCruiseSpeed != null ? npc.tradeCruiseSpeed : 0.72 + sr() * 0.65;
+  syncTradeShipName(npc, homeMeta);
+  npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta) % 4];
 }
 
 function createPalmTree(x, y, z) {
@@ -1283,6 +1325,7 @@ function generateIsland(cx, cz) {
   if (meta0.hasTown) {
     group.userData.dockX = meta0.dockX;
     group.userData.dockZ = meta0.dockZ;
+    group.userData.faction = meta0.faction;
   }
 
   const seg = Math.max(28, Math.floor(islandRadius * 2.0));
@@ -2145,16 +2188,8 @@ function spawnTradeShips() {
     if (!home) continue;
     let list = collectPortsInArea(nx, nz, 18000);
     if (list.length < 2) list = collectPortsInArea(nx, nz, 32000);
-    const others = list.filter(p => p.cx !== home.cx || p.cz !== home.cz);
-    if (!others.length) continue;
-    const homeExport = portExportsGood(home);
-    let cand = others.filter(p => portExportsGood(p) !== homeExport);
-    if (!cand.length) cand = others;
-    const dest = cand[Math.floor(sr() * cand.length)];
-    const nm = getItemMeta(homeExport);
-    const shortLab = (nm.name || homeExport).split(/\s+/)[0];
-    let tradeName = `${home.townName} — ${shortLab}`;
-    if (tradeName.length > 28) tradeName = tradeName.slice(0, 27) + '…';
+    const dest = pickTradeDestination(home, list, sr);
+    if (!dest) continue;
     const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
     const st = shipTypes[Math.floor(sr() * shipTypes.length)];
     const npc = {
@@ -2164,15 +2199,25 @@ function spawnTradeShips() {
       speed: 0.72 + sr() * 0.65,
       health: 48 + sr() * 42,
       type: st,
-      name: tradeName,
-      flagColor: ['#c9a227', '#2a5a8a', '#4a7a5a', '#8a6a4a', '#5a6a8a', '#6a5a8a'][Math.floor(sr() * 6)],
+      name: '',
+      flagColor: FACTION_TRADE_COLORS[townFaction(home) % 4],
       isTradeShip: true,
       aggro: false,
       tradeDestX: dest.dockX,
       tradeDestZ: dest.dockZ,
-      cargoGood: homeExport,
+      homeDockX: home.dockX,
+      homeDockZ: home.dockZ,
+      homeCx: home.cx,
+      homeCz: home.cz,
+      destCx: dest.cx,
+      destCz: dest.cz,
+      cargoGood: portExportsGood(home),
+      tradePhase: 'to_dest',
+      tradeTimer: 0,
+      tradeCruiseSpeed: 0.72 + sr() * 0.65,
       wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0
     };
+    syncTradeShipName(npc, home);
     const sailPick = sr() > 0.55 ? 'silk' : 'basic';
     const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: 'none', figurehead: 'none' }, npc.flagColor, npc.name);
     const npcCrew = [
@@ -2252,14 +2297,36 @@ function rebuildNPCShipMesh(npc) {
   scene.add(mesh);
 }
 
+/** Horizontal cannonball speed (world u/s); must match fireCannonball dx,dz scale. */
+const CANNONBALL_XY_SPEED = 35;
+/** Player broadside cooldown — AI matches this. */
+const PLAYER_BROADSIDE_COOLDOWN = 2.5;
+function getPlayerVelocityForLead() {
+  const spec = SHIP_TYPES[G.player.shipType];
+  const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
+  const speedMult = spec.speed + (sailPart ? sailPart.speedBonus : 0);
+  const windDot = Math.cos(G.wind.angle - G.player.rotation);
+  const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
+  const effectiveSpeed = Math.abs(G.player.speed * windEffect);
+  return { vx: Math.sin(G.player.rotation) * effectiveSpeed, vz: Math.cos(G.player.rotation) * effectiveSpeed };
+}
 function npcFireAtPlayer(npc) {
   const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
-  const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
+  const { vx: pvx, vz: pvz } = getPlayerVelocityForLead();
+  let px = G.player.x, pz = G.player.z;
+  for (let iter = 0; iter < 4; iter++) {
+    const dx = px - npc.x, dz = pz - npc.z;
+    const dist = Math.hypot(dx, dz);
+    const t = dist / CANNONBALL_XY_SPEED;
+    px = G.player.x + pvx * t;
+    pz = G.player.z + pvz * t;
+  }
+  const dx = px - npc.x, dz = pz - npc.z;
   const dist = Math.hypot(dx, dz);
   if (dist > 72 || dist < 2) return;
 
-  const toPlayerAngle = Math.atan2(dx, dz);
-  const relAngle = toPlayerAngle - npc.rotation;
+  const toTargetAngle = Math.atan2(dx, dz);
+  const relAngle = toTargetAngle - npc.rotation;
   const normRel = ((relAngle % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
   const side = Math.abs(normRel) > Math.PI / 7 && Math.abs(normRel) < Math.PI * 0.82 ? Math.sign(normRel) : 0;
   if (side === 0) return;
@@ -2268,8 +2335,10 @@ function npcFireAtPlayer(npc) {
   const localX = side * (npcSpec.hullW * 0.55 + 0.6);
   const wx = npc.x + localX * cosR;
   const wz = npc.z - localX * sinR;
-  const broadsideAngle = npc.rotation + side * Math.PI / 2;
-  const dirX = Math.sin(broadsideAngle), dirZ = Math.cos(broadsideAngle);
+  const aimDx = px - wx, aimDz = pz - wz;
+  const aimLen = Math.hypot(aimDx, aimDz) || 1;
+  const dirX = aimDx / aimLen;
+  const dirZ = aimDz / aimLen;
   const cannonY = (npc.mesh?.position.y || SEA_LEVEL + 0.5) + npcSpec.hullH * 0.6;
   spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
   fireCannonball(wx, wz, dirX, dirZ, cannonY, 'npc');
@@ -2284,18 +2353,57 @@ function updateNPCs(dt) {
   G.npcs.forEach(npc => {
     if (host) {
       if (npc.isTradeShip && !npc.sinking) {
-        if (npc.tradeDestX == null || npc.tradeDestZ == null) assignNewTradeRoute(npc);
+        if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
+        const cruise = npc.tradeCruiseSpeed != null ? npc.tradeCruiseSpeed : 0.85;
+        const phase = npc.tradePhase || 'to_dest';
         const tx = npc.tradeDestX, tz = npc.tradeDestZ;
-        if (tx != null && tz != null) {
-          const dx = tx - npc.x, dz = tz - npc.z;
-          const dist = Math.hypot(dx, dz);
-          if (dist < 92) assignNewTradeRoute(npc);
-          else {
-            const targetAngle = Math.atan2(dx, dz);
-            let tdiff = targetAngle - npc.rotation;
-            while (tdiff > Math.PI) tdiff -= Math.PI * 2;
-            while (tdiff < -Math.PI) tdiff += Math.PI * 2;
-            npc.rotation += tdiff * 0.9 * dt;
+        if (phase === 'to_dest' || phase === 'to_home') {
+          if (tx != null && tz != null) {
+            const dx = tx - npc.x, dz = tz - npc.z;
+            const dist = Math.hypot(dx, dz);
+            if (dist < TRADE_DOCK_DIST) {
+              npc.tradePhase = phase === 'to_dest' ? 'dock_dest' : 'dock_home';
+              npc.tradeTimer = TRADE_DOCK_EDGE_SEC;
+              npc.speed = 0;
+            } else {
+              const targetAngle = Math.atan2(dx, dz);
+              let tdiff = targetAngle - npc.rotation;
+              while (tdiff > Math.PI) tdiff -= Math.PI * 2;
+              while (tdiff < -Math.PI) tdiff += Math.PI * 2;
+              npc.rotation += tdiff * 0.9 * dt;
+              npc.speed = cruise;
+            }
+          }
+        } else if (phase === 'dock_dest' || phase === 'dock_home') {
+          npc.speed = 0;
+          npc.tradeTimer -= dt;
+          if (tx != null && tz != null) {
+            const dx = tx - npc.x, dz = tz - npc.z;
+            const d = Math.hypot(dx, dz) || 0.01;
+            const step = Math.min(10 * dt, d);
+            npc.x += (dx / d) * step;
+            npc.z += (dz / d) * step;
+            npc.rotation = Math.atan2(dx, dz);
+          }
+          if (npc.tradeTimer <= 0) {
+            if (phase === 'dock_dest') {
+              const destMeta = getProceduralIslandMeta(npc.destCx | 0, npc.destCz | 0);
+              if (destMeta && destMeta.hasTown) npc.cargoGood = portExportsGood(destMeta);
+              const homeM = getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
+              if (homeM && homeM.hasTown) syncTradeShipName(npc, homeM);
+              npc.tradeDestX = npc.homeDockX;
+              npc.tradeDestZ = npc.homeDockZ;
+              npc.tradePhase = 'to_home';
+              npc.speed = cruise;
+            } else {
+              npc.cargoGood = portExportsGood({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
+              const homeFull = getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
+              const list = collectPortsInArea(npc.homeDockX, npc.homeDockZ, 32000);
+              if (list.length >= 2 && homeFull) {
+                assignTradeRouteFromHome(npc, homeFull, list, Math.random);
+              } else assignNewTradeRoute(npc);
+              npc.speed = cruise;
+            }
           }
         }
         const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
@@ -2331,8 +2439,7 @@ function updateNPCs(dt) {
 
         if (npc.fireCooldown <= 0 && distToPlayer < 64) {
           npcFireAtPlayer(npc);
-          const jitter = (npc.fireJitter != null ? npc.fireJitter : 0.5) * 0.35;
-          npc.fireCooldown = 0.48 + jitter * 0.85 + Math.random() * 0.55;
+          npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
         }
       } else {
         npc.wanderTimer -= dt;
@@ -3188,8 +3295,8 @@ function doFireSide(fireSide) {
   ammoRow.count -= perSide;
   reconcileSlotsWithInventory();
 
-  if (fireSide === 1) G.starboardCooldown = 2.5;
-  else G.portCooldown = 2.5;
+  if (fireSide === 1) G.starboardCooldown = PLAYER_BROADSIDE_COOLDOWN;
+  else G.portCooldown = PLAYER_BROADSIDE_COOLDOWN;
   G.crewReloading = true; G.crewReloadTimer = 1.5;
   playCannonSound();
   triggerCombatFireHint();
@@ -3913,14 +4020,16 @@ function updateMissionsPanel() {
     const st = STORY_SHIP_ORDER[si];
     const cap = STORY_PIRATE_NAMES[st] || 'Target';
     const rew = STORY_REWARDS[si] != null ? STORY_REWARDS[si] : 0;
+    const ret = sq.turnInTown ? `<strong>${sq.turnInTown}</strong>` : 'the issuing port';
     storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(180,100,160,0.35);border-radius:6px;margin-bottom:10px;">
       <div style="color:#e8b8d8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story — bounty</div>
       <div style="color:#e0d6c2;font-size:12px;">Sink <strong>${cap}</strong> (${SHIP_TYPES[st]?.name || st}).</div>
-      <div style="color:#d4a848;font-size:10px;margin-top:4px;">Turn in at any port when done. Reward: ${rew}g.</div></div>`;
+      <div style="color:#d4a848;font-size:10px;margin-top:4px;">Turn in at ${ret} when done (gold on chart). Reward: ${rew}g.</div></div>`;
   } else if (sq.phase === 'report') {
+    const ret = sq.turnInTown ? `<strong>${sq.turnInTown}</strong>` : 'the issuing port';
     storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(120,180,120,0.4);border-radius:6px;margin-bottom:10px;">
       <div style="color:#a8e8b8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story — report</div>
-      <div style="color:#e0d6c2;font-size:12px;">Dock and open <strong>Port → Quests</strong> to claim your bounty and receive the next target.</div></div>`;
+      <div style="color:#e0d6c2;font-size:12px;">Dock at ${ret} and open <strong>Port → Quests</strong> to claim your bounty and receive the next target.</div></div>`;
   } else if (sq.phase === 'complete') {
     storyHtml = `<div style="padding:10px;background:rgba(30,40,30,0.5);border:1px solid rgba(120,160,100,0.35);border-radius:6px;margin-bottom:10px;">
       <div style="color:#b8d8a8;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Main story</div>
@@ -4044,7 +4153,12 @@ function dockAtPort() {
   }, 800);
   setTimeout(() => {
     document.getElementById('port-panel').style.display = 'block';
-    document.getElementById('port-title').textContent = G.nearDock.townName;
+    const pt = document.getElementById('port-title');
+    if (pt && G.nearDock) {
+      const fid = townFaction(G.nearDock);
+      const fc = FACTION_TRADE_COLORS[fid % 4];
+      pt.innerHTML = `${G.nearDock.townName || 'Port'}<div style="font-size:11px;font-weight:normal;color:${fc};opacity:0.95;margin-top:5px;letter-spacing:0.04em;">${factionLabel(fid)}</div>`;
+    }
     showPortTab('trade');
   }, 2000);
 }
@@ -4122,14 +4236,16 @@ function showPortTab(tab) {
       const st = STORY_SHIP_ORDER[si];
       const cap = STORY_PIRATE_NAMES[st] || 'Target';
       const rew = STORY_REWARDS[si] != null ? STORY_REWARDS[si] : 0;
+      const retPort = sq.turnInTown ? `<strong>${sq.turnInTown}</strong>` : 'the issuing port';
       storyBox.innerHTML = `<div style="color:#e8b8d8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — ACTIVE BOUNTY</div>
-        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;">Hunt <strong>${cap}</strong> (${SHIP_TYPES[st]?.name || st}). Sink them at sea, then return to <strong>any port</strong> and open Quests to report.</div>
+        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;">Hunt <strong>${cap}</strong> (${SHIP_TYPES[st]?.name || st}). Sink them at sea, then return to ${retPort} and open Quests to report (gold on chart).</div>
         <div style="color:#d4a848;font-size:11px;margin-top:8px;">Reward for this mark: ${rew}g (paid on turn-in).</div>${buildMainStoryChainHtml(sq)}`;
     } else if (sq.phase === 'report') {
       const prevStep = Math.max(0, sq.step);
       const reward = STORY_REWARDS[prevStep] != null ? STORY_REWARDS[prevStep] : 0;
+      const retPort = sq.turnInTown ? `<strong>${sq.turnInTown}</strong>` : 'the issuing port';
       storyBox.innerHTML = `<div style="color:#a8e8c8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — REPORT</div>
-        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;margin-bottom:10px;">You sank the bounty. Claim <strong>${reward}g</strong> and receive your next letter of marque.</div>
+        <div style="color:#e0d6c2;font-size:13px;line-height:1.5;margin-bottom:10px;">You sank the bounty. Dock at ${retPort} to claim <strong>${reward}g</strong> and receive your next letter of marque.</div>
         <button type="button" onclick="reportStoryBountyTurnIn()" style="background:rgba(40,70,50,0.55);border:1px solid rgba(120,180,120,0.45);color:#c8e8c8;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-family:Georgia,serif;">Claim bounty &amp; continue</button>${buildMainStoryChainHtml(sq)}`;
     } else if (sq.phase === 'complete') {
       storyBox.innerHTML = `<div style="color:#b8d8a8;font-size:12px;letter-spacing:1px;margin-bottom:8px;">MAIN STORY — COMPLETE</div>
@@ -4252,11 +4368,15 @@ window.acceptQuest = function(idx) {
 
 window.acceptMainStory = function() {
   if (!G.docked) { notify('Dock at a port first.'); return; }
+  if (!G.nearDock || G.nearDock.cx == null) { notify('Dock at a port first.'); return; }
   if (G.storyQuest.phase !== 'intro') { showPortTab('quests'); return; }
   G.storyQuest.phase = 'active';
+  G.storyQuest.turnInCx = G.nearDock.cx;
+  G.storyQuest.turnInCz = G.nearDock.cz;
+  G.storyQuest.turnInTown = G.nearDock.townName || 'this port';
   spawnStoryBountyNpc();
   saveProgress();
-  notify('Your first mark is sailing nearby. Hunt them down, then return to any port to report.');
+  notify(`Your first mark is sailing nearby. Hunt them down, then return to ${G.storyQuest.turnInTown} to report.`);
   showPortTab('quests');
   updateMissionsPanel();
   updateStoryBriefHud();
@@ -4267,6 +4387,12 @@ window.reportStoryBountyTurnIn = function() {
   const sq = G.storyQuest;
   if (sq.phase !== 'report') return;
   if (sq.step < 0 || sq.step >= STORY_SHIP_ORDER.length) return;
+  if (sq.turnInCx != null && sq.turnInCz != null) {
+    if (!G.nearDock || G.nearDock.cx !== sq.turnInCx || G.nearDock.cz !== sq.turnInCz) {
+      notify(`Return to ${sq.turnInTown || 'the issuing port'} to turn in this bounty (see chart).`);
+      return;
+    }
+  }
   const reward = STORY_REWARDS[sq.step];
   const gi = G.player.inventory.find(x => x.id === 'gold');
   if (gi) gi.count += reward;
@@ -4274,13 +4400,20 @@ window.reportStoryBountyTurnIn = function() {
   sq.step += 1;
   if (sq.step >= STORY_SHIP_ORDER.length) {
     sq.phase = 'complete';
+    sq.turnInCx = sq.turnInCz = null;
+    sq.turnInTown = null;
     removeStoryBountyFromWorld();
     notify('Main story complete! The five captains are finished.');
   } else {
     sq.phase = 'active';
+    if (G.nearDock && G.nearDock.cx != null) {
+      sq.turnInCx = G.nearDock.cx;
+      sq.turnInCz = G.nearDock.cz;
+      sq.turnInTown = G.nearDock.townName || 'this port';
+    }
     spawnStoryBountyNpc();
     const st = STORY_SHIP_ORDER[sq.step];
-    notify(`Next bounty: ${STORY_PIRATE_NAMES[st] || st} (${SHIP_TYPES[st]?.name || st}).`);
+    notify(`Next bounty: ${STORY_PIRATE_NAMES[st] || st} (${SHIP_TYPES[st]?.name || st}). Report to ${sq.turnInTown || 'this port'} when done.`);
   }
   reconcileSlotsWithInventory();
   saveProgress();
@@ -4454,7 +4587,8 @@ function drawFullmap() {
     if (d.hasTown) {
       const tx = cx + (d.dockX - centerX) * s, ty = cy - (d.dockZ - centerZ) * s;
       if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
-      ctx.fillStyle = '#e8c050'; ctx.fillRect(tx - 3, ty - 3, 6, 6);
+      const fcol = FACTION_TRADE_COLORS[townFaction(d) % 4];
+      ctx.fillStyle = fcol; ctx.fillRect(tx - 3, ty - 3, 6, 6);
       ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
       ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
       ctx.fillText(d.townName, tx, ty - 7);
@@ -4529,6 +4663,20 @@ function drawFullmap() {
         ctx.setLineDash([]);
         ctx.fillStyle = '#e8c8f8'; ctx.font = 'bold 11px Georgia'; ctx.textAlign = 'center';
         ctx.fillText('Harbor — ' + (port.townName || 'Port'), qx, qy - 16);
+      }
+    }
+  }
+
+  const sqR = G.storyQuest;
+  if (sqR.phase === 'report' && sqR.turnInCx != null && sqR.turnInCz != null) {
+    const tip = getProceduralIslandMeta(sqR.turnInCx, sqR.turnInCz);
+    if (tip && tip.hasTown && tip.dockX != null) {
+      const qx = cx + (tip.dockX - centerX) * s, qy = cy - (tip.dockZ - centerZ) * s;
+      if (qx > -20 && qx < w + 20 && qy > -20 && qy < h + 20) {
+        ctx.strokeStyle = 'rgba(255,230,140,0.98)'; ctx.lineWidth = 3; ctx.setLineDash([]);
+        ctx.strokeRect(qx - 11, qy - 11, 22, 22);
+        ctx.fillStyle = '#ffe8a8'; ctx.font = 'bold 11px Georgia,serif'; ctx.textAlign = 'center';
+        ctx.fillText('Bounty turn-in', qx, qy - 17);
       }
     }
   }
@@ -4618,8 +4766,8 @@ function drawMinimap() {
     if (d.hasTown) {
       const tx = cx + (d.dockX - G.player.x) * s, ty = cy - (d.dockZ - G.player.z) * s;
       if (tx > 0 && tx < w && ty > 0 && ty < h) {
-        ctx.fillStyle = '#e8c050'; ctx.fillRect(tx - 2, ty - 2, 4, 4);
-        if (s > 0.05) { ctx.fillStyle = '#e8c050'; ctx.font = (w >= 220 ? '9px' : '7px') + ' Georgia'; ctx.textAlign = 'center'; ctx.fillText(d.townName, tx, ty - 5); }
+        ctx.fillStyle = FACTION_TRADE_COLORS[townFaction(d) % 4]; ctx.fillRect(tx - 2, ty - 2, 4, 4);
+        if (s > 0.05) { ctx.fillStyle = '#e8d090'; ctx.font = (w >= 220 ? '9px' : '7px') + ' Georgia'; ctx.textAlign = 'center'; ctx.fillText(d.townName, tx, ty - 5); }
       }
     }
   }, G.player.x, G.player.z);
@@ -4635,6 +4783,19 @@ function drawMinimap() {
         ctx.setLineDash([]);
         ctx.fillStyle = '#e8c8f8'; ctx.font = (w >= 220 ? '8px' : '7px') + ' Georgia'; ctx.textAlign = 'center';
         ctx.fillText('Harbor', qx, qy - 10);
+      }
+    }
+  }
+  const sqM = G.storyQuest;
+  if (sqM.phase === 'report' && sqM.turnInCx != null && sqM.turnInCz != null) {
+    const tip = getProceduralIslandMeta(sqM.turnInCx, sqM.turnInCz);
+    if (tip && tip.hasTown && tip.dockX != null) {
+      const qx = cx + (tip.dockX - G.player.x) * s, qy = cy - (tip.dockZ - G.player.z) * s;
+      if (qx > 0 && qx < w && qy > 0 && qy < h) {
+        ctx.strokeStyle = 'rgba(255,230,140,0.95)'; ctx.lineWidth = 2; ctx.setLineDash([]);
+        ctx.strokeRect(qx - 7, qy - 7, 14, 14);
+        ctx.fillStyle = '#ffe8b0'; ctx.font = (w >= 220 ? '7px' : '6px') + ' Georgia'; ctx.textAlign = 'center';
+        ctx.fillText('Turn-in', qx, qy - 10);
       }
     }
   }
@@ -5355,7 +5516,8 @@ function updateStoryBriefHud() {
     const rew = STORY_REWARDS[si] != null ? STORY_REWARDS[si] : 0;
     if (titleEl) titleEl.textContent = 'MAIN STORY — BOUNTY';
     wrap.style.display = 'block';
-    txt.textContent = storyBriefAppendContracts(`Hunt ${cap} (${SHIP_TYPES[st]?.name || st}). Sink at sea, then any port → Quests to report. Bounty: ${rew}g.`);
+    const rp = sq.turnInTown ? sq.turnInTown : 'issuing port';
+    txt.textContent = storyBriefAppendContracts(`Hunt ${cap} (${SHIP_TYPES[st]?.name || st}). Sink at sea, then return to ${rp} → Quests to report. Bounty: ${rew}g.`);
     return;
   }
   if (sq.phase === 'report') {
@@ -5363,7 +5525,8 @@ function updateStoryBriefHud() {
     const reward = STORY_REWARDS[prev] != null ? STORY_REWARDS[prev] : 0;
     if (titleEl) titleEl.textContent = 'MAIN STORY — REPORT';
     wrap.style.display = 'block';
-    txt.textContent = storyBriefAppendContracts(`Target cleared. Dock → Quests to claim ${reward}g and your next letter of marque.`);
+    const rp = sq.turnInTown ? sq.turnInTown : 'issuing port';
+    txt.textContent = storyBriefAppendContracts(`Target cleared. Dock at ${rp} → Quests to claim ${reward}g and your next letter of marque.`);
     return;
   }
   if (sq.phase === 'complete') {
@@ -5853,7 +6016,7 @@ document.getElementById('tutorial-skip')?.addEventListener('click', () => {
 });
 
 function beginVoyageAfterCharacter() {
-  G.storyQuest = { phase: 'intro', step: 0 };
+  G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null };
   G.quests = [];
   G.mode = 'playing';
   G.player.speed = 1;
@@ -6044,10 +6207,13 @@ function loadProgress() {
         : Math.max(0, Math.min(maxIdx, st));
       G.storyQuest = {
         phase: okPh ? ph : 'intro',
-        step: stepClamped
+        step: stepClamped,
+        turnInCx: data.storyQuest.turnInCx != null ? data.storyQuest.turnInCx : null,
+        turnInCz: data.storyQuest.turnInCz != null ? data.storyQuest.turnInCz : null,
+        turnInTown: data.storyQuest.turnInTown != null ? data.storyQuest.turnInTown : null
       };
     } else {
-      G.storyQuest = { phase: 'intro', step: 0 };
+      G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null };
     }
     if (data.flagColor) G.player.flagColor = data.flagColor;
     if (data.worldSeed != null && data.worldSeed !== '') G.worldSeed = Number(data.worldSeed) >>> 0;
@@ -6214,7 +6380,7 @@ document.getElementById('new-game-btn').onclick = () => {
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
-  G.storyQuest = { phase: 'intro', step: 0 };
+  G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null };
   G.quests = [];
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('create-screen').style.display = 'block';
