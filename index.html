@@ -650,7 +650,7 @@ function sampleOpenOceanNearPlayer(minD, maxD) {
     const d = minD + Math.random() * (maxD - minD);
     const x = G.player.x + Math.cos(a) * d;
     const z = G.player.z + Math.sin(a) * d;
-    if (!isOnIsland(x, z)) return { x, z };
+    if (!isSeaObstructed(x, z)) return { x, z };
   }
   return { x: G.player.x + 400, z: G.player.z + 200 };
 }
@@ -1067,16 +1067,21 @@ function isPointInsideProceduralIsland(wx, wz) {
   return false;
 }
 
+/** Land / beach footprint for ships and fish (procedural + any loaded mesh). */
+function isSeaObstructed(x, z) {
+  return isPointInsideProceduralIsland(x, z) || isOnIsland(x, z);
+}
+
 /** Move the player to open ocean if the current seed would place them on land. */
 function ensurePlayerInOpenOcean() {
-  if (!isPointInsideProceduralIsland(G.player.x, G.player.z)) return;
+  if (!isSeaObstructed(G.player.x, G.player.z)) return;
   let s = ((G.worldSeed | 0) ^ 0x2f9f3ed1) >>> 0;
   const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
   for (let a = 0; a < 72; a++) {
     const ang = rnd() * Math.PI * 2;
     const dist = 200 + rnd() * 7200;
     const nx = Math.cos(ang) * dist, nz = Math.sin(ang) * dist;
-    if (!isPointInsideProceduralIsland(nx, nz)) {
+    if (!isSeaObstructed(nx, nz)) {
       G.player.x = nx;
       G.player.z = nz;
       return;
@@ -1084,7 +1089,7 @@ function ensurePlayerInOpenOcean() {
   }
   for (let k = 1; k < 120; k++) {
     const nx = k * CHUNK_SIZE * 1.1, nz = k * CHUNK_SIZE * 0.37;
-    if (!isPointInsideProceduralIsland(nx, nz)) {
+    if (!isSeaObstructed(nx, nz)) {
       G.player.x = nx;
       G.player.z = nz;
       return;
@@ -1472,15 +1477,17 @@ function generateIsland(cx, cz) {
   spawnSeagulls(worldX, worldZ, sgN);
   for (let fi = 0; fi < 8; fi++) {
     const fishAngle = Math.random() * Math.PI * 2;
-    const fishDist = islandRadius + 6 + Math.random() * 70;
-    spawnFish(worldX + Math.cos(fishAngle) * fishDist, worldZ + Math.sin(fishAngle) * fishDist, 5 + Math.floor(Math.random() * 9));
+    const fishDist = islandRadius * 0.92 + 10 + Math.random() * 70;
+    const fxx = worldX + Math.cos(fishAngle) * fishDist, fzz = worldZ + Math.sin(fishAngle) * fishDist;
+    if (!isSeaObstructed(fxx, fzz)) spawnFish(fxx, fzz, 5 + Math.floor(Math.random() * 9));
   }
   for (let oi = 0; oi < 12; oi++) {
     const openAngle = Math.random() * Math.PI * 2;
-    const openDist = Math.max(islandRadius * 0.28, 22) + Math.random() * 340;
+    const minRing = islandRadius * 0.92 + 14;
+    const openDist = minRing + Math.random() * 340;
     const fx = worldX + Math.cos(openAngle) * openDist;
     const fz = worldZ + Math.sin(openAngle) * openDist;
-    if (!isOnIsland(fx, fz)) spawnFish(fx, fz, 4 + Math.floor(Math.random() * 10));
+    if (!isSeaObstructed(fx, fz)) spawnFish(fx, fz, 4 + Math.floor(Math.random() * 10));
   }
 }
 
@@ -1588,6 +1595,7 @@ function pruneWildlifeAwayFromPlayer() {
 }
 
 function spawnFish(wx, wz, count) {
+  if (count <= 0 || isSeaObstructed(wx, wz)) return;
   const species = FISH_SPECIES[Math.floor(Math.random() * FISH_SPECIES.length)];
   const depth = SEA_LEVEL - 0.05 - Math.random() * 0.15;
   const leader = { x: wx, z: wz, dir: Math.random() * Math.PI * 2, speed: 1.5 + Math.random() * 3, turnTimer: 3 + Math.random() * 5, depth };
@@ -1617,6 +1625,15 @@ function updateFish(dt) {
     if (l.turnTimer <= 0) { l.dir += (Math.random() - 0.5) * 2; l.turnTimer = 2 + Math.random() * 6; }
     l.x += Math.sin(l.dir) * l.speed * dt;
     l.z += Math.cos(l.dir) * l.speed * dt;
+    if (isSeaObstructed(l.x, l.z)) {
+      l.dir += Math.PI + (Math.random() - 0.5) * 1.2;
+      l.x -= Math.sin(l.dir) * l.speed * dt * 2.2;
+      l.z -= Math.cos(l.dir) * l.speed * dt * 2.2;
+      for (let g = 0; g < 12 && isSeaObstructed(l.x, l.z); g++) {
+        l.x += Math.sin(l.dir) * 5;
+        l.z += Math.cos(l.dir) * 5;
+      }
+    }
   });
   fishSchools.forEach(f => {
     const l = f.userData.leader;
@@ -2077,7 +2094,7 @@ function spawnTradeShips() {
     const dist0 = 260 + Math.sqrt(sr()) * 12500;
     let nx = Math.cos(a) * dist0, nz = Math.sin(a) * dist0;
     for (let attempt = 0; attempt < 14; attempt++) {
-      if (!isOnIsland(nx, nz)) break;
+      if (!isSeaObstructed(nx, nz)) break;
       nx += (sr() - 0.5) * 260; nz += (sr() - 0.5) * 260;
       if (attempt > 7) {
         const a2 = sr() * Math.PI * 2, d2 = 260 + Math.sqrt(sr()) * 12500;
@@ -2142,7 +2159,7 @@ function spawnNPCs() {
     const d = 280 + Math.sqrt(sr()) * 8200;
     let nx = Math.cos(a) * d, nz = Math.sin(a) * d;
     for (let attempt = 0; attempt < 12; attempt++) {
-      if (!isOnIsland(nx, nz)) break;
+      if (!isSeaObstructed(nx, nz)) break;
       nx += (sr() - 0.5) * 220; nz += (sr() - 0.5) * 220;
       if (attempt > 6) { const a2 = sr() * Math.PI * 2, d2 = 280 + Math.sqrt(sr()) * 8200; nx = Math.cos(a2) * d2; nz = Math.sin(a2) * d2; }
     }
@@ -2243,7 +2260,7 @@ function updateNPCs(dt) {
         }
         const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
         const nNewZ = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
-        if (!isOnIsland(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
+        if (!isSeaObstructed(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
         else {
           npc.rotation += (Math.random() - 0.5) * 1.4;
           const back = Math.atan2(npc.x - nNewX, npc.z - nNewZ);
@@ -2291,12 +2308,12 @@ function updateNPCs(dt) {
 
       const nNewX = npc.x + Math.sin(npc.rotation) * npc.speed * dt;
       const nNewZ = npc.z + Math.cos(npc.rotation) * npc.speed * dt;
-      if (!isOnIsland(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
+      if (!isSeaObstructed(nNewX, nNewZ)) { npc.x = nNewX; npc.z = nNewZ; }
       else {
         npc.wanderAngle += Math.PI * 0.7 + Math.random() * 0.6;
         npc.rotation = npc.wanderAngle;
         npc.wanderTimer = 0.3;
-        if (isOnIsland(npc.x, npc.z)) {
+        if (isSeaObstructed(npc.x, npc.z)) {
           const escAngle = Math.atan2(-npc.x, -npc.z);
           npc.x += Math.sin(escAngle) * 5; npc.z += Math.cos(escAngle) * 5;
           npc.wanderAngle = escAngle;
@@ -4631,7 +4648,7 @@ function update(dt) {
     const effectiveSpeed = G.player.speed * windEffect;
     const newX = G.player.x + Math.sin(G.player.rotation) * effectiveSpeed * dt;
     const newZ = G.player.z + Math.cos(G.player.rotation) * effectiveSpeed * dt;
-    if (!isOnIsland(newX, newZ)) { G.player.x = newX; G.player.z = newZ; }
+    if (!isSeaObstructed(newX, newZ)) { G.player.x = newX; G.player.z = newZ; }
     else { G.player.speed *= 0.3; }
   }
 
@@ -4669,7 +4686,7 @@ function update(dt) {
     for (let k = 0; k < 7; k++) {
       const ox = G.player.x + (Math.random() - 0.5) * 5600;
       const oz = G.player.z + (Math.random() - 0.5) * 5600;
-      if (isOnIsland(ox, oz)) continue;
+      if (isSeaObstructed(ox, oz)) continue;
       spawnFish(ox, oz, 5 + Math.floor(Math.random() * 11));
     }
   }
@@ -5190,22 +5207,32 @@ function storyChapterRowState(i, sq) {
 }
 
 function buildMainStoryChainHtml(sq) {
-  let rows = '';
-  for (let i = 0; i < STORY_SHIP_ORDER.length; i++) {
+  let blocks = '';
+  const nMarks = STORY_SHIP_ORDER.length;
+  for (let i = 0; i < nMarks; i++) {
     const st = STORY_SHIP_ORDER[i];
     const cap = STORY_PIRATE_NAMES[st] || st;
     const shipN = SHIP_TYPES[st]?.name || st;
+    const rew = STORY_REWARDS[i] != null ? STORY_REWARDS[i] : 0;
     const state = storyChapterRowState(i, sq);
     let badge = '';
     if (state === 'done') badge = '<span style="color:#8ab896;">Done</span>';
     else if (state === 'locked') badge = '<span style="color:#5a5048;">Locked</span>';
     else if (state === 'upcoming') badge = '<span style="color:#98a8b8;">In campaign</span>';
-    else if (state === 'pending_briefing') badge = '<span style="color:#b8a878;">At any port → Quests</span>';
+    else if (state === 'pending_briefing') badge = '<span style="color:#b8a878;">At port → Quests</span>';
     else if (state === 'active') badge = '<span style="color:#d4a848;">Active bounty</span>';
-    else if (state === 'report') badge = '<span style="color:#a8d8c8;">Turn in (Quests)</span>';
-    rows += `<div style="font-size:11px;color:#c8c0b0;margin:5px 0;line-height:1.35;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;"><span><strong style="color:#e0d6c2;">${i + 1}.</strong> ${cap} <span style="color:#8a7a68;font-size:10px;">(${shipN})</span></span>${badge}</div>`;
+    else if (state === 'report') badge = '<span style="color:#a8d8c8;">Turn in</span>';
+    blocks += `<div style="padding:9px 10px;margin:8px 0;background:rgba(40,22,48,0.5);border:1px solid rgba(180,100,160,0.28);border-radius:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+        <div style="min-width:0;">
+          <div style="color:#e8b8d8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Mark ${i + 1} of ${nMarks}</div>
+          <div style="color:#e0d6c2;font-size:13px;line-height:1.35;"><strong>${cap}</strong> · <span style="color:#b8a898;">${shipN}</span></div>
+          <div style="color:#9a8a78;font-size:11px;margin-top:6px;line-height:1.4;">Sink at sea, then claim <strong style="color:#d4a848;">${rew}g</strong> at any port (in order).</div>
+        </div>
+        <div style="flex-shrink:0;text-align:right;">${badge}</div>
+      </div></div>`;
   }
-  return `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(200,120,180,0.28);"><div style="color:#c8a8d8;font-size:10px;letter-spacing:0.1em;margin-bottom:6px;">MAIN STORY — ALL MARKS (IN ORDER)</div>${rows}</div>`;
+  return `<div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(200,120,180,0.28);"><div style="color:#c8a8d8;font-size:10px;letter-spacing:0.1em;margin-bottom:8px;">MAIN STORY — ALL MARKS</div>${blocks}</div>`;
 }
 
 function isCaptainHudObscured() {
