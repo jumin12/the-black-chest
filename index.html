@@ -61,6 +61,9 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 .tb-btn{background:linear-gradient(180deg,rgba(35,22,12,0.9),rgba(20,12,6,0.95));border:1px solid rgba(180,140,60,0.4);border-radius:8px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:20px;transition:all 0.15s;touch-action:manipulation;box-shadow:0 2px 4px rgba(0,0,0,0.3);}
 .tb-btn:hover,.tb-btn:active{border-color:#d4a848;background:linear-gradient(180deg,rgba(50,35,15,0.95),rgba(30,18,8,0.98));}
 .tb-btn.active{border-color:#d4a848;background:linear-gradient(180deg,rgba(70,45,15,0.95),rgba(40,25,10,0.98));}
+@media(hover:none) and (pointer:coarse){
+  .tb-btn.active{box-shadow:0 0 0 2px rgba(212,168,72,0.5),0 2px 8px rgba(0,0,0,0.4);}
+}
 #anchor-status{position:absolute;top:50px;right:10px;}
 .log-tab:hover{color:#d4a848 !important;}
 .log-tab.active{color:#d4a848 !important;border-bottom:2px solid #d4a848 !important;}
@@ -3806,6 +3809,14 @@ let pinchDist = 0;
 let edgeCannonGesture = null;
 function clearEdgeCannonGesture() { edgeCannonGesture = null; }
 
+function isTypingInModalInput() {
+  const el = document.activeElement;
+  if (!el || el === document.body) return false;
+  const t = el.tagName;
+  if (t !== 'INPUT' && t !== 'TEXTAREA' && t !== 'SELECT') return false;
+  return !!(el.closest('#debug-modal-root') || el.closest('#debug-password-root') || el.closest('#settings-modal') || el.closest('#port-panel') || el.closest('#create-screen') || el.closest('#credits-modal'));
+}
+
 window.addEventListener('keydown', e => {
   if (document.activeElement?.id === 'chat-input') {
     if (e.key === 'Enter') { const inp = document.getElementById('chat-input'); if (inp.value.trim()) { const capName = G.player.crew[0]?.name || 'Pirate'; if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'chat', text: inp.value.trim() })); else addChatMessage(capName, inp.value.trim()); inp.value = ''; } inp.blur(); e.preventDefault(); }
@@ -3816,6 +3827,7 @@ window.addEventListener('keydown', e => {
     }
     return;
   }
+  if (isTypingInModalInput() && e.key !== 'Escape') return;
   keys[e.key.toLowerCase()] = true;
   const k = e.key.toLowerCase();
   if (k === 'b' || k === 'i' || k === 'c') {
@@ -3888,6 +3900,7 @@ window.addEventListener('keydown', e => {
     const sm = document.getElementById('settings-modal');
     if (sm && sm.style.display === 'flex') {
       sm.style.display = 'none';
+      document.getElementById('btn-settings')?.classList.remove('active');
       restoreMobileGameControls();
       e.preventDefault();
       return;
@@ -4231,9 +4244,14 @@ function doFireSide(fireSide) {
 
 function doFire() { doFireSide(1); doFireSide(-1); }
 
+function syncAnchorToolbarButton() {
+  const ba = document.getElementById('btn-anchor');
+  if (ba) ba.classList.toggle('active', !!G.player.anchored);
+}
 function doAnchor() {
   G.player.anchored = !G.player.anchored;
   document.getElementById('anchor-status').style.display = G.player.anchored ? 'block' : 'none';
+  syncAnchorToolbarButton();
   notify(G.player.anchored ? 'Anchor dropped' : 'Anchor raised');
 }
 
@@ -4250,6 +4268,7 @@ function togglePanel(id) {
     document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
     const btnMap = { 'ship-panel': 'btn-ship', 'inventory-panel': 'btn-inv', 'crew-panel': 'btn-crew', 'chat-box': 'btn-chat' };
     document.getElementById(btnMap[id])?.classList.add('active');
+    syncAnchorToolbarButton();
   }
 }
 function restoreMobileGameControls() {
@@ -4271,6 +4290,7 @@ function closeAllPanels() {
   closeDebugPasswordModal();
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
   restoreMobileGameControls();
+  syncAnchorToolbarButton();
 }
 
 function hideMobileControls() {
@@ -5019,7 +5039,7 @@ document.getElementById('btn-log').onclick = () => {
   const panel = document.getElementById('log-panel');
   const vis = panel.style.display !== 'none' && panel.style.display !== '';
   closeAllPanels();
-  if (!vis) { panel.style.display = 'block'; switchLogTab('ship'); hideMobileControls(); document.getElementById('btn-log').classList.add('active'); }
+  if (!vis) { panel.style.display = 'block'; switchLogTab('ship'); hideMobileControls(); document.getElementById('btn-log').classList.add('active'); syncAnchorToolbarButton(); }
 };
 document.querySelectorAll('.log-tab').forEach(tab => {
   tab.onclick = () => switchLogTab(tab.dataset.tab);
@@ -5043,6 +5063,7 @@ document.getElementById('btn-chat').onclick = () => {
   const chatBox = document.getElementById('chat-box');
   const wasOpen = chatBox.style.display !== 'none' && chatBox.style.display !== '';
   togglePanel('chat-box');
+  syncAnchorToolbarButton();
   if (!wasOpen) {
     hideMobileControls();
     unreadChat = 0;
@@ -5078,6 +5099,7 @@ const dockRopes = [];
 function dockAtPort() {
   if (!G.nearDock) return;
   G.docked = true; G.player.anchored = true; G.player.speed = 0;
+  syncAnchorToolbarButton();
   const da = G.nearDock.dockAngle || 0;
   const dWidX = Math.cos(da), dWidZ = -Math.sin(da);
   const playerSide = (G.player.x - G.nearDock.dockX) * dWidX + (G.player.z - G.nearDock.dockZ) * dWidZ;
@@ -5115,6 +5137,7 @@ function dockAtPort() {
 
 function leavePort() {
   G.docked = false; G.player.anchored = false;
+  syncAnchorToolbarButton();
   G.dockingAnim = null; G.sailsFurled = false;
   dockRopes.forEach(r => { scene.remove(r); r.geometry.dispose(); r.material.dispose(); });
   dockRopes.length = 0;
@@ -5415,7 +5438,9 @@ document.getElementById('port-leave').onclick = leavePort;
 document.querySelectorAll('.port-tab').forEach(t => { t.onclick = () => showPortTab(t.dataset.ptab); });
 document.getElementById('btn-help').onclick = () => {
   const h = document.getElementById('controls-help');
-  h.style.display = h.style.display === 'block' ? 'none' : 'block';
+  const willShow = h.style.display !== 'block';
+  h.style.display = willShow ? 'block' : 'none';
+  document.getElementById('btn-help').classList.toggle('active', willShow);
 };
 
 /* ============================== COMPASS ================================== */
@@ -6466,6 +6491,7 @@ function update(dt) {
     G.playerSinking = true; G.playerSinkTimer = 0;
     G.playerSinkY = playerShipGroup.position.y;
     G.player.speed = 0; G.player.anchored = true;
+    syncAnchorToolbarButton();
     spawnSwimmers(G.player.x, G.player.z, Math.min(G.player.crew.length, 4), G.player.crew);
     const lootDrops = [];
     for (let li = 0; li < 2 + Math.floor(Math.random()*2); li++) {
@@ -6491,6 +6517,7 @@ function update(dt) {
     if (G.playerSinkTimer > 8) {
       G.playerSinking = false;
       G.player.health = 100; G.player.anchored = false;
+      syncAnchorToolbarButton();
       G.player.x += (Math.random() - 0.5) * 100;
       G.player.z += (Math.random() - 0.5) * 100;
       ensurePlayerInOpenOcean();
@@ -7334,6 +7361,7 @@ function openSettingsPanel(options = {}) {
   const m = document.getElementById('settings-modal');
   if (!m) return;
   m.style.display = 'flex';
+  if (!fromMainMenu) document.getElementById('btn-settings')?.classList.add('active');
   const vol = document.getElementById('settings-volume');
   if (vol) vol.value = String(Math.round(G.soundVolume * 100));
   const row = document.getElementById('settings-scheme-row');
@@ -7359,6 +7387,7 @@ document.getElementById('credits-close')?.addEventListener('click', () => {
 document.getElementById('settings-close')?.addEventListener('click', () => {
   const m = document.getElementById('settings-modal');
   if (m) m.style.display = 'none';
+  document.getElementById('btn-settings')?.classList.remove('active');
   restoreMobileGameControls();
 });
 
