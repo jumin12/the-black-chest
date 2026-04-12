@@ -808,7 +808,9 @@ const G = {
   townStockpiles: null,
   townEconomyAcc: 0,
   /** Navigator spectate: `null` or `{ kind:'npc'|'player'|'dock', syncId?, playerId?, dockX?, dockZ?, facing? }` */
-  spectate: null
+  spectate: null,
+  /** Lifetime notoriety (persisted in save; synced to server when online). */
+  playerStats: { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 }
 };
 
 try {
@@ -817,6 +819,32 @@ try {
   const _ps = localStorage.getItem('pirates_mobile_scheme');
   if (_ps != null) G.mobileControlScheme = Math.max(0, Math.min(3, parseInt(_ps, 10)));
 } catch (e) {}
+
+function ensurePlayerStats() {
+  if (!G.playerStats || typeof G.playerStats !== 'object') {
+    G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+  }
+}
+/** Lifetime notoriety: persist to save and send deltas to the server when online. */
+function bumpNotoriety(d) {
+  if (!d || G.mode !== 'playing') return;
+  ensurePlayerStats();
+  const gold = Math.max(0, Math.floor(Number(d.gold) || 0));
+  const sinksAi = Math.max(0, Math.floor(Number(d.sinksAi) || 0));
+  const sinksPlayer = Math.max(0, Math.floor(Number(d.sinksPlayer) || 0));
+  const ransoms = Math.max(0, Math.floor(Number(d.ransoms) || 0));
+  const deaths = Math.max(0, Math.floor(Number(d.deaths) || 0));
+  if (!gold && !sinksAi && !sinksPlayer && !ransoms && !deaths) return;
+  if (gold) G.playerStats.goldEarned += gold;
+  if (sinksAi) G.playerStats.sinksAi += sinksAi;
+  if (sinksPlayer) G.playerStats.sinksPlayer += sinksPlayer;
+  if (ransoms) G.playerStats.ransoms += ransoms;
+  if (deaths) G.playerStats.deaths += deaths;
+  saveProgress();
+  if (ws?.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'leaderboard_update', gold, sinksAi, sinksPlayer, ransoms, deaths }));
+  }
+}
 
 /** Main story: defeat five notorious pirates, one per ship class, in order (any port for briefing / turn-in). */
 const STORY_SHIP_ORDER = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
@@ -1968,10 +1996,22 @@ function generateIsland(cx, cz) {
     townLabel.position.set(dockX, SEA_LEVEL + dockGround + 7.5, dockZ);
     group.add(townLabel);
 
-    const flagAlong = -16;
-    const fxx = dockX + dockLongX * flagAlong + dockWidX * 3.6;
-    const fzz = dockZ + dockLongZ * flagAlong + dockWidZ * 3.6;
-    const fyy = SEA_LEVEL + terrainYWorld(fxx, fzz) + 0.35;
+    const toInX = worldX - dockX, toInZ = worldZ - dockZ;
+    const inLen = Math.hypot(toInX, toInZ) || 1;
+    const ux = toInX / inLen, uz = toInZ / inLen;
+    const sideOff = 3.6;
+    let fxx = dockX + dockWidX * sideOff;
+    let fzz = dockZ + dockWidZ * sideOff;
+    for (let dist = 2; dist <= Math.min(140, islandRadius * 1.45); dist += 2) {
+      const tx = dockX + ux * dist + dockWidX * (sideOff * 0.35);
+      const tz = dockZ + uz * dist + dockWidZ * (sideOff * 0.35);
+      if (isSeaObstructed(tx, tz)) {
+        fxx = tx;
+        fzz = tz;
+        break;
+      }
+    }
+    const fyy = SEA_LEVEL + Math.max(terrainYWorld(fxx, fzz), 0.35) + 0.35;
     addDockFactionFlag(group, tf, fxx, fzz, fyy, dockAngle, dockWidX, dockWidZ);
   }
 
@@ -2670,7 +2710,7 @@ function checkPortQuestProgress() {
     reconcileSlotsWithInventory();
     G.quests.splice(i, 1);
     notify(`Delivery complete — ${q.destTown || 'port'}: +${q.reward}g`);
-    saveProgress();
+    bumpNotoriety({ gold: q.reward });
     updateMissionsPanel();
     updateStoryBriefHud();
   }
@@ -3766,6 +3806,7 @@ function connectToServer() {
       case 'leaderboard': {
         leaderboardData = msg.entries || [];
         try { localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData)); } catch (e) {}
+        syncLocalLegendFromEntries(leaderboardData);
         updatePiratesPanel();
         break;
       }
@@ -3976,6 +4017,12 @@ window.addEventListener('keydown', e => {
     }
     if (pm && pm.style.display === 'flex') {
       closeDebugPasswordModal();
+      return;
+    }
+    let navTok = null;
+    try { navTok = sessionStorage.getItem('pirates_navigator_sess'); } catch (err) {}
+    if (navTok) {
+      openDebugConsolePanel();
       return;
     }
     if (pm) {
@@ -5334,13 +5381,50 @@ function updateCrewPanel() {
   });
 }
 
+function lbRowGold(e) {
+  if (!e) return 0;
+  const v = e.gold != null ? e.gold : e.loot;
+  return Math.max(0, Math.floor(Number(v) || 0));
+}
+function lbRowSinksAi(e) {
+  if (!e) return 0;
+  const v = e.sinksAi != null ? e.sinksAi : e.kills;
+  return Math.max(0, Math.floor(Number(v) || 0));
+}
+function lbRowSinksPl(e) { return Math.max(0, Math.floor(Number(e && e.sinksPlayer) || 0)); }
+function lbRowRansoms(e) { return Math.max(0, Math.floor(Number(e && e.ransoms) || 0)); }
+function lbRowDeaths(e) { return Math.max(0, Math.floor(Number(e && e.deaths) || 0)); }
+function sortLbEntries(a, b) {
+  const ta = lbRowSinksAi(a) + lbRowSinksPl(a), tb = lbRowSinksAi(b) + lbRowSinksPl(b);
+  if (tb !== ta) return tb - ta;
+  const ga = lbRowGold(a), gb = lbRowGold(b);
+  if (gb !== ga) return gb - ga;
+  return String(a.name || '').localeCompare(String(b.name || ''));
+}
+/** When the server broadcasts ranks, fold your row back into local save so stats survive refresh/offline. */
+function syncLocalLegendFromEntries(entries) {
+  const cap = (G.player.crew[0] && G.player.crew[0].name) || '';
+  if (!cap || !Array.isArray(entries)) return;
+  const me = entries.find(x => x && x.name === cap);
+  if (!me) return;
+  ensurePlayerStats();
+  const g = lbRowGold(me), sai = lbRowSinksAi(me), spl = lbRowSinksPl(me), r = lbRowRansoms(me), d = lbRowDeaths(me);
+  let changed = false;
+  if (g > G.playerStats.goldEarned) { G.playerStats.goldEarned = g; changed = true; }
+  if (sai > G.playerStats.sinksAi) { G.playerStats.sinksAi = sai; changed = true; }
+  if (spl > G.playerStats.sinksPlayer) { G.playerStats.sinksPlayer = spl; changed = true; }
+  if (r > G.playerStats.ransoms) { G.playerStats.ransoms = r; changed = true; }
+  if (d > G.playerStats.deaths) { G.playerStats.deaths = d; changed = true; }
+  if (changed) saveProgress();
+}
+
 let leaderboardData = [];
 try {
   const _lbc = localStorage.getItem('pirates_lb_cache');
   if (_lbc) leaderboardData = JSON.parse(_lbc);
 } catch (e) {}
 if (leaderboardData.length) {
-  leaderboardData = leaderboardData.slice().sort((a, b) => (b.kills || 0) - (a.kills || 0) || (b.loot || 0) - (a.loot || 0));
+  leaderboardData = leaderboardData.slice().sort(sortLbEntries);
 }
 updatePiratesPanel();
 
@@ -5348,24 +5432,35 @@ function updatePiratesPanel() {
   const l = document.getElementById('pirates-list');
   if (!l) return;
   l.innerHTML = '';
+  ensurePlayerStats();
+  const ps = G.playerStats;
+  const youBlk = `<div style="margin-bottom:12px;padding:10px;background:rgba(40,28,18,0.55);border:1px solid rgba(180,140,60,0.35);border-radius:8px;font-size:10px;color:#c8b8a0;line-height:1.55;">
+    <div style="color:#d4a848;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:6px;">Your legend (saved)</div>
+    <span style="color:#d4a848;">Gold earned</span> ${ps.goldEarned} &nbsp;·&nbsp; <span style="color:#cc8888;">AI sunk</span> ${ps.sinksAi}
+    &nbsp;·&nbsp; <span style="color:#88a8cc;">Captains sunk</span> ${ps.sinksPlayer}<br>
+    <span style="color:#a8c8a8;">Ransoms</span> ${ps.ransoms} &nbsp;·&nbsp; <span style="color:#9888a8;">Lost at sea</span> ${ps.deaths}</div>`;
   let head = '<div style="color:#d4a848;font-size:12px;margin-bottom:8px;text-align:center;letter-spacing:1px;">TOP PIRATES</div>';
+  head += youBlk;
+  leaderboardData = leaderboardData.slice().sort(sortLbEntries);
   if (leaderboardData.length > 0) {
     const top = leaderboardData[0];
-    head += `<div style="text-align:center;margin-bottom:10px;padding:8px;background:rgba(50,18,18,0.4);border:1px solid rgba(180,80,60,0.35);border-radius:8px;font-size:11px;color:#e8dcc8;line-height:1.45;"><strong style="color:#d4a848;">Most notorious:</strong> ${top.name}<br><span style="color:#cc6666;">${top.kills} kills</span> · <span style="color:#d4a848;">${top.loot}g loot</span></div>`;
+    head += `<div style="text-align:center;margin-bottom:10px;padding:8px;background:rgba(50,18,18,0.4);border:1px solid rgba(180,80,60,0.35);border-radius:8px;font-size:10px;color:#e8dcc8;line-height:1.5;"><strong style="color:#d4a848;">Most notorious:</strong> ${top.name}<br>
+      <span style="color:#d4a848;">${lbRowGold(top)}g</span> earned · <span style="color:#cc8888;">${lbRowSinksAi(top)}</span> AI · <span style="color:#88a8cc;">${lbRowSinksPl(top)}</span> captains<br>
+      <span style="color:#a8c8a8;">${lbRowRansoms(top)}</span> ransoms · <span style="color:#9888a8;">${lbRowDeaths(top)}</span> deaths</div>`;
   }
   l.innerHTML = head;
   if (leaderboardData.length === 0) {
-    l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No data yet. Sink ships to climb the ranks!</div>';
+    l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No live rankings yet. Connect to the server to share the board — your legend above is always saved locally.</div>';
     return;
   }
   leaderboardData.forEach((e, i) => {
     const medal = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? '3rd' : `${i+1}th`;
     const medalColor = i === 0 ? '#ffd700' : i === 1 ? '#c0c0c0' : i === 2 ? '#cd7f32' : '#8a7a60';
     const d = document.createElement('div');
-    d.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px;background:rgba(30,20,12,0.4);border:1px solid rgba(140,100,40,0.15);border-radius:5px;margin-bottom:4px;';
+    d.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:8px;background:rgba(30,20,12,0.4);border:1px solid rgba(140,100,40,0.15);border-radius:5px;margin-bottom:4px;';
     d.innerHTML = `<div style="color:${medalColor};font-weight:bold;font-size:13px;min-width:32px;text-align:center;">${medal}</div>
-      <div style="flex:1;"><div style="color:#e0d6c2;font-size:13px;">${e.name}</div></div>
-      <div style="text-align:right;"><div style="color:#cc4444;font-size:11px;">${e.kills} kills</div><div style="color:#d4a848;font-size:10px;">${e.loot}g loot</div></div>`;
+      <div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${e.name}</div>
+ <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:4px;">${lbRowGold(e)}g · AI ${lbRowSinksAi(e)} · captains ${lbRowSinksPl(e)} · ransoms ${lbRowRansoms(e)} · deaths ${lbRowDeaths(e)}</div></div>`;
     l.appendChild(d);
   });
 }
@@ -5423,7 +5518,7 @@ window.ransomPrisoner = function(idx) {
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (gold) gold.count += 15;
   reconcileSlotsWithInventory();
-  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'leaderboard_update', kills: 0, loot: 15 }));
+  bumpNotoriety({ gold: 15, ransoms: 1 });
   notify(`Ransomed ${G.player.crew[idx].name} for 15 gold!`);
   G.player.crew.splice(idx, 1);
   rebuildPlayerShip();
@@ -5756,6 +5851,7 @@ window.portSell = function(id, price) {
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (gold) gold.count += price;
   reconcileSlotsWithInventory();
+  bumpNotoriety({ gold: price });
   notify(`Sold 1 ${id} for ${price}g`);
   showPortTab('trade');
 };
@@ -5864,7 +5960,7 @@ window.reportStoryBountyTurnIn = function() {
   const reward = STORY_REWARDS[sq.step];
   const gi = G.player.inventory.find(x => x.id === 'gold');
   if (gi) gi.count += reward;
-  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'leaderboard_update', kills: 0, loot: reward }));
+  bumpNotoriety({ gold: reward });
   sq.step += 1;
   if (sq.step >= STORY_SHIP_ORDER.length) {
     sq.phase = 'complete';
@@ -6795,12 +6891,14 @@ function update(dt) {
           spawnDamageChunks(b.x, b.y, b.z);
           if (npc.health <= 0) {
             const storySink = npc.isStoryBounty && npc.storyStep === G.storyQuest.step && G.storyQuest.phase === 'active';
-            if (storySink) onStoryBountySunkByPlayer(npc);
-            else {
+            if (storySink) {
+              onStoryBountySunkByPlayer(npc);
+              bumpNotoriety({ sinksAi: 1 });
+            } else {
               notify(`Sinking ${npc.name}! +30 gold`);
               const gi = G.player.inventory.find(x => x.id === 'gold');
               if (gi) gi.count += 30;
-              if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'leaderboard_update', kills: 1, loot: 30 }));
+              bumpNotoriety({ sinksAi: 1, gold: 30 });
             }
             npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
             spawnSwimmers(npc.x, npc.z, 2 + Math.floor(Math.random() * 3));
@@ -6949,6 +7047,7 @@ function update(dt) {
   }
 
   if (G.player.health <= 0 && !G.playerSinking) {
+    bumpNotoriety({ deaths: 1 });
     if (ws?.readyState === 1 && G.lastAttackerId != null) {
       const goldItem = G.player.inventory.find(i => i.id === 'gold');
       const goldN = goldItem ? goldItem.count : 0;
@@ -7019,6 +7118,7 @@ function update(dt) {
       }
       ex.count += amt;
       reconcileSlotsWithInventory();
+      if (item.type === 'gold') bumpNotoriety({ gold: amt });
       notify(`Collected ${item.type} ×${amt}!`);
       removeFloatingLootVisuals(item);
       if (item.netId != null && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'loot_collect', id: item.netId }));
@@ -7938,6 +8038,7 @@ function applyDefaultStartingLoadout() {
 
 function saveProgress() {
   try {
+    ensurePlayerStats();
     const data = {
       x: G.player.x, z: G.player.z, rotation: G.player.rotation,
       health: G.player.health, shipType: G.player.shipType,
@@ -7951,7 +8052,8 @@ function saveProgress() {
       quests: G.quests,
       storyQuest: G.storyQuest,
       worldSeed: G.worldSeed,
-      townStockpiles: G.townStockpiles
+      townStockpiles: G.townStockpiles,
+      playerStats: { ...G.playerStats }
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
   } catch (e) {}
@@ -7995,6 +8097,15 @@ function loadProgress() {
     if (data.flagColor) G.player.flagColor = data.flagColor;
     if (data.worldSeed != null && data.worldSeed !== '') G.worldSeed = Number(data.worldSeed) >>> 0;
     if (data.townStockpiles && typeof data.townStockpiles === 'object') G.townStockpiles = data.townStockpiles;
+    if (data.playerStats && typeof data.playerStats === 'object') {
+      ensurePlayerStats();
+      const ps = data.playerStats;
+      G.playerStats.goldEarned = Math.max(0, Math.floor(Number(ps.goldEarned) || 0));
+      G.playerStats.sinksAi = Math.max(0, Math.floor(Number(ps.sinksAi) || 0));
+      G.playerStats.sinksPlayer = Math.max(0, Math.floor(Number(ps.sinksPlayer) || 0));
+      G.playerStats.ransoms = Math.max(0, Math.floor(Number(ps.ransoms) || 0));
+      G.playerStats.deaths = Math.max(0, Math.floor(Number(ps.deaths) || 0));
+    }
     ensurePlayerInOpenOcean();
     return true;
   } catch (e) { return false; }
@@ -8158,6 +8269,7 @@ document.getElementById('start-btn').onclick = () => {
 
 document.getElementById('new-game-btn').onclick = () => {
   localStorage.removeItem(SAVE_KEY);
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
   G.player.health = 100; G.player.shipName = 'The Black Wave'; G.player.shipType = 'sloop';
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
