@@ -354,8 +354,20 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   </div>
   <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,12,25,0.97);z-index:50;pointer-events:auto;">
     <canvas id="fullmap-canvas" width="800" height="800" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(95vw,95vh);height:min(95vw,95vh);border:2px solid rgba(180,140,60,0.4);border-radius:8px;touch-action:none;cursor:grab;"></canvas>
-    <div style="position:absolute;top:10px;right:14px;color:#d4a848;font-size:14px;cursor:pointer;background:rgba(20,12,8,0.8);padding:6px 14px;border-radius:6px;border:1px solid rgba(180,140,60,0.4);" id="fullmap-close">CLOSE</div>
-    <div id="map-hint" style="position:absolute;top:10px;left:14px;color:#8090a0;font-size:11px;">Scroll to zoom / Drag to pan / M to close</div>
+    <div id="fullmap-layers" style="position:absolute;top:50%;left:max(8px,2vw);transform:translateY(-50%);width:176px;max-height:min(88vh,640px);overflow-y:auto;background:linear-gradient(165deg,rgba(12,22,38,0.96),rgba(6,12,22,0.94));border:1px solid rgba(180,140,90,0.42);border-radius:12px;padding:12px 14px;z-index:51;box-shadow:0 8px 28px rgba(0,0,0,0.5);font-family:Georgia,'Times New Roman',serif;font-size:11px;color:#e8e0d4;pointer-events:auto;">
+      <div style="color:#d4a848;font-weight:bold;font-size:11px;letter-spacing:0.08em;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(180,140,60,0.28);">CHART LAYERS</div>
+      <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="towns" checked style="accent-color:#c9a24a;width:14px;height:14px;"> Towns &amp; ports</label>
+      <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="merchants" checked style="accent-color:#c9a24a;width:14px;height:14px;"> Merchants</label>
+      <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="pirates" checked style="accent-color:#c9a24a;width:14px;height:14px;"> Pirates</label>
+      <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="players" checked style="accent-color:#c9a24a;width:14px;height:14px;"> Other players</label>
+      <div style="color:#b8a890;font-size:9px;margin:12px 0 6px;letter-spacing:0.12em;text-transform:uppercase;">Factions</div>
+      <label style="display:flex;align-items:center;gap:8px;margin:5px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="fac0" checked style="accent-color:#c94a4a;width:14px;height:14px;"><span style="color:#e8a0a0;">Crimson Compact</span></label>
+      <label style="display:flex;align-items:center;gap:8px;margin:5px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="fac1" checked style="accent-color:#4a7ac9;width:14px;height:14px;"><span style="color:#a0b8e8;">Azure Covenant</span></label>
+      <label style="display:flex;align-items:center;gap:8px;margin:5px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="fac2" checked style="accent-color:#4ac97a;width:14px;height:14px;"><span style="color:#a8e8c0;">Verdant League</span></label>
+      <label style="display:flex;align-items:center;gap:8px;margin:5px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="fac3" checked style="accent-color:#c9a24a;width:14px;height:14px;"><span style="color:#e8d4a0;">Amber Syndicate</span></label>
+    </div>
+    <div style="position:absolute;top:10px;right:14px;color:#d4a848;font-size:14px;cursor:pointer;background:rgba(20,12,8,0.8);padding:6px 14px;border-radius:6px;border:1px solid rgba(180,140,60,0.4);z-index:51;" id="fullmap-close">CLOSE</div>
+    <div id="map-hint" style="position:absolute;top:10px;left:50%;transform:translateX(-50%);color:#8090a0;font-size:11px;z-index:51;text-align:center;text-shadow:0 1px 3px rgba(0,0,0,0.8);">Scroll to zoom · Drag to pan · M to close</div>
   </div>
   <div id="anchor-status" class="hud-box" style="display:none;">Anchored</div>
   <div id="notification"></div>
@@ -522,12 +534,6 @@ function clampPlayerIntoWorldBounds() {
   G.player.z = Math.max(-lim, Math.min(lim, G.player.z));
 }
 const RENDER_DIST = 3;
-/** Other ships only appear on the normal minimap / full map when within this distance of you. */
-const MAP_LOCAL_VESSEL_RANGE = 1400;
-function isVesselInLocalMapRange(wx, wz) {
-  const dx = wx - G.player.x, dz = wz - G.player.z;
-  return dx * dx + dz * dz <= MAP_LOCAL_VESSEL_RANGE * MAP_LOCAL_VESSEL_RANGE;
-}
 function mainCanvasPixelRatio() {
   return Math.min(window.devicePixelRatio || 1, 2);
 }
@@ -5267,10 +5273,50 @@ function clampFullmapZoom(z) {
   return Math.max(FULLMAP_ZOOM_MIN, Math.min(FULLMAP_ZOOM_MAX, z));
 }
 let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = clampFullmapZoom(0.15), fmDragging = false, fmLastX = 0, fmLastY = 0;
+const mapChartLayers = { towns: true, merchants: true, pirates: true, players: true, faction: [true, true, true, true] };
+let mapChartLayersListenersReady = false;
+function npcChartFactionId(n) {
+  if (n.isTradeShip) return townFaction({ cx: n.homeCx | 0, cz: n.homeCz | 0, hasTown: true }) % 4;
+  if (n.factionId != null) return (n.factionId | 0) % 4;
+  const idx = FACTION_TRADE_COLORS.indexOf(n.flagColor);
+  if (idx >= 0) return idx;
+  return 0;
+}
+function mapChartTownVisible(d) {
+  if (!mapChartLayers.towns) return false;
+  return mapChartLayers.faction[townFaction(d) % 4];
+}
+function mapChartNpcVisible(n) {
+  const fid = npcChartFactionId(n);
+  if (!mapChartLayers.faction[fid]) return false;
+  if (n.isTradeShip) return mapChartLayers.merchants;
+  return mapChartLayers.pirates;
+}
+function ensureMapChartLayerListeners() {
+  if (mapChartLayersListenersReady) return;
+  const panel = document.getElementById('fullmap-layers');
+  if (!panel) return;
+  mapChartLayersListenersReady = true;
+  panel.addEventListener('change', (e) => {
+    const el = e.target;
+    if (el.type !== 'checkbox' || !el.dataset.chart) return;
+    const k = el.dataset.chart;
+    if (k === 'towns') mapChartLayers.towns = el.checked;
+    else if (k === 'merchants') mapChartLayers.merchants = el.checked;
+    else if (k === 'pirates') mapChartLayers.pirates = el.checked;
+    else if (k === 'players') mapChartLayers.players = el.checked;
+    else if (k.startsWith('fac')) mapChartLayers.faction[parseInt(k.slice(3), 10)] = el.checked;
+    if (fullmapOpen) drawFullmap();
+    drawMinimap();
+  });
+}
 function toggleFullmap() {
   fullmapOpen = !fullmapOpen;
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
-  if (fullmapOpen) { fmPanX = 0; fmPanZ = 0; fmZoom = clampFullmapZoom(fmZoom); drawFullmap(); hideMobileControls(); }
+  if (fullmapOpen) {
+    ensureMapChartLayerListeners();
+    fmPanX = 0; fmPanZ = 0; fmZoom = clampFullmapZoom(fmZoom); drawFullmap(); hideMobileControls();
+  }
   else restoreMobileGameControls();
 }
 function drawFullmap() {
@@ -5318,7 +5364,7 @@ function drawFullmap() {
     }
     ctx.closePath(); ctx.fill();
     ctx.shadowBlur = 0;
-    if (d.hasTown) {
+    if (d.hasTown && mapChartTownVisible(d)) {
       const tx = cx + (d.dockX - centerX) * s, ty = cy - (d.dockZ - centerZ) * s;
       if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
       const fcol = FACTION_TRADE_COLORS[townFaction(d) % 4];
@@ -5331,7 +5377,7 @@ function drawFullmap() {
 
   G.npcs.forEach(n => {
     if (n.sinking) return;
-    if (!isVesselInLocalMapRange(n.x, n.z)) return;
+    if (!mapChartNpcVisible(n)) return;
     const sx = cx + (n.x - centerX) * s, sy = cy - (n.z - centerZ) * s;
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
     const merchant = !!n.isTradeShip;
@@ -5345,7 +5391,7 @@ function drawFullmap() {
   });
 
   G.otherPlayers.forEach(p => {
-    if (!isVesselInLocalMapRange(p.x, p.z)) return;
+    if (!mapChartLayers.players) return;
     const sx = cx + (p.x - centerX) * s, sy = cy - (p.z - centerZ) * s;
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
     ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 5, 0, Math.PI * 2); ctx.fill();
@@ -5376,7 +5422,7 @@ function drawFullmap() {
     }
     if (q.type === 'hunt') {
       G.npcs.forEach(n => {
-        if (n.name === q.target && !n.sinking && isVesselInLocalMapRange(n.x, n.z)) {
+        if (n.name === q.target && !n.sinking && mapChartNpcVisible(n)) {
           const nx = cx + (n.x - centerX) * s, ny = cy - (n.z - centerZ) * s;
           ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
           ctx.beginPath(); ctx.arc(nx, ny, 10, 0, Math.PI * 2); ctx.stroke();
@@ -5416,33 +5462,57 @@ function drawFullmap() {
     }
   }
 
+  const limW = WORLD_EDGE_CLAMP;
+  const bxL = cx + (-limW - centerX) * s, bxR = cx + (limW - centerX) * s;
+  const byN = cy - (-limW - centerZ) * s, byS = cy - (limW - centerZ) * s;
+  const brx = Math.min(bxL, bxR), bry = Math.min(byN, byS);
+  const brw = Math.abs(bxR - bxL), brh = Math.abs(byS - byN);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 210, 130, 0.72)';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([12, 7]);
+  ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 4;
+  ctx.strokeRect(brx, bry, brw, brh);
+  ctx.shadowBlur = 0;
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(255, 220, 160, 0.88)';
+  ctx.font = 'bold 10px Georgia,serif'; ctx.textAlign = 'center';
+  ctx.fillText('World boundary', brx + brw / 2, Math.max(18, bry - 8));
+  ctx.restore();
+
   ctx.strokeStyle = 'rgba(180,140,60,0.25)'; ctx.lineWidth = 3;
   ctx.strokeRect(2, 2, w - 4, h - 4);
   ctx.strokeStyle = 'rgba(180,140,60,0.1)'; ctx.lineWidth = 1;
   ctx.strokeRect(6, 6, w - 12, h - 12);
 
-  const legH = 8 + FACTION_NAMES.length * 18;
-  ctx.fillStyle = 'rgba(6,10,18,0.82)';
-  ctx.beginPath(); ctx.roundRect(12, h - legH - 14, 210, legH, 8); ctx.fill();
-  ctx.strokeStyle = 'rgba(180,140,60,0.35)'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.roundRect(12, h - legH - 14, 210, legH, 8); ctx.stroke();
-  ctx.fillStyle = 'rgba(220,200,160,0.95)'; ctx.font = 'bold 11px Georgia,serif'; ctx.textAlign = 'left';
-  ctx.fillText('Factions', 22, h - legH - 2);
+  const legW = 232, legH = 58 + FACTION_NAMES.length * 22;
+  const legX = w - legW - 14, legY = h - legH - 40;
+  const legGrad = ctx.createLinearGradient(legX, legY, legX + legW, legY + legH);
+  legGrad.addColorStop(0, 'rgba(14,22,38,0.94)'); legGrad.addColorStop(1, 'rgba(8,14,26,0.92)');
+  ctx.fillStyle = legGrad;
+  ctx.beginPath(); ctx.roundRect(legX, legY, legW, legH, 10); ctx.fill();
+  ctx.strokeStyle = 'rgba(200, 160, 90, 0.45)'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.roundRect(legX, legY, legW, legH, 10); ctx.stroke();
+  ctx.fillStyle = 'rgba(212, 168, 72, 0.98)'; ctx.font = 'bold 11px Georgia,serif'; ctx.textAlign = 'left';
+  ctx.fillText('Powers of the archipelago', legX + 14, legY + 20);
+  ctx.fillStyle = 'rgba(140, 150, 170, 0.75)'; ctx.font = '9px Georgia,serif';
+  ctx.fillText('Ports · merchant hulls · pirate colors', legX + 14, legY + 34);
   for (let fi = 0; fi < FACTION_NAMES.length; fi++) {
+    const rowY = legY + 46 + fi * 22;
     ctx.fillStyle = FACTION_TRADE_COLORS[fi];
-    ctx.fillRect(22, h - legH + 8 + fi * 18, 16, 12);
-    ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.strokeRect(22, h - legH + 8 + fi * 18, 16, 12);
-    ctx.fillStyle = 'rgba(210,200,185,0.95)'; ctx.font = '11px Georgia,serif';
-    ctx.fillText(FACTION_NAMES[fi], 44, h - legH + 17 + fi * 18);
+    ctx.beginPath(); ctx.roundRect(legX + 14, rowY - 10, 20, 14, 3); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; ctx.strokeRect(legX + 14, rowY - 10, 20, 14);
+    ctx.fillStyle = 'rgba(228, 218, 200, 0.96)'; ctx.font = '11px Georgia,serif';
+    ctx.fillText(FACTION_NAMES[fi], legX + 42, rowY);
   }
 
-  ctx.fillStyle = 'rgba(180,140,60,0.6)'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(180,140,60,0.65)'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'right';
   ctx.fillText(`Zoom: ${(fmZoom * 1000).toFixed(0)}x`, w - 12, h - 10);
 }
 const fmCanvas = document.getElementById('fullmap-canvas');
 fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = clampFullmapZoom(fmZoom * (1 - e.deltaY * 0.001)); if (fullmapOpen) drawFullmap(); }, { passive: false });
 fmCanvas.addEventListener('mousedown', e => { fmDragging = true; fmLastX = e.clientX; fmLastY = e.clientY; fmCanvas.style.cursor = 'grabbing'; });
-window.addEventListener('mousemove', e => { if (fmDragging) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ -= (e.clientY - fmLastY) * scale / fmZoom; fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap(); } });
+window.addEventListener('mousemove', e => { if (fmDragging) { const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width; fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ += (e.clientY - fmLastY) * scale / fmZoom; fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap(); } });
 window.addEventListener('mouseup', () => { fmDragging = false; fmCanvas.style.cursor = 'grab'; });
 let fmTouchId = null, fmTouchX = 0, fmTouchY = 0, fmPinchDist = 0;
 fmCanvas.addEventListener('touchstart', e => {
@@ -5464,7 +5534,7 @@ fmCanvas.addEventListener('touchmove', e => {
     if (t.identifier === fmTouchId) {
       const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width;
       fmPanX -= (t.clientX - fmTouchX) * scale / fmZoom;
-      fmPanZ -= (t.clientY - fmTouchY) * scale / fmZoom;
+      fmPanZ += (t.clientY - fmTouchY) * scale / fmZoom;
       fmTouchX = t.clientX; fmTouchY = t.clientY;
       if (fullmapOpen) drawFullmap();
     }
@@ -5476,6 +5546,7 @@ document.getElementById('fullmap-close').onclick = toggleFullmap;
 
 let mmZoom = 0.08;
 function drawMinimap() {
+  ensureMapChartLayerListeners();
   const w = mmCanvas.width, h = mmCanvas.height, s = mmZoom, cx = w / 2, cy = h / 2;
   const ctx = mmCtx;
   ctx.fillStyle = '#081828'; ctx.fillRect(0, 0, w, h);
@@ -5513,7 +5584,7 @@ function drawMinimap() {
       p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
     }
     ctx.closePath(); ctx.fill();
-    if (d.hasTown) {
+    if (d.hasTown && mapChartTownVisible(d)) {
       const tx = cx + (d.dockX - G.player.x) * s, ty = cy - (d.dockZ - G.player.z) * s;
       if (tx > 0 && tx < w && ty > 0 && ty < h) {
         ctx.fillStyle = FACTION_TRADE_COLORS[townFaction(d) % 4]; ctx.fillRect(tx - 2, ty - 2, 4, 4);
@@ -5521,8 +5592,24 @@ function drawMinimap() {
       }
     }
   }, G.player.x, G.player.z);
-  G.npcs.forEach(n => { if (n.sinking) return; if (!isVesselInLocalMapRange(n.x, n.z)) return; const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { const mc = n.flagColor || (n.isTradeShip ? '#3a9a90' : '#cc3333'); ctx.fillStyle = mc; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 0.6; ctx.stroke(); } });
-  G.otherPlayers.forEach(p => { if (!isVesselInLocalMapRange(p.x, p.z)) return; const sx = cx + (p.x - G.player.x) * s, sy = cy - (p.z - G.player.z) * s; if (sx > 0 && sx < w && sy > 0 && sy < h) { ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke(); } });
+  G.npcs.forEach(n => {
+    if (n.sinking) return;
+    if (!mapChartNpcVisible(n)) return;
+    const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s;
+    if (sx > 0 && sx < w && sy > 0 && sy < h) {
+      const mc = n.flagColor || (n.isTradeShip ? '#3a9a90' : '#cc3333');
+      ctx.fillStyle = mc; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 0.6; ctx.stroke();
+    }
+  });
+  G.otherPlayers.forEach(p => {
+    if (!mapChartLayers.players) return;
+    const sx = cx + (p.x - G.player.x) * s, sy = cy - (p.z - G.player.z) * s;
+    if (sx > 0 && sx < w && sy > 0 && sy < h) {
+      ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke();
+    }
+  });
   if (G.storyQuest.phase === 'intro') {
     const port = findNearestPortDock(G.player.x, G.player.z);
     if (port) {
