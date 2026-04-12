@@ -2651,16 +2651,96 @@ function accelerateNpcToward(npc, dt, target) {
   }
   npc.speed = Math.max(-maxF * 0.2, Math.min(maxF, npc.speed));
 }
+/** Ray along npc.rotation: true if sea for full distance. */
+function npcForwardRayClear(npc, dist, segments) {
+  const n = Math.max(2, segments | 0);
+  const step = dist / n;
+  for (let s = 1; s <= n; s++) {
+    const x = npc.x + Math.sin(npc.rotation) * step * s;
+    const z = npc.z + Math.cos(npc.rotation) * step * s;
+    if (isSeaObstructed(x, z)) return false;
+  }
+  return true;
+}
+/** When land is ahead, steer toward the best arc around it (longest open ray among sampled headings). */
+function steerNpcClearanceAhead(npc, dt, turnSharp) {
+  if (npc.escapeMode) return;
+  if (isSeaObstructed(npc.x, npc.z)) return;
+  const look = 40;
+  if (npcForwardRayClear(npc, look, 9)) return;
+  const turn = turnSharp != null ? turnSharp : 2.35;
+  let bestAng = npc.rotation, bestScore = 0;
+  for (let i = -14; i <= 14; i++) {
+    const a = npc.rotation + (i / 14) * 1.15;
+    let score = 0;
+    for (let s = 1; s <= 7; s++) {
+      const x = npc.x + Math.sin(a) * 8.5 * s;
+      const z = npc.z + Math.cos(a) * 8.5 * s;
+      if (!isSeaObstructed(x, z)) score++;
+      else break;
+    }
+    if (score > bestScore) { bestScore = score; bestAng = a; }
+  }
+  if (bestScore >= 3) {
+    let diff = bestAng - npc.rotation;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    npc.rotation += diff * turn * dt * 0.72;
+    npc.wanderAngle = npc.rotation;
+  }
+}
+/** Stuck = moving forward but path blocked; then turn 180° and sail straight until open water ahead. */
+function updateNpcEscapeMode(npc, dt) {
+  const spd = npcEffectiveForwardSpeed(npc);
+  if (npc.escapeMode) {
+    npc.escapeTimer = (npc.escapeTimer || 0) + dt;
+    npc.wanderAngle = npc.rotation;
+    if (npc.escapeTimer > 9) {
+      npc.escapeMode = false;
+      npc.escapeTimer = 0;
+      npc.stuckAcc = 0;
+      const op = findNpcOpenWaterHeading(npc, 34);
+      if (op != null) { npc.rotation = op; npc.wanderAngle = op; }
+      return;
+    }
+    if (spd > 0.08 && npcForwardRayClear(npc, 52, 11) && npc.escapeTimer > 0.32) {
+      npc.escapeMode = false;
+      npc.escapeTimer = 0;
+      npc.stuckAcc = 0;
+    }
+    return;
+  }
+  if (spd > 0.12 && npc.navLastMoveClear === false) {
+    npc.stuckAcc = (npc.stuckAcc || 0) + dt;
+  } else {
+    npc.stuckAcc = Math.max(0, (npc.stuckAcc || 0) - dt * 0.85);
+  }
+  if (npc.stuckAcc > 0.5) {
+    npc.rotation += Math.PI;
+    while (npc.rotation > Math.PI) npc.rotation -= Math.PI * 2;
+    while (npc.rotation < -Math.PI) npc.rotation += Math.PI * 2;
+    npc.wanderAngle = npc.rotation;
+    npc.escapeMode = true;
+    npc.escapeTimer = 0;
+    npc.stuckAcc = 0;
+  }
+}
 function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   const spd = npcEffectiveForwardSpeed(npc);
   const turn = turnSharp != null ? turnSharp : 2.35;
   const nNewX = npc.x + Math.sin(npc.rotation) * spd * dt;
   const nNewZ = npc.z + Math.cos(npc.rotation) * spd * dt;
+  if (spd < 0.02) {
+    npc.navLastMoveClear = true;
+    return;
+  }
   if (!isSeaObstructed(nNewX, nNewZ)) {
     npc.x = nNewX;
     npc.z = nNewZ;
+    npc.navLastMoveClear = true;
     return;
   }
+  npc.navLastMoveClear = false;
   const open = findNpcOpenWaterHeading(npc, 28);
   if (open != null) {
     let diff = open - npc.rotation;
@@ -2902,11 +2982,13 @@ function updateNPCs(dt) {
               npc.tradeTimer = TRADE_DOCK_EDGE_SEC;
               npc.speed = 0;
             } else {
-              const targetAngle = Math.atan2(dx, dz);
-              let tdiff = targetAngle - npc.rotation;
-              while (tdiff > Math.PI) tdiff -= Math.PI * 2;
-              while (tdiff < -Math.PI) tdiff += Math.PI * 2;
-              npc.rotation += tdiff * 0.9 * dt;
+              if (!npc.escapeMode) {
+                const targetAngle = Math.atan2(dx, dz);
+                let tdiff = targetAngle - npc.rotation;
+                while (tdiff > Math.PI) tdiff -= Math.PI * 2;
+                while (tdiff < -Math.PI) tdiff += Math.PI * 2;
+                npc.rotation += tdiff * 0.9 * dt;
+              }
               accelerateNpcToward(npc, dt, tgtC);
             }
           }
@@ -2945,53 +3027,59 @@ function updateNPCs(dt) {
             }
           }
         }
+        if (phase === 'to_dest' || phase === 'to_home') steerNpcClearanceAhead(npc, dt, 2.45);
         if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
         applyNpcMoveWithIslandEscape(npc, dt, 2.45);
+        updateNpcEscapeMode(npc, dt);
       } else {
       if (!npc.fireCooldown) npc.fireCooldown = 0;
       npc.fireCooldown -= dt;
       if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
 
       const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+      const sharp = npc.aggro && distToPlayer < 110 ? 2.55 : 2.05;
 
-      if (npc.aggro && distToPlayer < 110) {
-        const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
-        const toPlayer = Math.atan2(dx, dz);
-        const starboardBroadside = toPlayer + Math.PI / 2;
-        const portBroadside = toPlayer - Math.PI / 2;
-        const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-        const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-        const targetAngle = npc.underFireTimer > 0
-          ? (dStar < dPort ? starboardBroadside : portBroadside)
-          : (toPlayer + Math.PI / 3);
-        let diff = targetAngle - npc.rotation;
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.08;
-        npc.rotation += diff * turnMul * dt;
+      if (!npc.escapeMode) {
+        if (npc.aggro && distToPlayer < 110) {
+          const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
+          const toPlayer = Math.atan2(dx, dz);
+          const starboardBroadside = toPlayer + Math.PI / 2;
+          const portBroadside = toPlayer - Math.PI / 2;
+          const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+          const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+          const targetAngle = npc.underFireTimer > 0
+            ? (dStar < dPort ? starboardBroadside : portBroadside)
+            : (toPlayer + Math.PI / 3);
+          let diff = targetAngle - npc.rotation;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.08;
+          npc.rotation += diff * turnMul * dt;
 
-        if (npc.fireCooldown <= 0 && distToPlayer < 64) {
-          npcFireAtPlayer(npc);
-          npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+          if (npc.fireCooldown <= 0 && distToPlayer < 64) {
+            npcFireAtPlayer(npc);
+            npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+          }
+        } else {
+          npc.wanderTimer -= dt;
+          if (npc.wanderTimer <= 0) {
+            npc.wanderAngle += (Math.random() - 0.5) * 1.5;
+            npc.wanderTimer = 4 + Math.random() * 8;
+          }
+          let diff = npc.wanderAngle - npc.rotation;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          npc.rotation += diff * 0.5 * dt;
         }
-      } else {
-        npc.wanderTimer -= dt;
-        if (npc.wanderTimer <= 0) {
-          npc.wanderAngle += (Math.random() - 0.5) * 1.5;
-          npc.wanderTimer = 4 + Math.random() * 8;
-        }
-        let diff = npc.wanderAngle - npc.rotation;
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        npc.rotation += diff * 0.5 * dt;
       }
 
+      steerNpcClearanceAhead(npc, dt, sharp);
       if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
       const maxF = npcMaxForwardSpeed(npc);
       const tgtSpd = npc.aggro && distToPlayer < 110 ? maxF * 0.5 : maxF * 0.28;
       accelerateNpcToward(npc, dt, tgtSpd);
-      const sharp = npc.aggro && distToPlayer < 110 ? 2.55 : 2.05;
       applyNpcMoveWithIslandEscape(npc, dt, sharp);
+      updateNpcEscapeMode(npc, dt);
       }
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
