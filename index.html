@@ -354,7 +354,8 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   </div>
   <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,12,25,0.97);z-index:50;pointer-events:auto;">
     <canvas id="fullmap-canvas" width="800" height="800" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(95vw,95vh);height:min(95vw,95vh);border:2px solid rgba(180,140,60,0.4);border-radius:8px;touch-action:none;cursor:grab;"></canvas>
-    <div id="fullmap-layers" style="position:absolute;top:50%;left:max(8px,2vw);transform:translateY(-50%);width:176px;max-height:min(88vh,640px);overflow-y:auto;background:linear-gradient(165deg,rgba(12,22,38,0.96),rgba(6,12,22,0.94));border:1px solid rgba(180,140,90,0.42);border-radius:12px;padding:12px 14px;z-index:51;box-shadow:0 8px 28px rgba(0,0,0,0.5);font-family:Georgia,'Times New Roman',serif;font-size:11px;color:#e8e0d4;pointer-events:auto;">
+    <button type="button" id="fullmap-layers-toggle" aria-expanded="false" aria-controls="fullmap-layers" style="position:absolute;top:42px;left:max(10px,1.5vw);z-index:52;color:#d4a848;font-size:12px;font-family:Georgia,serif;cursor:pointer;background:rgba(20,12,8,0.88);padding:8px 14px;border-radius:8px;border:1px solid rgba(180,140,60,0.45);box-shadow:0 4px 14px rgba(0,0,0,0.35);pointer-events:auto;">Chart layers</button>
+    <div id="fullmap-layers" style="display:none;position:absolute;top:84px;left:max(10px,1.5vw);width:176px;max-height:min(72vh,520px);overflow-y:auto;background:linear-gradient(165deg,rgba(12,22,38,0.96),rgba(6,12,22,0.94));border:1px solid rgba(180,140,90,0.42);border-radius:12px;padding:12px 14px;z-index:51;box-shadow:0 8px 28px rgba(0,0,0,0.5);font-family:Georgia,'Times New Roman',serif;font-size:11px;color:#e8e0d4;pointer-events:auto;">
       <div style="color:#d4a848;font-weight:bold;font-size:11px;letter-spacing:0.08em;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(180,140,60,0.28);">CHART LAYERS</div>
       <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="towns" checked style="accent-color:#c9a24a;width:14px;height:14px;"> Towns &amp; ports</label>
       <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer;user-select:none;"><input type="checkbox" data-chart="merchants" checked style="accent-color:#c9a24a;width:14px;height:14px;"> Merchants</label>
@@ -5292,11 +5293,27 @@ function mapChartNpcVisible(n) {
   if (n.isTradeShip) return mapChartLayers.merchants;
   return mapChartLayers.pirates;
 }
+function setFullmapLayersPanelVisible(show) {
+  const panel = document.getElementById('fullmap-layers');
+  const btn = document.getElementById('fullmap-layers-toggle');
+  if (panel) panel.style.display = show ? 'block' : 'none';
+  if (btn) {
+    btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+    btn.textContent = show ? 'Hide chart layers' : 'Chart layers';
+  }
+}
+function toggleFullmapLayersPanel() {
+  const panel = document.getElementById('fullmap-layers');
+  const open = panel && panel.style.display === 'block';
+  setFullmapLayersPanelVisible(!open);
+}
 function ensureMapChartLayerListeners() {
   if (mapChartLayersListenersReady) return;
   const panel = document.getElementById('fullmap-layers');
+  const btn = document.getElementById('fullmap-layers-toggle');
   if (!panel) return;
   mapChartLayersListenersReady = true;
+  if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); toggleFullmapLayersPanel(); });
   panel.addEventListener('change', (e) => {
     const el = e.target;
     if (el.type !== 'checkbox' || !el.dataset.chart) return;
@@ -5315,9 +5332,12 @@ function toggleFullmap() {
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
   if (fullmapOpen) {
     ensureMapChartLayerListeners();
+    setFullmapLayersPanelVisible(false);
     fmPanX = 0; fmPanZ = 0; fmZoom = clampFullmapZoom(fmZoom); drawFullmap(); hideMobileControls();
+  } else {
+    setFullmapLayersPanelVisible(false);
+    restoreMobileGameControls();
   }
-  else restoreMobileGameControls();
 }
 function drawFullmap() {
   fmZoom = clampFullmapZoom(fmZoom);
@@ -5485,7 +5505,7 @@ function drawFullmap() {
   ctx.strokeStyle = 'rgba(180,140,60,0.1)'; ctx.lineWidth = 1;
   ctx.strokeRect(6, 6, w - 12, h - 12);
 
-  const legW = 232, legH = 58 + FACTION_NAMES.length * 22;
+  const legW = 232, legH = 34 + FACTION_NAMES.length * 22;
   const legX = w - legW - 14, legY = h - legH - 40;
   const legGrad = ctx.createLinearGradient(legX, legY, legX + legW, legY + legH);
   legGrad.addColorStop(0, 'rgba(14,22,38,0.94)'); legGrad.addColorStop(1, 'rgba(8,14,26,0.92)');
@@ -5495,10 +5515,8 @@ function drawFullmap() {
   ctx.beginPath(); ctx.roundRect(legX, legY, legW, legH, 10); ctx.stroke();
   ctx.fillStyle = 'rgba(212, 168, 72, 0.98)'; ctx.font = 'bold 11px Georgia,serif'; ctx.textAlign = 'left';
   ctx.fillText('Powers of the archipelago', legX + 14, legY + 20);
-  ctx.fillStyle = 'rgba(140, 150, 170, 0.75)'; ctx.font = '9px Georgia,serif';
-  ctx.fillText('Ports · merchant hulls · pirate colors', legX + 14, legY + 34);
   for (let fi = 0; fi < FACTION_NAMES.length; fi++) {
-    const rowY = legY + 46 + fi * 22;
+    const rowY = legY + 32 + fi * 22;
     ctx.fillStyle = FACTION_TRADE_COLORS[fi];
     ctx.beginPath(); ctx.roundRect(legX + 14, rowY - 10, 20, 14, 3); ctx.fill();
     ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; ctx.strokeRect(legX + 14, rowY - 10, 20, 14);
