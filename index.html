@@ -834,6 +834,8 @@ const G = {
   npcs: [],
   damageChunks: [],
   seaDebris: [],
+  _lastSeaBattleActivityT: Infinity,
+  _seaDebrisPurgeAt: null,
   swimmers: [],
   selectedAmmoType: 'ball',
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
@@ -2474,6 +2476,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     const mH = spec.hullLen * 0.7, mZ = (m - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
     const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.11, mH, 5), rm);
     mast.userData.isMast = true;
+    mast.userData.mastLeanSign = m % 2 === 0 ? 1 : -1;
     mast.position.set(0, spec.hullH * 0.6 + mH / 2, mZ); mast.castShadow = true; g.add(mast);
 
     const sW = spec.hullW * 1.2, sH = mH * 0.55;
@@ -2527,6 +2530,8 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
 
   const fmH = spec.hullLen * 0.45;
   const foremast = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, fmH, 4), rm);
+  foremast.userData.isMast = true;
+  foremast.userData.mastLeanSign = 1;
   foremast.position.set(0, spec.hullH * 0.5 + fmH / 2, spec.hullLen * 0.35);
   foremast.castShadow = true; g.add(foremast);
   const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, spec.hullLen * 0.35, 4), rm);
@@ -2535,7 +2540,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   const jibGeo = new THREE.PlaneGeometry(spec.hullW * 0.5, fmH * 0.5, 3, 3);
   const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
   jib.position.set(0, spec.hullH * 0.5 + fmH * 0.5, spec.hullLen * 0.44);
-  jib.rotation.y = 0.3; jib.userData.isSail = true; jib.userData.basePositions = jibGeo.attributes.position.array.slice();
+  jib.rotation.y = 0.3; jib.userData.isSail = true; jib.userData.isJib = true; jib.userData.basePositions = jibGeo.attributes.position.array.slice();
   g.add(jib);
 
   if (parts.figurehead && parts.figurehead !== 'none') {
@@ -3299,8 +3304,9 @@ function npcSailBonus(npc) {
 /** Same cap as player: min(G.player.speed, 12 * speedMult) — see update() sailing. */
 function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
-  const rm = npc.riggingMult != null ? Math.max(0.12, Math.min(1, npc.riggingMult)) : 1;
-  return 12 * (spec.speed + npcSailBonus(npc)) * rm;
+  const rm = npc.riggingMult != null ? Math.max(0.1, Math.min(1, npc.riggingMult)) : 1;
+  const rigF = Math.pow(rm, 1.32);
+  return 12 * (spec.speed + npcSailBonus(npc)) * rigF;
 }
 function npcWindEffect(npc) {
   const w = getWindAt(npc.x, npc.z);
@@ -3877,10 +3883,11 @@ function disposeCannonballGeometries(root) {
 }
 
 function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType) {
-  const at = ammoType === 'grape' || ammoType === 'chain' ? ammoType : 'ball';
+  const isPellet = ammoType === 'grape_pellet';
+  const at = isPellet ? 'grape' : (ammoType === 'grape' || ammoType === 'chain' ? ammoType : 'ball');
   const y = spawnY || (SEA_LEVEL + 1.2);
   const dy0 = at === 'grape' ? 2.0 : 1.5;
-  const life0 = at === 'chain' ? 3.0 : 4;
+  const life0 = at === 'chain' ? 3.0 : (isPellet ? 2.2 : 4);
   const b = {
     x, z, y,
     dx: dx * 35,
@@ -3889,25 +3896,32 @@ function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType) {
     life: life0,
     owner: owner || 'player',
     sourcePlayerId: sourcePlayerId != null ? sourcePlayerId : null,
-    ammoType: at
+    ammoType: at,
+    isPellet: !!isPellet
   };
   G.cannonballs.push(b);
+  markSeaBattleActivity();
   let m;
   if (at === 'grape') {
-    m = new THREE.Group();
-    const n = 12, rBall = 0.052;
-    for (let gi = 0; gi < n; gi++) {
-      const sm = new THREE.Mesh(new THREE.SphereGeometry(rBall, 4, 4), grapeShotMat);
-      const u = Math.random(), v = Math.random();
-      const th = u * Math.PI * 2, ph = Math.acos(2 * v - 1);
-      const rad = 0.09 + Math.random() * 0.07;
-      sm.position.set(
-        rad * Math.sin(ph) * Math.cos(th),
-        rad * Math.sin(ph) * Math.sin(th) * 0.65,
-        rad * Math.cos(ph));
-      m.add(sm);
+    if (isPellet) {
+      m = new THREE.Mesh(new THREE.SphereGeometry(0.072, 5, 5), grapeShotMat);
+      m.userData.disposeOnRemove = true;
+    } else {
+      m = new THREE.Group();
+      const n = 12, rBall = 0.052;
+      for (let gi = 0; gi < n; gi++) {
+        const sm = new THREE.Mesh(new THREE.SphereGeometry(rBall, 4, 4), grapeShotMat);
+        const u = Math.random(), v = Math.random();
+        const th = u * Math.PI * 2, ph = Math.acos(2 * v - 1);
+        const rad = 0.09 + Math.random() * 0.07;
+        sm.position.set(
+          rad * Math.sin(ph) * Math.cos(th),
+          rad * Math.sin(ph) * Math.sin(th) * 0.65,
+          rad * Math.cos(ph));
+        m.add(sm);
+      }
+      m.userData.disposeOnRemove = true;
     }
-    m.userData.disposeOnRemove = true;
   } else if (at === 'chain') {
     m = new THREE.Group();
     const ballR = 0.175;
@@ -4023,8 +4037,26 @@ function spawnDamageChunks(wx, wy, wz) {
   }
 }
 
-function spawnSeaDebrisFromHit(wx, wz, pieces) {
+function markSeaBattleActivity() {
+  G._lastSeaBattleActivityT = G.time;
+  G._seaDebrisPurgeAt = null;
+}
+
+function updateSeaDebrisBattleClock(dt) {
+  const peaceGap = 3.6;
+  if (G.time - G._lastSeaBattleActivityT > peaceGap) {
+    if (G._seaDebrisPurgeAt == null) G._seaDebrisPurgeAt = G.time + 30;
+  } else {
+    G._seaDebrisPurgeAt = null;
+  }
+}
+
+function spawnSeaDebrisFromHit(wx, wz, pieces, fromNet) {
   const n = Math.max(1, Math.min(12, pieces | 0));
+  markSeaBattleActivity();
+  if (ws && ws.readyState === 1 && !fromNet) {
+    try { ws.send(JSON.stringify({ type: 'sea_debris', x: wx, z: wz, n })); } catch (e) {}
+  }
   for (let i = 0; i < n; i++) {
     const size = 0.12 + Math.random() * 0.38;
     const mesh = new THREE.Mesh(
@@ -4035,7 +4067,7 @@ function spawnSeaDebrisFromHit(wx, wz, pieces) {
     mesh.userData.vx = (Math.random() - 0.5) * 1.2;
     mesh.userData.vz = (Math.random() - 0.5) * 1.2;
     mesh.userData.bob = Math.random() * Math.PI * 2;
-    mesh.userData.life = 12 + Math.random() * 10;
+    mesh.userData.battleFlotsam = true;
     mesh.rotation.set(Math.random() * 0.8, Math.random() * Math.PI * 2, Math.random() * 0.8);
     scene.add(mesh);
     G.seaDebris.push(mesh);
@@ -4045,17 +4077,30 @@ function spawnSeaDebrisFromHit(wx, wz, pieces) {
 function applyRiggingVisualToGroup(group, riggingHealth) {
   if (!group) return;
   const rh = riggingHealth != null ? riggingHealth : 100;
-  const rf = Math.max(0.08, Math.min(1, rh / 100));
+  const rf = Math.max(0, Math.min(1, rh / 100));
+  const damage = 1 - rf;
   group.traverse(ch => {
     if (ch.userData && ch.userData.isSail && ch.scale) {
-      const base = ch.userData._rigBaseScale == null ? ch.scale.x : ch.userData._rigBaseScale;
-      ch.userData._rigBaseScale = base;
-      ch.scale.setScalar(base * (0.2 + 0.8 * rf));
+      if (ch.userData._rigBaseScale == null) ch.userData._rigBaseScale = ch.scale.x;
+      if (ch.userData._rigBasePosY == null) ch.userData._rigBasePosY = ch.position.y;
+      if (ch.userData._rigBaseRotX == null) ch.userData._rigBaseRotX = ch.rotation.x;
+      const base = ch.userData._rigBaseScale;
+      const fall = damage;
+      ch.scale.setScalar(base * (0.32 + 0.68 * rf));
+      ch.rotation.x = ch.userData._rigBaseRotX + fall * (ch.userData.isJib ? 0.75 : 1.05);
+      ch.position.y = ch.userData._rigBasePosY - fall * 0.5 * (ch.userData.isJib ? 0.55 : 1);
     }
     if (ch.userData && ch.userData.isMast && ch.scale) {
-      const by = ch.userData._mastBaseSy == null ? ch.scale.y : ch.userData._mastBaseSy;
-      ch.userData._mastBaseSy = by;
-      ch.scale.y = by * (0.15 + 0.85 * rf);
+      if (ch.userData._mastBaseSy == null) ch.userData._mastBaseSy = ch.scale.y;
+      if (ch.userData._mastBaseY == null) ch.userData._mastBaseY = ch.position.y;
+      if (ch.userData._mastBaseRotX == null) ch.userData._mastBaseRotX = ch.rotation.x;
+      if (ch.userData._mastBaseRotZ == null) ch.userData._mastBaseRotZ = ch.rotation.z;
+      const lean = ch.userData.mastLeanSign || 1;
+      const fall = damage;
+      ch.scale.y = ch.userData._mastBaseSy * (0.5 + 0.5 * rf);
+      ch.rotation.x = ch.userData._mastBaseRotX + fall * 1.12;
+      ch.rotation.z = ch.userData._mastBaseRotZ + fall * 0.62 * lean;
+      ch.position.y = ch.userData._mastBaseY - fall * 0.95;
     }
   });
 }
@@ -4074,24 +4119,38 @@ function removeCrewMemberAtWithFlavor(idx, overboard, killerLabel) {
   const c = G.player.crew[idx];
   if (!c || c.role === 'captain') return;
   if (overboard) {
-    spawnSwimmers(G.player.x, G.player.z, 1, [c], { rescueRestoresCrew: true });
+    const thrown = {
+      name: c.name, role: c.role, health: c.health, task: c.task || 'idle',
+      color: c.color || '#4a4a4a', hat: c.hat || 'none', outfit: c.outfit || 'vest', parrot: !!c.parrot
+    };
+    G.player.crew.splice(idx, 1);
+    const ast = 18 + Math.random() * 5;
+    const r = G.player.rotation;
+    const bx = G.player.x - Math.sin(r) * ast + (Math.random() - 0.5) * 2.5;
+    const bz = G.player.z - Math.cos(r) * ast + (Math.random() - 0.5) * 2.5;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'swimmer_spawn', swimmers: [{ x: bx, z: bz, restore: thrown }] }));
+    } else {
+      spawnSwimmers(bx, bz, 1, [thrown], { rescueRestoresCrew: true });
+    }
     notify(`${c.name} was knocked into the sea!`);
   } else {
+    G.player.crew.splice(idx, 1);
     spawnSwimmers(G.player.x, G.player.z, 1, [], {});
     notify(`${c.name} was slain by ${killerLabel}!`);
   }
-  G.player.crew.splice(idx, 1);
   G.player.morale = Math.max(0, G.player.morale - (overboard ? 10 : 14));
   rebuildPlayerShip();
   updateCrewPanel();
   refreshCargoPanelIfOpen();
 }
 
-function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz) {
+function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
   if (G.docked) return;
   const at = ammoType === 'grape' || ammoType === 'chain' ? ammoType : 'ball';
+  markSeaBattleActivity();
   spawnDamageChunks(hx, SEA_LEVEL + 1.2, hz);
-  spawnSeaDebrisFromHit(hx, hz, at === 'grape' ? 5 : at === 'chain' ? 7 : 4);
+  spawnSeaDebrisFromHit(hx, hz, at === 'grape' ? (isPellet ? 2 : 5) : at === 'chain' ? 8 : 4);
   if (at === 'ball') {
     G.player.health = Math.max(0, G.player.health - 9);
     G.player.morale = Math.max(0, G.player.morale - 4);
@@ -4103,21 +4162,33 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz) {
       if (ix >= 0) removeCrewMemberAtWithFlavor(ix, false, 'round shot');
     }
   } else if (at === 'grape') {
-    G.player.health = Math.max(0, G.player.health - 4);
-    G.player.morale = Math.max(0, G.player.morale - 8);
-    if (Math.random() < 0.52) {
-      const ix = pickNonCaptainCrewIndexForCasualty();
-      if (ix >= 0) removeCrewMemberAtWithFlavor(ix, false, 'grapeshot');
-    } else if (Math.random() < 0.28) {
-      const ix = pickNonCaptainCrewIndexForCasualty();
-      if (ix >= 0) removeCrewMemberAtWithFlavor(ix, true, 'grapeshot');
+    if (isPellet) {
+      G.player.health = Math.max(0, G.player.health - 1.8);
+      G.player.morale = Math.max(0, G.player.morale - 1.2);
+      if (Math.random() < 0.09) {
+        const ix = pickNonCaptainCrewIndexForCasualty();
+        if (ix >= 0) removeCrewMemberAtWithFlavor(ix, false, 'grapeshot');
+      } else if (Math.random() < 0.11) {
+        const ix = pickNonCaptainCrewIndexForCasualty();
+        if (ix >= 0) removeCrewMemberAtWithFlavor(ix, true, 'grapeshot');
+      }
+    } else {
+      G.player.health = Math.max(0, G.player.health - 4);
+      G.player.morale = Math.max(0, G.player.morale - 8);
+      if (Math.random() < 0.52) {
+        const ix = pickNonCaptainCrewIndexForCasualty();
+        if (ix >= 0) removeCrewMemberAtWithFlavor(ix, false, 'grapeshot');
+      } else if (Math.random() < 0.28) {
+        const ix = pickNonCaptainCrewIndexForCasualty();
+        if (ix >= 0) removeCrewMemberAtWithFlavor(ix, true, 'grapeshot');
+      }
     }
   } else if (at === 'chain') {
-    G.player.health = Math.max(0, G.player.health - 5);
-    G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - (16 + Math.random() * 14));
-    G.player.morale = Math.max(0, G.player.morale - 5);
+    G.player.health = Math.max(0, G.player.health - 6);
+    G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - (30 + Math.random() * 14));
+    G.player.morale = Math.max(0, G.player.morale - 6);
     applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
-    if (Math.random() < 0.2) {
+    if (Math.random() < 0.24) {
       const ix = pickNonCaptainCrewIndexForCasualty();
       if (ix >= 0) removeCrewMemberAtWithFlavor(ix, true, 'falling spars');
     }
@@ -4450,6 +4521,9 @@ function connectToServer() {
         break;
       case 'admin_chat_log':
         renderAdminChatLog(msg.messages || []);
+        break;
+      case 'sea_debris':
+        spawnSeaDebrisFromHit(msg.x, msg.z, msg.n, true);
         break;
       case 'cannonball': {
         fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId, msg.ammoType);
@@ -5442,11 +5516,29 @@ function doFireSide(fireSide) {
     const wx = G.player.x + localX * cosR + localZ * sinR;
     const wz = G.player.z - localX * sinR + localZ * cosR;
 
-    spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
-    fireCannonball(wx, wz, dirX, dirZ, cannonY, 'player', G.myId, ammoKind);
-    if (ws?.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind }));
-      ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
+    if (ammoKind === 'grape') {
+      const pelletsPerGun = 10;
+      for (let p = 0; p < pelletsPerGun; p++) {
+        const spread = (Math.random() - 0.5) * 0.58 + (Math.random() - 0.5) * 0.28;
+        const c = Math.cos(spread), s = Math.sin(spread);
+        const pdx = dirX * c - dirZ * s;
+        const pdz = dirX * s + dirZ * c;
+        if (p === 0) spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
+        fireCannonball(wx, wz, pdx, pdz, cannonY, 'player', G.myId, 'grape_pellet');
+        if (ws?.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: pdx, dz: pdz, ammoType: 'grape_pellet' }));
+        }
+      }
+      if (ws?.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
+      }
+    } else {
+      spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
+      fireCannonball(wx, wz, dirX, dirZ, cannonY, 'player', G.myId, ammoKind);
+      if (ws?.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind }));
+        ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
+      }
     }
   }
 }
@@ -7787,7 +7879,8 @@ let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0, wildlifePruneAcc = 0;
 
 function update(dt) {
   if (G.mode !== 'playing') return;
-  G.time += dt; G.dt = dt;
+   G.time += dt; G.dt = dt;
+  updateSeaDebrisBattleClock(dt);
   tickTownEconomy(dt);
   checkExploreQuestProgress();
   const wHere = getWindAt(G.player.x, G.player.z);
@@ -7828,7 +7921,8 @@ function update(dt) {
 
     if (Math.abs(turn) > 0.1) G.player.rotation += turn * spec.turnRate * dt * Math.min(1, Math.abs(G.player.speed) * 0.3 + 0.3);
 
-    const rigF = Math.max(0.28, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) / 100);
+    const rigPct = (G.player.riggingHealth != null ? G.player.riggingHealth : 100) / 100;
+    const rigF = Math.max(0.12, Math.pow(Math.max(0.05, rigPct), 1.35));
     const morF = (G.player.morale != null ? G.player.morale : 100) < 32 ? 0.9 : 1;
     const effectiveSpeed = G.player.speed * windEffect * rigF * morF;
     const newX = G.player.x + Math.sin(G.player.rotation) * effectiveSpeed * dt;
@@ -8095,7 +8189,7 @@ function update(dt) {
       if (b.ammoType === 'chain') {
         cm.rotation.y += dt * 18;
         cm.rotation.z += dt * 6;
-      } else if (b.ammoType === 'grape') {
+      } else if (b.ammoType === 'grape' && !b.isPellet) {
         cm.rotation.x += dt * 5;
         cm.rotation.y += dt * 3.2;
       }
@@ -8105,19 +8199,21 @@ function update(dt) {
       G.npcs.forEach(npc => {
         if (npc.sinking || npc.health <= 0) return;
         const at = b.ammoType || 'ball';
-        const hitR = at === 'grape' ? 3.9 : at === 'chain' ? 3.2 : 3;
+        const isPellet = !!b.isPellet;
+        const hitR = isPellet ? 1.65 : at === 'grape' ? 3.9 : at === 'chain' ? 3.2 : 3;
         if (Math.hypot(b.x - npc.x, b.z - npc.z) < hitR) {
           let dh = 15;
-          if (at === 'grape') dh = 10;
+          if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
+          else if (at === 'grape') dh = 10;
           else if (at === 'chain') dh = 8;
           npc.health -= dh;
           npc.aggro = true;
           npc.underFireTimer = 4.6;
           spawnDamageChunks(b.x, b.y, b.z);
-          spawnSeaDebrisFromHit(b.x, b.z, at === 'chain' ? 7 : at === 'grape' ? 5 : 4);
+          spawnSeaDebrisFromHit(b.x, b.z, at === 'chain' ? 8 : at === 'grape' ? (isPellet ? 2 : 5) : 4);
           if (at === 'chain') {
-            npc.riggingMult = Math.max(0.14, (npc.riggingMult != null ? npc.riggingMult : 1) * 0.52);
-            if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, (npc.riggingMult || 0.14) * 100);
+            npc.riggingMult = Math.max(0.1, (npc.riggingMult != null ? npc.riggingMult : 1) * 0.38);
+            if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, (npc.riggingMult || 0.1) * 100);
           }
           if (npc.health <= 0) {
             const storySink = npc.isStoryBounty && npc.storyStep === G.storyQuest.step && G.storyQuest.phase === 'active';
@@ -8148,8 +8244,9 @@ function update(dt) {
 
     if ((b.owner === 'npc' || b.owner === 'other_player') && !G.playerSinking && G.player.health > 0 && !G.docked) {
       const at = b.ammoType || 'ball';
+      const isPellet = !!b.isPellet;
       const distP = Math.hypot(b.x - G.player.x, b.z - G.player.z);
-      const hitR = at === 'grape' ? 5.2 : at === 'chain' ? 4.2 : 5;
+      const hitR = isPellet ? 2.0 : at === 'grape' ? 5.2 : at === 'chain' ? 4.2 : 5;
       if (distP < hitR && b.y > SEA_LEVEL - 1) {
         if (b.owner === 'other_player') {
           G.lastAttackerId = b.sourcePlayerId != null ? b.sourcePlayerId : null;
@@ -8170,7 +8267,7 @@ function update(dt) {
           G.lastAttackerId = null;
           G.npcs.forEach(n => { if (Math.hypot(b.x - n.x, b.z - n.z) < 60) G.lastAttacker = `${n.name} (${n.isTradeShip ? 'merchant' : 'AI pirate'})`; });
         }
-        applyAmmoHitToLocalPlayer(at, b.sourcePlayerId, b.x, b.z);
+        applyAmmoHitToLocalPlayer(at, b.sourcePlayerId, b.x, b.z, isPellet);
         notify(`Hull hit! HP: ${Math.round(G.player.health)}`);
         triggerCombatFireHint();
         b.life = 0;
@@ -8179,12 +8276,11 @@ function update(dt) {
 
     if (b.owner === 'player') {
       const at = b.ammoType || 'ball';
-      const hitR = at === 'grape' ? 4.2 : at === 'chain' ? 3.6 : 3.5;
+      const isPellet = !!b.isPellet;
+      const hitR = isPellet ? 2.2 : at === 'grape' ? 4.2 : at === 'chain' ? 3.6 : 3.5;
       G.otherPlayers.forEach((op, opId) => {
         if (op.docked) return;
         if (Math.hypot(b.x - op.x, b.z - op.z) < hitR) {
-          spawnDamageChunks(b.x, b.y, b.z);
-          spawnSeaDebrisFromHit(b.x, b.z, 3);
           notify(`Hit ${networkPlayerCaptainName(op)}'s ship!`);
           b.life = 0;
         }
@@ -8218,7 +8314,8 @@ function update(dt) {
 
   for (let i = G.seaDebris.length - 1; i >= 0; i--) {
     const d = G.seaDebris[i];
-    d.userData.life -= dt;
+    const purge = G._seaDebrisPurgeAt != null && G.time >= G._seaDebrisPurgeAt && d.userData.battleFlotsam;
+    if (!d.userData.battleFlotsam && d.userData.life != null) d.userData.life -= dt;
     d.position.x += d.userData.vx * dt;
     d.position.z += d.userData.vz * dt;
     d.userData.vx *= 0.985;
@@ -8226,7 +8323,7 @@ function update(dt) {
     d.position.y = SEA_LEVEL + 0.06 + Math.sin(G.time * 1.4 + d.userData.bob) * 0.05;
     d.rotation.x += dt * 0.4;
     d.rotation.z += dt * 0.35;
-    if (d.userData.life <= 0) {
+    if (purge || (!d.userData.battleFlotsam && d.userData.life <= 0)) {
       scene.remove(d);
       d.geometry.dispose();
       d.material.dispose();

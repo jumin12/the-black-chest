@@ -848,8 +848,17 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'cannonball': {
-          const ammoType = msg.ammoType === 'grape' || msg.ammoType === 'chain' ? msg.ammoType : 'ball';
+          const a = msg.ammoType;
+          const ammoType = a === 'grape' || a === 'chain' || a === 'grape_pellet' ? a : 'ball';
           broadcast({ type: 'cannonball', shooterId: id, x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, ammoType }, id);
+          break;
+        }
+        case 'sea_debris': {
+          const n = Math.max(1, Math.min(14, Math.floor(Number(msg.n) || 4)));
+          const x = Number(msg.x);
+          const z = Number(msg.z);
+          if (!Number.isFinite(x) || !Number.isFinite(z)) break;
+          broadcast({ type: 'sea_debris', x, z, n }, id);
           break;
         }
         case 'npc_sync': {
