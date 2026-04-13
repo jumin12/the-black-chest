@@ -825,7 +825,9 @@ setInterval(() => {
   if (players.size === 0) return;
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
-    name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName, crewData: p.crewData
+    name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
+    shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' },
+    crewData: p.crewData
   }));
   broadcast({ type: 'state', players: snapshot });
 }, 1000 / TICK_RATE);

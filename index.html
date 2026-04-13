@@ -2316,7 +2316,25 @@ arcRight.rotation.y = -Math.PI / 2;
 arcRight.visible = false;
 scene.add(arcRight);
 
+function normalizeShipParts(parts) {
+  const d = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
+  if (!parts || typeof parts !== 'object') return { ...d };
+  return {
+    hull: parts.hull || d.hull,
+    sail: parts.sail || d.sail,
+    cannon: parts.cannon === undefined || parts.cannon === null || parts.cannon === '' ? d.cannon : parts.cannon,
+    figurehead: parts.figurehead === undefined || parts.figurehead === null || parts.figurehead === '' ? d.figurehead : parts.figurehead
+  };
+}
+
+function otherPlayerShipCacheKey(p) {
+  const sp = normalizeShipParts(p.shipParts);
+  const nm = (p.shipName || p.name || '').trim();
+  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}`;
+}
+
 function buildShipMesh(type, parts, flagColor, shipName) {
+  parts = normalizeShipParts(parts);
   const g = new THREE.Group(), spec = SHIP_TYPES[type];
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
@@ -2473,6 +2491,29 @@ function buildShipMesh(type, parts, flagColor, shipName) {
   return g;
 }
 
+/** Push deck coordinates away from mainmast / foremast columns (masts sit near x=0). */
+function repelCrewFromMastsXZ(px, pz, spec) {
+  const hl = spec.hullLen;
+  const hw = spec.hullW;
+  let x = px;
+  let z = pz;
+  const clear = 0.5;
+  for (let m = 0; m < spec.masts; m++) {
+    const mZ = (m - (spec.masts - 1) / 2) * (hl * 0.3);
+    const dx = x;
+    const dz = z - mZ;
+    const d = Math.hypot(dx, dz);
+    if (d < clear && d > 1e-5) {
+      const push = ((clear - d) / d) * 1.12;
+      x += dx * push;
+      z += dz * push;
+    }
+  }
+  x = Math.max(-hw * 0.44, Math.min(hw * 0.44, x));
+  z = Math.max(-hl * 0.48, Math.min(hl * 0.44, z));
+  return { x, z };
+}
+
 function buildCrewMeshes(group, crewList, shipType) {
   for (let ci = group.children.length - 1; ci >= 0; ci--) {
     const ch = group.children[ci];
@@ -2545,7 +2586,12 @@ function buildCrewMeshes(group, crewList, shipType) {
       px = (si % 2 === 0 ? -1 : 1) * spec.hullW * 0.26;
       pz = -spec.hullLen * 0.08 + (si % 4) * 0.45;
       py = deckY;
-    } else { px = (Math.random() - 0.5) * spec.hullW * 0.5; pz = (Math.random() - 0.5) * spec.hullLen * 0.4; py = deckY; }
+    }         else { px = (Math.random() - 0.5) * spec.hullW * 0.5; pz = (Math.random() - 0.5) * spec.hullLen * 0.4; py = deckY; }
+    if (member.role !== 'prisoner') {
+      const rp = repelCrewFromMastsXZ(px, pz, spec);
+      px = rp.x;
+      pz = rp.z;
+    }
     cg.position.set(px, py, pz);
     cg.userData.basePos = { x: px, y: py, z: pz };
     cg.userData.crewSm = { x: px, y: py, z: pz, ry: 0 };
@@ -2593,6 +2639,11 @@ function clampCrewToShipDeck(sm, spec, member) {
   sm.x = Math.max(minX, Math.min(maxX, sm.x));
   sm.z = Math.max(minZ, Math.min(maxZ, sm.z));
   sm.y = Math.max(minY, Math.min(maxY, sm.y));
+  if (member.role !== 'prisoner') {
+    const rp = repelCrewFromMastsXZ(sm.x, sm.z, spec);
+    sm.x = Math.max(minX, Math.min(maxX, rp.x));
+    sm.z = Math.max(minZ, Math.min(maxZ, rp.z));
+  }
 }
 
 function updateCrewDeckAnimations(dt) {
@@ -2637,17 +2688,19 @@ function updateCrewDeckAnimations(dt) {
       ty = b.y + Math.abs(Math.sin(t * 1.25 + k)) * 0.035 * gunAmp * ampBase + fireKick * 0.025;
       tryRot = Math.sin(t * 0.85 + k) * 0.18 * gunAmp + run * 0.08;
     } else if (member.task === 'sails') {
+      const steer = Math.max(-1, Math.min(1, (G._playerYawRateSm || 0) * 0.35));
       const pull = Math.sin(t * 0.42 + k);
       const haul = Math.cos(t * 0.33 + k * 1.1);
-      tx = b.x + haul * spec.hullW * 0.11 * ampBase * (0.92 + seaLean * 0.35);
+      tx = b.x + haul * spec.hullW * 0.11 * ampBase * (0.92 + seaLean * 0.35) + steer * spec.hullW * 0.06;
       tz = b.z + pull * spec.hullLen * 0.1 * ampBase;
       ty = b.y + Math.sin(t * 0.88 + k) * 0.025 * ampBase;
-      tryRot = Math.sin(t * 0.44 + k) * 0.26 + pull * 0.06;
+      tryRot = Math.sin(t * 0.44 + k) * 0.26 + pull * 0.06 + steer * 0.22;
     } else if (member.task === 'helm') {
-      tx = b.x + Math.sin(t * 0.32 + k) * 0.05 * ampBase;
+      const steer = Math.max(-1, Math.min(1, (G._playerYawRateSm || 0) * 0.42));
+      tx = b.x + Math.sin(t * 0.32 + k) * 0.05 * ampBase + steer * 0.14;
       tz = b.z + Math.sin(t * 0.28 + k) * 0.03 * seaLean;
       ty = b.y;
-      tryRot = Math.sin(t * 0.5 + k) * 0.24 + Math.sin(t * 0.9) * 0.04 * seaLean;
+      tryRot = Math.sin(t * 0.5 + k) * 0.24 + Math.sin(t * 0.9) * 0.04 * seaLean + steer * 0.55;
     } else if (member.task === 'lookout') {
       tx = b.x + Math.sin(t * 0.4 + k) * 0.09 * ampBase;
       tz = b.z;
@@ -2674,6 +2727,127 @@ function updateCrewDeckAnimations(dt) {
     let leanX = 0;
     if (member.task === 'clean') leanX = Math.sin(t * 0.72 + k) * 0.05 * ampBase;
     else if (member.task === 'cannons') leanX = Math.sin(t * 0.5 + k) * 0.04 * gunAmp * ampBase + fireKick * 0.06;
+    ch.rotation.x = leanX;
+    ch.rotation.z = 0;
+    ch.rotation.y = sm.ry;
+  });
+}
+
+function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
+  const wHere = getWindAt(wx, wz);
+  const relWind = wHere.angle - rotation;
+  const windPushZ = Math.cos(relWind);
+  const windStr = wHere.speed / 6;
+  const seaSpd = Math.min(1, Math.abs(speed || 0) / 10);
+  const sailTgt = Math.max(-0.8, Math.min(0.8, relWind * 0.35 * (0.85 + seaSpd * 0.2)));
+  if (shipGroup.userData._remoteSailAngle == null) shipGroup.userData._remoteSailAngle = sailTgt;
+  shipGroup.userData._remoteSailAngle += (sailTgt - shipGroup.userData._remoteSailAngle) * Math.min(1, 2.8 * dt);
+
+  shipGroup.traverse(child => {
+    if (child.userData && child.userData.isSail && child.userData.basePositions) {
+      child.rotation.y = shipGroup.userData._remoteSailAngle;
+      const p = child.geometry.attributes.position;
+      const base = child.userData.basePositions;
+      const billow = Math.abs(windPushZ) * windStr * (0.35 + seaSpd * 0.55);
+      const tt = G.time;
+      for (let i = 0; i < p.count; i++) {
+        const bx = base[i * 3];
+        const by = base[i * 3 + 1];
+        const bz = base[i * 3 + 2];
+        const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
+        const flutter = Math.sin(tt * 2.0 + by * 3 + bx * 1.5) * 0.025;
+        p.setY(i, by);
+        p.setZ(i, bz + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
+      }
+      p.needsUpdate = true;
+      child.geometry.computeVertexNormals();
+    }
+    if (child.userData && child.userData.isFlag) {
+      child.rotation.y = Math.sin(G.time * 3 + wx * 0.01) * 0.3;
+    }
+  });
+}
+
+function updateRemoteCrewDeckAnimations(dt, shipGroup, p, shipType) {
+  const manifest = shipGroup.userData.crewManifest;
+  if (!manifest || !manifest.length) return;
+  const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
+  const t = G.time;
+  const seaLean = Math.min(1, Math.abs(p.speed || 0) / 11);
+  const ampBase = 0.78 + (1 - seaLean) * 0.22;
+  if (shipGroup.userData._lastRemoteYaw == null) shipGroup.userData._lastRemoteYaw = p.rotation || 0;
+  const pr = p.rotation || 0;
+  let yawRate = (pr - shipGroup.userData._lastRemoteYaw) / Math.max(dt, 1e-4);
+  while (yawRate > Math.PI) yawRate -= Math.PI * 2;
+  while (yawRate < -Math.PI) yawRate += Math.PI * 2;
+  shipGroup.userData._lastRemoteYaw = pr;
+  if (shipGroup.userData._remoteYawRateSm == null) shipGroup.userData._remoteYawRateSm = yawRate;
+  shipGroup.userData._remoteYawRateSm += (yawRate - shipGroup.userData._remoteYawRateSm) * Math.min(1, dt * 6);
+  const steer = Math.max(-1, Math.min(1, shipGroup.userData._remoteYawRateSm * 0.42));
+
+  let T = shipGroup.userData.crewDeckCombatT || 0;
+  T = Math.max(0, T - dt * 0.9);
+  shipGroup.userData.crewDeckCombatT = T;
+  const fireKick = Math.min(1, T * 2.2);
+  const broadsideBusy = Math.min(1, T * 2.5);
+  const reloadPhase = broadsideBusy * 0.75;
+  const gunAmp = 0.94 + broadsideBusy * 0.2 + seaLean * 0.14 + fireKick * 0.1;
+  const posLerp = 1 - Math.exp(-(6 + broadsideBusy * 2 + T * 2) * dt);
+  const rotLerp = 1 - Math.exp(-(4.8 + broadsideBusy * 1.1) * dt);
+
+  shipGroup.traverse(ch => {
+    if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx == null) return;
+    const member = manifest[ch.userData.crewIdx];
+    if (!member || member.role === 'prisoner') return;
+    const b = ch.userData.basePos;
+    const k = ch.userData.animKey || 0;
+    if (!ch.userData.crewSm) ch.userData.crewSm = { x: ch.position.x, y: ch.position.y, z: ch.position.z, ry: 0 };
+    const sm = ch.userData.crewSm;
+    let tx;
+    let ty;
+    let tz;
+    let tryRot;
+    if (member.task === 'cannons') {
+      const run = Math.sin(t * 0.55 + k * 1.3);
+      const ram = Math.sin(t * 0.48 + k) * 0.09 * gunAmp * ampBase;
+      const sway = Math.cos(t * 0.38 + k * 0.7) * 0.07 * gunAmp * ampBase;
+      const kick = fireKick * 0.07 * Math.sin(t * 22 + k);
+      tx = b.x + ram + kick;
+      tz = b.z + sway + run * 0.05 * (0.65 + reloadPhase * 0.35);
+      ty = b.y + Math.abs(Math.sin(t * 1.25 + k)) * 0.035 * gunAmp * ampBase + fireKick * 0.025;
+      tryRot = Math.sin(t * 0.85 + k) * 0.18 * gunAmp + run * 0.08;
+    } else if (member.task === 'sails') {
+      const pull = Math.sin(t * 0.42 + k);
+      const haul = Math.cos(t * 0.33 + k * 1.1);
+      tx = b.x + haul * spec.hullW * 0.11 * ampBase * (0.92 + seaLean * 0.35) + steer * spec.hullW * 0.06;
+      tz = b.z + pull * spec.hullLen * 0.1 * ampBase;
+      ty = b.y + Math.sin(t * 0.88 + k) * 0.025 * ampBase;
+      tryRot = Math.sin(t * 0.44 + k) * 0.26 + pull * 0.06 + steer * 0.22;
+    } else if (member.task === 'helm') {
+      tx = b.x + Math.sin(t * 0.32 + k) * 0.05 * ampBase + steer * 0.14;
+      tz = b.z + Math.sin(t * 0.28 + k) * 0.03 * seaLean;
+      ty = b.y;
+      tryRot = Math.sin(t * 0.5 + k) * 0.24 + Math.sin(t * 0.9) * 0.04 * seaLean + steer * 0.55;
+    } else if (member.task === 'lookout') {
+      tx = b.x + Math.sin(t * 0.4 + k) * 0.09 * ampBase;
+      tz = b.z;
+      ty = b.y;
+      tryRot = Math.sin(t * 0.38 + k) * 0.36;
+    } else {
+      tx = b.x + Math.sin(t * 0.48 + k) * spec.hullW * 0.14 * ampBase;
+      tz = b.z + Math.cos(t * 0.44 + k) * spec.hullLen * 0.1 * ampBase;
+      ty = b.y;
+      tryRot = Math.sin(t * 0.35 + k) * 0.42;
+    }
+    tryRot = Math.max(-0.55, Math.min(0.55, tryRot));
+    sm.x += (tx - sm.x) * posLerp;
+    sm.y += (ty - sm.y) * posLerp;
+    sm.z += (tz - sm.z) * posLerp;
+    sm.ry += (tryRot - sm.ry) * rotLerp;
+    clampCrewToShipDeck(sm, spec, member);
+    ch.position.set(sm.x, sm.y, sm.z);
+    let leanX = 0;
+    if (member.task === 'cannons') leanX = Math.sin(t * 0.5 + k) * 0.04 * gunAmp * ampBase + fireKick * 0.06;
     ch.rotation.x = leanX;
     ch.rotation.z = 0;
     ch.rotation.y = sm.ry;
@@ -3875,7 +4049,15 @@ function connectToServer() {
       case 'state': msg.players.forEach(p => { if (p.id !== G.myId) { const ex = G.otherPlayers.get(p.id); if (ex) Object.assign(ex, p); } }); break;
       case 'ship_update': { const p = G.otherPlayers.get(msg.id); if (p) { p.shipType = msg.shipType; p.shipParts = msg.shipParts; if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } } break; }
       case 'chat': addChatMessage(msg.name, msg.text); break;
-      case 'cannonball': fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId); break;
+      case 'cannonball': {
+        fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId);
+        const sid = msg.shooterId;
+        if (sid != null && otherShipGroups.has(sid)) {
+          const og = otherShipGroups.get(sid);
+          og.userData.crewDeckCombatT = Math.max(og.userData.crewDeckCombatT || 0, 0.48);
+        }
+        break;
+      }
       case 'leaderboard': {
         leaderboardData = msg.entries || [];
         try { localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData)); } catch (e) {}
@@ -6974,6 +7156,12 @@ function update(dt) {
   }
 
   processProvisionsDrain(dt);
+  if (G._prevPlayerYaw == null) G._prevPlayerYaw = G.player.rotation;
+  let rawYawRate = (G.player.rotation - G._prevPlayerYaw) / Math.max(dt, 1e-4);
+  while (rawYawRate > Math.PI) rawYawRate -= Math.PI * 2;
+  while (rawYawRate < -Math.PI) rawYawRate += Math.PI * 2;
+  G._prevPlayerYaw = G.player.rotation;
+  G._playerYawRateSm = G._playerYawRateSm == null ? rawYawRate : G._playerYawRateSm + (rawYawRate - G._playerYawRateSm) * Math.min(1, dt * 7);
   if (!G.docked && !G.playerSinking) updateCrewDeckAnimations(dt);
 
   updateChunks();
@@ -7100,34 +7288,25 @@ function update(dt) {
     }
     if (child.userData.isFlag) child.rotation.y = Math.sin(G.time * 3) * 0.3;
     if (child.userData.isCrew) {
+      if (!G.crewReloading || child.userData.crewIdx <= 0) return;
       const bp = child.userData.basePos;
-      if (G.crewReloading && child.userData.crewIdx > 0) {
-        const spec = SHIP_TYPES[G.player.shipType];
-        const cannonSide = child.userData.crewIdx % 2 === 0 ? 1 : -1;
-        const cannonZ = (Math.floor(child.userData.crewIdx / 2) - 1) * 1.8;
-        const tx = cannonSide * spec.hullW * 0.35;
-        child.position.x += (tx - child.position.x) * 6 * dt;
-        child.position.z += (cannonZ - child.position.z) * 6 * dt;
-      } else {
-        child.userData.wanderTimer -= dt;
-        if (child.userData.wanderTimer <= 0) {
-          child.userData.wanderTimer = 2 + Math.random() * 4;
-          child.position.x = bp.x + (Math.random() - 0.5) * 0.4;
-          child.position.z = bp.z + (Math.random() - 0.5) * 0.4;
-        }
-        child.position.x += (bp.x - child.position.x) * 1.5 * dt;
-        child.position.z += (bp.z - child.position.z) * 1.5 * dt;
-      }
+      const spec = SHIP_TYPES[G.player.shipType];
+      const cannonSide = child.userData.crewIdx % 2 === 0 ? 1 : -1;
+      const cannonZ = (Math.floor(child.userData.crewIdx / 2) - 1) * 1.8;
+      const tx = cannonSide * spec.hullW * 0.35;
+      child.position.x += (tx - child.position.x) * 6 * dt;
+      child.position.z += (cannonZ - child.position.z) * 6 * dt;
     }
   });
 
   G.otherPlayers.forEach((p, id) => {
-    if (!otherShipGroups.has(id) || otherShipGroups.get(id).userData.cachedName !== (p.shipName || p.name)) {
+    const cacheKey = otherPlayerShipCacheKey(p);
+    if (!otherShipGroups.has(id) || otherShipGroups.get(id).userData.cacheKey !== cacheKey) {
       if (otherShipGroups.has(id)) { scene.remove(otherShipGroups.get(id)); otherShipGroups.delete(id); }
       const st = p.shipType || 'sloop';
       const displayName = p.shipName || p.name || `Pirate ${id}`;
       const captainName = p.name || '';
-      const sm = buildShipMesh(st, p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' }, p.color || '#4488cc', displayName);
+      const sm = buildShipMesh(st, p.shipParts, p.color || '#4488cc', displayName);
       if (captainName && captainName !== displayName) {
         const capLabel = makeTextSprite(displayName, '#88bbff', captainName);
         const spec = SHIP_TYPES[st];
@@ -7135,15 +7314,26 @@ function update(dt) {
         sm.children = sm.children.filter(c => !(c instanceof THREE.Sprite));
         sm.add(capLabel);
       }
-      const pCrew = p.crewData && p.crewData.length ? p.crewData.map((c, ci) => ({
-        name: c.name || 'Pirate', role: c.role || 'sailor', color: c.color, hat: c.hat,
-        task: ['helm','cannons','sails','lookout'][ci] || 'idle', health: 100
-      })) : [
+      const pCrew = p.crewData && p.crewData.length ? p.crewData.map((c, ci) => {
+        let task = c.task;
+        if (!task || task === 'idle') {
+          if (c.role === 'captain') task = 'helm';
+          else if (c.role === 'gunner') task = 'cannons';
+          else if (c.role === 'navigator') task = 'lookout';
+          else task = ['helm', 'cannons', 'sails', 'lookout'][ci] || 'idle';
+        }
+        return {
+          name: c.name || 'Pirate', role: c.role || 'sailor', color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
+          task, health: 100
+        };
+      }) : [
         { name: captainName || 'Captain', role: 'captain', task: 'helm', color: p.color, health: 100 },
         { name: 'Gunner', role: 'gunner', task: 'cannons', health: 100 },
         { name: 'Sailor', role: 'sailor', task: 'sails', health: 100 }
       ];
       buildCrewMeshes(sm, pCrew, st);
+      sm.userData.cacheKey = cacheKey;
+      sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = displayName;
       otherShipGroups.set(id, sm);
       scene.add(sm);
@@ -7161,6 +7351,8 @@ function update(dt) {
       sg.rotation.y = p.rotation || 0;
       sg.rotation.x = Math.sin(G.time * 0.9 + p.z * 0.05) * 0.02;
       sg.rotation.z = Math.sin(G.time * 0.7 + p.x * 0.06) * 0.03;
+      animateRemoteShipSails(sg, p.x, p.z, p.rotation || 0, p.speed || 0, dt);
+      updateRemoteCrewDeckAnimations(dt, sg, p, p.shipType || 'sloop');
     }
   });
 
