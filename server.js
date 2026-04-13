@@ -6,22 +6,13 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 const TICK_RATE = 20;
-const SEED_FILE = path.join(__dirname, 'world_seed.json');
-/** Stable default when no file/env (matches client `CANONICAL_DEFAULT_WORLD_SEED`). Commit `world_seed.json` so restarts and deploys always reload the same archipelago unless you intentionally change the file or set `WORLD_SEED`. */
+/** Optional directory for persistent JSON (e.g. Docker volume). Defaults next to server.js. */
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
+const LB_FILE_LEGACY = path.join(DATA_DIR, 'leaderboard.json');
+/** Stable default when no file/env (matches client `CANONICAL_DEFAULT_WORLD_SEED`). Commit `world_seed.json` so restarts and deploys reload the same archipelago; live rankings persist in the same file under `leaderboard`. */
 const DEFAULT_WORLD_SEED = 42;
-let WORLD_SEED;
-try {
-  const raw = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8'));
-  WORLD_SEED = Number(raw.seed) >>> 0;
-} catch (e) {
-  const envS = process.env.WORLD_SEED;
-  if (envS != null && String(envS).trim() !== '') {
-    WORLD_SEED = Number(envS) >>> 0;
-  } else {
-    WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
-  }
-  try { fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); } catch (e2) {}
-}
+let WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
 
 /**
  * Navigator unlock password: prefer `NAVIGATOR_ADMIN_PASSWORD` (hosting secret / env).
@@ -102,8 +93,7 @@ let nextId = 1;
 let nextLootNetId = 1;
 let nextSwimmerNetId = 1;
 
-const LB_FILE = path.join(__dirname, 'leaderboard.json');
-const BANS_FILE = path.join(__dirname, 'bans.json');
+const BANS_FILE = path.join(DATA_DIR, 'bans.json');
 let leaderboardHistory = [];
 /** @type {Set<string>} */
 let bannedIps = new Set();
@@ -204,6 +194,65 @@ function sortLeaderboardHistory() {
   });
 }
 
+function persistWorldSeedFile() {
+  try {
+    fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory }));
+  } catch (e) {}
+}
+
+function migrateLegacyStandaloneLeaderboard() {
+  if (leaderboardHistory.length > 0) return;
+  try {
+    const lbRaw = fs.readFileSync(LB_FILE_LEGACY, 'utf-8');
+    const parsed = JSON.parse(lbRaw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return;
+    leaderboardHistory = parsed.map(normalizeLbEntry);
+    persistWorldSeedFile();
+  } catch (e) {}
+}
+
+function loadPersistedState() {
+  let raw = null;
+  const seedFileExists = fs.existsSync(SEED_FILE);
+  if (seedFileExists) {
+    try {
+      const o = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8'));
+      raw = o && typeof o === 'object' ? o : null;
+    } catch (e) {
+      console.error('[playground] world_seed.json invalid JSON:', e.message);
+    }
+  }
+  if (raw == null) {
+    const envS = process.env.WORLD_SEED;
+    if (envS != null && String(envS).trim() !== '') {
+      WORLD_SEED = Number(envS) >>> 0;
+    } else {
+      WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
+    }
+    leaderboardHistory = [];
+    if (!seedFileExists) {
+      try {
+        fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED, leaderboard: [] }));
+      } catch (e2) {}
+    }
+    migrateLegacyStandaloneLeaderboard();
+    return;
+  }
+  WORLD_SEED = raw.seed != null ? Number(raw.seed) >>> 0 : DEFAULT_WORLD_SEED >>> 0;
+  leaderboardHistory = Array.isArray(raw.leaderboard)
+    ? raw.leaderboard.map(normalizeLbEntry)
+    : [];
+  migrateLegacyStandaloneLeaderboard();
+}
+
+loadPersistedState();
+mergeLeaderboardByName();
+sortLeaderboardHistory();
+
+function saveLeaderboard() {
+  persistWorldSeedFile();
+}
+
 function loadBans() {
   try {
     const raw = fs.readFileSync(BANS_FILE, 'utf-8');
@@ -221,7 +270,7 @@ function saveBans() {
 }
 loadBans();
 
-const CAPTAIN_ACCOUNTS_FILE = path.join(__dirname, 'captain_accounts.json');
+const CAPTAIN_ACCOUNTS_FILE = path.join(DATA_DIR, 'captain_accounts.json');
 const CAPTAIN_ACCOUNT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 /** @type {Record<string, { token: string, displayName: string, lastActiveMs: number }>} */
 let captainAccounts = {};
@@ -291,19 +340,6 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 setInterval(flushCaptainAccountsIfDirty, 15000);
 
-try {
-  const lbRaw = fs.readFileSync(LB_FILE, 'utf-8');
-  const parsed = JSON.parse(lbRaw);
-  if (Array.isArray(parsed)) leaderboardHistory = parsed.map(normalizeLbEntry);
-} catch (e) {
-  leaderboardHistory = [];
-  try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e2) {}
-}
-mergeLeaderboardByName();
-sortLeaderboardHistory();
-function saveLeaderboard() {
-  try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e) {}
-}
 setInterval(() => { saveLeaderboard(); }, 60000);
 function persistLeaderboardShutdown() {
   saveLeaderboard();
@@ -328,7 +364,7 @@ const CORS_HEADERS = {
 
 function setWorldSeedAndPersist(newSeed) {
   WORLD_SEED = Number(newSeed) >>> 0;
-  try { fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED })); } catch (e) {}
+  persistWorldSeedFile();
   broadcastAll({ type: 'world_seed', seed: WORLD_SEED });
 }
 
