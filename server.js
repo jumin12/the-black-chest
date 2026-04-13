@@ -684,6 +684,12 @@ wss.on('connection', (ws, req) => {
     name: `Pirate_${id}`,
     health: 100,
     crewCount: 3,
+    docked: false,
+    dockX: null,
+    dockZ: null,
+    dockAngle: null,
+    riggingHealth: 100,
+    morale: 100,
     clientIp
   };
 
@@ -724,6 +730,13 @@ wss.on('connection', (ws, req) => {
           if (msg.rotation !== undefined) p.rotation = msg.rotation;
           if (msg.speed !== undefined) p.speed = msg.speed;
           if (msg.health !== undefined) p.health = msg.health;
+          if (msg.docked !== undefined) p.docked = !!msg.docked;
+          if (msg.dockX !== undefined) p.dockX = msg.dockX;
+          if (msg.dockZ !== undefined) p.dockZ = msg.dockZ;
+          if (msg.dockAngle !== undefined) p.dockAngle = msg.dockAngle;
+          if (msg.riggingHealth !== undefined) p.riggingHealth = Math.max(0, Math.min(100, Number(msg.riggingHealth) || 0));
+          if (msg.morale !== undefined) p.morale = Math.max(0, Math.min(100, Number(msg.morale) || 0));
+          if (msg.crewData && Array.isArray(msg.crewData)) p.crewData = msg.crewData.slice(0, 32);
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {
             const now = Date.now();
@@ -835,7 +848,8 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'cannonball': {
-          broadcast({ type: 'cannonball', shooterId: id, x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz }, id);
+          const ammoType = msg.ammoType === 'grape' || msg.ammoType === 'chain' ? msg.ammoType : 'ball';
+          broadcast({ type: 'cannonball', shooterId: id, x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, ammoType }, id);
           break;
         }
         case 'npc_sync': {
@@ -1100,7 +1114,13 @@ setInterval(() => {
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
     name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' },
-    crewData: p.crewData
+    crewData: p.crewData,
+    docked: !!p.docked,
+    dockX: p.dockX != null ? p.dockX : null,
+    dockZ: p.dockZ != null ? p.dockZ : null,
+    dockAngle: p.dockAngle != null ? p.dockAngle : null,
+    riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
+    morale: p.morale != null ? p.morale : 100
   }));
   broadcast({ type: 'state', players: snapshot });
 }, 1000 / TICK_RATE);
