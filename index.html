@@ -2341,9 +2341,22 @@ function updateChunks() {
     if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) { wx = t.x; wz = t.z; }
   }
   const pcx = Math.floor(wx / CHUNK_SIZE), pcz = Math.floor(wz / CHUNK_SIZE);
-  for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++)
-    for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++)
-      generateIsland(pcx + dx, pcz + dz);
+  const pending = [];
+  for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++) {
+    for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++) {
+      const cx = pcx + dx, cz = pcz + dz;
+      const key = `${cx},${cz}`;
+      if (!G.chunks.has(key)) pending.push({ cx, cz, d2: dx * dx + dz * dz });
+    }
+  }
+  if (!pending.length) return;
+  pending.sort((a, b) => a.d2 - b.d2);
+  let budget = G.mode === 'playing' && G.player && Math.abs(G.player.speed) > 6.5 ? 3 : 2;
+  if (pending.length > 14) budget = Math.min(budget + 1, 4);
+  for (let i = 0; i < pending.length && budget > 0; i++) {
+    generateIsland(pending[i].cx, pending[i].cz);
+    budget--;
+  }
 }
 
 /* ============================== SHIPS ==================================== */
@@ -4720,18 +4733,27 @@ function connectToServer() {
         if (msg.players) {
           msg.players.forEach(p => {
             G.otherPlayers.set(p.id, p);
-            refreshOtherPlayerShipCacheKey(G.otherPlayers.get(p.id));
+            const row = G.otherPlayers.get(p.id);
+            if (row) {
+              refreshOtherPlayerShipCacheKey(row);
+              row._netRxAt = performance.now();
+            }
           });
         }
         if (G.mode === 'playing' && !hasSave) ensurePlayerInOpenOcean();
         if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
         tryOfferLeaderboardSeedToServer();
         break;
-      case 'player_join':
+      case 'player_join': {
         G.otherPlayers.set(msg.player.id, msg.player);
-        refreshOtherPlayerShipCacheKey(G.otherPlayers.get(msg.player.id));
+        const pl = G.otherPlayers.get(msg.player.id);
+        if (pl) {
+          refreshOtherPlayerShipCacheKey(pl);
+          pl._netRxAt = performance.now();
+        }
         notify(`${networkPlayerCaptainName(msg.player)} joined`);
         break;
+      }
       case 'player_leave': {
         const lid = Number(msg.id);
         disposeRemoteDockRopes(msg.id);
@@ -4747,7 +4769,10 @@ function connectToServer() {
           if (ex) Object.assign(ex, p);
           else G.otherPlayers.set(p.id, p);
           const row = G.otherPlayers.get(p.id);
-          if (row) refreshOtherPlayerShipCacheKey(row);
+          if (row) {
+            refreshOtherPlayerShipCacheKey(row);
+            row._netRxAt = performance.now();
+          }
         });
         break;
       case 'ship_update': {
@@ -8270,6 +8295,21 @@ function playerShipWaveAt(wx, wz) {
   return { waveH, wavePitch, waveRoll };
 }
 
+/** Extrapolate remote hull XZ from last network snapshot using synced speed/yaw (reduces lag at high speed). */
+function remoteShipPredictXZ(p) {
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const t0 = p._netRxAt != null ? p._netRxAt : now;
+  let ageSec = (now - t0) / 1000;
+  if (!Number.isFinite(ageSec) || ageSec < 0) ageSec = 0;
+  ageSec = Math.min(ageSec, 0.22);
+  const sp = Math.max(0, Number(p.speed) || 0);
+  const yaw = Number(p.rotation) || 0;
+  const px = Number(p.x) || 0;
+  const pz = Number(p.z) || 0;
+  if (sp < 0.06) return { x: px, z: pz };
+  return { x: px + Math.sin(yaw) * sp * ageSec, z: pz + Math.cos(yaw) * sp * ageSec };
+}
+
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE for smooth remote motion. */
 const NET_SYNC_HZ = 45;
@@ -8538,8 +8578,9 @@ function update(dt) {
       sm.userData.cacheKey = cacheKey;
       sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = shipTitle;
-      const w0 = playerShipWaveAt(p.x, p.z);
-      sm.position.set(p.x, SEA_LEVEL + 0.35 + w0.waveH, p.z);
+      const pr0 = remoteShipPredictXZ(p);
+      const w0 = playerShipWaveAt(pr0.x, pr0.z);
+      sm.position.set(pr0.x, SEA_LEVEL + 0.35 + w0.waveH, pr0.z);
       sm.rotation.set(w0.wavePitch, p.rotation || 0, w0.waveRoll);
       if (preservedSinking) {
         sm.userData.sinking = true;
@@ -8564,19 +8605,27 @@ function update(dt) {
         otherShipGroups.delete(id);
       }
     } else {
-      const w = playerShipWaveAt(p.x, p.z);
-      const posAlpha = Math.min(1, 28 * dt);
-      sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.35 + w.waveH, p.z), posAlpha);
+      const pr = remoteShipPredictXZ(p);
+      const w = playerShipWaveAt(pr.x, pr.z);
+      const tgt = new THREE.Vector3(pr.x, SEA_LEVEL + 0.35 + w.waveH, pr.z);
+      const horizErr = Math.hypot(sg.position.x - pr.x, sg.position.z - pr.z);
+      let posAlpha = Math.min(1, 28 * dt);
+      if (horizErr > 2) posAlpha = Math.min(1, 48 * dt);
+      if (horizErr > 6) posAlpha = Math.min(1, 72 * dt);
+      if (horizErr > 14) posAlpha = 1;
+      sg.position.lerp(tgt, posAlpha);
       const targetYaw = p.rotation || 0;
       let ry = sg.rotation.y;
       let dYaw = targetYaw - ry;
       while (dYaw > Math.PI) dYaw -= Math.PI * 2;
       while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-      ry += dYaw * Math.min(1, 22 * dt);
+      let yawAlpha = Math.min(1, 22 * dt);
+      if ((p.speed || 0) > 7) yawAlpha = Math.min(1, 34 * dt);
+      ry += dYaw * yawAlpha;
       sg.rotation.y = ry;
       sg.rotation.x = w.wavePitch;
       sg.rotation.z = w.waveRoll;
-      animateRemoteShipSails(sg, p.x, p.z, p.rotation || 0, p.speed || 0, dt);
+      animateRemoteShipSails(sg, pr.x, pr.z, p.rotation || 0, p.speed || 0, dt);
       updateRemoteCrewDeckAnimations(dt, sg, p, p.shipType || 'sloop');
       applyRiggingVisualToGroup(sg, p.riggingHealth != null ? p.riggingHealth : 100);
       if (p.docked && p.dockX != null && p.dockZ != null) {
