@@ -77,7 +77,8 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 .log-tab.active{color:#d4a848 !important;border-bottom:2px solid #d4a848 !important;}
 .tb-label{display:inline;}
 @media(max-width:768px){.tb-label{display:none;}}
-#compass{position:absolute;top:8px;left:10px;width:90px;height:90px;pointer-events:none;}
+#compass{position:absolute;top:8px;left:10px;width:90px;height:90px;pointer-events:none;z-index:12;}
+#compass.compass-over-chart{z-index:55;}
 #compass canvas{width:100%;height:100%;}
 #story-brief-hud{display:none;position:absolute;top:102px;left:10px;max-width:min(280px,calc(100vw - 120px));z-index:56;pointer-events:none;}
 #story-brief-hud .story-brief-inner{background:linear-gradient(180deg,rgba(42,26,48,0.92),rgba(22,14,28,0.95));border:1px solid rgba(200,140,200,0.4);border-radius:8px;padding:8px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.35);}
@@ -4090,6 +4091,36 @@ function combatFxHash(wx, wy, wz, i, salt, packN) {
   h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
   return (h >>> 0) / 4294967296;
 }
+
+/** Deterministic swimmer drop positions; `crewSlice` + rescue builds `restore` for each index. */
+function buildSeaSwimmerPayloads(wx, wz, count, crewSlice, rescue) {
+  const n = Math.max(0, count | 0);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const spread = crewSlice ? 8 : 7;
+    const ox = wx + (combatFxHash(wx, SEA_LEVEL, wz, i, 301, n) - 0.5) * spread;
+    const oz = wz + (combatFxHash(wx, SEA_LEVEL, wz, i, 302, n) - 0.5) * spread;
+    let restore = null;
+    if (rescue && crewSlice && crewSlice[i]) {
+      const c = crewSlice[i];
+      restore = {
+        name: c.name, role: c.role, health: c.health, task: c.task || 'idle',
+        color: c.color || '#4a4a4a', hat: c.hat || 'none', outfit: c.outfit || 'vest', parrot: !!c.parrot
+      };
+    }
+    out.push({ x: ox, z: oz, restore });
+  }
+  return out;
+}
+function broadcastOrSpawnSeaSwimmers(payloads) {
+  if (!payloads || !payloads.length) return;
+  if (ws && ws.readyState === 1) {
+    try { ws.send(JSON.stringify({ type: 'swimmer_spawn', swimmers: payloads })); } catch (e) {}
+  } else {
+    payloads.forEach(p => spawnNetworkSwimmer(p.x, p.z, p.restore || null, null));
+  }
+}
+
 function spawnDamageChunks(wx, wy, wz) {
   for (let i = 0; i < 6; i++) {
     const size = 0.1 + combatFxHash(wx, wy, wz, i, 11, 6) * 0.2;
@@ -4234,7 +4265,7 @@ function removeCrewMemberAtWithFlavor(idx, overboard, killerLabel) {
     notify(`${c.name} was knocked into the sea!`);
   } else {
     G.player.crew.splice(idx, 1);
-    spawnSwimmers(G.player.x, G.player.z, 1, [], {});
+    broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(G.player.x, G.player.z, 1, null, false));
     notify(`${c.name} was slain by ${killerLabel}!`);
   }
   G.player.morale = Math.max(0, G.player.morale - (overboard ? 10 : 14));
@@ -4801,7 +4832,6 @@ function connectToServer() {
         if (vid !== G.myId) {
           const sinkCap = (msg.name && String(msg.name).trim()) ? String(msg.name).trim() : 'A captain';
           notify(`${sinkCap}'s ship is sinking!`);
-          spawnSwimmers(msg.x, msg.z, 3);
         }
         if (otherShipGroups.has(vid)) {
           const sg = otherShipGroups.get(vid);
@@ -4829,9 +4859,11 @@ function connectToServer() {
       case 'swimmer_spawn': {
         if (msg.swimmers && Array.isArray(msg.swimmers)) {
           msg.swimmers.forEach(s => {
-            if (!s || s.x == null || s.z == null) return;
+            if (!s) return;
+            const sx = Number(s.x), sz = Number(s.z);
+            if (!Number.isFinite(sx) || !Number.isFinite(sz)) return;
             if (s.id != null && G.swimmers.some(sw => sw.userData.netId === s.id)) return;
-            spawnNetworkSwimmer(s.x, s.z, s.restore || null, s.id);
+            spawnNetworkSwimmer(sx, sz, s.restore || null, s.id);
           });
         }
         break;
@@ -7493,7 +7525,7 @@ function drawCompass() {
   ctx.restore();
 
   const hr = r * 0.5;
-  ctx.save(); ctx.rotate(G.player.rotation);
+  ctx.save(); ctx.rotate(-G.player.rotation);
   ctx.beginPath(); ctx.moveTo(0, -hr); ctx.lineTo(-7, hr * 0.2); ctx.lineTo(0, hr * 0.06); ctx.lineTo(7, hr * 0.2); ctx.closePath();
   ctx.fillStyle = '#e8c030'; ctx.fill();
   ctx.strokeStyle = '#8a6020'; ctx.lineWidth = 1.1; ctx.stroke();
@@ -7594,6 +7626,8 @@ function ensureMapChartLayerListeners() {
 function toggleFullmap() {
   fullmapOpen = !fullmapOpen;
   document.getElementById('fullmap').style.display = fullmapOpen ? 'block' : 'none';
+  const compEl = document.getElementById('compass');
+  if (compEl) compEl.classList.toggle('compass-over-chart', fullmapOpen);
   if (fullmapOpen) {
     ensureMapChartLayerListeners();
     setFullmapLayersPanelVisible(!isMobile);
@@ -8411,12 +8445,14 @@ function update(dt) {
             }
             checkHuntQuestOnNpcSink(npc);
             npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
-            spawnSwimmers(npc.x, npc.z, 2 + Math.floor(Math.random() * 3));
+            const swN = 2 + Math.floor(Math.random() * 3);
+            broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(npc.x, npc.z, swN, null, false));
             for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
               const t = ['wood','iron','gold','gunpowder','food','cannonballs'][Math.floor(Math.random() * 6)];
               const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
               const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
-              addFloatingLootMesh(lx, lz, t, c);
+              if (ws?.readyState === 1) spawnWorldLootAt(lx, lz, t, c, 0.5);
+              else addFloatingLootMesh(lx, lz, t, c);
             }
             reconcileSlotsWithInventory();
           }
@@ -8601,7 +8637,8 @@ function update(dt) {
     G.dockingAnim = null;
     G.player.speed = 0; G.player.anchored = true;
     syncAnchorToolbarButton();
-    spawnSwimmers(G.player.x, G.player.z, Math.min(G.player.crew.length, 4), G.player.crew);
+    const crewSaveN = Math.min(G.player.crew.length, 4);
+    broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(G.player.x, G.player.z, crewSaveN, G.player.crew.slice(0, crewSaveN), true));
     const lootDrops = [];
     for (let li = 0; li < 2 + Math.floor(Math.random()*2); li++) {
       const t = ['wood','iron','gold','gunpowder','food','cannonballs'][Math.floor(Math.random()*6)];
@@ -9269,7 +9306,7 @@ function buildTutorialSteps() {
   steps.push({
     sel: '#compass',
     title: 'Compass and wind',
-    body: 'North, east, south, and west stay fixed. The gold needle is your heading; the blue arrow is the wind. Both turn against the card.'
+        body: 'North, east, south, and west stay fixed on the card. The gold needle shows your ship\'s heading; the blue arrow is the wind direction. On the full chart (M), the compass stays visible in the corner.'
   });
   steps.push({
     sel: '#minimap',
