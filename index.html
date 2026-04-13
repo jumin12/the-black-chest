@@ -61,6 +61,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 #start-screen h1{font-size:clamp(24px,6vw,48px);color:#d4a848;text-shadow:0 2px 4px rgba(0,0,0,0.6),0 0 30px rgba(212,168,72,0.3);margin-bottom:10px;letter-spacing:3px;text-align:center;font-family:Georgia,serif;}
 #start-screen p{color:#9a8a6a;margin-bottom:30px;font-size:clamp(14px,3vw,16px);text-align:center;font-style:italic;}
 #notification{position:absolute;top:50px;left:50%;transform:translateX(-50%);background:rgba(20,12,8,0.9);border:1px solid #d4a848;border-radius:6px;padding:8px 20px;font-size:13px;opacity:0;transition:opacity 0.3s;pointer-events:none;white-space:nowrap;z-index:30;}
+#combat-popups-root{position:fixed;inset:0;pointer-events:none;z-index:26;overflow:visible;}
+.combat-popup{position:absolute;left:0;top:0;max-width:min(240px,42vw);padding:5px 10px;border-radius:6px;background:rgba(18,10,6,0.92);border:1px solid rgba(200,120,80,0.55);color:#e8d8c8;font-size:12px;font-family:Georgia,serif;text-shadow:0 1px 2px rgba(0,0,0,0.85);line-height:1.25;pointer-events:none;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.45);}
+.combat-popup.chain{border-color:rgba(160,140,200,0.55);color:#e4dcf8;}
+.combat-popup.grape{border-color:rgba(180,140,100,0.55);color:#f0dcc8;}
 .toolbar{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:15;}
 .tb-btn{background:linear-gradient(180deg,rgba(35,22,12,0.9),rgba(20,12,6,0.95));border:1px solid rgba(180,140,60,0.4);border-radius:8px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:20px;transition:all 0.15s;touch-action:manipulation;box-shadow:0 2px 4px rgba(0,0,0,0.3);}
 .tb-btn:hover,.tb-btn:active{border-color:#d4a848;background:linear-gradient(180deg,rgba(50,35,15,0.95),rgba(30,18,8,0.98));}
@@ -472,6 +476,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   </div>
   <div id="anchor-status" class="hud-box" style="display:none;">Anchored</div>
   <div id="notification"></div>
+  <div id="combat-popups-root" aria-hidden="true"></div>
 
   <div class="toolbar">
     <div class="tb-btn" id="btn-log" title="Captain's Log (B)" style="width:auto;padding:0 12px;gap:6px;font-size:12px;color:#d4a848;font-family:Georgia,serif;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg><span class="tb-label">Log</span></div>
@@ -836,6 +841,7 @@ const G = {
   seaDebris: [],
   _lastSeaBattleActivityT: Infinity,
   _seaDebrisPurgeAt: null,
+  combatPopups3D: [],
   swimmers: [],
   selectedAmmoType: 'ball',
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
@@ -2474,20 +2480,31 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
 
   for (let m = 0; m < spec.masts; m++) {
     const mH = spec.hullLen * 0.7, mZ = (m - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
+    const mastRig = new THREE.Group();
+    mastRig.position.set(0, spec.hullH * 0.6, mZ);
+    mastRig.userData.isMastRig = true;
+    mastRig.userData.mastLeanSign = m % 2 === 0 ? 1 : -1;
     const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.11, mH, 5), rm);
     mast.userData.isMast = true;
-    mast.userData.mastLeanSign = m % 2 === 0 ? 1 : -1;
-    mast.position.set(0, spec.hullH * 0.6 + mH / 2, mZ); mast.castShadow = true; g.add(mast);
+    mast.userData.mastLeanSign = mastRig.userData.mastLeanSign;
+    mast.position.set(0, mH / 2, 0);
+    mast.castShadow = true;
+    mastRig.add(mast);
 
     const sW = spec.hullW * 1.2, sH = mH * 0.55;
     const sg = new THREE.PlaneGeometry(sW, sH, 6, 6);
     const sail = new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide }));
-    sail.position.set(0, spec.hullH * 0.6 + mH * 0.6, mZ + 0.3);
+    sail.position.set(0, mH * 0.6, 0.3);
     sail.userData.isSail = true; sail.userData.basePositions = sg.attributes.position.array.slice();
-    sail.castShadow = true; g.add(sail);
+    sail.castShadow = true;
+    mastRig.add(sail);
 
     const yg = new THREE.CylinderGeometry(0.04, 0.04, sW + 0.4, 4); yg.rotateZ(Math.PI / 2);
-    const yard = new THREE.Mesh(yg, rm); yard.position.set(0, spec.hullH * 0.6 + mH * 0.85, mZ); g.add(yard);
+    const yard = new THREE.Mesh(yg, rm);
+    yard.position.set(0, mH * 0.85, 0);
+    yard.userData.isYard = true;
+    mastRig.add(yard);
+    g.add(mastRig);
   }
 
   if (spec.bowStyle === 'blunt') {
@@ -2529,19 +2546,27 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   }
 
   const fmH = spec.hullLen * 0.45;
+  const foreRig = new THREE.Group();
+  foreRig.position.set(0, spec.hullH * 0.5, spec.hullLen * 0.35);
+  foreRig.userData.isMastRig = true;
+  foreRig.userData.isForemastRig = true;
+  foreRig.userData.mastLeanSign = -1;
   const foremast = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, fmH, 4), rm);
   foremast.userData.isMast = true;
-  foremast.userData.mastLeanSign = 1;
-  foremast.position.set(0, spec.hullH * 0.5 + fmH / 2, spec.hullLen * 0.35);
-  foremast.castShadow = true; g.add(foremast);
+  foremast.userData.mastLeanSign = -1;
+  foremast.position.set(0, fmH / 2, 0);
+  foremast.castShadow = true;
+  foreRig.add(foremast);
+  const jibGeo = new THREE.PlaneGeometry(spec.hullW * 0.5, fmH * 0.5, 3, 3);
+  const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
+  jib.position.set(0, fmH * 0.5, spec.hullLen * 0.09);
+  jib.rotation.y = 0.3;
+  jib.userData.isSail = true; jib.userData.isJib = true; jib.userData.basePositions = jibGeo.attributes.position.array.slice();
+  foreRig.add(jib);
+  g.add(foreRig);
   const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, spec.hullLen * 0.35, 4), rm);
   bowsprit.position.set(0, spec.hullH * 0.35, spec.hullLen * 0.55);
   bowsprit.rotation.x = 0.45; g.add(bowsprit);
-  const jibGeo = new THREE.PlaneGeometry(spec.hullW * 0.5, fmH * 0.5, 3, 3);
-  const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
-  jib.position.set(0, spec.hullH * 0.5 + fmH * 0.5, spec.hullLen * 0.44);
-  jib.rotation.y = 0.3; jib.userData.isSail = true; jib.userData.isJib = true; jib.userData.basePositions = jibGeo.attributes.position.array.slice();
-  g.add(jib);
 
   if (parts.figurehead && parts.figurehead !== 'none') {
     const fg = new THREE.ConeGeometry(0.3, 1.2, 6); fg.rotateX(Math.PI * 0.3);
@@ -2579,23 +2604,47 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   return g;
 }
 
-/** Push deck coordinates away from mainmast / foremast columns (masts sit near x=0). */
-function repelCrewFromMastsXZ(px, pz, spec) {
+function pushOutOfCircleXZ(x, z, cx, cz, rInner, rOuter) {
+  const dx = x - cx, dz = z - cz;
+  const d = Math.hypot(dx, dz);
+  if (d < rInner && d > 1e-5) {
+    const push = (rOuter - d) / d;
+    return { x: x + dx * push * 1.06, z: z + dz * push * 1.06 };
+  }
+  return { x, z };
+}
+
+function pushOutOfAabbXZ(x, z, minX, maxX, minZ, maxZ) {
+  if (x < minX || x > maxX || z < minZ || z > maxZ) return { x, z };
+  const dL = x - minX, dR = maxX - x, dF = z - minZ, dB = maxZ - z;
+  const m = Math.min(dL, dR, dF, dB);
+  if (m === dL) return { x: minX - 0.07, z };
+  if (m === dR) return { x: maxX + 0.07, z };
+  if (m === dF) return { x, z: minZ - 0.07 };
+  return { x, z: maxZ + 0.07 };
+}
+
+/** Keep crew & prisoners out of mast columns, foremast, and solid deck structures. */
+function repelCrewFromMastsXZ(px, pz, spec, shipType) {
+  const st = shipType || 'sloop';
   const hl = spec.hullLen;
   const hw = spec.hullW;
   let x = px;
   let z = pz;
-  const clear = 0.5;
   for (let m = 0; m < spec.masts; m++) {
     const mZ = (m - (spec.masts - 1) / 2) * (hl * 0.3);
-    const dx = x;
-    const dz = z - mZ;
-    const d = Math.hypot(dx, dz);
-    if (d < clear && d > 1e-5) {
-      const push = ((clear - d) / d) * 1.12;
-      x += dx * push;
-      z += dz * push;
-    }
+    const p = pushOutOfCircleXZ(x, z, 0, mZ, 0.54, 0.64);
+    x = p.x; z = p.z;
+  }
+  const pf = pushOutOfCircleXZ(x, z, 0, hl * 0.35, 0.38, 0.5);
+  x = pf.x; z = pf.z;
+  if (st === 'warship') {
+    const pb = pushOutOfAabbXZ(x, z, -hw * 0.41, hw * 0.41, -hl * 0.45, -hl * 0.17);
+    x = pb.x; z = pb.z;
+  }
+  if (st === 'galleon' || st === 'warship') {
+    const pc = pushOutOfCircleXZ(x, z, 0, 0, 0.3, 0.44);
+    x = pc.x; z = pc.z;
   }
   x = Math.max(-hw * 0.44, Math.min(hw * 0.44, x));
   z = Math.max(-hl * 0.48, Math.min(hl * 0.44, z));
@@ -2675,11 +2724,9 @@ function buildCrewMeshes(group, crewList, shipType) {
       pz = -spec.hullLen * 0.08 + (si % 4) * 0.45;
       py = deckY;
     }         else { px = (Math.random() - 0.5) * spec.hullW * 0.5; pz = (Math.random() - 0.5) * spec.hullLen * 0.4; py = deckY; }
-    if (member.role !== 'prisoner') {
-      const rp = repelCrewFromMastsXZ(px, pz, spec);
-      px = rp.x;
-      pz = rp.z;
-    }
+    const rp0 = repelCrewFromMastsXZ(px, pz, spec, shipType);
+    px = rp0.x;
+    pz = rp0.z;
     cg.position.set(px, py, pz);
     cg.userData.basePos = { x: px, y: py, z: pz };
     cg.userData.crewSm = { x: px, y: py, z: pz, ry: 0 };
@@ -2688,7 +2735,7 @@ function buildCrewMeshes(group, crewList, shipType) {
   });
 }
 
-function clampCrewToShipDeck(sm, spec, member) {
+function clampCrewToShipDeck(sm, spec, member, shipType) {
   const hw = spec.hullW;
   const L = spec.hullLen;
   const deckBase = spec.hullH * 0.65;
@@ -2727,11 +2774,9 @@ function clampCrewToShipDeck(sm, spec, member) {
   sm.x = Math.max(minX, Math.min(maxX, sm.x));
   sm.z = Math.max(minZ, Math.min(maxZ, sm.z));
   sm.y = Math.max(minY, Math.min(maxY, sm.y));
-  if (member.role !== 'prisoner') {
-    const rp = repelCrewFromMastsXZ(sm.x, sm.z, spec);
-    sm.x = Math.max(minX, Math.min(maxX, rp.x));
-    sm.z = Math.max(minZ, Math.min(maxZ, rp.z));
-  }
+  const rp = repelCrewFromMastsXZ(sm.x, sm.z, spec, shipType || 'sloop');
+  sm.x = Math.max(minX, Math.min(maxX, rp.x));
+  sm.z = Math.max(minZ, Math.min(maxZ, rp.z));
 }
 
 function updateCrewDeckAnimations(dt) {
@@ -2810,7 +2855,7 @@ function updateCrewDeckAnimations(dt) {
     sm.y += (ty - sm.y) * posLerp;
     sm.z += (tz - sm.z) * posLerp;
     sm.ry += (tryRot - sm.ry) * rotLerp;
-    clampCrewToShipDeck(sm, spec, member);
+    clampCrewToShipDeck(sm, spec, member, G.player.shipType);
     ch.position.set(sm.x, sm.y, sm.z);
     let leanX = 0;
     if (member.task === 'clean') leanX = Math.sin(t * 0.72 + k) * 0.05 * ampBase;
@@ -2932,7 +2977,7 @@ function updateRemoteCrewDeckAnimations(dt, shipGroup, p, shipType) {
     sm.y += (ty - sm.y) * posLerp;
     sm.z += (tz - sm.z) * posLerp;
     sm.ry += (tryRot - sm.ry) * rotLerp;
-    clampCrewToShipDeck(sm, spec, member);
+    clampCrewToShipDeck(sm, spec, member, shipType);
     ch.position.set(sm.x, sm.y, sm.z);
     let leanX = 0;
     if (member.task === 'cannons') leanX = Math.sin(t * 0.5 + k) * 0.04 * gunAmp * ampBase + fireKick * 0.06;
@@ -4074,33 +4119,46 @@ function spawnSeaDebrisFromHit(wx, wz, pieces, fromNet) {
   }
 }
 
+/** Chain-shot rigging: 3 damage bands — rig stays one piece per mast (mast + yard + sail parented). */
 function applyRiggingVisualToGroup(group, riggingHealth) {
   if (!group) return;
-  const rh = riggingHealth != null ? riggingHealth : 100;
-  const rf = Math.max(0, Math.min(1, rh / 100));
-  const damage = 1 - rf;
+  const rh = Math.max(0, Math.min(100, riggingHealth != null ? riggingHealth : 100));
+  let st;
+  if (rh > 66) st = 0;
+  else if (rh > 33) st = 1;
+  else st = 2;
+  const u = st === 0 ? (100 - rh) / (100 - 66) : st === 1 ? (66 - rh) / (66 - 33) : (33 - rh) / 33;
+  const t = Math.max(0, Math.min(1, u));
+
   group.traverse(ch => {
-    if (ch.userData && ch.userData.isSail && ch.scale) {
-      if (ch.userData._rigBaseScale == null) ch.userData._rigBaseScale = ch.scale.x;
-      if (ch.userData._rigBasePosY == null) ch.userData._rigBasePosY = ch.position.y;
-      if (ch.userData._rigBaseRotX == null) ch.userData._rigBaseRotX = ch.rotation.x;
-      const base = ch.userData._rigBaseScale;
-      const fall = damage;
-      ch.scale.setScalar(base * (0.32 + 0.68 * rf));
-      ch.rotation.x = ch.userData._rigBaseRotX + fall * (ch.userData.isJib ? 0.75 : 1.05);
-      ch.position.y = ch.userData._rigBasePosY - fall * 0.5 * (ch.userData.isJib ? 0.55 : 1);
-    }
-    if (ch.userData && ch.userData.isMast && ch.scale) {
-      if (ch.userData._mastBaseSy == null) ch.userData._mastBaseSy = ch.scale.y;
-      if (ch.userData._mastBaseY == null) ch.userData._mastBaseY = ch.position.y;
-      if (ch.userData._mastBaseRotX == null) ch.userData._mastBaseRotX = ch.rotation.x;
-      if (ch.userData._mastBaseRotZ == null) ch.userData._mastBaseRotZ = ch.rotation.z;
+    if (ch.userData && ch.userData.isMastRig) {
+      if (ch.userData._rigRestRot == null) {
+        ch.userData._rigRestRot = { x: ch.rotation.x, y: ch.rotation.y, z: ch.rotation.z };
+      }
+      const ir = ch.userData._rigRestRot;
       const lean = ch.userData.mastLeanSign || 1;
-      const fall = damage;
-      ch.scale.y = ch.userData._mastBaseSy * (0.5 + 0.5 * rf);
-      ch.rotation.x = ch.userData._mastBaseRotX + fall * 1.12;
-      ch.rotation.z = ch.userData._mastBaseRotZ + fall * 0.62 * lean;
-      ch.position.y = ch.userData._mastBaseY - fall * 0.95;
+      let angX = ir.x, angZ = ir.z;
+      if (st === 0) {
+        angX += t * 0.075;
+        angZ += t * 0.065 * lean;
+      } else if (st === 1) {
+        angX += 0.075 + t * 0.28;
+        angZ += 0.065 * lean + t * 0.34 * lean;
+      } else {
+        angX += 0.355 + t * 1.05;
+        angZ += 0.405 * lean + t * 0.88 * lean;
+      }
+      ch.rotation.x = angX;
+      ch.rotation.z = angZ;
+    }
+    if (ch.userData && ch.userData.isSail && ch.scale) {
+      if (ch.userData._rigSailScale == null) ch.userData._rigSailScale = ch.scale.x;
+      const b = ch.userData._rigSailScale;
+      let sc = 1;
+      if (st === 0) sc = 1 - t * 0.09;
+      else if (st === 1) sc = 0.91 - t * 0.16;
+      else sc = 0.75 - t * 0.36;
+      ch.scale.setScalar(b * Math.max(0.36, sc));
     }
   });
 }
@@ -4151,9 +4209,11 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
   markSeaBattleActivity();
   spawnDamageChunks(hx, SEA_LEVEL + 1.2, hz);
   spawnSeaDebrisFromHit(hx, hz, at === 'grape' ? (isPellet ? 2 : 5) : at === 'chain' ? 8 : 4);
+  const pwx = G.player.x, pwz = G.player.z;
   if (at === 'ball') {
     G.player.health = Math.max(0, G.player.health - 9);
     G.player.morale = Math.max(0, G.player.morale - 4);
+    showCombatPopupWorld(pwx, pwz, `Round shot · hull −9 (${Math.round(G.player.health)} HP)`);
     if (Math.random() < 0.14) {
       const ix = pickNonCaptainCrewIndexForCasualty();
       if (ix >= 0) removeCrewMemberAtWithFlavor(ix, true, 'cannon fire');
@@ -4165,6 +4225,11 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
     if (isPellet) {
       G.player.health = Math.max(0, G.player.health - 1.8);
       G.player.morale = Math.max(0, G.player.morale - 1.2);
+      if (!G._nextGrapePelletPopupAt) G._nextGrapePelletPopupAt = 0;
+      if (G.time >= G._nextGrapePelletPopupAt) {
+        G._nextGrapePelletPopupAt = G.time + 0.45;
+        showCombatPopupWorld(pwx, pwz, `Grapeshot · hull −2 (${Math.round(G.player.health)} HP)`, { cssClass: 'grape', life: 1.85 });
+      }
       if (Math.random() < 0.09) {
         const ix = pickNonCaptainCrewIndexForCasualty();
         if (ix >= 0) removeCrewMemberAtWithFlavor(ix, false, 'grapeshot');
@@ -4175,6 +4240,7 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
     } else {
       G.player.health = Math.max(0, G.player.health - 4);
       G.player.morale = Math.max(0, G.player.morale - 8);
+      showCombatPopupWorld(pwx, pwz, `Grapeshot · hull −4 (${Math.round(G.player.health)} HP)`, { cssClass: 'grape' });
       if (Math.random() < 0.52) {
         const ix = pickNonCaptainCrewIndexForCasualty();
         if (ix >= 0) removeCrewMemberAtWithFlavor(ix, false, 'grapeshot');
@@ -4184,10 +4250,13 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
       }
     }
   } else if (at === 'chain') {
+    const rigBefore = G.player.riggingHealth != null ? G.player.riggingHealth : 100;
     G.player.health = Math.max(0, G.player.health - 6);
-    G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - (30 + Math.random() * 14));
+    G.player.riggingHealth = Math.max(0, rigBefore - (30 + Math.random() * 14));
+    const rigLoss = Math.round(rigBefore - G.player.riggingHealth);
     G.player.morale = Math.max(0, G.player.morale - 6);
     applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
+    showCombatPopupWorld(pwx, pwz, `Chain shot · hull −6, rigging −${rigLoss}% (${Math.round(G.player.riggingHealth)}%)`, { cssClass: 'chain' });
     if (Math.random() < 0.24) {
       const ix = pickNonCaptainCrewIndexForCasualty();
       if (ix >= 0) removeCrewMemberAtWithFlavor(ix, true, 'falling spars');
@@ -5629,6 +5698,57 @@ function hideMobileControls() {
   }
 }
 function notify(text) { const el = document.getElementById('notification'); el.textContent = text; el.style.opacity = '1'; clearTimeout(el._t); el._t = setTimeout(() => el.style.opacity = '0', 2500); }
+
+function showCombatPopupWorld(wx, wz, text, opts) {
+  if (G.mode !== 'playing') return;
+  opts = opts || {};
+  const root = document.getElementById('combat-popups-root');
+  if (!root) return;
+  const el = document.createElement('div');
+  el.className = 'combat-popup' + (opts.cssClass ? ' ' + opts.cssClass : '');
+  el.textContent = text;
+  root.appendChild(el);
+  if (!G.combatPopups3D) G.combatPopups3D = [];
+  G.combatPopups3D.push({
+    el,
+    wx,
+    wy: opts.wy != null ? opts.wy : SEA_LEVEL + 3.6,
+    wz,
+    t: 0,
+    life: opts.life != null ? opts.life : 2.35
+  });
+}
+
+function updateCombatPopups(dt) {
+  if (!G.combatPopups3D || !G.combatPopups3D.length || typeof camera === 'undefined') return;
+  const cw = window.innerWidth, ch = window.innerHeight;
+  const pxScr = 0.5 * cw, pyScr = 0.42 * ch;
+  const avoidR = Math.min(cw, ch) * 0.21;
+  for (let i = G.combatPopups3D.length - 1; i >= 0; i--) {
+    const p = G.combatPopups3D[i];
+    p.t += dt;
+    const v = new THREE.Vector3(p.wx, p.wy, p.wz);
+    v.project(camera);
+    if (p.t >= p.life || v.z > 1) {
+      p.el.remove();
+      G.combatPopups3D.splice(i, 1);
+      continue;
+    }
+    let sx = (v.x * 0.5 + 0.5) * cw;
+    let sy = (-v.y * 0.5 + 0.5) * ch;
+    const dx = sx - pxScr, dy = sy - pyScr;
+    if (Math.hypot(dx, dy) < avoidR) {
+      const d = Math.hypot(dx, dy) || 1;
+      sx = pxScr + (dx / d) * (avoidR + 18);
+      sy = pyScr + (dy / d) * (avoidR + 18);
+    }
+    p.el.style.left = `${sx}px`;
+    p.el.style.top = `${sy}px`;
+    p.el.style.transform = 'translate(-50%, -100%)';
+    const fade = Math.max(0, 1 - p.t / p.life);
+    p.el.style.opacity = String(fade * fade);
+  }
+}
 let unreadChat = 0;
 function addChatMessage(name, text, chatId) {
   const log = document.getElementById('chat-log');
@@ -8209,6 +8329,11 @@ function update(dt) {
           npc.health -= dh;
           npc.aggro = true;
           npc.underFireTimer = 4.6;
+          let popMsg = `−${dh} hull`;
+          if (at === 'chain') popMsg = `Chain · −${dh} hull · rigging`;
+          else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
+          else if (at === 'ball') popMsg = `Round shot · −${dh}`;
+          showCombatPopupWorld(npc.x, npc.z, `${npc.name}: ${popMsg} (${Math.max(0, Math.round(npc.health))} HP)`, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '', life: 2.1 });
           spawnDamageChunks(b.x, b.y, b.z);
           spawnSeaDebrisFromHit(b.x, b.z, at === 'chain' ? 8 : at === 'grape' ? (isPellet ? 2 : 5) : 4);
           if (at === 'chain') {
@@ -8268,7 +8393,6 @@ function update(dt) {
           G.npcs.forEach(n => { if (Math.hypot(b.x - n.x, b.z - n.z) < 60) G.lastAttacker = `${n.name} (${n.isTradeShip ? 'merchant' : 'AI pirate'})`; });
         }
         applyAmmoHitToLocalPlayer(at, b.sourcePlayerId, b.x, b.z, isPellet);
-        notify(`Hull hit! HP: ${Math.round(G.player.health)}`);
         triggerCombatFireHint();
         b.life = 0;
       }
@@ -8281,7 +8405,11 @@ function update(dt) {
       G.otherPlayers.forEach((op, opId) => {
         if (op.docked) return;
         if (Math.hypot(b.x - op.x, b.z - op.z) < hitR) {
-          notify(`Hit ${networkPlayerCaptainName(op)}'s ship!`);
+          let msg = `Hit ${networkPlayerCaptainName(op)}!`;
+          if (at === 'ball') msg = `Round shot · hull −9`;
+          else if (at === 'chain') msg = `Chain · hull −6 · rigging`;
+          else if (at === 'grape') msg = isPellet ? `Grape · hull −2` : `Grapeshot · hull −4`;
+          showCombatPopupWorld(op.x, op.z, msg, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '' });
           b.life = 0;
         }
       });
@@ -8752,6 +8880,7 @@ function gameLoop(time) {
   update(dt); render();
   updateCombatFireEdgesUI();
   if (G.mode === 'playing') {
+    updateCombatPopups(dt);
     const dm = document.getElementById('debug-modal-root');
     if (dm && dm.style.display === 'flex') {
       drawDebugWorldMap();
