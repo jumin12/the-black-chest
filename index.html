@@ -898,7 +898,7 @@ function bumpNotoriety(d) {
   if (sinksPlayer) G.playerStats.sinksPlayer += sinksPlayer;
   if (ransoms) G.playerStats.ransoms += ransoms;
   if (deaths) G.playerStats.deaths += deaths;
-  saveProgress();
+  saveProgressDebounced();
   if (ws?.readyState === 1) {
     const payload = { type: 'leaderboard_update', gold, sinksAi, sinksPlayer, ransoms, deaths };
     if (G.myId != null) payload.playerId = G.myId;
@@ -2412,11 +2412,16 @@ function networkPlayerCaptainName(p) {
 function otherPlayerShipCacheKey(p) {
   const sp = normalizeShipPartsForRemoteView(p.shipParts);
   const nm = (p.shipName || p.name || '').trim();
+  const fc = String(p.flagColor || p.color || '').trim();
   const cd = p.crewData;
   const crewSeg = Array.isArray(cd) && cd.length
-    ? `C${cd.length}:${cd.map(c => `${c.name || ''}|${c.role || ''}`).join(',')}`
+    ? `C${cd.length}:${cd.map(c => {
+        const h = c.health != null ? Math.max(0, Math.min(100, Math.round(Number(c.health)))) : 100;
+        const hb = Math.floor(h / 15) * 15;
+        return `${c.name || ''}|${c.role || ''}|${c.color || ''}|${c.hat || ''}|${c.outfit || ''}|${c.task || ''}|${c.parrot ? 1 : 0}|h${hb}`;
+      }).join(',')}`
     : '_';
-  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${crewSeg}`;
+  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${fc}|${crewSeg}`;
 }
 
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
@@ -4535,16 +4540,24 @@ function rememberCaptainToken(displayName, token) {
     localStorage.setItem('pirates_captain_accounts', JSON.stringify(o));
   } catch (e) {}
 }
+function buildCrewSyncPayload() {
+  return G.player.crew.map(c => ({
+    name: c.name, role: c.role, color: c.color, hat: c.hat, outfit: c.outfit, task: c.task, parrot: c.parrot,
+    health: c.health != null ? Math.max(0, Math.min(100, Number(c.health))) : 100
+  }));
+}
 function syncCaptainNameToServer() {
   if (!ws || ws.readyState !== 1) return;
   const capName = G.player.crew[0]?.name || 'Pirate';
-  const crewSync = G.player.crew.map(c => ({ name: c.name, role: c.role, color: c.color, hat: c.hat }));
   const captainToken = getCaptainTokenForName(capName);
   ws.send(JSON.stringify({
     type: 'set_name',
     name: capName,
     shipName: G.player.shipName,
-    crew: crewSync,
+    shipType: G.player.shipType,
+    shipParts: G.player.shipParts,
+    flagColor: G.player.flagColor || '#1a1a1a',
+    crew: buildCrewSyncPayload(),
     captainToken
   }));
 }
@@ -4652,9 +4665,17 @@ function connectToServer() {
     wsUserBanned = false;
     notify('Connected to server');
     const capName = G.player.crew[0]?.name || 'Pirate';
-    const crewSync = G.player.crew.map(c => ({ name: c.name, role: c.role, color: c.color, hat: c.hat }));
     const captainToken = getCaptainTokenForName(capName);
-    ws.send(JSON.stringify({ type: 'set_name', name: capName, shipName: G.player.shipName, crew: crewSync, captainToken }));
+    ws.send(JSON.stringify({
+      type: 'set_name',
+      name: capName,
+      shipName: G.player.shipName,
+      shipType: G.player.shipType,
+      shipParts: G.player.shipParts,
+      flagColor: G.player.flagColor || '#1a1a1a',
+      crew: buildCrewSyncPayload(),
+      captainToken
+    }));
     sendUpdate();
   };
   ws.onmessage = (e) => {
@@ -4959,9 +4980,11 @@ function sendUpdate() {
     dockAngle: G.docked && G.nearDock ? (G.nearDock.dockAngle || 0) : null,
     riggingHealth: G.player.riggingHealth != null ? G.player.riggingHealth : 100,
     morale: G.player.morale != null ? G.player.morale : 100,
-    crewData: G.player.crew.map(c => ({
-      name: c.name, role: c.role, color: c.color, hat: c.hat, task: c.task, outfit: c.outfit, parrot: c.parrot
-    }))
+    shipType: G.player.shipType,
+    shipName: G.player.shipName,
+    shipParts: { ...G.player.shipParts },
+    flagColor: G.player.flagColor || '#1a1a1a',
+    crewData: buildCrewSyncPayload()
   };
   ws.send(JSON.stringify(payload));
 }
@@ -6435,6 +6458,59 @@ function ensureCargoSlots() {
     syncInventoryFromCargoSlots();
   }
 }
+/** Fast path after picking up one item type at sea (avoids full multi-item reconcile). */
+function reconcileSlotsAfterPickup(itemId) {
+  ensureCargoSlots();
+  const row = G.player.inventory.find(i => i.id === itemId);
+  const target = row ? Math.max(0, Math.floor(Number(row.count) || 0)) : 0;
+  let cur = slotSumById(itemId);
+  while (cur > target) {
+    let removed = false;
+    for (let i = G.player.cargoSlots.length - 1; i >= 0 && cur > target; i--) {
+      const s = G.player.cargoSlots[i];
+      if (!s || s.id !== itemId) continue;
+      const take = Math.min(s.count, cur - target);
+      s.count -= take;
+      cur -= take;
+      removed = true;
+      if (s.count <= 0) G.player.cargoSlots[i] = null;
+    }
+    if (!removed) break;
+  }
+  if (cur >= target) return;
+  let need = target - cur;
+  const meta = getItemMeta(itemId);
+  while (need > 0) {
+    let placed = false;
+    for (let i = 0; i < G.player.cargoSlots.length; i++) {
+      const s = G.player.cargoSlots[i];
+      if (s && s.id === itemId && s.count < ITEM_MAX_STACK) {
+        const add = Math.min(ITEM_MAX_STACK - s.count, need);
+        s.count += add;
+        need -= add;
+        placed = true;
+        if (need <= 0) break;
+      }
+    }
+    if (need <= 0) break;
+    for (let i = 0; i < G.player.cargoSlots.length; i++) {
+      if (!G.player.cargoSlots[i]) {
+        const add = Math.min(ITEM_MAX_STACK, need);
+        G.player.cargoSlots[i] = { id: itemId, name: meta.name, icon: meta.icon, count: add };
+        need -= add;
+        placed = true;
+        if (need <= 0) break;
+      }
+    }
+    if (!placed) break;
+  }
+  while (need > 0) {
+    const drop = Math.min(ITEM_MAX_STACK, need);
+    spawnWorldLootAt(G.player.x, G.player.z, itemId, drop);
+    need -= drop;
+  }
+}
+
 function reconcileSlotsWithInventory() {
   ensureCargoSlots();
   const want = new Map();
@@ -8140,6 +8216,14 @@ document.getElementById('minimap').addEventListener('wheel', e => {
   mmZoom = Math.max(0.02, Math.min(0.3, mmZoom + e.deltaY * 0.0002)); drawMinimap();
 }, { passive: false });
 
+/** Match local player ship bob/pitch/roll so remote vessels ride the same waves. */
+function playerShipWaveAt(wx, wz) {
+  const waveH = Math.sin(G.time * 0.7 + wx * 0.04) * 0.15 + Math.sin(G.time * 1.1 + wz * 0.06) * 0.1 + Math.sin(G.time * 1.8 + wx * 0.08) * 0.05;
+  const wavePitch = Math.sin(G.time * 0.9 + wz * 0.05) * 0.03 + Math.sin(G.time * 1.5 + wx * 0.07) * 0.015;
+  const waveRoll = Math.sin(G.time * 0.7 + wx * 0.06) * 0.04 + Math.sin(G.time * 1.3 + wz * 0.04) * 0.02;
+  return { waveH, wavePitch, waveRoll };
+}
+
 /* ============================== GAME LOOP ================================ */
 let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0, wildlifePruneAcc = 0;
 
@@ -8376,7 +8460,7 @@ function update(dt) {
       const captainName = networkPlayerCaptainName(p);
       const shipTitle = (p.shipName && String(p.shipName).trim()) ? String(p.shipName).trim() : captainName;
       const visualParts = normalizeShipPartsForRemoteView(p.shipParts);
-      const sm = buildShipMesh(st, visualParts, p.color || '#4488cc', shipTitle);
+      const sm = buildShipMesh(st, visualParts, p.flagColor || p.color || '#4488cc', shipTitle);
       if (captainName && shipTitle !== captainName) {
         const capLabel = makeTextSprite(shipTitle, '#88bbff', captainName, p.color || '');
         const spec = SHIP_TYPES[st];
@@ -8392,9 +8476,10 @@ function update(dt) {
           else if (c.role === 'navigator') task = 'lookout';
           else task = ['helm', 'cannons', 'sails', 'lookout'][ci] || 'idle';
         }
+        const ch = c.health != null ? Math.max(0, Math.min(100, Number(c.health))) : 100;
         return {
           name: c.name || 'Pirate', role: c.role || 'sailor', color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
-          task, health: 100
+          task, health: ch
         };
       }) : [
         { name: captainName, role: 'captain', task: 'helm', color: p.color, health: 100 },
@@ -8405,9 +8490,9 @@ function update(dt) {
       sm.userData.cacheKey = cacheKey;
       sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = shipTitle;
-      const owH0 = Math.sin(G.time * 0.7 + p.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + p.z * 0.06) * 0.08;
-      sm.position.set(p.x, SEA_LEVEL + 0.35 + owH0, p.z);
-      sm.rotation.y = p.rotation || 0;
+      const w0 = playerShipWaveAt(p.x, p.z);
+      sm.position.set(p.x, SEA_LEVEL + 0.35 + w0.waveH, p.z);
+      sm.rotation.set(w0.wavePitch, p.rotation || 0, w0.waveRoll);
       if (preservedSinking) {
         sm.userData.sinking = true;
         sm.userData.sinkY = preservedSinking.sinkY != null ? preservedSinking.sinkY : sm.position.y;
@@ -8431,11 +8516,11 @@ function update(dt) {
         otherShipGroups.delete(id);
       }
     } else {
-      const owH = Math.sin(G.time * 0.7 + p.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + p.z * 0.06) * 0.08;
-      sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.35 + owH, p.z), Math.min(1, 5 * dt));
+      const w = playerShipWaveAt(p.x, p.z);
+      sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.35 + w.waveH, p.z), Math.min(1, 5 * dt));
       sg.rotation.y = p.rotation || 0;
-      sg.rotation.x = Math.sin(G.time * 0.9 + p.z * 0.05) * 0.02;
-      sg.rotation.z = Math.sin(G.time * 0.7 + p.x * 0.06) * 0.03;
+      sg.rotation.x = w.wavePitch;
+      sg.rotation.z = w.waveRoll;
       animateRemoteShipSails(sg, p.x, p.z, p.rotation || 0, p.speed || 0, dt);
       updateRemoteCrewDeckAnimations(dt, sg, p, p.shipType || 'sloop');
       applyRiggingVisualToGroup(sg, p.riggingHealth != null ? p.riggingHealth : 100);
@@ -8801,17 +8886,19 @@ function update(dt) {
         ex = { id: item.type, name: m.name, icon: m.icon, count: 0 };
         G.player.inventory.push(ex);
       }
-      ex.count += amt;
-      if (item.type === 'gold') bumpNotoriety({ gold: amt });
-      notify(`Collected ${item.type} ×${amt}!`);
+           ex.count += amt;
+      const pickedType = item.type;
+      const pickedAmt = amt;
       removeFloatingLootVisuals(item);
       if (item.netId != null && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'loot_collect', id: item.netId }));
       G.floatingItems.splice(fi, 1);
-      setTimeout(() => {
-        reconcileSlotsWithInventory();
+      reconcileSlotsAfterPickup(pickedType);
+      requestAnimationFrame(() => {
+        if (pickedType === 'gold') bumpNotoriety({ gold: pickedAmt });
+        notify(`Collected ${pickedType} ×${pickedAmt}!`);
         refreshCargoPanelIfOpen();
         updateInventoryPanel();
-      }, 0);
+      });
     }
   }
 
@@ -9724,6 +9811,21 @@ function applyDefaultStartingLoadout(opts) {
   syncCaptainNameToServer();
 }
 
+let _saveProgressDebounceTimer = null;
+function saveProgressDebounced() {
+  if (_saveProgressDebounceTimer) clearTimeout(_saveProgressDebounceTimer);
+  _saveProgressDebounceTimer = setTimeout(() => {
+    _saveProgressDebounceTimer = null;
+    saveProgress();
+  }, 420);
+}
+function flushPendingSaveProgress() {
+  if (!_saveProgressDebounceTimer) return;
+  clearTimeout(_saveProgressDebounceTimer);
+  _saveProgressDebounceTimer = null;
+  saveProgress();
+}
+
 function saveProgress() {
   try {
     ensurePlayerStats();
@@ -9749,6 +9851,8 @@ function saveProgress() {
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
   } catch (e) {}
 }
+window.addEventListener('beforeunload', flushPendingSaveProgress);
+window.addEventListener('pagehide', flushPendingSaveProgress);
 
 function loadProgress() {
   try {
