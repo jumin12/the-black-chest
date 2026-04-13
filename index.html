@@ -733,6 +733,11 @@ import * as THREE from 'three';
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const CHUNK_SIZE = 300;
+/** Stable fractional phase in [0, CHUNK_SIZE) for grid alignment (JS % is wrong for negatives). */
+function chunkGridPhase(coord) {
+  const c = CHUNK_SIZE;
+  return ((coord % c) + c) % c;
+}
 /** Playable archipelago spans chunk indices ±this from origin (15×15 chunks, ~28–34 port towns). Outside is empty ocean. */
 const WORLD_CHUNK_HALF = 7;
 const WORLD_EDGE_CLAMP = WORLD_CHUNK_HALF * CHUNK_SIZE + CHUNK_SIZE * 0.5;
@@ -2408,11 +2413,9 @@ function networkPlayerCaptainName(p) {
 function otherPlayerShipCacheKey(p) {
   const sp = normalizeShipPartsForRemoteView(p.shipParts);
   const nm = (p.shipName || p.name || '').trim();
-  const cd = p.crewData;
-  const crewSeg = Array.isArray(cd) && cd.length
-    ? `C${cd.length}:${cd.map(c => `${c.name || ''}|${c.role || ''}`).join(',')}`
-    : '_';
-  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${crewSeg}`;
+  const cN = Array.isArray(p.crewData) ? p.crewData.length : 0;
+  /** Roster names omitted: including them caused a full mesh rebuild (and brief warp from the origin) on every crew health tick during broadsides. Count still refreshes the deck when someone is lost. */
+  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|n${cN}`;
 }
 
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
@@ -7653,9 +7656,18 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   const gs = CHUNK_SIZE * s;
   if (gs > 4) {
     ctx.strokeStyle = 'rgba(40,60,90,0.2)'; ctx.lineWidth = 0.5;
-    const ox = (cx - (centerX * s) % gs + gs) % gs, oz = (cy - (centerZ * s) % gs + gs) % gs;
-    for (let i = -1; i < w / gs + 2; i++) { ctx.beginPath(); ctx.moveTo(ox + i * gs, 0); ctx.lineTo(ox + i * gs, h); ctx.stroke(); }
-    for (let i = -1; i < h / gs + 2; i++) { ctx.beginPath(); ctx.moveTo(0, oz + i * gs); ctx.lineTo(w, oz + i * gs); ctx.stroke(); }
+    const phx = chunkGridPhase(centerX), phz = chunkGridPhase(centerZ);
+    const vLines = Math.ceil(w / gs) + 4, hLines = Math.ceil(h / gs) + 4;
+    for (let m = -vLines; m <= vLines; m++) {
+      const lx = cx + (m * CHUNK_SIZE - phx) * s;
+      if (lx < -gs || lx > w + gs) continue;
+      ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, h); ctx.stroke();
+    }
+    for (let m = -hLines; m <= hLines; m++) {
+      const ly = cy - (m * CHUNK_SIZE - phz) * s;
+      if (ly < -gs || ly > h + gs) continue;
+      ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w, ly); ctx.stroke();
+    }
   }
 
   const pad = CHUNK_SIZE * 1.5;
@@ -7950,10 +7962,13 @@ function drawMinimap() {
   const gridSize = CHUNK_SIZE * s;
   if (gridSize > 8) {
     ctx.strokeStyle = 'rgba(30,50,70,0.4)'; ctx.lineWidth = 0.5;
-    for (let gx = -10; gx <= 10; gx++) {
-      const lx = cx + (gx * CHUNK_SIZE - G.player.x % CHUNK_SIZE) * s;
-      const ly = cy + (gx * CHUNK_SIZE - G.player.z % CHUNK_SIZE) * s;
+    const phx = chunkGridPhase(G.player.x), phz = chunkGridPhase(G.player.z);
+    for (let m = -12; m <= 12; m++) {
+      const lx = cx + (m * CHUNK_SIZE - phx) * s;
       ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, h); ctx.stroke();
+    }
+    for (let m = -12; m <= 12; m++) {
+      const ly = cy - (m * CHUNK_SIZE - phz) * s;
       ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w, ly); ctx.stroke();
     }
   }
@@ -8303,6 +8318,9 @@ function update(dt) {
       sm.userData.cacheKey = cacheKey;
       sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = shipTitle;
+      const owH0 = Math.sin(G.time * 0.7 + p.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + p.z * 0.06) * 0.08;
+      sm.position.set(p.x, SEA_LEVEL + 0.35 + owH0, p.z);
+      sm.rotation.y = p.rotation || 0;
       otherShipGroups.set(id, sm);
       scene.add(sm);
     }
