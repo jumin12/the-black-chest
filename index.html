@@ -738,6 +738,13 @@ function chunkGridPhase(coord) {
   const c = CHUNK_SIZE;
   return ((coord % c) + c) % c;
 }
+/** Full map + minimap: mirror world X on screen so chart left/right matches the 3D world (ports no longer appear on the wrong shore). North (+Z) stays toward the top of the chart. */
+function mapChartScreenX(cx, centerX, worldX, scale) {
+  return cx - (worldX - centerX) * scale;
+}
+function mapChartScreenY(cy, centerZ, worldZ, scale) {
+  return cy - (worldZ - centerZ) * scale;
+}
 /** Playable archipelago spans chunk indices ±this from origin (15×15 chunks, ~28–34 port towns). Outside is empty ocean. */
 const WORLD_CHUNK_HALF = 7;
 const WORLD_EDGE_CLAMP = WORLD_CHUNK_HALF * CHUNK_SIZE + CHUNK_SIZE * 0.5;
@@ -7627,7 +7634,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     ctx.globalAlpha = 0.42;
     for (let iy = 0; iy < h; iy += cell) {
       for (let ix = 0; ix < w; ix += cell) {
-        const wx = centerX + (ix + cell * 0.5 - cx) / s;
+        const wx = centerX - (ix + cell * 0.5 - cx) / s;
         const wz = centerZ - (iy + cell * 0.5 - cy) / s;
         const wd = getWindAt(wx, wz);
         const hue = (((wd.angle / (Math.PI * 2)) % 1) + 1) % 1;
@@ -7639,14 +7646,14 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     const ar = cell * 2;
     for (let iy = 0; iy < h; iy += ar) {
       for (let ix = 0; ix < w; ix += ar) {
-        const wx = centerX + (ix + ar * 0.5 - cx) / s;
+        const wx = centerX - (ix + ar * 0.5 - cx) / s;
         const wz = centerZ - (iy + ar * 0.5 - cy) / s;
         const wd = getWindAt(wx, wz);
-        const px = cx + (wx - centerX) * s, py = cy - (wz - centerZ) * s;
+        const px = mapChartScreenX(cx, centerX, wx, s), py = mapChartScreenY(cy, centerZ, wz, s);
         const len = Math.min(14, 4 + wd.speed * 0.28) * Math.max(0.6, s / 0.14);
         ctx.beginPath();
         ctx.moveTo(px, py);
-        ctx.lineTo(px + Math.sin(wd.angle) * len, py - Math.cos(wd.angle) * len);
+        ctx.lineTo(px - Math.sin(wd.angle) * len, py - Math.cos(wd.angle) * len);
         ctx.stroke();
       }
     }
@@ -7659,7 +7666,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     const phx = chunkGridPhase(centerX), phz = chunkGridPhase(centerZ);
     const vLines = Math.ceil(w / gs) + 4, hLines = Math.ceil(h / gs) + 4;
     for (let m = -vLines; m <= vLines; m++) {
-      const lx = cx + (m * CHUNK_SIZE - phx) * s;
+      const lx = cx - (m * CHUNK_SIZE - phx) * s;
       if (lx < -gs || lx > w + gs) continue;
       ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, h); ctx.stroke();
     }
@@ -7674,7 +7681,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   const bMinX = centerX - w / (2 * s) - pad, bMaxX = centerX + w / (2 * s) + pad;
   const bMinZ = centerZ - h / (2 * s) - pad, bMaxZ = centerZ + h / (2 * s) + pad;
   forEachProceduralIslandInWorldBounds(bMinX, bMaxX, bMinZ, bMaxZ, d => {
-    const sx = cx + (d.worldX - centerX) * s, sy = cy - (d.worldZ - centerZ) * s;
+    const sx = mapChartScreenX(cx, centerX, d.worldX, s), sy = mapChartScreenY(cy, centerZ, d.worldZ, s);
     if (sx < -50 || sx > w + 50 || sy < -50 || sy > h + 50) return;
     const ir = Math.max(4, d.radius * s);
     ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 4;
@@ -7697,7 +7704,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     ctx.closePath(); ctx.fill();
     ctx.shadowBlur = 0;
     if (d.hasTown && mapChartTownVisible(d)) {
-      const tx = cx + (d.dockX - centerX) * s, ty = cy - (d.dockZ - centerZ) * s;
+      const tx = mapChartScreenX(cx, centerX, d.dockX, s), ty = mapChartScreenY(cy, centerZ, d.dockZ, s);
       if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
       const fcol = FACTION_TRADE_COLORS[townFaction(d) % 4];
       ctx.fillStyle = fcol; ctx.fillRect(tx - 3, ty - 3, 6, 6);
@@ -7711,7 +7718,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   G.npcs.forEach(n => {
     if (n.sinking) return;
     if (!npcVisibleForWorldMapOverlay(n, debugShipLayers)) return;
-    const sx = cx + (n.x - centerX) * s, sy = cy - (n.z - centerZ) * s;
+    const sx = mapChartScreenX(cx, centerX, n.x, s), sy = mapChartScreenY(cy, centerZ, n.z, s);
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
     const merchant = !!n.isTradeShip;
     const hullCol = n.flagColor || (merchant ? '#2a7a72' : '#aa2222');
@@ -7719,13 +7726,13 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     ctx.strokeStyle = merchant ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; ctx.stroke();
     const dirLen = merchant ? 7 : 8;
     ctx.strokeStyle = hullCol; ctx.lineWidth = 1.5; ctx.beginPath();
-    ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.sin(n.rotation) * dirLen, sy - Math.cos(n.rotation) * dirLen); ctx.stroke();
+    ctx.moveTo(sx, sy); ctx.lineTo(sx - Math.sin(n.rotation) * dirLen, sy - Math.cos(n.rotation) * dirLen); ctx.stroke();
     ctx.fillStyle = '#e8e0d8'; ctx.font = '10px Georgia,serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 8);
   });
 
   G.otherPlayers.forEach(p => {
     if (!otherPlayersVisibleForWorldMap(debugShipLayers)) return;
-    const sx = cx + (p.x - centerX) * s, sy = cy - (p.z - centerZ) * s;
+    const sx = mapChartScreenX(cx, centerX, p.x, s), sy = mapChartScreenY(cy, centerZ, p.z, s);
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
     ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 5, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
@@ -7733,18 +7740,18 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     ctx.fillText(p.shipName || p.name || 'Player', sx, sy - 10);
   });
 
-  const px = cx + (G.player.x - centerX) * s, py = cy - (G.player.z - centerZ) * s;
+  const px = mapChartScreenX(cx, centerX, G.player.x, s), py = mapChartScreenY(cy, centerZ, G.player.z, s);
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
   const pr = G.player.rotation;
   ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2.5; ctx.beginPath();
-  ctx.moveTo(px, py); ctx.lineTo(px + Math.sin(pr) * 14, py - Math.cos(pr) * 14); ctx.stroke();
+  ctx.moveTo(px, py); ctx.lineTo(px - Math.sin(pr) * 14, py - Math.cos(pr) * 14); ctx.stroke();
   ctx.fillStyle = '#d4a848'; ctx.font = 'bold 12px Georgia,serif'; ctx.textAlign = 'center';
   ctx.fillText(G.player.shipName || 'You', px, py + 18);
 
   G.quests.filter(q => q.accepted).forEach(q => {
     if (q.type === 'explore') {
-      const qx = cx + (q.x - centerX) * s, qy = cy - (q.z - centerZ) * s;
+      const qx = mapChartScreenX(cx, centerX, q.x, s), qy = mapChartScreenY(cy, centerZ, q.z, s);
       if (qx > -10 && qx < w + 10 && qy > -10 && qy < h + 10) {
         ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
         ctx.beginPath(); ctx.arc(qx, qy, 8, 0, Math.PI * 2); ctx.stroke();
@@ -7756,7 +7763,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     if (q.type === 'hunt') {
       G.npcs.forEach(n => {
         if (n.name === q.target && !n.sinking && npcVisibleForWorldMapOverlay(n, debugShipLayers)) {
-          const nx = cx + (n.x - centerX) * s, ny = cy - (n.z - centerZ) * s;
+          const nx = mapChartScreenX(cx, centerX, n.x, s), ny = mapChartScreenY(cy, centerZ, n.z, s);
           ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
           ctx.beginPath(); ctx.arc(nx, ny, 10, 0, Math.PI * 2); ctx.stroke();
           ctx.setLineDash([]);
@@ -7770,7 +7777,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   if (G.storyQuest.phase === 'intro') {
     const port = findNearestPortDock(G.player.x, G.player.z);
     if (port) {
-      const qx = cx + (port.dockX - centerX) * s, qy = cy - (port.dockZ - centerZ) * s;
+      const qx = mapChartScreenX(cx, centerX, port.dockX, s), qy = mapChartScreenY(cy, centerZ, port.dockZ, s);
       if (qx > -14 && qx < w + 14 && qy > -14 && qy < h + 14) {
         ctx.strokeStyle = 'rgba(220,160,255,0.95)'; ctx.lineWidth = 2.5; ctx.setLineDash([5, 4]);
         ctx.beginPath(); ctx.arc(qx, qy, 12, 0, Math.PI * 2); ctx.stroke();
@@ -7785,7 +7792,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   if (sqR.phase === 'report' && sqR.turnInCx != null && sqR.turnInCz != null) {
     const tip = getProceduralIslandMeta(sqR.turnInCx, sqR.turnInCz);
     if (tip && tip.hasTown && tip.dockX != null) {
-      const qx = cx + (tip.dockX - centerX) * s, qy = cy - (tip.dockZ - centerZ) * s;
+      const qx = mapChartScreenX(cx, centerX, tip.dockX, s), qy = mapChartScreenY(cy, centerZ, tip.dockZ, s);
       if (qx > -20 && qx < w + 20 && qy > -20 && qy < h + 20) {
         ctx.strokeStyle = 'rgba(255,230,140,0.98)'; ctx.lineWidth = 3; ctx.setLineDash([]);
         ctx.strokeRect(qx - 11, qy - 11, 22, 22);
@@ -7798,7 +7805,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   }
 
   const limW = WORLD_EDGE_CLAMP;
-  const bxL = cx + (-limW - centerX) * s, bxR = cx + (limW - centerX) * s;
+  const bxL = mapChartScreenX(cx, centerX, -limW, s), bxR = mapChartScreenX(cx, centerX, limW, s);
   const byN = cy - (-limW - centerZ) * s, byS = cy - (limW - centerZ) * s;
   const brx = Math.min(bxL, bxR), bry = Math.min(byN, byS);
   const brw = Math.abs(bxR - bxL), brh = Math.abs(byS - byN);
@@ -7860,14 +7867,14 @@ fmCanvas.addEventListener('mousedown', e => { fmDragging = true; fmLastX = e.cli
 window.addEventListener('mousemove', e => {
   if (fmDragging) {
     const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width;
-    fmPanX -= (e.clientX - fmLastX) * scale / fmZoom; fmPanZ += (e.clientY - fmLastY) * scale / fmZoom;
+    fmPanX += (e.clientX - fmLastX) * scale / fmZoom; fmPanZ += (e.clientY - fmLastY) * scale / fmZoom;
     fmLastX = e.clientX; fmLastY = e.clientY; if (fullmapOpen) drawFullmap();
   }
   if (debugMapDragging) {
     const dcv = document.getElementById('debug-world-map');
     if (dcv) {
       const rect = dcv.getBoundingClientRect(); const scale = dcv.width / rect.width;
-      debugMapPanX -= (e.clientX - debugMapLastX) * scale / debugMapZoom;
+      debugMapPanX += (e.clientX - debugMapLastX) * scale / debugMapZoom;
       debugMapPanZ += (e.clientY - debugMapLastY) * scale / debugMapZoom;
       debugMapLastX = e.clientX; debugMapLastY = e.clientY;
       drawDebugWorldMap();
@@ -7899,7 +7906,7 @@ fmCanvas.addEventListener('touchmove', e => {
     const t = e.changedTouches[i];
     if (t.identifier === fmTouchId) {
       const rect = fmCanvas.getBoundingClientRect(); const scale = 800 / rect.width;
-      fmPanX -= (t.clientX - fmTouchX) * scale / fmZoom;
+      fmPanX += (t.clientX - fmTouchX) * scale / fmZoom;
       fmPanZ += (t.clientY - fmTouchY) * scale / fmZoom;
       fmTouchX = t.clientX; fmTouchY = t.clientY;
       if (fullmapOpen) drawFullmap();
@@ -7941,7 +7948,7 @@ fmCanvas.addEventListener('touchend', e => { e.stopPropagation(); fmTouchId = nu
       const t = e.changedTouches[i];
       if (t.identifier === debugMapTouchId) {
         const rect = debugWc.getBoundingClientRect(); const scale = debugWc.width / rect.width;
-        debugMapPanX -= (t.clientX - debugMapTouchX) * scale / debugMapZoom;
+        debugMapPanX += (t.clientX - debugMapTouchX) * scale / debugMapZoom;
         debugMapPanZ += (t.clientY - debugMapTouchY) * scale / debugMapZoom;
         debugMapTouchX = t.clientX; debugMapTouchY = t.clientY;
         drawDebugWorldMap();
@@ -7964,7 +7971,7 @@ function drawMinimap() {
     ctx.strokeStyle = 'rgba(30,50,70,0.4)'; ctx.lineWidth = 0.5;
     const phx = chunkGridPhase(G.player.x), phz = chunkGridPhase(G.player.z);
     for (let m = -12; m <= 12; m++) {
-      const lx = cx + (m * CHUNK_SIZE - phx) * s;
+      const lx = cx - (m * CHUNK_SIZE - phx) * s;
       ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, h); ctx.stroke();
     }
     for (let m = -12; m <= 12; m++) {
@@ -7976,7 +7983,7 @@ function drawMinimap() {
   const mmMinX = G.player.x - w / (2 * s) - mmPad, mmMaxX = G.player.x + w / (2 * s) + mmPad;
   const mmMinZ = G.player.z - h / (2 * s) - mmPad, mmMaxZ = G.player.z + h / (2 * s) + mmPad;
   forEachProceduralIslandInWorldBounds(mmMinX, mmMaxX, mmMinZ, mmMaxZ, d => {
-    const sx = cx + (d.worldX - G.player.x) * s, sy = cy - (d.worldZ - G.player.z) * s;
+    const sx = mapChartScreenX(cx, G.player.x, d.worldX, s), sy = mapChartScreenY(cy, G.player.z, d.worldZ, s);
     if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) return;
     const ir = Math.max(2, d.radius * s);
     const pts = 12;
@@ -7997,7 +8004,7 @@ function drawMinimap() {
     }
     ctx.closePath(); ctx.fill();
     if (d.hasTown && mapChartTownVisible(d)) {
-      const tx = cx + (d.dockX - G.player.x) * s, ty = cy - (d.dockZ - G.player.z) * s;
+      const tx = mapChartScreenX(cx, G.player.x, d.dockX, s), ty = mapChartScreenY(cy, G.player.z, d.dockZ, s);
       if (tx > 0 && tx < w && ty > 0 && ty < h) {
         ctx.fillStyle = FACTION_TRADE_COLORS[townFaction(d) % 4]; ctx.fillRect(tx - 2, ty - 2, 4, 4);
         if (s > 0.05) { ctx.fillStyle = '#e8d090'; ctx.font = (w >= 220 ? '9px' : '7px') + ' Georgia'; ctx.textAlign = 'center'; ctx.fillText(d.townName, tx, ty - 5); }
@@ -8007,7 +8014,7 @@ function drawMinimap() {
   G.npcs.forEach(n => {
     if (n.sinking) return;
     if (!mapChartNpcVisible(n)) return;
-    const sx = cx + (n.x - G.player.x) * s, sy = cy - (n.z - G.player.z) * s;
+    const sx = mapChartScreenX(cx, G.player.x, n.x, s), sy = mapChartScreenY(cy, G.player.z, n.z, s);
     if (sx > 0 && sx < w && sy > 0 && sy < h) {
       const mc = n.flagColor || (n.isTradeShip ? '#3a9a90' : '#cc3333');
       ctx.fillStyle = mc; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill();
@@ -8016,7 +8023,7 @@ function drawMinimap() {
   });
   G.otherPlayers.forEach(p => {
     if (!mapChartLayers.players) return;
-    const sx = cx + (p.x - G.player.x) * s, sy = cy - (p.z - G.player.z) * s;
+    const sx = mapChartScreenX(cx, G.player.x, p.x, s), sy = mapChartScreenY(cy, G.player.z, p.z, s);
     if (sx > 0 && sx < w && sy > 0 && sy < h) {
       ctx.fillStyle = p.color || '#44aaff'; ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke();
@@ -8025,7 +8032,7 @@ function drawMinimap() {
   if (G.storyQuest.phase === 'intro') {
     const port = findNearestPortDock(G.player.x, G.player.z);
     if (port) {
-      const qx = cx + (port.dockX - G.player.x) * s, qy = cy - (port.dockZ - G.player.z) * s;
+      const qx = mapChartScreenX(cx, G.player.x, port.dockX, s), qy = mapChartScreenY(cy, G.player.z, port.dockZ, s);
       if (qx > 0 && qx < w && qy > 0 && qy < h) {
         ctx.strokeStyle = 'rgba(200,140,240,0.9)'; ctx.lineWidth = 1.8; ctx.setLineDash([3, 3]);
         ctx.beginPath(); ctx.arc(qx, qy, 8, 0, Math.PI * 2); ctx.stroke();
@@ -8039,7 +8046,7 @@ function drawMinimap() {
   if (sqM.phase === 'report' && sqM.turnInCx != null && sqM.turnInCz != null) {
     const tip = getProceduralIslandMeta(sqM.turnInCx, sqM.turnInCz);
     if (tip && tip.hasTown && tip.dockX != null) {
-      const qx = cx + (tip.dockX - G.player.x) * s, qy = cy - (tip.dockZ - G.player.z) * s;
+      const qx = mapChartScreenX(cx, G.player.x, tip.dockX, s), qy = mapChartScreenY(cy, G.player.z, tip.dockZ, s);
       if (qx > 0 && qx < w && qy > 0 && qy < h) {
         ctx.strokeStyle = 'rgba(255,230,140,0.95)'; ctx.lineWidth = 2; ctx.setLineDash([]);
         ctx.strokeRect(qx - 7, qy - 7, 14, 14);
@@ -8050,7 +8057,7 @@ function drawMinimap() {
   }
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
-  ctx.lineTo(cx + Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
+  ctx.lineTo(cx - Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
   ctx.strokeStyle = 'rgba(180,140,60,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(1, 1, w - 2, h - 2);
 }
 document.getElementById('minimap').addEventListener('wheel', e => {
