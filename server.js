@@ -679,11 +679,14 @@ wss.on('connection', (ws, req) => {
     rotation: 0,
     speed: 0,
     shipType: 'sloop',
+    shipName: '',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' },
+    flagColor: '#1a1a1a',
     color: `hsl(${Math.random() * 360}, 70%, 50%)`,
     name: `Pirate_${id}`,
     health: 100,
     crewCount: 3,
+    crewData: null,
     docked: false,
     dockX: null,
     dockZ: null,
@@ -736,6 +739,19 @@ wss.on('connection', (ws, req) => {
           if (msg.dockAngle !== undefined) p.dockAngle = msg.dockAngle;
           if (msg.riggingHealth !== undefined) p.riggingHealth = Math.max(0, Math.min(100, Number(msg.riggingHealth) || 0));
           if (msg.morale !== undefined) p.morale = Math.max(0, Math.min(100, Number(msg.morale) || 0));
+          if (msg.shipType !== undefined && msg.shipType !== null) {
+            const st = String(msg.shipType).trim().slice(0, 24);
+            if (st) p.shipType = st;
+          }
+          if (msg.shipName !== undefined) p.shipName = String(msg.shipName || '').slice(0, 28);
+          if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
+          if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
+            p.shipParts = {
+              hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none',
+              ...p.shipParts,
+              ...msg.shipParts
+            };
+          }
           if (msg.crewData && Array.isArray(msg.crewData)) p.crewData = msg.crewData.slice(0, 32);
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {
@@ -819,7 +835,19 @@ wss.on('connection', (ws, req) => {
           p.name = displayName;
           p.captainKey = newKey;
           if (msg.shipName) p.shipName = String(msg.shipName).slice(0, 28);
-          if (msg.crew) p.crewData = msg.crew.slice(0, 6);
+          if (msg.shipType !== undefined && msg.shipType !== null) {
+            const st = String(msg.shipType).trim().slice(0, 24);
+            if (st) p.shipType = st;
+          }
+          if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
+          if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
+            p.shipParts = {
+              hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none',
+              ...p.shipParts,
+              ...msg.shipParts
+            };
+          }
+          if (msg.crew) p.crewData = msg.crew.slice(0, 32);
           ws.captainAccountKey = newKey;
           break;
         }
@@ -1132,6 +1160,7 @@ setInterval(() => {
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
     name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
+    flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' },
     crewData: p.crewData,
     docked: !!p.docked,
