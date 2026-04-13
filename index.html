@@ -2345,8 +2345,28 @@ function normalizeShipParts(parts) {
   };
 }
 
+/** Remote ships should always show broadside tubes when the host reports cannon:none (default / desync). */
+function normalizeShipPartsForRemoteView(parts) {
+  const n = normalizeShipParts(parts);
+  if (!n.cannon || n.cannon === 'none') return { ...n, cannon: 'light' };
+  return n;
+}
+
+/** Captain display name from synced crewData (falls back to network handle). */
+function networkPlayerCaptainName(p) {
+  if (!p) return 'Captain';
+  const cd = p.crewData;
+  if (Array.isArray(cd) && cd.length) {
+    const cap = cd.find(c => c && c.role === 'captain') || cd[0];
+    if (cap && cap.name && String(cap.name).trim()) return String(cap.name).trim().slice(0, 28);
+  }
+  const n = p.name != null ? String(p.name).trim() : '';
+  if (n && !/^pirate_\d+$/i.test(n)) return n.slice(0, 28);
+  return n ? n.slice(0, 28) : 'Captain';
+}
+
 function otherPlayerShipCacheKey(p) {
-  const sp = normalizeShipParts(p.shipParts);
+  const sp = normalizeShipPartsForRemoteView(p.shipParts);
   const nm = (p.shipName || p.name || '').trim();
   return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}`;
 }
@@ -3441,9 +3461,10 @@ function rebuildNPCShipMesh(npc) {
     { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
     { name: 'Mate', role: 'sailor', task: 'sails', color: '#2a4a2a' }
   ];
-  const parts = merchant
+  const partsRaw = merchant
     ? { hull: 'basic', sail: npc.sailPick === 'silk' ? 'silk' : 'basic', cannon: 'none', figurehead: 'none' }
     : { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' };
+  const parts = merchant ? partsRaw : normalizeShipPartsForRemoteView(partsRaw);
   if (npc.mesh) {
     scene.remove(npc.mesh);
     npc.mesh = null;
@@ -4056,13 +4077,13 @@ function connectToServer() {
         }
         if (msg.player) {
           if (!hasSave) { G.player.x = msg.player.x; G.player.z = msg.player.z; }
-          G.player.color = msg.player.color; G.player.name = msg.player.name;
+          G.player.color = msg.player.color;
         }
         if (msg.players) msg.players.forEach(p => G.otherPlayers.set(p.id, p));
         if (G.mode === 'playing' && !hasSave) ensurePlayerInOpenOcean();
         if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
         break;
-      case 'player_join': G.otherPlayers.set(msg.player.id, msg.player); notify(`${msg.player.name} joined`); break;
+      case 'player_join': G.otherPlayers.set(msg.player.id, msg.player); notify(`${networkPlayerCaptainName(msg.player)} joined`); break;
       case 'player_leave': G.otherPlayers.delete(msg.id); if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } break;
       case 'state': msg.players.forEach(p => { if (p.id !== G.myId) { const ex = G.otherPlayers.get(p.id); if (ex) Object.assign(ex, p); } }); break;
       case 'ship_update': { const p = G.otherPlayers.get(msg.id); if (p) { p.shipType = msg.shipType; p.shipParts = msg.shipParts; if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } } break; }
@@ -4230,7 +4251,8 @@ function connectToServer() {
       case 'ship_sunk': {
         const vid = msg.victimId != null ? msg.victimId : msg.id;
         if (vid !== G.myId) {
-          notify(`${msg.name}'s ship is sinking!`);
+          const sinkCap = (msg.name && String(msg.name).trim()) ? String(msg.name).trim() : 'A captain';
+          notify(`${sinkCap}'s ship is sinking!`);
           spawnSwimmers(msg.x, msg.z, 3);
         }
         if (otherShipGroups.has(vid)) {
@@ -7450,16 +7472,17 @@ function update(dt) {
     }
   });
 
-  G.otherPlayers.forEach((p, id) => {
+   G.otherPlayers.forEach((p, id) => {
     const cacheKey = otherPlayerShipCacheKey(p);
     if (!otherShipGroups.has(id) || otherShipGroups.get(id).userData.cacheKey !== cacheKey) {
       if (otherShipGroups.has(id)) { scene.remove(otherShipGroups.get(id)); otherShipGroups.delete(id); }
       const st = p.shipType || 'sloop';
-      const displayName = p.shipName || p.name || `Pirate ${id}`;
-      const captainName = p.name || '';
-      const sm = buildShipMesh(st, p.shipParts, p.color || '#4488cc', displayName);
-      if (captainName && captainName !== displayName) {
-        const capLabel = makeTextSprite(displayName, '#88bbff', captainName);
+      const captainName = networkPlayerCaptainName(p);
+      const shipTitle = (p.shipName && String(p.shipName).trim()) ? String(p.shipName).trim() : captainName;
+      const visualParts = normalizeShipPartsForRemoteView(p.shipParts);
+      const sm = buildShipMesh(st, visualParts, p.color || '#4488cc', shipTitle);
+      if (captainName && shipTitle !== captainName) {
+        const capLabel = makeTextSprite(shipTitle, '#88bbff', captainName, p.color || '');
         const spec = SHIP_TYPES[st];
         capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
         sm.children = sm.children.filter(c => !(c instanceof THREE.Sprite));
@@ -7478,14 +7501,14 @@ function update(dt) {
           task, health: 100
         };
       }) : [
-        { name: captainName || 'Captain', role: 'captain', task: 'helm', color: p.color, health: 100 },
+        { name: captainName, role: 'captain', task: 'helm', color: p.color, health: 100 },
         { name: 'Gunner', role: 'gunner', task: 'cannons', health: 100 },
         { name: 'Sailor', role: 'sailor', task: 'sails', health: 100 }
       ];
       buildCrewMeshes(sm, pCrew, st);
       sm.userData.cacheKey = cacheKey;
       sm.userData.crewManifest = pCrew;
-      sm.userData.cachedName = displayName;
+      sm.userData.cachedName = shipTitle;
       otherShipGroups.set(id, sm);
       scene.add(sm);
     }
@@ -7555,12 +7578,13 @@ function update(dt) {
           G.lastAttackerId = b.sourcePlayerId != null ? b.sourcePlayerId : null;
           if (b.sourcePlayerId != null && G.otherPlayers.has(b.sourcePlayerId)) {
             const op = G.otherPlayers.get(b.sourcePlayerId);
-            G.lastAttacker = `${op.shipName || 'Unknown Ship'} (Captain ${op.name || 'Unknown Captain'})`;
+            const capN = networkPlayerCaptainName(op);
+            G.lastAttacker = `${op.shipName || 'Unknown Ship'} (Captain ${capN})`;
           } else {
             G.otherPlayers.forEach(op => {
               if (Math.hypot(b.x - op.x, b.z - op.z) < 60) {
                 const shipN = op.shipName || 'Unknown Ship';
-                const capN = op.name || 'Unknown Captain';
+                const capN = networkPlayerCaptainName(op);
                 G.lastAttacker = `${shipN} (Captain ${capN})`;
               }
             });
@@ -7579,7 +7603,7 @@ function update(dt) {
       G.otherPlayers.forEach((op, opId) => {
         if (Math.hypot(b.x - op.x, b.z - op.z) < 3.5) {
           spawnDamageChunks(b.x, b.y, b.z);
-          notify(`Hit ${op.name || 'enemy ship'}!`);
+          notify(`Hit ${networkPlayerCaptainName(op)}'s ship!`);
           b.life = 0;
         }
       });
@@ -7721,9 +7745,9 @@ function update(dt) {
       G.player.speed = 1;
       G.lastAttackerId = null;
       G.lastAttacker = '';
-      applyDefaultStartingLoadout();
+      applyDefaultStartingLoadout({ preserveCaptainIdentity: true });
       document.getElementById('death-overlay').style.display = 'none';
-      notify('Respawned with a fresh crew and hold.');
+      notify('Respawned with a fresh crew and hold — your captain name and ship are unchanged.');
     }
   }
 
@@ -8663,13 +8687,35 @@ function getDefaultStartingCrew() {
     { name: 'Red Mary', role: 'navigator', health: 100, task: 'lookout', color: '#6a1a3a', hat: 'none', outfit: 'vest', parrot: false }
   ];
 }
-function applyDefaultStartingLoadout() {
+function applyDefaultStartingLoadout(opts) {
+  opts = opts || {};
+  const keep = !!opts.preserveCaptainIdentity;
+  let savedCap = null;
+  let savedShipName = '';
+  let savedShipType = null;
+  let savedParts = null;
+  let savedFlag = null;
+  if (keep) {
+    savedCap = G.player.crew[0] ? { ...G.player.crew[0] } : null;
+    savedShipName = G.player.shipName || '';
+    savedShipType = G.player.shipType || null;
+    savedParts = G.player.shipParts ? { ...normalizeShipParts(G.player.shipParts) } : null;
+    savedFlag = G.player.flagColor || null;
+  }
   G.player.shipType = 'sloop';
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
   G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
-  if (G.player.crew[0]) G.player.crew[0].name = randomCaptainNameForServer();
+  if (keep && savedCap && String(savedCap.name || '').trim()) {
+    G.player.crew[0] = { ...G.player.crew[0], ...savedCap, role: 'captain', task: 'helm', health: 100 };
+    if (savedShipName) G.player.shipName = savedShipName;
+    if (savedShipType) G.player.shipType = savedShipType;
+    if (savedParts) G.player.shipParts = savedParts;
+    if (savedFlag) G.player.flagColor = savedFlag;
+  } else if (G.player.crew[0]) {
+    G.player.crew[0].name = randomCaptainNameForServer();
+  }
   reconcileSlotsWithInventory();
   rebuildPlayerShip();
   syncCaptainNameToServer();
