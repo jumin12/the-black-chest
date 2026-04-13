@@ -861,6 +861,14 @@ wss.on('connection', (ws, req) => {
           broadcast({ type: 'sea_debris', x, z, n }, id);
           break;
         }
+        case 'ship_hit_fx': {
+          const x = Number(msg.x);
+          const z = Number(msg.z);
+          const y = Number(msg.y);
+          if (!Number.isFinite(x) || !Number.isFinite(z)) break;
+          broadcast({ type: 'ship_hit_fx', x, z, y: Number.isFinite(y) ? y : null }, id);
+          break;
+        }
         case 'npc_sync': {
           broadcast({ type: 'npc_sync', npcs: msg.npcs, wind: msg.wind }, id);
           break;
