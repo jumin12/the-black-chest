@@ -9,7 +9,8 @@ const TICK_RATE = 20;
 /** Optional directory for persistent JSON (e.g. Docker volume). Defaults next to server.js. */
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
 const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
-const LB_FILE_LEGACY = path.join(DATA_DIR, 'leaderboard.json');
+/** Primary notorious-pirates store (array JSON); also mirrored inside world_seed.json. */
+const LEADERBOARD_FILE = path.join(DATA_DIR, 'leaderboard.json');
 /** Stable default when no file/env (matches client `CANONICAL_DEFAULT_WORLD_SEED`). Commit `world_seed.json` so restarts and deploys reload the same archipelago; live rankings persist in the same file under `leaderboard`. */
 const DEFAULT_WORLD_SEED = 42;
 let WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
@@ -242,19 +243,66 @@ function sortLeaderboardHistory() {
   });
 }
 
-function persistWorldSeedFile() {
+function writeFileAtomic(filePath, dataStr) {
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const tmp = path.join(dir, `.${base}.tmp.${process.pid}.${Date.now()}`);
+  fs.writeFileSync(tmp, dataStr, 'utf-8');
   try {
-    fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory }));
-  } catch (e) {}
+    fs.renameSync(tmp, filePath);
+  } catch (e) {
+    try {
+      fs.copyFileSync(tmp, filePath);
+    } catch (e2) {
+      throw e2;
+    } finally {
+      try { fs.unlinkSync(tmp); } catch (e3) {}
+    }
+  }
+}
+
+function readStandaloneLeaderboardRaw() {
+  try {
+    if (!fs.existsSync(LEADERBOARD_FILE)) return null;
+    const t = fs.readFileSync(LEADERBOARD_FILE, 'utf-8');
+    const p = JSON.parse(t);
+    if (Array.isArray(p)) return p;
+    if (p && Array.isArray(p.leaderboard)) return p.leaderboard;
+  } catch (e) {
+    console.error('[playground] leaderboard.json read error:', e.message);
+  }
+  return null;
+}
+
+function pickLeaderboardArrays(worldArr, fileArr) {
+  const w = Array.isArray(worldArr) ? worldArr : [];
+  const f = Array.isArray(fileArr) ? fileArr : [];
+  if (f.length > w.length) return f;
+  if (w.length > f.length) return w;
+  if (f.length > 0) return f;
+  return w;
+}
+
+function persistWorldSeedFile() {
+  const worldPayload = JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory });
+  const lbOnly = JSON.stringify(leaderboardHistory);
+  try {
+    writeFileAtomic(SEED_FILE, worldPayload);
+    writeFileAtomic(LEADERBOARD_FILE, lbOnly);
+  } catch (e) {
+    console.error('[playground] persist world/leaderboard failed:', e.message);
+  }
 }
 
 function migrateLegacyStandaloneLeaderboard() {
   if (leaderboardHistory.length > 0) return;
   try {
-    const lbRaw = fs.readFileSync(LB_FILE_LEGACY, 'utf-8');
+    if (!fs.existsSync(LEADERBOARD_FILE)) return;
+    const lbRaw = fs.readFileSync(LEADERBOARD_FILE, 'utf-8');
     const parsed = JSON.parse(lbRaw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return;
-    leaderboardHistory = parsed.map(normalizeLbEntry);
+    const arr = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.leaderboard) ? parsed.leaderboard : null);
+    if (!arr || !arr.length) return;
+    leaderboardHistory = arr.map(normalizeLbEntry);
     persistWorldSeedFile();
   } catch (e) {}
 }
@@ -270,6 +318,7 @@ function loadPersistedState() {
       console.error('[playground] world_seed.json invalid JSON:', e.message);
     }
   }
+  const standaloneLb = readStandaloneLeaderboardRaw();
   if (raw == null) {
     const envS = process.env.WORLD_SEED;
     if (envS != null && String(envS).trim() !== '') {
@@ -277,19 +326,21 @@ function loadPersistedState() {
     } else {
       WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
     }
-    leaderboardHistory = [];
+    leaderboardHistory = (standaloneLb && standaloneLb.length)
+      ? standaloneLb.map(normalizeLbEntry)
+      : [];
     if (!seedFileExists) {
       try {
-        fs.writeFileSync(SEED_FILE, JSON.stringify({ seed: WORLD_SEED, leaderboard: [] }));
+        writeFileAtomic(SEED_FILE, JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory }));
       } catch (e2) {}
     }
     migrateLegacyStandaloneLeaderboard();
     return;
   }
   WORLD_SEED = raw.seed != null ? Number(raw.seed) >>> 0 : DEFAULT_WORLD_SEED >>> 0;
-  leaderboardHistory = Array.isArray(raw.leaderboard)
-    ? raw.leaderboard.map(normalizeLbEntry)
-    : [];
+  const fromWorld = Array.isArray(raw.leaderboard) ? raw.leaderboard : [];
+  const picked = pickLeaderboardArrays(fromWorld, standaloneLb);
+  leaderboardHistory = picked.map(normalizeLbEntry);
   migrateLegacyStandaloneLeaderboard();
 }
 
@@ -297,6 +348,7 @@ loadPersistedState();
 backfillLeaderboardCaptainKeys();
 mergeLeaderboardByIdentity();
 sortLeaderboardHistory();
+if (leaderboardHistory.length) persistWorldSeedFile();
 
 function saveLeaderboard() {
   persistWorldSeedFile();

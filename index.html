@@ -2371,8 +2371,15 @@ function otherPlayerShipCacheKey(p) {
   return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}`;
 }
 
-function buildShipMesh(type, parts, flagColor, shipName) {
+function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
+  meshOpts = meshOpts || {};
   parts = normalizeShipParts(parts);
+  const isMerchantHull = !!meshOpts.merchantHull;
+  const honorPlayerLoadout = !!meshOpts.honorPlayerLoadout;
+  let cannonTier = parts.cannon;
+  if (!isMerchantHull && !honorPlayerLoadout && (!cannonTier || cannonTier === 'none')) {
+    cannonTier = 'light';
+  }
   const g = new THREE.Group(), spec = SHIP_TYPES[type];
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
@@ -2468,8 +2475,9 @@ function buildShipMesh(type, parts, flagColor, shipName) {
     crows.position.set(0, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.95, 0); g.add(crows);
   }
 
-  if (parts.cannon && parts.cannon !== 'none') {
-    const cc = spec.cannonSlots || 2;
+  if (cannonTier && cannonTier !== 'none') {
+    let cc = spec.cannonSlots || 2;
+    if (cc < 1) cc = 1;
     const cg = new THREE.CylinderGeometry(0.1, 0.15, 1.2, 6); cg.rotateZ(Math.PI / 2);
     const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
     for (let c = 0; c < cc; c++) {
@@ -3025,7 +3033,7 @@ function ensurePlayerCrewTasks() {
 function rebuildPlayerShip() {
   playerShipGroup.clear();
   ensurePlayerCrewTasks();
-  const ship = buildShipMesh(G.player.shipType, G.player.shipParts, G.player.flagColor || '#1a1a1a');
+  const ship = buildShipMesh(G.player.shipType, G.player.shipParts, G.player.flagColor || '#1a1a1a', '', { honorPlayerLoadout: true });
   playerShipGroup.add(ship);
   buildCrewMeshes(ship, G.player.crew, G.player.shipType);
 
@@ -3396,7 +3404,7 @@ function spawnTradeShips() {
     npc.tradePhase = 'loading_home';
     npc.tradeTimer = 6 + sr() * 14;
     syncTradeShipName(npc, home);
-    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: 'none', figurehead: 'none' }, npc.flagColor, npc.name);
+    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: 'none', figurehead: 'none' }, npc.flagColor, npc.name, { merchantHull: true });
     const npcCrew = [
       { name: 'Merchant', role: 'captain', task: 'helm', color: '#3a3020', hat: 'tricorn' },
       { name: 'Deckhand', role: 'sailor', task: 'sails', color: '#4a4538' }
@@ -3469,7 +3477,7 @@ function rebuildNPCShipMesh(npc) {
     scene.remove(npc.mesh);
     npc.mesh = null;
   }
-  const mesh = buildShipMesh(npc.type, parts, npc.flagColor, npc.name);
+  const mesh = buildShipMesh(npc.type, parts, npc.flagColor, npc.name, { merchantHull: merchant });
   buildCrewMeshes(mesh, npcCrew, npc.type);
   npc.mesh = mesh;
   scene.add(mesh);
@@ -5799,7 +5807,7 @@ function updateCargo3DMesh() {
   }
   const fc = G.player.flagColor || '#1a1a1a';
   const nm = G.player.shipName || 'Ship';
-  cargoShipPreview = buildShipMesh(G.player.shipType, G.player.shipParts, fc, nm);
+  cargoShipPreview = buildShipMesh(G.player.shipType, G.player.shipParts, fc, nm, { honorPlayerLoadout: true });
   const crewForMesh = G.player.crew.map((c, i) => ({
     name: c.name, role: c.role, color: c.color || '#4a4a4a', hat: c.hat || 'none', outfit: c.outfit || 'vest',
     parrot: !!c.parrot, health: c.health ?? 100,
@@ -8263,7 +8271,7 @@ function updatePreviewShip() {
   const allCrew = getCrewFromUI();
   const shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
   const prevFlagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
-  previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, prevFlagColor, shipName);
+  previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, prevFlagColor, shipName, { honorPlayerLoadout: true });
   buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
     ...c, health: 100, task: ['helm','cannons','sails','lookout'][i] || 'idle'
   })), G.player.shipType);
