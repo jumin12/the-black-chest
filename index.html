@@ -573,6 +573,15 @@ input,textarea{-webkit-user-select:text;user-select:text;}
             </div>
           </div>
         </section>
+        <section class="debug-section" aria-label="Navigator authority">
+          <h4 class="debug-section-head">Online captains</h4>
+          <p class="debug-map-hint" style="margin-bottom:10px;">Roster, go to ship, chat mute, kick (may rejoin), or ban (address blocked on host). Requires navigator unlock and server support.</p>
+          <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <button type="button" id="debug-admin-refresh">Refresh roster</button>
+            <button type="button" id="debug-admin-reset-lb" style="background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Reset notorious ranks</button>
+          </div>
+          <div class="debug-roster-scroll" id="debug-admin-players" style="max-height:240px;margin-top:10px;"></div>
+        </section>
         <section class="debug-section" aria-label="Cheats">
           <h4 class="debug-section-head">Cargo spawn</h4>
           <div id="debug-cheats-items"></div>
@@ -842,7 +851,9 @@ function bumpNotoriety(d) {
   if (deaths) G.playerStats.deaths += deaths;
   saveProgress();
   if (ws?.readyState === 1) {
-    ws.send(JSON.stringify({ type: 'leaderboard_update', gold, sinksAi, sinksPlayer, ransoms, deaths }));
+    const payload = { type: 'leaderboard_update', gold, sinksAi, sinksPlayer, ransoms, deaths };
+    if (G.myId != null) payload.playerId = G.myId;
+    ws.send(JSON.stringify(payload));
   }
 }
 
@@ -3652,6 +3663,8 @@ function removeLootByNetId(netId) {
 
 /* ============================== NETWORK =================================== */
 let ws = null;
+let wsReconnectTimer = null;
+let wsUserBanned = false;
 let playWorldNetTimeoutId = null;
 let prefetchedServerSeed = null;
 
@@ -3680,6 +3693,50 @@ function getHttpOrigin() {
   }
   return `${location.protocol}//${location.host}`;
 }
+
+function randomCaptainNameForServer() {
+  const r = Math.random().toString(36).slice(2, 8);
+  return `Captain ${r}`;
+}
+function captainNameStorageKey(name) {
+  return String(name || '').trim().toLowerCase().slice(0, 28);
+}
+function getCaptainTokenForName(displayName) {
+  const k = captainNameStorageKey(displayName);
+  if (!k) return null;
+  try {
+    const raw = localStorage.getItem('pirates_captain_accounts');
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return o[k] && typeof o[k] === 'string' ? o[k] : null;
+  } catch (e) {
+    return null;
+  }
+}
+function rememberCaptainToken(displayName, token) {
+  const k = captainNameStorageKey(displayName);
+  if (!k || !token) return;
+  try {
+    const raw = localStorage.getItem('pirates_captain_accounts');
+    const o = raw ? JSON.parse(raw) : {};
+    o[k] = String(token);
+    localStorage.setItem('pirates_captain_accounts', JSON.stringify(o));
+  } catch (e) {}
+}
+function syncCaptainNameToServer() {
+  if (!ws || ws.readyState !== 1) return;
+  const capName = G.player.crew[0]?.name || 'Pirate';
+  const crewSync = G.player.crew.map(c => ({ name: c.name, role: c.role, color: c.color, hat: c.hat }));
+  const captainToken = getCaptainTokenForName(capName);
+  ws.send(JSON.stringify({
+    type: 'set_name',
+    name: capName,
+    shipName: G.player.shipName,
+    crew: crewSync,
+    captainToken
+  }));
+}
+
 function destroyAmbientWildlife() {
   seagulls.forEach(sg => { scene.remove(sg); });
   seagulls.length = 0;
@@ -3763,13 +3820,29 @@ function schedulePlayWorldNetFallback() {
   }, 4200);
 }
 function connectToServer() {
+  if (wsUserBanned) return;
   const url = getServerUrl();
-  try { ws = new WebSocket(url); } catch (e) { return; }
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  if (ws) {
+    try {
+      ws.onclose = null;
+      ws.close();
+    } catch (err) {}
+    ws = null;
+  }
+  let socket;
+  try { socket = new WebSocket(url); } catch (e) { return; }
+  ws = socket;
   ws.onopen = () => {
+    wsUserBanned = false;
     notify('Connected to server');
     const capName = G.player.crew[0]?.name || 'Pirate';
     const crewSync = G.player.crew.map(c => ({ name: c.name, role: c.role, color: c.color, hat: c.hat }));
-    ws.send(JSON.stringify({ type: 'set_name', name: capName, shipName: G.player.shipName, crew: crewSync }));
+    const captainToken = getCaptainTokenForName(capName);
+    ws.send(JSON.stringify({ type: 'set_name', name: capName, shipName: G.player.shipName, crew: crewSync, captainToken }));
     ws.send(JSON.stringify({ type: 'update', x: G.player.x, z: G.player.z, rotation: G.player.rotation, speed: G.player.speed, health: G.player.health }));
   };
   ws.onmessage = (e) => {
@@ -3810,6 +3883,33 @@ function connectToServer() {
         updatePiratesPanel();
         break;
       }
+      case 'admin_players':
+        renderDebugAdminPlayers(msg.players || []);
+        break;
+      case 'admin_error':
+        notify(msg.error || 'Navigator action failed.');
+        break;
+      case 'admin_ok':
+        if (msg.action === 'reset_leaderboard') {
+          notify('Notorious pirate ranks were cleared on the server.');
+        }
+        break;
+      case 'kicked':
+        notify(msg.reason || 'You were removed from the server.');
+        break;
+      case 'banned':
+        wsUserBanned = true;
+        notify(msg.reason || 'You are banned from this server.');
+        break;
+      case 'chat_error':
+        notify(msg.error || 'Chat not sent.');
+        break;
+      case 'name_reserved':
+        if (msg.name && msg.captainToken) rememberCaptainToken(msg.name, msg.captainToken);
+        break;
+      case 'name_rejected':
+        notify(msg.error || 'Captain name not allowed on this server.');
+        break;
       case 'world_seed': {
         if (msg.seed == null) break;
         const ns = Number(msg.seed) >>> 0;
@@ -3944,9 +4044,15 @@ function connectToServer() {
         break;
       }
     }
-  };
+   };
   ws.onerror = () => {};
-  ws.onclose = () => { setTimeout(connectToServer, 3000); };
+  ws.onclose = () => {
+    if (wsUserBanned) return;
+    wsReconnectTimer = setTimeout(() => {
+      wsReconnectTimer = null;
+      if (G.mode === 'playing') connectToServer();
+    }, 3000);
+  };
 }
 function sendUpdate() {
   if (!ws || ws.readyState !== 1) return;
@@ -4178,7 +4284,102 @@ function openDebugConsolePanel() {
   const sinp = document.getElementById('debug-seed-preview-input');
   if (sinp && (sinp.value.trim() === '' || !Number.isFinite(parseInt(sinp.value, 10)))) sinp.value = String(G.worldSeed >>> 0);
   drawDebugSeedPreviewMap();
+  requestAdminPlayerRoster();
 }
+function getNavigatorSessToken() {
+  try { return sessionStorage.getItem('pirates_navigator_sess'); } catch (e) { return null; }
+}
+function sendAdminNav(payload) {
+  const token = getNavigatorSessToken();
+  if (!token) {
+    notify('Unlock the navigator console first.');
+    return;
+  }
+  if (!ws || ws.readyState !== 1) {
+    notify('Connect to the server first.');
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'admin_nav', token, ...payload }));
+}
+function requestAdminPlayerRoster() {
+  sendAdminNav({ action: 'list_players' });
+}
+function adminTeleportToNetworkPlayer(pid) {
+  const id = Number(pid);
+  if (!Number.isFinite(id)) return;
+  if (G.myId === id) {
+    notify('That is your own ship.');
+    return;
+  }
+  const p = G.otherPlayers.get(id);
+  if (!p || p.x == null || p.z == null) {
+    notify('No position for that captain yet.');
+    return;
+  }
+  G.player.x = p.x;
+  G.player.z = p.z;
+  if (p.rotation != null) G.player.rotation = p.rotation;
+  G.player.speed = 0;
+  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({
+      type: 'update',
+      x: G.player.x,
+      z: G.player.z,
+      rotation: G.player.rotation,
+      speed: G.player.speed,
+      health: G.player.health
+    }));
+  }
+  notify(`Moved to ${p.name || 'captain'}'s last reported position.`);
+}
+function renderDebugAdminPlayers(players) {
+  const el = document.getElementById('debug-admin-players');
+  if (!el) return;
+  if (!players.length) {
+    el.innerHTML = '<div style="color:#8a7a60;font-size:11px;">No captains in roster (solo or still syncing).</div>';
+    return;
+  }
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  el.innerHTML = players.map(p => {
+    const muted = p.muted ? ' <span style="color:#c8a8a8;">(muted)</span>' : '';
+    const self = G.myId === p.id;
+    return `<div style="padding:8px;margin-bottom:6px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;font-size:11px;color:#e0d6c2;">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:space-between;">
+        <div style="min-width:0;"><strong>${esc(p.name || 'Unknown')}</strong>${muted}<span style="color:#7a7068;"> · id ${p.id}</span><br>
+        <span style="color:#8a7a60;font-size:10px;">${Math.round(p.x)}, ${Math.round(p.z)}${p.ip ? ` · ${esc(p.ip)}` : ''}</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;">
+          <button type="button" class="debug-admin-act" data-act="teleport" data-pid="${p.id}" ${self ? 'disabled' : ''} style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;">Go to</button>
+          <button type="button" class="debug-admin-act" data-act="${p.muted ? 'unmute' : 'mute'}" data-pid="${p.id}" ${self ? 'disabled' : ''} style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;">${p.muted ? 'Unmute' : 'Mute'}</button>
+          <button type="button" class="debug-admin-act" data-act="kick" data-pid="${p.id}" ${self ? 'disabled' : ''} style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;">Kick</button>
+          <button type="button" class="debug-admin-act" data-act="ban" data-pid="${p.id}" ${self ? 'disabled' : ''} style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;background:rgba(90,30,30,0.4);border:1px solid #844;color:#ecc;">Ban</button>
+        </div>
+      </div></div>`;
+  }).join('');
+}
+(function initDebugAdminRoster() {
+  document.getElementById('debug-admin-refresh')?.addEventListener('click', () => requestAdminPlayerRoster());
+  document.getElementById('debug-admin-reset-lb')?.addEventListener('click', () => {
+    if (!confirm('Clear all notorious pirate ranks on the server? This cannot be undone.')) return;
+    sendAdminNav({ action: 'reset_leaderboard' });
+  });
+  document.getElementById('debug-admin-players')?.addEventListener('click', e => {
+    const btn = e.target.closest('.debug-admin-act');
+    if (!btn || btn.disabled) return;
+    const act = btn.getAttribute('data-act');
+    const pid = +btn.getAttribute('data-pid');
+    if (!act || !Number.isFinite(pid)) return;
+    if (act === 'teleport') adminTeleportToNetworkPlayer(pid);
+    else if (act === 'mute' || act === 'unmute') sendAdminNav({ action: act, targetId: pid });
+    else if (act === 'kick') {
+      if (!confirm('Kick this captain? They may rejoin.')) return;
+      sendAdminNav({ action: 'kick', targetId: pid });
+    } else if (act === 'ban') {
+      if (!confirm('Ban this connection? They will not be able to rejoin until the host removes the ban.')) return;
+      sendAdminNav({ action: 'ban', targetId: pid });
+    }
+  });
+})();
 function unlockDebugConsole() {
   const inp = document.getElementById('debug-password-input');
   const pw = (inp && inp.value) || '';
@@ -5395,17 +5596,33 @@ function lbRowSinksPl(e) { return Math.max(0, Math.floor(Number(e && e.sinksPlay
 function lbRowRansoms(e) { return Math.max(0, Math.floor(Number(e && e.ransoms) || 0)); }
 function lbRowDeaths(e) { return Math.max(0, Math.floor(Number(e && e.deaths) || 0)); }
 function sortLbEntries(a, b) {
-  const ta = lbRowSinksAi(a) + lbRowSinksPl(a), tb = lbRowSinksAi(b) + lbRowSinksPl(b);
+  const ta = lbRowSinksAi(a) + lbRowSinksPl(a) + lbRowRansoms(a) * 0.25;
+  const tb = lbRowSinksAi(b) + lbRowSinksPl(b) + lbRowRansoms(b) * 0.25;
   if (tb !== ta) return tb - ta;
   const ga = lbRowGold(a), gb = lbRowGold(b);
   if (gb !== ga) return gb - ga;
   return String(a.name || '').localeCompare(String(b.name || ''));
 }
+function dedupeLeaderboardForDisplay(entries) {
+  const seen = new Set();
+  const out = [];
+  for (const e of entries.slice().sort(sortLbEntries)) {
+    if (!e) continue;
+    const pid = e.playerId != null ? Number(e.playerId) : null;
+    const key = Number.isFinite(pid) ? `p:${pid}` : `n:${String(e.name || '').toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
 /** When the server broadcasts ranks, fold your row back into local save so stats survive refresh/offline. */
 function syncLocalLegendFromEntries(entries) {
   const cap = (G.player.crew[0] && G.player.crew[0].name) || '';
   if (!cap || !Array.isArray(entries)) return;
-  const me = entries.find(x => x && x.name === cap);
+  const myPid = G.myId != null ? Number(G.myId) : null;
+  const me = (Number.isFinite(myPid) && entries.find(x => x && Number(x.playerId) === myPid))
+    || entries.find(x => x && x.name === cap);
   if (!me) return;
   ensurePlayerStats();
   const g = lbRowGold(me), sai = lbRowSinksAi(me), spl = lbRowSinksPl(me), r = lbRowRansoms(me), d = lbRowDeaths(me);
@@ -5441,19 +5658,19 @@ function updatePiratesPanel() {
     <span style="color:#a8c8a8;">Ransoms</span> ${ps.ransoms} &nbsp;·&nbsp; <span style="color:#9888a8;">Lost at sea</span> ${ps.deaths}</div>`;
   let head = '<div style="color:#d4a848;font-size:12px;margin-bottom:8px;text-align:center;letter-spacing:1px;">TOP PIRATES</div>';
   head += youBlk;
-  leaderboardData = leaderboardData.slice().sort(sortLbEntries);
-  if (leaderboardData.length > 0) {
-    const top = leaderboardData[0];
+  const board = dedupeLeaderboardForDisplay(leaderboardData);
+  if (board.length > 0) {
+    const top = board[0];
     head += `<div style="text-align:center;margin-bottom:10px;padding:8px;background:rgba(50,18,18,0.4);border:1px solid rgba(180,80,60,0.35);border-radius:8px;font-size:10px;color:#e8dcc8;line-height:1.5;"><strong style="color:#d4a848;">Most notorious:</strong> ${top.name}<br>
       <span style="color:#d4a848;">${lbRowGold(top)}g</span> earned · <span style="color:#cc8888;">${lbRowSinksAi(top)}</span> AI · <span style="color:#88a8cc;">${lbRowSinksPl(top)}</span> captains<br>
       <span style="color:#a8c8a8;">${lbRowRansoms(top)}</span> ransoms · <span style="color:#9888a8;">${lbRowDeaths(top)}</span> deaths</div>`;
   }
   l.innerHTML = head;
-  if (leaderboardData.length === 0) {
+  if (board.length === 0) {
     l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No live rankings yet. Connect to the server to share the board — your legend above is always saved locally.</div>';
     return;
   }
-  leaderboardData.forEach((e, i) => {
+  board.forEach((e, i) => {
     const medal = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? '3rd' : `${i+1}th`;
     const medalColor = i === 0 ? '#ffd700' : i === 1 ? '#c0c0c0' : i === 2 ? '#cd7f32' : '#8a7a60';
     const d = document.createElement('div');
@@ -7330,6 +7547,7 @@ function isStoryBriefHudObscured() {
     const st = window.getComputedStyle(el);
     return st.display !== 'none' && st.visibility !== 'hidden' && parseFloat(st.opacity || '1') > 0.02;
   };
+  if (isMobile && (G.docked || shown('port-panel'))) return true;
   if (typeof fullmapOpen !== 'undefined' && fullmapOpen) return true;
   if (shown('dock-prompt')) return true;
   if (shown('log-panel')) return true;
@@ -7679,6 +7897,11 @@ function drawFlagPreview() {
 function buildCreationUI() {
   const mp = document.getElementById('mobile-layout-picker');
   if (mp) mp.style.display = 'none';
+  const capIn = document.getElementById('cap-name');
+  if (capIn && !capIn.dataset.seededUnique) {
+    capIn.value = randomCaptainNameForServer();
+    capIn.dataset.seededUnique = '1';
+  }
   makeColorRow(document.getElementById('cap-colors'), CREW_COLORS, '#8b0000');
   makeOptionRow(document.getElementById('cap-hat'), HAT_OPTIONS, 'tricorn', 'hat');
   makeOptionRow(document.getElementById('cap-outfit'), OUTFIT_OPTIONS, 'coat', 'outfit');
@@ -8032,8 +8255,10 @@ function applyDefaultStartingLoadout() {
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
   G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+  if (G.player.crew[0]) G.player.crew[0].name = randomCaptainNameForServer();
   reconcileSlotsWithInventory();
   rebuildPlayerShip();
+  syncCaptainNameToServer();
 }
 
 function saveProgress() {
@@ -8268,6 +8493,9 @@ document.getElementById('start-btn').onclick = () => {
 };
 
 document.getElementById('new-game-btn').onclick = () => {
+  wsUserBanned = false;
+  const capNameEl = document.getElementById('cap-name');
+  if (capNameEl) delete capNameEl.dataset.seededUnique;
   localStorage.removeItem(SAVE_KEY);
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;

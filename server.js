@@ -103,11 +103,16 @@ let nextLootNetId = 1;
 let nextSwimmerNetId = 1;
 
 const LB_FILE = path.join(__dirname, 'leaderboard.json');
+const BANS_FILE = path.join(__dirname, 'bans.json');
 let leaderboardHistory = [];
+/** @type {Set<string>} */
+let bannedIps = new Set();
+/** @type {Set<number>} */
+const mutedPlayerIds = new Set();
 
 function normalizeLbEntry(e) {
   if (!e || typeof e !== 'object') {
-    return { name: 'Unknown', gold: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+    return { name: 'Unknown', gold: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, playerId: null };
   }
   const name = String(e.name || 'Pirate').slice(0, 28);
   const gold = Math.max(0, Math.floor(
@@ -119,17 +124,172 @@ function normalizeLbEntry(e) {
   const sinksPlayer = Math.max(0, Math.floor(Number(e.sinksPlayer) || 0));
   const ransoms = Math.max(0, Math.floor(Number(e.ransoms) || 0));
   const deaths = Math.max(0, Math.floor(Number(e.deaths) || 0));
-  return { name, gold, sinksAi, sinksPlayer, ransoms, deaths };
+  const rawPid = e.playerId != null && e.playerId !== '' ? Number(e.playerId) : null;
+  const playerId = Number.isFinite(rawPid) ? rawPid : null;
+  return { name, gold, sinksAi, sinksPlayer, ransoms, deaths, playerId };
 }
+
+/** Merge legacy duplicate rows that share the same captain name (reconnect / name-key bugs). */
+function mergeLeaderboardByName() {
+  const m = new Map();
+  for (const raw of leaderboardHistory) {
+    const e = normalizeLbEntry(raw);
+    const key = e.name.toLowerCase();
+    if (!m.has(key)) {
+      m.set(key, { ...e });
+    } else {
+      const o = m.get(key);
+      o.gold += e.gold;
+      o.sinksAi += e.sinksAi;
+      o.sinksPlayer += e.sinksPlayer;
+      o.ransoms += e.ransoms;
+      o.deaths += e.deaths;
+      if (o.playerId != null && e.playerId != null && o.playerId !== e.playerId) o.playerId = null;
+      else if (o.playerId == null) o.playerId = e.playerId;
+    }
+  }
+  leaderboardHistory = Array.from(m.values());
+}
+
+/**
+ * One leaderboard row per live socket id; reclaim name rows left behind when that id disconnected.
+ */
+function getLeaderboardRowIndex(socketId, capName) {
+  capName = String(capName || 'Pirate').slice(0, 28);
+  let idx = leaderboardHistory.findIndex(r => normalizeLbEntry(r).playerId === socketId);
+  if (idx >= 0) {
+    const row = normalizeLbEntry(leaderboardHistory[idx]);
+    row.playerId = socketId;
+    row.name = capName;
+    leaderboardHistory[idx] = row;
+    return idx;
+  }
+  idx = leaderboardHistory.findIndex(r => {
+    const row = normalizeLbEntry(r);
+    return row.name === capName && (row.playerId == null || !players.has(row.playerId));
+  });
+  if (idx >= 0) {
+    const row = normalizeLbEntry(leaderboardHistory[idx]);
+    row.playerId = socketId;
+    row.name = capName;
+    leaderboardHistory[idx] = row;
+    return idx;
+  }
+  idx = leaderboardHistory.findIndex(r => normalizeLbEntry(r).name === capName);
+  if (idx >= 0) {
+    const row = normalizeLbEntry(leaderboardHistory[idx]);
+    if (row.playerId != null && players.has(row.playerId) && row.playerId !== socketId) {
+      idx = -1;
+    } else {
+      row.playerId = socketId;
+      row.name = capName;
+      leaderboardHistory[idx] = row;
+      return idx;
+    }
+  }
+  const row = normalizeLbEntry({ name: capName, playerId: socketId });
+  leaderboardHistory.push(row);
+  return leaderboardHistory.length - 1;
+}
+
 function sortLeaderboardHistory() {
   leaderboardHistory.sort((a, b) => {
-    const ta = a.sinksAi + a.sinksPlayer + a.ransoms * 0.25;
-    const tb = b.sinksAi + b.sinksPlayer + b.ransoms * 0.25;
+    const na = normalizeLbEntry(a);
+    const nb = normalizeLbEntry(b);
+    const ta = na.sinksAi + na.sinksPlayer + na.ransoms * 0.25;
+    const tb = nb.sinksAi + nb.sinksPlayer + nb.ransoms * 0.25;
     if (tb !== ta) return tb - ta;
-    if (b.gold !== a.gold) return b.gold - a.gold;
-    return String(a.name).localeCompare(String(b.name));
+    if (nb.gold !== na.gold) return nb.gold - na.gold;
+    return String(na.name).localeCompare(String(nb.name));
   });
 }
+
+function loadBans() {
+  try {
+    const raw = fs.readFileSync(BANS_FILE, 'utf-8');
+    const o = JSON.parse(raw);
+    const arr = Array.isArray(o.ips) ? o.ips : Array.isArray(o) ? o : [];
+    bannedIps = new Set(arr.map(x => String(x || '').trim()).filter(Boolean));
+  } catch (e) {
+    bannedIps = new Set();
+  }
+}
+function saveBans() {
+  try {
+    fs.writeFileSync(BANS_FILE, JSON.stringify({ ips: Array.from(bannedIps) }));
+  } catch (e) {}
+}
+loadBans();
+
+const CAPTAIN_ACCOUNTS_FILE = path.join(__dirname, 'captain_accounts.json');
+const CAPTAIN_ACCOUNT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+/** @type {Record<string, { token: string, displayName: string, lastActiveMs: number }>} */
+let captainAccounts = {};
+let captainAccountsDirty = false;
+
+function normalizeCaptainKey(name) {
+  return String(name || '').trim().toLowerCase().slice(0, 28);
+}
+
+function secureTokenEquals(a, b) {
+  try {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    const ab = Buffer.from(a, 'utf8');
+    const bb = Buffer.from(b, 'utf8');
+    if (ab.length !== bb.length) return false;
+    return crypto.timingSafeEqual(ab, bb);
+  } catch (e) {
+    return false;
+  }
+}
+
+function loadCaptainAccounts() {
+  try {
+    const raw = fs.readFileSync(CAPTAIN_ACCOUNTS_FILE, 'utf-8');
+    const o = JSON.parse(raw);
+    const acc = o && typeof o.accounts === 'object' ? o.accounts : null;
+    captainAccounts = acc && typeof acc === 'object' ? acc : {};
+  } catch (e) {
+    captainAccounts = {};
+  }
+}
+
+function saveCaptainAccounts() {
+  try {
+    fs.writeFileSync(CAPTAIN_ACCOUNTS_FILE, JSON.stringify({ accounts: captainAccounts }));
+    captainAccountsDirty = false;
+  } catch (e) {}
+}
+
+function pruneStaleCaptainAccounts() {
+  const now = Date.now();
+  let changed = false;
+  for (const k of Object.keys(captainAccounts)) {
+    const a = captainAccounts[k];
+    if (!a || now - (a.lastActiveMs || 0) > CAPTAIN_ACCOUNT_TTL_MS) {
+      delete captainAccounts[k];
+      changed = true;
+    }
+  }
+  if (changed) saveCaptainAccounts();
+  return changed;
+}
+
+function markCaptainAccountsDirty() {
+  captainAccountsDirty = true;
+}
+
+function flushCaptainAccountsIfDirty() {
+  if (!captainAccountsDirty) return;
+  saveCaptainAccounts();
+}
+
+loadCaptainAccounts();
+pruneStaleCaptainAccounts();
+setInterval(() => {
+  pruneStaleCaptainAccounts();
+}, 60 * 60 * 1000);
+setInterval(flushCaptainAccountsIfDirty, 15000);
 
 try {
   const lbRaw = fs.readFileSync(LB_FILE, 'utf-8');
@@ -139,6 +299,7 @@ try {
   leaderboardHistory = [];
   try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e2) {}
 }
+mergeLeaderboardByName();
 sortLeaderboardHistory();
 function saveLeaderboard() {
   try { fs.writeFileSync(LB_FILE, JSON.stringify(leaderboardHistory)); } catch (e) {}
@@ -147,8 +308,17 @@ setInterval(() => { saveLeaderboard(); }, 60000);
 function persistLeaderboardShutdown() {
   saveLeaderboard();
 }
-process.on('SIGINT', persistLeaderboardShutdown);
-process.on('SIGTERM', persistLeaderboardShutdown);
+function persistCaptainAccountsShutdown() {
+  flushCaptainAccountsIfDirty();
+}
+process.on('SIGINT', () => {
+  persistLeaderboardShutdown();
+  persistCaptainAccountsShutdown();
+});
+process.on('SIGTERM', () => {
+  persistLeaderboardShutdown();
+  persistCaptainAccountsShutdown();
+});
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -255,7 +425,59 @@ function broadcastAll(data) {
   });
 }
 
-wss.on('connection', (ws) => {
+function normalizeClientIp(req) {
+  let ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+    || req.socket?.remoteAddress || '';
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  return ip || 'unknown';
+}
+
+function isNavigatorAdminTokenOk(token) {
+  if (!token || typeof token !== 'string') return false;
+  pruneAdminSessions();
+  const exp = adminSessions.get(token);
+  return !!(exp && exp > Date.now());
+}
+
+function findWsByPlayerId(pid) {
+  for (const c of wss.clients) {
+    if (c.readyState === 1 && c.playerId === pid) return c;
+  }
+  return null;
+}
+
+function collectAdminPlayerList() {
+  const out = [];
+  for (const c of wss.clients) {
+    if (c.readyState !== 1) continue;
+    const pid = c.playerId;
+    if (pid == null) continue;
+    const p = players.get(pid);
+    if (!p) continue;
+    out.push({
+      id: pid,
+      name: p.name || 'Unknown',
+      x: p.x,
+      z: p.z,
+      ip: c.clientIp || '',
+      muted: mutedPlayerIds.has(pid)
+    });
+  }
+  out.sort((a, b) => a.id - b.id);
+  return out;
+}
+
+wss.on('connection', (ws, req) => {
+  const clientIp = normalizeClientIp(req);
+  ws.clientIp = clientIp;
+  if (bannedIps.has(clientIp)) {
+    try {
+      ws.send(JSON.stringify({ type: 'banned', reason: 'You are banned from this server.' }));
+    } catch (e) {}
+    ws.close();
+    return;
+  }
+
   const id = nextId++;
   ws.playerId = id;
 
@@ -273,7 +495,8 @@ wss.on('connection', (ws) => {
     color: `hsl(${Math.random() * 360}, 70%, 50%)`,
     name: `Pirate_${id}`,
     health: 100,
-    crewCount: 3
+    crewCount: 3,
+    clientIp
   };
 
   players.set(id, playerData);
@@ -301,13 +524,89 @@ wss.on('connection', (ws) => {
           if (msg.rotation !== undefined) p.rotation = msg.rotation;
           if (msg.speed !== undefined) p.speed = msg.speed;
           if (msg.health !== undefined) p.health = msg.health;
+          const ck = ws.captainAccountKey;
+          if (ck && captainAccounts[ck]) {
+            const now = Date.now();
+            if (!ws._captainTouchAt || now - ws._captainTouchAt > 120000) {
+              ws._captainTouchAt = now;
+              captainAccounts[ck].lastActiveMs = now;
+              markCaptainAccountsDirty();
+            }
+          }
           break;
         }
         case 'set_name': {
           const p = players.get(id);
-          if (p && msg.name) p.name = msg.name.slice(0, 28);
-          if (p && msg.shipName) p.shipName = msg.shipName.slice(0, 28);
-          if (p && msg.crew) p.crewData = msg.crew.slice(0, 6);
+          if (!p) break;
+          pruneStaleCaptainAccounts();
+
+          const displayName = msg.name ? String(msg.name).slice(0, 28).trim() : 'Pirate';
+          const newKey = normalizeCaptainKey(displayName);
+          if (!newKey) {
+            try {
+              ws.send(JSON.stringify({ type: 'name_rejected', error: 'Captain name cannot be empty.' }));
+            } catch (e) {}
+            break;
+          }
+
+          const tokenOffered = msg.captainToken && String(msg.captainToken).trim() !== ''
+            ? String(msg.captainToken).trim()
+            : null;
+
+          const oldKey = ws.captainAccountKey || null;
+
+          let duplicateOnline = false;
+          for (const [pid, pl] of players) {
+            if (pid === id) continue;
+            if (normalizeCaptainKey(pl.name) === newKey) duplicateOnline = true;
+          }
+          if (duplicateOnline) {
+            try {
+              ws.send(JSON.stringify({ type: 'name_rejected', error: 'That captain name is already in use by a connected player.' }));
+            } catch (e) {}
+            break;
+          }
+
+          const acc = captainAccounts[newKey];
+          if (acc) {
+            if (!tokenOffered || !secureTokenEquals(acc.token, tokenOffered)) {
+              try {
+                ws.send(JSON.stringify({
+                  type: 'name_rejected',
+                  error: 'That captain name is taken. Choose another, or wait until it frees after 14 days without sailing this server.'
+                }));
+              } catch (e) {}
+              break;
+            }
+            acc.lastActiveMs = Date.now();
+            acc.displayName = displayName;
+            saveCaptainAccounts();
+          } else {
+            if (oldKey && oldKey !== newKey && captainAccounts[oldKey] && tokenOffered
+              && secureTokenEquals(captainAccounts[oldKey].token, tokenOffered)) {
+              delete captainAccounts[oldKey];
+            }
+            const newTok = crypto.randomBytes(24).toString('hex');
+            captainAccounts[newKey] = {
+              token: newTok,
+              displayName,
+              lastActiveMs: Date.now()
+            };
+            saveCaptainAccounts();
+            try {
+              ws.send(JSON.stringify({
+                type: 'name_reserved',
+                captainKey: newKey,
+                captainToken: newTok,
+                name: displayName
+              }));
+            } catch (e) {}
+          }
+
+          p.name = displayName;
+          if (msg.shipName) p.shipName = String(msg.shipName).slice(0, 28);
+          if (msg.crew) p.crewData = msg.crew.slice(0, 6);
+          ws.captainAccountKey = newKey;
           break;
         }
         case 'ship_update': {
@@ -319,6 +618,12 @@ wss.on('connection', (ws) => {
           break;
         }
         case 'chat': {
+          if (mutedPlayerIds.has(id)) {
+            try {
+              ws.send(JSON.stringify({ type: 'chat_error', error: 'You are muted by the navigator.' }));
+            } catch (e) {}
+            break;
+          }
           broadcast({ type: 'chat', id, name: players.get(id)?.name || 'Unknown', text: msg.text });
           break;
         }
@@ -399,12 +704,11 @@ wss.on('connection', (ws) => {
           kp.kills = (kp.kills || 0) + dk;
           kp.loot = (kp.loot || 0) + dl;
           const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
-          let idx = leaderboardHistory.findIndex(e => e.name === capName);
-          let row = idx >= 0 ? normalizeLbEntry(leaderboardHistory[idx]) : normalizeLbEntry({ name: capName });
+          const idx = getLeaderboardRowIndex(killerId, capName);
+          const row = normalizeLbEntry(leaderboardHistory[idx]);
           row.sinksPlayer += dk;
           row.gold += dl;
-          if (idx >= 0) leaderboardHistory[idx] = row;
-          else leaderboardHistory.push(row);
+          leaderboardHistory[idx] = row;
           sortLeaderboardHistory();
           leaderboardHistory = leaderboardHistory.slice(0, 50);
           saveLeaderboard();
@@ -419,22 +723,88 @@ wss.on('connection', (ws) => {
           const dPl = Math.max(0, Math.floor(Number(msg.sinksPlayer) || 0));
           const dr = Math.max(0, Math.floor(Number(msg.ransoms) || 0));
           const dd = Math.max(0, Math.floor(Number(msg.deaths) || 0));
+          if (dg === 0 && dAi === 0 && dPl === 0 && dr === 0 && dd === 0) break;
           p.kills = (p.kills || 0) + dAi + dPl;
           p.loot = (p.loot || 0) + dg;
           const capName = (p.name || p.shipName || 'Pirate').slice(0, 28);
-          let idx = leaderboardHistory.findIndex(e => e.name === capName);
-          let row = idx >= 0 ? normalizeLbEntry(leaderboardHistory[idx]) : normalizeLbEntry({ name: capName });
+          const idx = getLeaderboardRowIndex(id, capName);
+          const row = normalizeLbEntry(leaderboardHistory[idx]);
           row.gold += dg;
           row.sinksAi += dAi;
           row.sinksPlayer += dPl;
           row.ransoms += dr;
           row.deaths += dd;
-          if (idx >= 0) leaderboardHistory[idx] = row;
-          else leaderboardHistory.push(row);
+          leaderboardHistory[idx] = row;
           sortLeaderboardHistory();
           leaderboardHistory = leaderboardHistory.slice(0, 50);
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          break;
+        }
+        case 'admin_nav': {
+          const token = msg.token;
+          if (!isNavigatorAdminTokenOk(token)) {
+            try {
+              ws.send(JSON.stringify({ type: 'admin_error', error: 'Navigator session expired or invalid.' }));
+            } catch (e) {}
+            break;
+          }
+          const action = String(msg.action || '');
+          const targetId = msg.targetId != null ? Number(msg.targetId) : null;
+          if (action === 'list_players') {
+            ws.send(JSON.stringify({ type: 'admin_players', players: collectAdminPlayerList() }));
+            break;
+          }
+          if (action === 'reset_leaderboard') {
+            leaderboardHistory = [];
+            sortLeaderboardHistory();
+            saveLeaderboard();
+            broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'reset_leaderboard' }));
+            break;
+          }
+          if (targetId == null || !Number.isFinite(targetId)) {
+            ws.send(JSON.stringify({ type: 'admin_error', error: 'Missing target.' }));
+            break;
+          }
+          if (action === 'mute') {
+            mutedPlayerIds.add(targetId);
+            ws.send(JSON.stringify({ type: 'admin_players', players: collectAdminPlayerList() }));
+            break;
+          }
+          if (action === 'unmute') {
+            mutedPlayerIds.delete(targetId);
+            ws.send(JSON.stringify({ type: 'admin_players', players: collectAdminPlayerList() }));
+            break;
+          }
+          if (action === 'kick') {
+            const tw = findWsByPlayerId(targetId);
+            if (tw) {
+              try {
+                tw.send(JSON.stringify({ type: 'kicked', reason: 'Removed by navigator (kick). You may rejoin.' }));
+              } catch (e) {}
+              tw.close();
+            }
+            ws.send(JSON.stringify({ type: 'admin_players', players: collectAdminPlayerList() }));
+            break;
+          }
+          if (action === 'ban') {
+            const tw = findWsByPlayerId(targetId);
+            const banIp = tw && tw.clientIp ? tw.clientIp : (players.get(targetId)?.clientIp || '');
+            if (banIp && banIp !== 'unknown') {
+              bannedIps.add(banIp);
+              saveBans();
+            }
+            if (tw) {
+              try {
+                tw.send(JSON.stringify({ type: 'banned', reason: 'Banned from this server.' }));
+              } catch (e) {}
+              tw.close();
+            }
+            ws.send(JSON.stringify({ type: 'admin_players', players: collectAdminPlayerList() }));
+            break;
+          }
+          ws.send(JSON.stringify({ type: 'admin_error', error: 'Unknown admin action.' }));
           break;
         }
         case 'get_leaderboard': {
