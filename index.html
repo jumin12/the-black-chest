@@ -970,7 +970,8 @@ function spawnStoryBountyNpc() {
     storyStep: sq.step,
     aggro: true,
     sailBonus: 0.1,
-    flagColor: '#5a0808'
+    flagColor: '#5a0808',
+    riggingHealth: 100
   };
   npc.speed = npcMaxForwardSpeed(npc) * (0.2 + sr() * 0.14);
   const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, npc.flagColor, npc.name);
@@ -982,6 +983,7 @@ function spawnStoryBountyNpc() {
   buildCrewMeshes(mesh, npcCrew, npc.type);
   npc.mesh = mesh;
   scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
   G.npcs.push(npc);
   notify(`Wanted: ${name} — ${SHIP_TYPES[shipType]?.name || shipType} class.`);
 }
@@ -3346,10 +3348,17 @@ function npcSailBonus(npc) {
   if (npc.isTradeShip) return npc.sailPick === 'silk' ? 0.3 : 0;
   return 0.1;
 }
+/** Rigging 0–100 for AI ships (synced); legacy `riggingMult` still supported for old saves. */
+function getNpcRiggingHealth(npc) {
+  if (!npc) return 100;
+  if (npc.riggingHealth != null) return Math.max(0, Math.min(100, Number(npc.riggingHealth)));
+  if (npc.riggingMult != null) return Math.max(0, Math.min(100, Number(npc.riggingMult) * 100));
+  return 100;
+}
 /** Same cap as player: min(G.player.speed, 12 * speedMult) — see update() sailing. */
 function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
-  const rm = npc.riggingMult != null ? Math.max(0.1, Math.min(1, npc.riggingMult)) : 1;
+  const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
   const rigF = Math.pow(rm, 1.32);
   return 12 * (spec.speed + npcSailBonus(npc)) * rigF;
 }
@@ -3546,7 +3555,8 @@ function spawnTradeShips() {
       homeCz: home.cz,
       sailPick,
       sailBonus: sailPick === 'silk' ? 0.3 : 0,
-      wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0
+      wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
+      riggingHealth: 100
     };
     assignTradeRouteFromHome(npc, home, allPorts, sr);
     npc.homeEmbarkX = nx;
@@ -3564,6 +3574,7 @@ function spawnTradeShips() {
     buildCrewMeshes(mesh, npcCrew, npc.type);
     npc.mesh = mesh;
     scene.add(mesh);
+    applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
     G.npcs.push(npc);
     tradeSyncIdx++;
   }
@@ -3587,7 +3598,8 @@ function spawnNPCs() {
       health: 60 + sr() * 40, type: ['cutter','sloop','brigantine','galleon','warship'][Math.floor(sr() * 5)],
       name: uniqueNames[i],
       wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
-      underFireTimer: 0, fireJitter: sr()
+      underFireTimer: 0, fireJitter: sr(),
+      riggingHealth: 100
     };
     const chunkX = Math.floor(nx / CHUNK_SIZE), chunkZ = Math.floor(nz / CHUNK_SIZE);
     const pirateFaction = ((chunkX * 31 + chunkZ * 17 + npcSeed * 3 + i * 13) & 0x7fffffff) % 4;
@@ -3604,6 +3616,7 @@ function spawnNPCs() {
     ];
     buildCrewMeshes(mesh, npcCrew, npc.type);
     npc.mesh = mesh; scene.add(mesh);
+    applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
     G.npcs.push(npc);
   }
   spawnTradeShips();
@@ -3635,6 +3648,7 @@ function rebuildNPCShipMesh(npc) {
   buildCrewMeshes(mesh, npcCrew, npc.type);
   npc.mesh = mesh;
   scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
 }
 
 /** Horizontal cannonball speed (world u/s); must match fireCannonball dx,dz scale. */
@@ -3909,6 +3923,7 @@ function updateNPCs(dt) {
       npc.mesh.rotation.y = npc.rotation;
       npc.mesh.rotation.x = Math.sin(G.time * 0.9 + npc.z * 0.05) * 0.025;
       npc.mesh.rotation.z = Math.sin(G.time * 0.7 + npc.x * 0.06) * 0.035;
+      applyRiggingVisualToGroup(npc.mesh, getNpcRiggingHealth(npc));
     }
   });
   if (host) G.npcs = G.npcs.filter(n => n.health > -900);
@@ -4065,17 +4080,31 @@ function spawnNetworkSwimmer(wx, wz, crewRestore, netId) {
   G.swimmers.push(sg);
 }
 
+/** Deterministic 0..1 from world hit point — keeps debris / splinters identical for every client. */
+function combatFxHash(wx, wy, wz, i, salt, packN) {
+  const ix = Math.floor(wx * 1000) | 0;
+  const iz = Math.floor(wz * 1000) | 0;
+  const iy = wy != null && Number.isFinite(wy) ? Math.floor(wy * 1000) | 0 : 0;
+  const pn = packN != null ? (packN | 0) & 0xffff : 0;
+  let h = (Math.imul(ix, 5016571) ^ iz ^ iy ^ Math.imul((i | 0) + 1, 374761393) ^ (salt | 0) ^ (pn << 1)) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
+  return (h >>> 0) / 4294967296;
+}
 function spawnDamageChunks(wx, wy, wz) {
   for (let i = 0; i < 6; i++) {
-    const size = 0.1 + Math.random() * 0.2;
+    const size = 0.1 + combatFxHash(wx, wy, wz, i, 11, 6) * 0.2;
     const chunk = new THREE.Mesh(
       new THREE.BoxGeometry(size, size, size),
-      new THREE.MeshLambertMaterial({ color: Math.random() > 0.5 ? 0x6b3a1f : 0x4a2a10 })
+      new THREE.MeshLambertMaterial({ color: combatFxHash(wx, wy, wz, i, 12, 6) > 0.5 ? 0x6b3a1f : 0x4a2a10 })
     );
-    chunk.position.set(wx + (Math.random() - 0.5), wy + Math.random() * 0.5, wz + (Math.random() - 0.5));
-    chunk.userData.vx = (Math.random() - 0.5) * 8;
-    chunk.userData.vy = 3 + Math.random() * 5;
-    chunk.userData.vz = (Math.random() - 0.5) * 8;
+    chunk.position.set(
+      wx + (combatFxHash(wx, wy, wz, i, 13, 6) - 0.5),
+      wy + combatFxHash(wx, wy, wz, i, 14, 6) * 0.5,
+      wz + (combatFxHash(wx, wy, wz, i, 15, 6) - 0.5)
+    );
+    chunk.userData.vx = (combatFxHash(wx, wy, wz, i, 16, 6) - 0.5) * 8;
+    chunk.userData.vy = 3 + combatFxHash(wx, wy, wz, i, 17, 6) * 5;
+    chunk.userData.vz = (combatFxHash(wx, wy, wz, i, 18, 6) - 0.5) * 8;
     chunk.userData.life = 1.5;
     scene.add(chunk);
     G.damageChunks.push(chunk);
@@ -4102,24 +4131,35 @@ function spawnSeaDebrisFromHit(wx, wz, pieces, fromNet) {
   if (ws && ws.readyState === 1 && !fromNet) {
     try { ws.send(JSON.stringify({ type: 'sea_debris', x: wx, z: wz, n })); } catch (e) {}
   }
+  const wy = SEA_LEVEL + 0.08;
   for (let i = 0; i < n; i++) {
-    const size = 0.12 + Math.random() * 0.38;
+    const size = 0.12 + combatFxHash(wx, wy, wz, i, 21, n) * 0.38;
+    const hVar = 0.35 + combatFxHash(wx, wy, wz, i, 22, n) * 0.35;
+    const dVar = 0.6 + combatFxHash(wx, wy, wz, i, 23, n) * 0.4;
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(size, size * (0.35 + Math.random() * 0.35), size * (0.6 + Math.random() * 0.4)),
-      new THREE.MeshLambertMaterial({ color: Math.random() > 0.35 ? 0x5c3a28 : 0x4a3530 })
+      new THREE.BoxGeometry(size, size * hVar, size * dVar),
+      new THREE.MeshLambertMaterial({ color: combatFxHash(wx, wy, wz, i, 24, n) > 0.35 ? 0x5c3a28 : 0x4a3530 })
     );
-    mesh.position.set(wx + (Math.random() - 0.5) * 2.5, SEA_LEVEL + 0.08 + Math.random() * 0.15, wz + (Math.random() - 0.5) * 2.5);
-    mesh.userData.vx = (Math.random() - 0.5) * 1.2;
-    mesh.userData.vz = (Math.random() - 0.5) * 1.2;
-    mesh.userData.bob = Math.random() * Math.PI * 2;
+    mesh.position.set(
+      wx + (combatFxHash(wx, wy, wz, i, 25, n) - 0.5) * 2.5,
+      SEA_LEVEL + 0.08 + combatFxHash(wx, wy, wz, i, 26, n) * 0.15,
+      wz + (combatFxHash(wx, wy, wz, i, 27, n) - 0.5) * 2.5
+    );
+    mesh.userData.vx = (combatFxHash(wx, wy, wz, i, 28, n) - 0.5) * 1.2;
+    mesh.userData.vz = (combatFxHash(wx, wy, wz, i, 29, n) - 0.5) * 1.2;
+    mesh.userData.bob = combatFxHash(wx, wy, wz, i, 30, n) * Math.PI * 2;
     mesh.userData.battleFlotsam = true;
-    mesh.rotation.set(Math.random() * 0.8, Math.random() * Math.PI * 2, Math.random() * 0.8);
+    mesh.rotation.set(
+      combatFxHash(wx, wy, wz, i, 31, n) * 0.8,
+      combatFxHash(wx, wy, wz, i, 32, n) * Math.PI * 2,
+      combatFxHash(wx, wy, wz, i, 33, n) * 0.8
+    );
     scene.add(mesh);
     G.seaDebris.push(mesh);
   }
 }
 
-/** Chain-shot rigging: 3 damage bands — rig stays one piece per mast (mast + yard + sail parented). */
+/** Chain-shot rigging: 3 bands — stages 0–1 lean, stage 2 knocked over (heavy list). */
 function applyRiggingVisualToGroup(group, riggingHealth) {
   if (!group) return;
   const rh = Math.max(0, Math.min(100, riggingHealth != null ? riggingHealth : 100));
@@ -4139,14 +4179,14 @@ function applyRiggingVisualToGroup(group, riggingHealth) {
       const lean = ch.userData.mastLeanSign || 1;
       let angX = ir.x, angZ = ir.z;
       if (st === 0) {
-        angX += t * 0.075;
-        angZ += t * 0.065 * lean;
+        angX += t * 0.09;
+        angZ += t * 0.08 * lean;
       } else if (st === 1) {
-        angX += 0.075 + t * 0.28;
-        angZ += 0.065 * lean + t * 0.34 * lean;
+        angX += 0.09 + t * 0.34;
+        angZ += 0.08 * lean + t * 0.4 * lean;
       } else {
-        angX += 0.355 + t * 1.05;
-        angZ += 0.405 * lean + t * 0.88 * lean;
+        angX += 0.43 + t * 1.22;
+        angZ += 0.48 * lean + t * 1.02 * lean;
       }
       ch.rotation.x = angX;
       ch.rotation.z = angZ;
@@ -4594,6 +4634,13 @@ function connectToServer() {
       case 'sea_debris':
         spawnSeaDebrisFromHit(msg.x, msg.z, msg.n, true);
         break;
+      case 'ship_hit_fx': {
+        const hx = Number(msg.x), hz = Number(msg.z);
+        if (!Number.isFinite(hx) || !Number.isFinite(hz)) break;
+        const hy = msg.y != null && Number.isFinite(Number(msg.y)) ? Number(msg.y) : SEA_LEVEL + 1.2;
+        spawnDamageChunks(hx, hy, hz);
+        break;
+      }
       case 'cannonball': {
         fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId, msg.ammoType);
         const sid = msg.shooterId;
@@ -4701,7 +4748,8 @@ function connectToServer() {
               storyStep: step,
               aggro: !!nd.aggro,
               sinking: !!nd.sinking,
-              syncX: nd.x, syncZ: nd.z, syncR: nd.r
+              syncX: nd.x, syncZ: nd.z, syncR: nd.r,
+              riggingHealth: nd.rg != null ? Math.max(0, Math.min(100, nd.rg)) : 100
             };
             const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, npc.flagColor, npc.name);
             const npcCrew = [
@@ -4727,6 +4775,8 @@ function connectToServer() {
           }
           npc.syncX = nd.x; npc.syncZ = nd.z; npc.syncR = nd.r;
           npc.health = nd.h; npc.aggro = !!nd.aggro;
+          if (nd.rg != null) npc.riggingHealth = Math.max(0, Math.min(100, nd.rg));
+          if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, getNpcRiggingHealth(npc));
           if (nd.sinking && !npc.sinking) {
             npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
           }
@@ -8335,10 +8385,14 @@ function update(dt) {
           else if (at === 'ball') popMsg = `Round shot · −${dh}`;
           showCombatPopupWorld(npc.x, npc.z, `${npc.name}: ${popMsg} (${Math.max(0, Math.round(npc.health))} HP)`, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '', life: 2.1 });
           spawnDamageChunks(b.x, b.y, b.z);
+          if (ws?.readyState === 1) {
+            try { ws.send(JSON.stringify({ type: 'ship_hit_fx', x: b.x, y: b.y, z: b.z })); } catch (e) {}
+          }
           spawnSeaDebrisFromHit(b.x, b.z, at === 'chain' ? 8 : at === 'grape' ? (isPellet ? 2 : 5) : 4);
           if (at === 'chain') {
-            npc.riggingMult = Math.max(0.1, (npc.riggingMult != null ? npc.riggingMult : 1) * 0.38);
-            if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, (npc.riggingMult || 0.1) * 100);
+            const rigBefore = npc.riggingHealth != null ? npc.riggingHealth : getNpcRiggingHealth(npc);
+            npc.riggingHealth = Math.max(0, rigBefore - (30 + Math.random() * 14));
+            if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
           }
           if (npc.health <= 0) {
             const storySink = npc.isStoryBounty && npc.storyStep === G.storyQuest.step && G.storyQuest.phase === 'active';
@@ -8676,6 +8730,7 @@ function update(dt) {
       z: Math.round(n.z * 10) / 10,
       r: Math.round(n.rotation * 1000) / 1000,
       h: Math.round(n.health),
+      rg: Math.round(getNpcRiggingHealth(n)),
       aggro: !!n.aggro,
       sinking: !!n.sinking,
       t: n.type,
