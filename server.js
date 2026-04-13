@@ -92,6 +92,10 @@ const players = new Map();
 let nextId = 1;
 let nextLootNetId = 1;
 let nextSwimmerNetId = 1;
+let nextChatMessageId = 1;
+const CHAT_HISTORY_MAX = 200;
+/** @type {{ id: number, t: number, playerId: number, name: string, text: string }[]} */
+const chatHistory = [];
 
 const BANS_FILE = path.join(DATA_DIR, 'bans.json');
 let leaderboardHistory = [];
@@ -591,6 +595,18 @@ wss.on('connection', (ws, req) => {
   }));
   ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
 
+  for (const m of chatHistory.slice(-40)) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'chat',
+        chatId: m.id,
+        id: m.playerId,
+        name: m.name,
+        text: m.text
+      }));
+    } catch (e) {}
+  }
+
   broadcast({ type: 'player_join', player: playerData }, id);
 
   ws.on('message', (raw) => {
@@ -706,7 +722,13 @@ wss.on('connection', (ws, req) => {
             } catch (e) {}
             break;
           }
-          broadcast({ type: 'chat', id, name: players.get(id)?.name || 'Unknown', text: msg.text });
+          const text = String(msg.text != null ? msg.text : '').slice(0, 500);
+          if (!text.trim()) break;
+          const name = players.get(id)?.name || 'Unknown';
+          const mid = nextChatMessageId++;
+          chatHistory.push({ id: mid, t: Date.now(), playerId: id, name, text });
+          if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
+          broadcastAll({ type: 'chat', chatId: mid, id, name, text });
           break;
         }
         case 'cannonball': {
@@ -843,6 +865,52 @@ wss.on('connection', (ws, req) => {
             saveLeaderboard();
             broadcast({ type: 'leaderboard', entries: leaderboardHistory });
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'reset_leaderboard' }));
+            break;
+          }
+          if (action === 'reset_all_time_data') {
+            leaderboardHistory = [];
+            sortLeaderboardHistory();
+            saveLeaderboard();
+            broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+            broadcastAll({ type: 'reset_local_career_data' });
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'reset_all_time_data' }));
+            break;
+          }
+          if (action === 'list_bans') {
+            ws.send(JSON.stringify({ type: 'admin_bans', ips: Array.from(bannedIps).sort() }));
+            break;
+          }
+          if (action === 'unban') {
+            const ip = msg.ip != null ? String(msg.ip).trim() : '';
+            if (!ip) {
+              ws.send(JSON.stringify({ type: 'admin_error', error: 'Missing IP to unban.' }));
+              break;
+            }
+            bannedIps.delete(ip);
+            saveBans();
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'unban' }));
+            break;
+          }
+          if (action === 'get_chat_log') {
+            ws.send(JSON.stringify({ type: 'admin_chat_log', messages: chatHistory.slice() }));
+            break;
+          }
+          if (action === 'delete_chat_message') {
+            const cid = msg.chatId != null ? Number(msg.chatId) : NaN;
+            if (!Number.isFinite(cid)) {
+              ws.send(JSON.stringify({ type: 'admin_error', error: 'Invalid chat message id.' }));
+              break;
+            }
+            const ix = chatHistory.findIndex(m => m.id === cid);
+            if (ix >= 0) chatHistory.splice(ix, 1);
+            broadcastAll({ type: 'chat_removed', chatId: cid });
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'delete_chat_message' }));
+            break;
+          }
+          if (action === 'clear_chat') {
+            chatHistory.length = 0;
+            broadcastAll({ type: 'chat_cleared' });
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'clear_chat' }));
             break;
           }
           if (targetId == null || !Number.isFinite(targetId)) {

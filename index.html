@@ -582,6 +582,24 @@ input,textarea{-webkit-user-select:text;user-select:text;}
           </div>
           <div class="debug-roster-scroll" id="debug-admin-players" style="max-height:240px;margin-top:10px;"></div>
         </section>
+        <section class="debug-section" aria-label="Bans and global career reset">
+          <h4 class="debug-section-head">Bans &amp; all-time reset</h4>
+          <p class="debug-map-hint" style="margin-bottom:10px;">Banned client addresses (from navigator ban). Remove a ban to allow that address back. <strong>Reset all-time data</strong> clears server notorious ranks and wipes local career stats on <em>every</em> connected browser.</p>
+          <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+            <button type="button" id="debug-admin-refresh-bans">Refresh ban list</button>
+            <button type="button" id="debug-admin-reset-alltime" style="background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Reset all-time data (everyone)</button>
+          </div>
+          <div class="debug-roster-scroll" id="debug-admin-bans" style="max-height:160px;margin-bottom:8px;"></div>
+        </section>
+        <section class="debug-section" aria-label="Global chat moderation">
+          <h4 class="debug-section-head">Global chat</h4>
+          <p class="debug-map-hint" style="margin-bottom:10px;">Server-side log. Delete a line or clear the whole log for all players.</p>
+          <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+            <button type="button" id="debug-admin-refresh-chat">Refresh chat log</button>
+            <button type="button" id="debug-admin-clear-chat" style="background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Clear all chat</button>
+          </div>
+          <div class="debug-roster-scroll" id="debug-admin-chat-log" style="max-height:260px;"></div>
+        </section>
         <section class="debug-section" aria-label="Cheats">
           <h4 class="debug-section-head">Cargo spawn</h4>
           <div id="debug-cheats-items"></div>
@@ -4048,7 +4066,29 @@ function connectToServer() {
       case 'player_leave': G.otherPlayers.delete(msg.id); if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } break;
       case 'state': msg.players.forEach(p => { if (p.id !== G.myId) { const ex = G.otherPlayers.get(p.id); if (ex) Object.assign(ex, p); } }); break;
       case 'ship_update': { const p = G.otherPlayers.get(msg.id); if (p) { p.shipType = msg.shipType; p.shipParts = msg.shipParts; if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } } break; }
-      case 'chat': addChatMessage(msg.name, msg.text); break;
+      case 'chat': addChatMessage(msg.name, msg.text, msg.chatId); break;
+      case 'chat_removed': {
+        const log = document.getElementById('chat-log');
+        if (!log || msg.chatId == null) break;
+        const sel = log.querySelector('[data-chat-id="' + String(msg.chatId) + '"]');
+        if (sel) sel.remove();
+        break;
+      }
+      case 'chat_cleared': {
+        const log = document.getElementById('chat-log');
+        if (log) log.innerHTML = '';
+        break;
+      }
+      case 'reset_local_career_data':
+        clearLocalCareerDataFromServerReset();
+        notify('All-time career data on this device was cleared by the navigator.');
+        break;
+      case 'admin_bans':
+        renderAdminBanList(msg.ips || []);
+        break;
+      case 'admin_chat_log':
+        renderAdminChatLog(msg.messages || []);
+        break;
       case 'cannonball': {
         fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId);
         const sid = msg.shooterId;
@@ -4074,6 +4114,18 @@ function connectToServer() {
       case 'admin_ok':
         if (msg.action === 'reset_leaderboard') {
           notify('Notorious pirate ranks were cleared on the server.');
+        }
+        if (msg.action === 'unban') {
+          notify('Ban removed.');
+          requestAdminBanList();
+        }
+        if (msg.action === 'delete_chat_message') {
+          notify('Chat message removed.');
+          requestAdminChatLog();
+        }
+        if (msg.action === 'clear_chat') {
+          notify('Global chat cleared for everyone.');
+          requestAdminChatLog();
         }
         break;
       case 'kicked':
@@ -4467,6 +4519,8 @@ function openDebugConsolePanel() {
   if (sinp && (sinp.value.trim() === '' || !Number.isFinite(parseInt(sinp.value, 10)))) sinp.value = String(G.worldSeed >>> 0);
   drawDebugSeedPreviewMap();
   requestAdminPlayerRoster();
+  requestAdminBanList();
+  requestAdminChatLog();
 }
 function getNavigatorSessToken() {
   try { return sessionStorage.getItem('pirates_navigator_sess'); } catch (e) { return null; }
@@ -4485,6 +4539,12 @@ function sendAdminNav(payload) {
 }
 function requestAdminPlayerRoster() {
   sendAdminNav({ action: 'list_players' });
+}
+function requestAdminBanList() {
+  sendAdminNav({ action: 'list_bans' });
+}
+function requestAdminChatLog() {
+  sendAdminNav({ action: 'get_chat_log' });
 }
 function adminTeleportToNetworkPlayer(pid) {
   const id = Number(pid);
@@ -4515,6 +4575,42 @@ function adminTeleportToNetworkPlayer(pid) {
   }
   notify(`Moved to ${p.name || 'captain'}'s last reported position.`);
 }
+function renderAdminBanList(ips) {
+  const el = document.getElementById('debug-admin-bans');
+  if (!el) return;
+  if (!ips || !ips.length) {
+    el.innerHTML = '<div style="color:#8a7a60;font-size:11px;">No banned addresses.</div>';
+    return;
+  }
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  el.innerHTML = ips.map(ip => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;margin-bottom:4px;background:rgba(30,20,12,0.5);border-radius:4px;font-size:11px;color:#e0d6c2;">
+    <code style="font-size:10px;word-break:break-all;">${esc(ip)}</code>
+    <button type="button" class="debug-admin-unban" data-ip="${esc(ip)}" style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;">Remove ban</button>
+  </div>`).join('');
+}
+function renderAdminChatLog(messages) {
+  const el = document.getElementById('debug-admin-chat-log');
+  if (!el) return;
+  if (!messages || !messages.length) {
+    el.innerHTML = '<div style="color:#8a7a60;font-size:11px;">No messages in the server log.</div>';
+    return;
+  }
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const rows = messages.slice().sort((a, b) => (a.id || 0) - (b.id || 0));
+  el.innerHTML = rows.map(m => {
+    const id = m.id != null ? +m.id : NaN;
+    const time = m.t ? new Date(m.t).toLocaleString() : '';
+    return `<div style="padding:6px;margin-bottom:4px;background:rgba(30,20,12,0.45);border-radius:4px;font-size:10px;color:#c8c0b0;border:1px solid rgba(140,100,40,0.12);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;">
+        <div style="min-width:0;flex:1;">
+          <span style="color:#d4a848;">${esc(m.name || '?')}</span> <span style="color:#5a5048;">#${id}</span>
+          ${time ? `<span style="color:#5a5048;margin-left:6px;">${esc(time)}</span>` : ''}<br/>
+          <span style="color:#e0d6c2;word-break:break-word;">${esc(m.text || '')}</span>
+        </div>
+        <button type="button" class="debug-admin-chat-del" data-chat-id="${Number.isFinite(id) ? id : ''}" style="font-size:10px;padding:4px 8px;flex-shrink:0;cursor:pointer;font-family:inherit;">Delete</button>
+      </div></div>`;
+  }).join('');
+}
 function renderDebugAdminPlayers(players) {
   const el = document.getElementById('debug-admin-players');
   if (!el) return;
@@ -4544,6 +4640,30 @@ function renderDebugAdminPlayers(players) {
   document.getElementById('debug-admin-reset-lb')?.addEventListener('click', () => {
     if (!confirm('Clear all notorious pirate ranks on the server? This cannot be undone.')) return;
     sendAdminNav({ action: 'reset_leaderboard' });
+  });
+  document.getElementById('debug-admin-reset-alltime')?.addEventListener('click', () => {
+    if (!confirm('Reset ALL notorious ranks AND wipe local career stats (all-time) on every connected browser? This cannot be undone.')) return;
+    sendAdminNav({ action: 'reset_all_time_data' });
+  });
+  document.getElementById('debug-admin-refresh-bans')?.addEventListener('click', () => requestAdminBanList());
+  document.getElementById('debug-admin-refresh-chat')?.addEventListener('click', () => requestAdminChatLog());
+  document.getElementById('debug-admin-clear-chat')?.addEventListener('click', () => {
+    if (!confirm('Remove every chat message for all players?')) return;
+    sendAdminNav({ action: 'clear_chat' });
+  });
+  document.getElementById('debug-admin-bans')?.addEventListener('click', e => {
+    const btn = e.target.closest('.debug-admin-unban');
+    if (!btn) return;
+    const ip = btn.getAttribute('data-ip');
+    if (!ip) return;
+    sendAdminNav({ action: 'unban', ip });
+  });
+  document.getElementById('debug-admin-chat-log')?.addEventListener('click', e => {
+    const btn = e.target.closest('.debug-admin-chat-del');
+    if (!btn) return;
+    const cid = btn.getAttribute('data-chat-id');
+    if (!cid) return;
+    sendAdminNav({ action: 'delete_chat_message', chatId: +cid });
   });
   document.getElementById('debug-admin-players')?.addEventListener('click', e => {
     const btn = e.target.closest('.debug-admin-act');
@@ -4976,10 +5096,12 @@ function hideMobileControls() {
 }
 function notify(text) { const el = document.getElementById('notification'); el.textContent = text; el.style.opacity = '1'; clearTimeout(el._t); el._t = setTimeout(() => el.style.opacity = '0', 2500); }
 let unreadChat = 0;
-function addChatMessage(name, text) {
+function addChatMessage(name, text, chatId) {
   const log = document.getElementById('chat-log');
   const d = document.createElement('div');
-  d.innerHTML = `<span style="color:#d4a848">${name}:</span> ${text}`;
+  if (chatId != null) d.setAttribute('data-chat-id', String(chatId));
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  d.innerHTML = `<span style="color:#d4a848">${esc(name)}:</span> ${esc(text)}`;
   log.appendChild(d); log.scrollTop = log.scrollHeight;
   const chatBox = document.getElementById('chat-box');
   if (chatBox.style.display === 'none' || chatBox.style.display === '') {
@@ -5896,6 +6018,24 @@ function getCombinedAllTimeStatsForDisplay() {
     deaths: at.deaths + G.playerStats.deaths,
     captainsTotal: at.captainsRetired + (hasActiveSaveInStorage() ? 1 : 0)
   };
+}
+
+/** Server broadcast: wipe this browser's career totals and cached leaderboard (navigator reset-all-time). */
+function clearLocalCareerDataFromServerReset() {
+  try {
+    localStorage.removeItem(ALLTIME_STATS_KEY);
+    localStorage.removeItem('pirates_lb_cache');
+  } catch (e) {}
+  ensurePlayerStats();
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+  try {
+    saveProgress();
+  } catch (e2) {}
+  leaderboardData = [];
+  try {
+    localStorage.setItem('pirates_lb_cache', '[]');
+  } catch (e3) {}
+  updatePiratesPanel();
 }
 
 let leaderboardData = [];
