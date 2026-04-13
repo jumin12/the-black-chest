@@ -922,11 +922,13 @@ wss.on('connection', (ws, req) => {
         }
         case 'swimmer_spawn': {
           if (msg.swimmers && Array.isArray(msg.swimmers)) {
+            const spawnAt = Date.now();
             const swimmers = msg.swimmers.map(s => ({
               x: s.x,
               z: s.z,
               restore: s.restore || null,
-              id: nextSwimmerNetId++
+              id: nextSwimmerNetId++,
+              spawnAt
             }));
             broadcastAll({ type: 'swimmer_spawn', swimmers });
           }

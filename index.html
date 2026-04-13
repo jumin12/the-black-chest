@@ -1992,6 +1992,7 @@ function generateIsland(cx, cz) {
     G.floatingItems.push(fi);
     const crate = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
     crate.position.set(fi.x, SEA_LEVEL + 1.5, fi.z); crate.castShadow = true; crate.userData.floatItem = fi;
+    fi.lootVisual = crate;
     group.add(crate);
   }
 
@@ -4014,8 +4015,21 @@ function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType) {
   cannonballMeshes.push(m);
 }
 
+function computeSwimmerLandAge(y0, vy0, yCut) {
+  let lo = 0, hi = 14;
+  for (let k = 0; k < 48; k++) {
+    const mid = (lo + hi) / 2;
+    const y = y0 + vy0 * mid - 4 * mid * mid;
+    if (y > yCut) lo = mid;
+    else hi = mid;
+  }
+  return hi;
+}
+
 function spawnSwimmers(wx, wz, count, crewData, opts) {
   const rescue = opts && opts.rescueRestoresCrew;
+  const batchMs = Date.now();
+  const yCut = SEA_LEVEL + 0.1;
   for (let i = 0; i < count; i++) {
     const sg = new THREE.Group();
     const crewColor = crewData && crewData[i] ? new THREE.Color(crewData[i].color || '#4a4a4a') : new THREE.Color([0x8b0000, 0x2a4a6a, 0x4a4a4a, 0x2a6a2a][i % 4]);
@@ -4025,14 +4039,24 @@ function spawnSwimmers(wx, wz, count, crewData, opts) {
     head.position.set(0, 0.15, -0.2); sg.add(head);
     const a = Math.random() * Math.PI * 2;
     const jumpDist = 2 + Math.random() * 4;
-    sg.position.set(wx, SEA_LEVEL + 2 + Math.random() * 2, wz);
-    sg.userData.targetX = wx + Math.cos(a) * jumpDist;
-    sg.userData.targetZ = wz + Math.sin(a) * jumpDist;
-    sg.userData.jumping = true; sg.userData.jumpVY = 2 + Math.random() * 3;
+    const sx = wx, sz = wz;
+    const tx = wx + Math.cos(a) * jumpDist;
+    const tz = wz + Math.sin(a) * jumpDist;
+    const y0 = SEA_LEVEL + 2 + Math.random() * 2;
+    const vy0 = 2 + Math.random() * 3;
+    sg.userData.sx = sx;
+    sg.userData.sz = sz;
+    sg.userData.tx = tx;
+    sg.userData.tz = tz;
+    sg.userData.y0 = y0;
+    sg.userData.vy0 = vy0;
     sg.userData.driftX = (Math.random() - 0.5) * 0.8;
     sg.userData.driftZ = (Math.random() - 0.5) * 0.8;
     sg.userData.bobPhase = Math.random() * Math.PI * 2;
-    sg.userData.life = 60;
+    sg.userData.baseRotY = Math.random() * Math.PI * 2;
+    sg.userData.tLand = computeSwimmerLandAge(y0, vy0, yCut);
+    sg.userData.spawnAtMs = batchMs;
+    sg.userData.life0 = 60;
     sg.userData.crewName = crewData && crewData[i] ? crewData[i].name : null;
     if (rescue && crewData && crewData[i]) {
       const cd = crewData[i];
@@ -4041,6 +4065,7 @@ function spawnSwimmers(wx, wz, count, crewData, opts) {
         color: cd.color || '#4a4a4a', hat: cd.hat || 'none', outfit: cd.outfit || 'vest', parrot: !!cd.parrot
       };
     }
+    sg.position.set(sx, y0, sz);
     scene.add(sg);
     G.swimmers.push(sg);
   }
@@ -4051,7 +4076,7 @@ function swimmerStreamHash(wx, wz, salt) {
   h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
   return (h >>> 0) / 4294967296;
 }
-function spawnNetworkSwimmer(wx, wz, crewRestore, netId) {
+function spawnNetworkSwimmer(wx, wz, crewRestore, netId, spawnAtMs) {
   const sg = new THREE.Group();
   const crewColor = crewRestore ? new THREE.Color(crewRestore.color || '#4a4a4a') : new THREE.Color(0x8b0000);
   const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.3, 3, 4), new THREE.MeshLambertMaterial({ color: crewColor }));
@@ -4060,15 +4085,25 @@ function spawnNetworkSwimmer(wx, wz, crewRestore, netId) {
   head.position.set(0, 0.15, -0.2); sg.add(head);
   const a = swimmerStreamHash(wx, wz, 1) * Math.PI * 2;
   const jumpDist = 2 + swimmerStreamHash(wx, wz, 2) * 4;
-  sg.position.set(wx, SEA_LEVEL + 2 + swimmerStreamHash(wx, wz, 3) * 2, wz);
-  sg.userData.targetX = wx + Math.cos(a) * jumpDist;
-  sg.userData.targetZ = wz + Math.sin(a) * jumpDist;
-  sg.userData.jumping = true;
-  sg.userData.jumpVY = 2 + swimmerStreamHash(wx, wz, 4) * 3;
+  const sx = wx, sz = wz;
+  const tx = wx + Math.cos(a) * jumpDist;
+  const tz = wz + Math.sin(a) * jumpDist;
+  const y0 = SEA_LEVEL + 2 + swimmerStreamHash(wx, wz, 3) * 2;
+  const vy0 = 2 + swimmerStreamHash(wx, wz, 4) * 3;
+  const yCut = SEA_LEVEL + 0.1;
+  sg.userData.sx = sx;
+  sg.userData.sz = sz;
+  sg.userData.tx = tx;
+  sg.userData.tz = tz;
+  sg.userData.y0 = y0;
+  sg.userData.vy0 = vy0;
   sg.userData.driftX = (swimmerStreamHash(wx, wz, 5) - 0.5) * 0.8;
   sg.userData.driftZ = (swimmerStreamHash(wx, wz, 6) - 0.5) * 0.8;
   sg.userData.bobPhase = swimmerStreamHash(wx, wz, 7) * Math.PI * 2;
-  sg.userData.life = 60;
+  sg.userData.baseRotY = swimmerStreamHash(wx, wz, 8) * Math.PI * 2;
+  sg.userData.tLand = computeSwimmerLandAge(y0, vy0, yCut);
+  sg.userData.spawnAtMs = spawnAtMs != null && Number.isFinite(spawnAtMs) ? spawnAtMs : Date.now();
+  sg.userData.life0 = 60;
   sg.userData.crewName = crewRestore ? crewRestore.name : null;
   if (crewRestore) {
     sg.userData.crewRestore = {
@@ -4077,6 +4112,7 @@ function spawnNetworkSwimmer(wx, wz, crewRestore, netId) {
     };
   }
   if (netId != null) sg.userData.netId = netId;
+  sg.position.set(sx, y0, sz);
   scene.add(sg);
   G.swimmers.push(sg);
 }
@@ -4117,7 +4153,8 @@ function broadcastOrSpawnSeaSwimmers(payloads) {
   if (ws && ws.readyState === 1) {
     try { ws.send(JSON.stringify({ type: 'swimmer_spawn', swimmers: payloads })); } catch (e) {}
   } else {
-    payloads.forEach(p => spawnNetworkSwimmer(p.x, p.z, p.restore || null, null));
+    const t = Date.now();
+    payloads.forEach(p => spawnNetworkSwimmer(p.x, p.z, p.restore || null, null, t));
   }
 }
 
@@ -4400,10 +4437,19 @@ function addFloatingLootMesh(x, z, type, count, netId) {
   crate.position.set(li.x, SEA_LEVEL + 0.5, li.z);
   crate.userData.floatItem = li;
   crate.userData.isLoot = true;
+  li.lootVisual = crate;
   scene.add(crate);
 }
 
 function removeFloatingLootVisuals(item) {
+  if (item.lootVisual) {
+    const c = item.lootVisual;
+    if (c.parent) c.parent.remove(c);
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) c.material.dispose();
+    item.lootVisual = null;
+    return;
+  }
   islandGroup.traverse(c => { if (c.userData.floatItem === item) c.visible = false; });
   const toRemove = [];
   scene.traverse(c => { if (c.userData.floatItem === item) toRemove.push(c); });
@@ -4863,7 +4909,7 @@ function connectToServer() {
             const sx = Number(s.x), sz = Number(s.z);
             if (!Number.isFinite(sx) || !Number.isFinite(sz)) return;
             if (s.id != null && G.swimmers.some(sw => sw.userData.netId === s.id)) return;
-            spawnNetworkSwimmer(sx, sz, s.restore || null, s.id);
+            spawnNetworkSwimmer(sx, sz, s.restore || null, s.id, s.spawnAt != null ? Number(s.spawnAt) : Date.now());
           });
         }
         break;
@@ -8341,6 +8387,9 @@ function update(dt) {
       sm.userData.cacheKey = cacheKey;
       sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = shipTitle;
+      const owH0 = Math.sin(G.time * 0.7 + p.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + p.z * 0.06) * 0.08;
+      sm.position.set(p.x, SEA_LEVEL + 0.35 + owH0, p.z);
+      sm.rotation.y = p.rotation || 0;
       otherShipGroups.set(id, sm);
       scene.add(sm);
     }
@@ -8569,20 +8618,38 @@ function update(dt) {
 
   for (let i = G.swimmers.length - 1; i >= 0; i--) {
     const sw = G.swimmers[i];
-    if (sw.userData.jumping) {
-      sw.userData.jumpVY -= 8 * dt;
-      sw.position.y += sw.userData.jumpVY * dt;
-      sw.position.x += (sw.userData.targetX - sw.position.x) * 3 * dt;
-      sw.position.z += (sw.userData.targetZ - sw.position.z) * 3 * dt;
+    const u = sw.userData;
+    if (u.spawnAtMs == null) u.spawnAtMs = Date.now();
+    const age = (Date.now() - u.spawnAtMs) / 1000;
+    const sx0 = u.sx != null ? u.sx : sw.position.x;
+    const sz0 = u.sz != null ? u.sz : sw.position.z;
+    const tx = u.tx != null ? u.tx : sx0;
+    const tz = u.tz != null ? u.tz : sz0;
+    const y0 = u.y0 != null ? u.y0 : SEA_LEVEL + 2;
+    const vy0 = u.vy0 != null ? u.vy0 : 3;
+    const tLand = u.tLand != null ? u.tLand : computeSwimmerLandAge(y0, vy0, SEA_LEVEL + 0.1);
+    const driftX = u.driftX != null ? u.driftX : 0;
+    const driftZ = u.driftZ != null ? u.driftZ : 0;
+    const bobPh = u.bobPhase != null ? u.bobPhase : 0;
+    const baseRotY = u.baseRotY != null ? u.baseRotY : 0;
+    if (age < tLand) {
+      const ej = Math.exp(-3 * age);
+      sw.position.x = tx + (sx0 - tx) * ej;
+      sw.position.z = tz + (sz0 - tz) * ej;
+      sw.position.y = y0 + vy0 * age - 4 * age * age;
       sw.rotation.x = -Math.PI * 0.3;
-      if (sw.position.y <= SEA_LEVEL + 0.1) { sw.userData.jumping = false; sw.position.y = SEA_LEVEL + 0.05; sw.rotation.x = 0; }
     } else {
-      sw.position.x += sw.userData.driftX * dt;
-      sw.position.z += sw.userData.driftZ * dt;
-      sw.position.y = SEA_LEVEL + 0.05 + Math.sin(G.time * 2 + sw.userData.bobPhase) * 0.1;
+      const ta = age - tLand;
+      const ejL = Math.exp(-3 * tLand);
+      const xL = tx + (sx0 - tx) * ejL;
+      const zL = tz + (sz0 - tz) * ejL;
+      sw.position.x = xL + driftX * ta;
+      sw.position.z = zL + driftZ * ta;
+      sw.position.y = SEA_LEVEL + 0.05 + Math.sin(G.time * 2 + bobPh) * 0.1;
+      sw.rotation.x = 0;
     }
-    sw.rotation.y += dt * 0.5;
-    sw.userData.life -= dt;
+    sw.rotation.y = baseRotY + age * 0.5;
+    u.life = (u.life0 != null ? u.life0 : 60) - age;
     const distToPlayer = Math.hypot(sw.position.x - G.player.x, sw.position.z - G.player.z);
     if (distToPlayer < 6) {
       let collected = false;
@@ -8618,7 +8685,7 @@ function update(dt) {
       }
       continue;
     }
-    if (sw.userData.life <= 0) {
+    if (u.life <= 0) {
       scene.remove(sw);
       G.swimmers.splice(i, 1);
     }
