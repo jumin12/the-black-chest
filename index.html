@@ -3352,6 +3352,11 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   }
   nudgeNpcOffIsland(npc);
 }
+function tradeShipCannonForType(shipType) {
+  if (shipType === 'galleon') return 'heavy';
+  if (shipType === 'brigantine') return 'medium';
+  return 'light';
+}
 function spawnTradeShips() {
   const tBase = ((G.worldSeed | 0) * 31 + 22411) >>> 0;
   const allPorts = collectAllTradingPorts();
@@ -3378,6 +3383,7 @@ function spawnTradeShips() {
     const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
     const st = shipTypes[Math.floor(sr() * shipTypes.length)];
     const sailPick = sr() > 0.55 ? 'silk' : 'basic';
+    const cannonPart = tradeShipCannonForType(st);
     const npc = {
       syncId: TRADE_NPC_SYNC_START + tradeSyncIdx,
       x: nx, z: nz,
@@ -3385,6 +3391,7 @@ function spawnTradeShips() {
       speed: 0,
       health: 48 + sr() * 42,
       type: st,
+      tradeCannon: cannonPart,
       name: '',
       flagColor: FACTION_TRADE_COLORS[townFaction(home) % 4],
       isTradeShip: true,
@@ -3404,9 +3411,10 @@ function spawnTradeShips() {
     npc.tradePhase = 'loading_home';
     npc.tradeTimer = 6 + sr() * 14;
     syncTradeShipName(npc, home);
-    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: 'none', figurehead: 'none' }, npc.flagColor, npc.name, { merchantHull: true });
+    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none' }, npc.flagColor, npc.name, { merchantHull: true });
     const npcCrew = [
       { name: 'Merchant', role: 'captain', task: 'helm', color: '#3a3020', hat: 'tricorn' },
+      { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4538', hat: 'bandana' },
       { name: 'Deckhand', role: 'sailor', task: 'sails', color: '#4a4538' }
     ];
     buildCrewMeshes(mesh, npcCrew, npc.type);
@@ -3461,8 +3469,10 @@ function spawnNPCs() {
 
 function rebuildNPCShipMesh(npc) {
   const merchant = !!npc.isTradeShip;
+  const mercCannon = merchant ? (npc.tradeCannon || tradeShipCannonForType(npc.type)) : 'light';
   const npcCrew = merchant ? [
     { name: 'Merchant', role: 'captain', task: 'helm', color: '#3a3020', hat: 'tricorn' },
+    { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4538', hat: 'bandana' },
     { name: 'Deckhand', role: 'sailor', task: 'sails', color: '#4a4538' }
   ] : [
     { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
@@ -3470,7 +3480,7 @@ function rebuildNPCShipMesh(npc) {
     { name: 'Mate', role: 'sailor', task: 'sails', color: '#2a4a2a' }
   ];
   const partsRaw = merchant
-    ? { hull: 'basic', sail: npc.sailPick === 'silk' ? 'silk' : 'basic', cannon: 'none', figurehead: 'none' }
+    ? { hull: 'basic', sail: npc.sailPick === 'silk' ? 'silk' : 'basic', cannon: mercCannon, figurehead: 'none' }
     : { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' };
   const parts = merchant ? partsRaw : normalizeShipPartsForRemoteView(partsRaw);
   if (npc.mesh) {
@@ -3487,6 +3497,10 @@ function rebuildNPCShipMesh(npc) {
 const CANNONBALL_XY_SPEED = 35;
 /** Player broadside cooldown — AI matches this. */
 const PLAYER_BROADSIDE_COOLDOWN = 2.5;
+/** Death: ship fully sinks for this long before respawn countdown begins. */
+const PLAYER_DEATH_SINK_SEC = 5.2;
+/** After the sink animation, wait this many seconds before respawning. */
+const PLAYER_RESPAWN_DELAY_SEC = 2;
 function getPlayerVelocityForLead() {
   const spec = SHIP_TYPES[G.player.shipType];
   const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
@@ -3539,6 +3553,44 @@ function updateNPCs(dt) {
   G.npcs.forEach(npc => {
     if (host) {
       if (npc.isTradeShip && !npc.sinking) {
+        if (!npc.fireCooldown) npc.fireCooldown = 0;
+        npc.fireCooldown -= dt;
+        if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
+        const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+        if (npc.aggro && (G.playerSinking || G.player.health <= 0 || distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) {
+          npc.aggro = false;
+        }
+        const fighting = npc.aggro && distToPlayer < 135 && !G.playerSinking && G.player.health > 0;
+        if (fighting) {
+          const sharp = distToPlayer < 110 ? 2.55 : 2.05;
+          if (!npc.escapeMode) {
+            const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
+            const toPlayer = Math.atan2(dx, dz);
+            const starboardBroadside = toPlayer + Math.PI / 2;
+            const portBroadside = toPlayer - Math.PI / 2;
+            const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+            const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+            const targetAngle = npc.underFireTimer > 0
+              ? (dStar < dPort ? starboardBroadside : portBroadside)
+              : (toPlayer + Math.PI / 3);
+            let diff = targetAngle - npc.rotation;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.08;
+            npc.rotation += diff * turnMul * dt;
+            if (npc.fireCooldown <= 0 && distToPlayer < 64) {
+              npcFireAtPlayer(npc);
+              npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+            }
+          }
+          steerNpcClearanceAhead(npc, dt, sharp);
+          if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+          const maxF = npcMaxForwardSpeed(npc);
+          const tgtSpd = npc.underFireTimer > 0 && distToPlayer < 92 ? maxF * 0.06 : maxF * 0.16;
+          accelerateNpcToward(npc, dt, tgtSpd);
+          applyNpcMoveWithIslandEscape(npc, dt, sharp);
+          updateNpcEscapeMode(npc, dt);
+        } else {
         if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
         const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.35;
         const phase = npc.tradePhase || 'to_dest';
@@ -3620,6 +3672,7 @@ function updateNPCs(dt) {
         if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
         applyNpcMoveWithIslandEscape(npc, dt, 2.45);
         updateNpcEscapeMode(npc, dt);
+        }
       } else {
       if (!npc.fireCooldown) npc.fireCooldown = 0;
       npc.fireCooldown -= dt;
@@ -4424,9 +4477,9 @@ window.addEventListener('keydown', e => {
       if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 30); }
     }
   }
-  if (e.key === ' ' && G.mode === 'playing' && !G.spectate) { e.preventDefault(); doFire(); }
-  if (k === 'z' && G.mode === 'playing' && !G.spectate) doFireSide(-1);
-  if (k === 'x' && G.mode === 'playing' && !G.spectate) doFireSide(1);
+  if (e.key === ' ' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) { e.preventDefault(); doFire(); }
+  if (k === 'z' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(-1);
+  if (k === 'x' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(1);
   if (e.key === 'Escape') {
     if (G.spectate) {
       endSpectateMode();
@@ -5052,6 +5105,7 @@ function updateCombatFireEdgesUI() {
 /* ============================== ACTIONS =================================== */
 function doFireSide(fireSide) {
   if (G.spectate) return;
+  if (G.playerSinking || G.player.health <= 0) return;
   const spec = SHIP_TYPES[G.player.shipType];
   const cp = SHIP_PARTS.cannon.find(c => c.id === G.player.shipParts.cannon);
   if (!cp || cp.damage <= 0) { notify('No cannons equipped!'); return; }
@@ -5489,7 +5543,7 @@ function updateDebugRoster() {
     if (!debugRosterSearchMatches(shipHay, q)) continue;
     const row = document.createElement('div');
     row.className = 'debug-roster-row';
-    const crewDesc = n.isTradeShip ? 'Merchant captain + deckhand (2 aboard)' : (n.isStoryBounty ? 'Notorious officers — captain, gunner, mate (3)' : 'Pirate captain + gunner + mate (3)');
+    const crewDesc = n.isTradeShip ? 'Merchant crew — captain, gunner, deckhand (3 aboard)' : (n.isStoryBounty ? 'Notorious officers — captain, gunner, mate (3)' : 'Pirate captain + gunner + mate (3)');
     const spdNow = Math.round(npcEffectiveForwardSpeed(n) * 100) / 100;
     const spdMax = Math.round(npcMaxForwardSpeed(n) * 100) / 100;
     const spdOrder = typeof n.speed === 'number' ? Math.round(Math.abs(n.speed) * 100) / 100 : null;
@@ -7381,7 +7435,7 @@ function update(dt) {
   G.wind.angle = wHere.angle;
   G.wind.speed = wHere.speed;
 
-  if (!G.player.anchored && !G.spectate) {
+  if (!G.player.anchored && !G.spectate && !G.playerSinking && G.player.health > 0) {
     const spec = SHIP_TYPES[G.player.shipType];
     const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
     const speedMult = spec.speed + (sailPart ? sailPart.speedBonus : 0);
@@ -7678,7 +7732,7 @@ function update(dt) {
       });
     }
 
-    if (b.owner === 'npc' || b.owner === 'other_player') {
+    if ((b.owner === 'npc' || b.owner === 'other_player') && !G.playerSinking && G.player.health > 0) {
       const distP = Math.hypot(b.x - G.player.x, b.z - G.player.z);
       if (distP < 5 && b.y > SEA_LEVEL - 1) {
         G.player.health = Math.max(0, G.player.health - (b.owner === 'other_player' ? 12 : 8));
@@ -7820,6 +7874,7 @@ function update(dt) {
     }
     G.playerSinking = true; G.playerSinkTimer = 0;
     G.playerSinkY = playerShipGroup.position.y;
+    G.dockingAnim = null;
     G.player.speed = 0; G.player.anchored = true;
     syncAnchorToolbarButton();
     spawnSwimmers(G.player.x, G.player.z, Math.min(G.player.crew.length, 4), G.player.crew);
@@ -7839,13 +7894,21 @@ function update(dt) {
   }
   if (G.playerSinking) {
     G.playerSinkTimer += dt;
-    const remaining = Math.max(0, 8 - G.playerSinkTimer);
-    document.getElementById('death-timer').textContent = `Respawning in ${Math.ceil(remaining)}s`;
-    G.playerSinkY -= dt * 0.6;
+    const sinkDone = G.playerSinkTimer >= PLAYER_DEATH_SINK_SEC;
+    const elTimer = document.getElementById('death-timer');
+    if (elTimer) {
+      if (!sinkDone) elTimer.textContent = 'Ship going under…';
+      else {
+        const remain = Math.max(0, PLAYER_RESPAWN_DELAY_SEC - (G.playerSinkTimer - PLAYER_DEATH_SINK_SEC));
+        elTimer.textContent = `Respawning in ${Math.ceil(remain)}s`;
+      }
+    }
+    G.playerSinkY -= dt * 0.58;
     playerShipGroup.position.set(G.player.x, G.playerSinkY, G.player.z);
     playerShipGroup.rotation.set(G.playerSinkTimer * 0.06, G.player.rotation, G.playerSinkTimer * 0.12);
-    if (G.playerSinkTimer > 8) {
+    if (G.playerSinkTimer >= PLAYER_DEATH_SINK_SEC + PLAYER_RESPAWN_DELAY_SEC) {
       G.playerSinking = false;
+      G.playerSinkTimer = 0;
       G.player.health = 100; G.player.anchored = false;
       syncAnchorToolbarButton();
       G.player.x += (Math.random() - 0.5) * 100;
