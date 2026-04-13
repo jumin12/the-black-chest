@@ -6,6 +6,8 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 const TICK_RATE = 20;
+/** Monotonic seconds, advanced each state tick — clients use this to sync cosmetic/combat animation phase. */
+let serverSimTime = 0;
 /** Optional directory for persistent JSON (e.g. Docker volume). Defaults next to server.js. */
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
 const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
@@ -866,7 +868,12 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'npc_cannon': {
-          broadcast({ type: 'npc_cannon', x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, y: msg.y }, id);
+          const nid = msg.npcId != null ? Number(msg.npcId) : null;
+          broadcast({
+            type: 'npc_cannon',
+            npcId: Number.isFinite(nid) ? nid : null,
+            x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, y: msg.y
+          }, id);
           break;
         }
         case 'cannon_fx': {
@@ -1118,7 +1125,12 @@ wss.on('connection', (ws, req) => {
 });
 
 setInterval(() => {
-  if (players.size === 0) return;
+  if (players.size === 0) {
+    serverSimTime = 0;
+    return;
+  }
+  serverSimTime += 1 / TICK_RATE;
+  const simT = Math.round(serverSimTime * 1000) / 1000;
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
     name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
@@ -1131,7 +1143,7 @@ setInterval(() => {
     riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
     morale: p.morale != null ? p.morale : 100
   }));
-  broadcast({ type: 'state', players: snapshot });
+  broadcast({ type: 'state', players: snapshot, simT });
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, '0.0.0.0', () => {
