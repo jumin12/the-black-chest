@@ -5635,6 +5635,76 @@ function syncLocalLegendFromEntries(entries) {
   if (changed) saveProgress();
 }
 
+const ALLTIME_STATS_KEY = 'pirates_alltime_v1';
+
+function defaultAllTimeStats() {
+  return {
+    goldEarned: 0,
+    sinksAi: 0,
+    sinksPlayer: 0,
+    ransoms: 0,
+    deaths: 0,
+    captainsRetired: 0
+  };
+}
+function loadAllTimeStats() {
+  try {
+    const raw = localStorage.getItem(ALLTIME_STATS_KEY);
+    if (!raw) return defaultAllTimeStats();
+    const o = JSON.parse(raw);
+    return {
+      goldEarned: Math.max(0, Math.floor(Number(o.goldEarned) || 0)),
+      sinksAi: Math.max(0, Math.floor(Number(o.sinksAi) || 0)),
+      sinksPlayer: Math.max(0, Math.floor(Number(o.sinksPlayer) || 0)),
+      ransoms: Math.max(0, Math.floor(Number(o.ransoms) || 0)),
+      deaths: Math.max(0, Math.floor(Number(o.deaths) || 0)),
+      captainsRetired: Math.max(0, Math.floor(Number(o.captainsRetired) || 0))
+    };
+  } catch (e) {
+    return defaultAllTimeStats();
+  }
+}
+function saveAllTimeStats(at) {
+  try {
+    localStorage.setItem(ALLTIME_STATS_KEY, JSON.stringify(at));
+  } catch (e) {}
+}
+function addPlayerStatsInto(target, src) {
+  target.goldEarned += Math.max(0, Math.floor(Number(src.goldEarned) || 0));
+  target.sinksAi += Math.max(0, Math.floor(Number(src.sinksAi) || 0));
+  target.sinksPlayer += Math.max(0, Math.floor(Number(src.sinksPlayer) || 0));
+  target.ransoms += Math.max(0, Math.floor(Number(src.ransoms) || 0));
+  target.deaths += Math.max(0, Math.floor(Number(src.deaths) || 0));
+}
+/** Fold the current save's career stats into the cross-profile bucket (call before wiping the save on New Game). */
+function retireCurrentCaptainIntoAllTime() {
+  ensurePlayerStats();
+  const at = loadAllTimeStats();
+  addPlayerStatsInto(at, G.playerStats);
+  at.captainsRetired += 1;
+  saveAllTimeStats(at);
+}
+function hasActiveSaveInStorage() {
+  try {
+    return !!localStorage.getItem('pirates_save_v1');
+  } catch (e) {
+    return false;
+  }
+}
+/** Sums retired profiles (from New Game) plus the active save's `playerStats` for the log panel. */
+function getCombinedAllTimeStatsForDisplay() {
+  ensurePlayerStats();
+  const at = loadAllTimeStats();
+  return {
+    goldEarned: at.goldEarned + G.playerStats.goldEarned,
+    sinksAi: at.sinksAi + G.playerStats.sinksAi,
+    sinksPlayer: at.sinksPlayer + G.playerStats.sinksPlayer,
+    ransoms: at.ransoms + G.playerStats.ransoms,
+    deaths: at.deaths + G.playerStats.deaths,
+    captainsTotal: at.captainsRetired + (hasActiveSaveInStorage() ? 1 : 0)
+  };
+}
+
 let leaderboardData = [];
 try {
   const _lbc = localStorage.getItem('pirates_lb_cache');
@@ -5643,19 +5713,20 @@ try {
 if (leaderboardData.length) {
   leaderboardData = leaderboardData.slice().sort(sortLbEntries);
 }
-updatePiratesPanel();
 
 function updatePiratesPanel() {
   const l = document.getElementById('pirates-list');
   if (!l) return;
   l.innerHTML = '';
   ensurePlayerStats();
-  const ps = G.playerStats;
+  const tot = getCombinedAllTimeStatsForDisplay();
   const youBlk = `<div style="margin-bottom:12px;padding:10px;background:rgba(40,28,18,0.55);border:1px solid rgba(180,140,60,0.35);border-radius:8px;font-size:10px;color:#c8b8a0;line-height:1.55;">
-    <div style="color:#d4a848;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:6px;">Your legend (saved)</div>
-    <span style="color:#d4a848;">Gold earned</span> ${ps.goldEarned} &nbsp;·&nbsp; <span style="color:#cc8888;">AI sunk</span> ${ps.sinksAi}
-    &nbsp;·&nbsp; <span style="color:#88a8cc;">Captains sunk</span> ${ps.sinksPlayer}<br>
-    <span style="color:#a8c8a8;">Ransoms</span> ${ps.ransoms} &nbsp;·&nbsp; <span style="color:#9888a8;">Lost at sea</span> ${ps.deaths}</div>`;
+    <div style="color:#d4a848;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:4px;">All-time career (this device)</div>
+    <div style="color:#7a7068;font-size:9px;line-height:1.4;margin-bottom:8px;">Totals combine every captain profile on this browser — past careers (when you start a new game) plus your current voyage.</div>
+    <span style="color:#c8b8e8;">Captains commanded</span> ${tot.captainsTotal} &nbsp;·&nbsp; <span style="color:#d4a848;">Gold earned</span> ${tot.goldEarned}<br>
+    <span style="color:#cc8888;">AI sunk</span> ${tot.sinksAi}
+    &nbsp;·&nbsp; <span style="color:#88a8cc;">Rival captains sunk</span> ${tot.sinksPlayer}
+    &nbsp;·&nbsp; <span style="color:#a8c8a8;">Ransoms</span> ${tot.ransoms} &nbsp;·&nbsp; <span style="color:#9888a8;">Lost at sea</span> ${tot.deaths}</div>`;
   let head = '<div style="color:#d4a848;font-size:12px;margin-bottom:8px;text-align:center;letter-spacing:1px;">TOP PIRATES</div>';
   head += youBlk;
   const board = dedupeLeaderboardForDisplay(leaderboardData);
@@ -5667,7 +5738,7 @@ function updatePiratesPanel() {
   }
   l.innerHTML = head;
   if (board.length === 0) {
-    l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No live rankings yet. Connect to the server to share the board — your legend above is always saved locally.</div>';
+    l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No live rankings yet. Connect to the server to share the board — your all-time career stats above stay on this device.</div>';
     return;
   }
   board.forEach((e, i) => {
@@ -8341,6 +8412,7 @@ const origUpdate = update;
 
 /* ============================== INIT ===================================== */
 const hasSave = loadProgress();
+updatePiratesPanel();
 noise = new SimplexNoise(G.worldSeed);
 if (!hasSave) ensurePlayerInOpenOcean();
 updateChunks();
@@ -8496,6 +8568,7 @@ document.getElementById('new-game-btn').onclick = () => {
   wsUserBanned = false;
   const capNameEl = document.getElementById('cap-name');
   if (capNameEl) delete capNameEl.dataset.seededUnique;
+  retireCurrentCaptainIntoAllTime();
   localStorage.removeItem(SAVE_KEY);
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
@@ -8508,6 +8581,7 @@ document.getElementById('new-game-btn').onclick = () => {
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('create-screen').style.display = 'block';
   buildCreationUI();
+  updatePiratesPanel();
 };
 
 document.getElementById('start-btn').textContent = hasSave ? 'Continue Voyage' : 'Create Your Crew';
