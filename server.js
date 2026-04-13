@@ -576,7 +576,7 @@ wss.on('connection', (ws, req) => {
     rotation: 0,
     speed: 0,
     shipType: 'sloop',
-    shipParts: { hull: 'basic', sail: 'basic', cannon: 'none', figurehead: 'none' },
+    shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' },
     color: `hsl(${Math.random() * 360}, 70%, 50%)`,
     name: `Pirate_${id}`,
     health: 100,
@@ -756,13 +756,18 @@ wss.on('connection', (ws, req) => {
             count: l.count,
             id: nextLootNetId++
           }));
+          const _v = players.get(victimId);
+          let _sinkName = _v?.name || msg.name || 'Unknown';
+          if (_v?.crewData && Array.isArray(_v.crewData) && _v.crewData[0]?.name) {
+            _sinkName = String(_v.crewData[0].name).slice(0, 28);
+          }
           broadcastAll({
             type: 'ship_sunk',
             victimId,
             x: msg.x,
             z: msg.z,
             loot,
-            name: players.get(victimId)?.name || msg.name || 'Unknown'
+            name: _sinkName
           });
           break;
         }
