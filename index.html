@@ -839,6 +839,8 @@ const G = {
   islands: [],
   cannonballs: [],
   floatingItems: [],
+  /** netId -> loot row for O(1) removal on loot_collect (avoids scans near busy scenes). */
+  lootByNetId: new Map(),
   npcs: [],
   damageChunks: [],
   seaDebris: [],
@@ -2422,6 +2424,11 @@ function otherPlayerShipCacheKey(p) {
       }).join(',')}`
     : '_';
   return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${fc}|${crewSeg}`;
+}
+
+function refreshOtherPlayerShipCacheKey(p) {
+  if (!p) return;
+  p._netShipCacheKey = otherPlayerShipCacheKey(p);
 }
 
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
@@ -4444,6 +4451,7 @@ function addFloatingLootMesh(x, z, type, count, netId) {
   const li = { type, count: cnt, x, z, collected: false };
   if (netId != null) li.netId = netId;
   G.floatingItems.push(li);
+  if (netId != null) G.lootByNetId.set(netId, li);
   const crate = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
   crate.position.set(li.x, SEA_LEVEL + 0.5, li.z);
   crate.userData.floatItem = li;
@@ -4468,6 +4476,16 @@ function removeFloatingLootVisuals(item) {
 }
 
 function removeLootByNetId(netId) {
+  if (netId == null) return;
+  const fast = G.lootByNetId.get(netId);
+  if (fast) {
+    G.lootByNetId.delete(netId);
+    fast.collected = true;
+    removeFloatingLootVisuals(fast);
+    const ix = G.floatingItems.indexOf(fast);
+    if (ix >= 0) G.floatingItems.splice(ix, 1);
+    return;
+  }
   for (let i = G.floatingItems.length - 1; i >= 0; i--) {
     const item = G.floatingItems[i];
     if (item.netId === netId) {
@@ -4699,12 +4717,21 @@ function connectToServer() {
           if (!hasSave) { G.player.x = msg.player.x; G.player.z = msg.player.z; }
           G.player.color = msg.player.color;
         }
-        if (msg.players) msg.players.forEach(p => G.otherPlayers.set(p.id, p));
+        if (msg.players) {
+          msg.players.forEach(p => {
+            G.otherPlayers.set(p.id, p);
+            refreshOtherPlayerShipCacheKey(G.otherPlayers.get(p.id));
+          });
+        }
         if (G.mode === 'playing' && !hasSave) ensurePlayerInOpenOcean();
         if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
         tryOfferLeaderboardSeedToServer();
         break;
-      case 'player_join': G.otherPlayers.set(msg.player.id, msg.player); notify(`${networkPlayerCaptainName(msg.player)} joined`); break;
+      case 'player_join':
+        G.otherPlayers.set(msg.player.id, msg.player);
+        refreshOtherPlayerShipCacheKey(G.otherPlayers.get(msg.player.id));
+        notify(`${networkPlayerCaptainName(msg.player)} joined`);
+        break;
       case 'player_leave': {
         const lid = Number(msg.id);
         disposeRemoteDockRopes(msg.id);
@@ -4713,8 +4740,26 @@ function connectToServer() {
         if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); }
         break;
       }
-      case 'state': msg.players.forEach(p => { if (p.id !== G.myId) { const ex = G.otherPlayers.get(p.id); if (ex) Object.assign(ex, p); } }); break;
-      case 'ship_update': { const p = G.otherPlayers.get(msg.id); if (p) { p.shipType = msg.shipType; p.shipParts = msg.shipParts; if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } } break; }
+      case 'state':
+        msg.players.forEach(p => {
+          if (p.id === G.myId) return;
+          const ex = G.otherPlayers.get(p.id);
+          if (ex) Object.assign(ex, p);
+          else G.otherPlayers.set(p.id, p);
+          const row = G.otherPlayers.get(p.id);
+          if (row) refreshOtherPlayerShipCacheKey(row);
+        });
+        break;
+      case 'ship_update': {
+        const p = G.otherPlayers.get(msg.id);
+        if (p) {
+          p.shipType = msg.shipType;
+          p.shipParts = msg.shipParts;
+          refreshOtherPlayerShipCacheKey(p);
+          if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); }
+        }
+        break;
+      }
       case 'chat': addChatMessage(msg.name, msg.text, msg.chatId); break;
       case 'chat_removed': {
         const log = document.getElementById('chat-log');
@@ -4932,7 +4977,8 @@ function connectToServer() {
         break;
       }
       case 'loot_collect': {
-        if (msg.id != null) removeLootByNetId(msg.id);
+        const lid = msg.id;
+        if (lid != null) setTimeout(() => { try { removeLootByNetId(lid); } catch (e) {} }, 0);
         break;
       }
       case 'swimmer_spawn': {
@@ -8225,6 +8271,8 @@ function playerShipWaveAt(wx, wz) {
 }
 
 /* ============================== GAME LOOP ================================ */
+/** Must match server.js TICK_RATE for smooth remote motion. */
+const NET_SYNC_HZ = 45;
 let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0, wildlifePruneAcc = 0;
 
 function update(dt) {
@@ -8447,7 +8495,7 @@ function update(dt) {
   });
 
    G.otherPlayers.forEach((p, id) => {
-    const cacheKey = otherPlayerShipCacheKey(p);
+    const cacheKey = p._netShipCacheKey != null ? p._netShipCacheKey : otherPlayerShipCacheKey(p);
     if (!otherShipGroups.has(id) || otherShipGroups.get(id).userData.cacheKey !== cacheKey) {
       let preservedSinking = null;
       if (otherShipGroups.has(id)) {
@@ -8517,8 +8565,15 @@ function update(dt) {
       }
     } else {
       const w = playerShipWaveAt(p.x, p.z);
-      sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.35 + w.waveH, p.z), Math.min(1, 5 * dt));
-      sg.rotation.y = p.rotation || 0;
+      const posAlpha = Math.min(1, 28 * dt);
+      sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.35 + w.waveH, p.z), posAlpha);
+      const targetYaw = p.rotation || 0;
+      let ry = sg.rotation.y;
+      let dYaw = targetYaw - ry;
+      while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+      while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+      ry += dYaw * Math.min(1, 22 * dt);
+      sg.rotation.y = ry;
       sg.rotation.x = w.wavePitch;
       sg.rotation.z = w.waveRoll;
       animateRemoteShipSails(sg, p.x, p.z, p.rotation || 0, p.speed || 0, dt);
@@ -8889,15 +8944,18 @@ function update(dt) {
            ex.count += amt;
       const pickedType = item.type;
       const pickedAmt = amt;
+      const pickedNet = item.netId;
+      if (pickedNet != null) G.lootByNetId.delete(pickedNet);
       removeFloatingLootVisuals(item);
-      if (item.netId != null && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'loot_collect', id: item.netId }));
+      if (pickedNet != null && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'loot_collect', id: pickedNet }));
       G.floatingItems.splice(fi, 1);
       reconcileSlotsAfterPickup(pickedType);
       requestAnimationFrame(() => {
         if (pickedType === 'gold') bumpNotoriety({ gold: pickedAmt });
         notify(`Collected ${pickedType} ×${pickedAmt}!`);
-        refreshCargoPanelIfOpen();
-        updateInventoryPanel();
+        const runHeavyUi = () => { refreshCargoPanelIfOpen(); updateInventoryPanel(); };
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(runHeavyUi, { timeout: 120 });
+        else setTimeout(runHeavyUi, 0);
       });
     }
   }
@@ -8947,7 +9005,10 @@ function update(dt) {
   if (G.spectate) updateSpectateInfoPanel();
 
   sendTimer -= dt;
-  if (sendTimer <= 0) { sendUpdate(); sendTimer = 0.05; }
+  if (sendTimer <= 0) {
+    sendUpdate();
+    sendTimer = ws?.readyState === 1 ? (1 / NET_SYNC_HZ) : 0.05;
+  }
 
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;

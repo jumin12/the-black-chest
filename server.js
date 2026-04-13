@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
-const TICK_RATE = 20;
+/** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
+const TICK_RATE = 45;
 /** Optional directory for persistent JSON (e.g. Docker volume). Defaults next to server.js. */
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
 const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
