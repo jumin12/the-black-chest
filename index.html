@@ -842,6 +842,9 @@ const G = {
   _lastSeaBattleActivityT: Infinity,
   _seaDebrisPurgeAt: null,
   combatPopups3D: [],
+  /** Server-driven animation clock (seconds); aligned via `state.simT` when online. */
+  serverSimT: null,
+  serverSimTTarget: null,
   swimmers: [],
   selectedAmmoType: 'ball',
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
@@ -2785,7 +2788,7 @@ function updateCrewDeckAnimations(dt) {
   if (!ship) return;
   if (G.crewDeckCombatT > 0) G.crewDeckCombatT = Math.max(0, G.crewDeckCombatT - dt * 1.25);
   const spec = SHIP_TYPES[G.player.shipType];
-  const t = G.time;
+  const t = getNetworkAnimTime();
   const cd = Math.max(G.starboardCooldown, G.portCooldown);
   const broadsideBusy = cd > 0 ? 1 : 0;
   const reloadT = G.crewReloading ? 1 : 0;
@@ -2882,7 +2885,7 @@ function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
       const p = child.geometry.attributes.position;
       const base = child.userData.basePositions;
       const billow = Math.abs(windPushZ) * windStr * (0.35 + seaSpd * 0.55);
-      const tt = G.time;
+      const tt = getNetworkAnimTime();
       for (let i = 0; i < p.count; i++) {
         const bx = base[i * 3];
         const by = base[i * 3 + 1];
@@ -2896,7 +2899,7 @@ function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
       child.geometry.computeVertexNormals();
     }
     if (child.userData && child.userData.isFlag) {
-      child.rotation.y = Math.sin(G.time * 3 + wx * 0.01) * 0.3;
+      child.rotation.y = Math.sin(getNetworkAnimTime() * 3 + wx * 0.01) * 0.3;
     }
   });
 }
@@ -2905,7 +2908,7 @@ function updateRemoteCrewDeckAnimations(dt, shipGroup, p, shipType) {
   const manifest = shipGroup.userData.crewManifest;
   if (!manifest || !manifest.length) return;
   const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
-  const t = G.time;
+  const t = getNetworkAnimTime();
   const seaLean = Math.min(1, Math.abs(p.speed || 0) / 11);
   const ampBase = 0.78 + (1 - seaLean) * 0.22;
   if (shipGroup.userData._lastRemoteYaw == null) shipGroup.userData._lastRemoteYaw = p.rotation || 0;
@@ -3278,6 +3281,12 @@ function isMultiplayerHost() {
   const ids = Array.from(G.otherPlayers.keys());
   ids.push(G.myId);
   return G.myId <= Math.min(...ids);
+}
+
+/** Shared phase for deck crew, sails, flags — matches other clients when `state.simT` is present. */
+function getNetworkAnimTime() {
+  if (ws?.readyState === 1 && G.myId != null && G.serverSimT != null) return G.serverSimT;
+  return G.time;
 }
 /** True if (wx,wz) is open sea and most compass bearings stay in water at ~clear units (off beaches, still works in channels). */
 function hasMinClearanceFromLand(wx, wz, clear) {
@@ -3704,9 +3713,12 @@ function npcFireBroadsideAtPlayer(npc) {
     spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
     fireCannonball(wx, wz, dirX, dirZ, cannonY, 'npc', null, 'ball');
     if (ws?.readyState === 1 && isMultiplayerHost()) {
-      ws.send(JSON.stringify({ type: 'npc_cannon', x: wx, z: wz, dx: dirX, dz: dirZ, y: cannonY }));
+      ws.send(JSON.stringify({ type: 'npc_cannon', npcId: npc.syncId, x: wx, z: wz, dx: dirX, dz: dirZ, y: cannonY }));
       ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
     }
+  }
+  if (npc.mesh) {
+    npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 0.48);
   }
 }
 
@@ -3887,13 +3899,21 @@ function updateNPCs(dt) {
       }
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
-      const k = Math.min(1, 14 * dt);
+      if (npc.syncSp == null) npc.syncSp = 0;
+      const k = Math.min(1, 22 * dt);
       npc.x += (npc.syncX - npc.x) * k;
       npc.z += (npc.syncZ - npc.z) * k;
       let dr = npc.syncR - npc.rotation;
       while (dr > Math.PI) dr -= Math.PI * 2;
       while (dr < -Math.PI) dr += Math.PI * 2;
       npc.rotation += dr * k;
+      const sp = npc.syncSp || 0;
+      if (sp > 0.04) {
+        const err = Math.hypot(npc.syncX - npc.x, npc.syncZ - npc.z);
+        const ex = Math.max(0, Math.min(1, 1 - err * 0.22));
+        npc.x += Math.sin(npc.rotation) * sp * dt * 0.55 * ex;
+        npc.z += Math.cos(npc.rotation) * sp * dt * 0.55 * ex;
+      }
     }
 
     if (npc.sinking) {
@@ -3904,11 +3924,16 @@ function updateNPCs(dt) {
         if (npc.sinkTimer > 4) { scene.remove(npc.mesh); npc.mesh = null; npc.health = -999; }
       }
     } else if (npc.mesh) {
-      const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + npc.z * 0.06) * 0.08;
+      const nt = getNetworkAnimTime();
+      const nWH = Math.sin(nt * 0.7 + npc.x * 0.04) * 0.12 + Math.sin(nt * 1.1 + npc.z * 0.06) * 0.08;
       npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + nWH, npc.z);
       npc.mesh.rotation.y = npc.rotation;
-      npc.mesh.rotation.x = Math.sin(G.time * 0.9 + npc.z * 0.05) * 0.025;
-      npc.mesh.rotation.z = Math.sin(G.time * 0.7 + npc.x * 0.06) * 0.035;
+      npc.mesh.rotation.x = Math.sin(nt * 0.9 + npc.z * 0.05) * 0.025;
+      npc.mesh.rotation.z = Math.sin(nt * 0.7 + npc.x * 0.06) * 0.035;
+      const nSp = host ? (npc.speed || 0) : (npc.syncSp != null ? npc.syncSp : 0);
+      const npcP = { x: npc.x, z: npc.z, rotation: npc.rotation, speed: nSp };
+      animateRemoteShipSails(npc.mesh, npc.x, npc.z, npc.rotation, nSp, dt);
+      updateRemoteCrewDeckAnimations(dt, npc.mesh, npcP, npc.type || 'sloop');
     }
   });
   if (host) G.npcs = G.npcs.filter(n => n.health > -900);
@@ -4566,7 +4591,14 @@ function connectToServer() {
         G.otherPlayers.delete(msg.id);
         if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); }
         break;
-      case 'state': msg.players.forEach(p => { if (p.id !== G.myId) { const ex = G.otherPlayers.get(p.id); if (ex) Object.assign(ex, p); } }); break;
+      case 'state': {
+        if (msg.simT != null && Number.isFinite(msg.simT)) {
+          G.serverSimTTarget = msg.simT;
+          if (G.serverSimT == null) G.serverSimT = msg.simT;
+        }
+        msg.players.forEach(p => { if (p.id !== G.myId) { const ex = G.otherPlayers.get(p.id); if (ex) Object.assign(ex, p); } });
+        break;
+      }
       case 'ship_update': { const p = G.otherPlayers.get(msg.id); if (p) { p.shipType = msg.shipType; p.shipParts = msg.shipParts; if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } } break; }
       case 'chat': addChatMessage(msg.name, msg.text, msg.chatId); break;
       case 'chat_removed': {
@@ -4701,7 +4733,8 @@ function connectToServer() {
               storyStep: step,
               aggro: !!nd.aggro,
               sinking: !!nd.sinking,
-              syncX: nd.x, syncZ: nd.z, syncR: nd.r
+              syncX: nd.x, syncZ: nd.z, syncR: nd.r,
+              syncSp: nd.sp != null ? nd.sp : 0
             };
             const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull' }, npc.flagColor, npc.name);
             const npcCrew = [
@@ -4726,6 +4759,7 @@ function connectToServer() {
             rebuildNPCShipMesh(npc);
           }
           npc.syncX = nd.x; npc.syncZ = nd.z; npc.syncR = nd.r;
+          npc.syncSp = nd.sp != null ? nd.sp : 0;
           npc.health = nd.h; npc.aggro = !!nd.aggro;
           if (nd.sinking && !npc.sinking) {
             npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
@@ -4742,6 +4776,13 @@ function connectToServer() {
       }
       case 'npc_cannon':
         fireCannonball(msg.x, msg.z, msg.dx, msg.dz, msg.y, 'npc');
+        if (msg.npcId != null) {
+          const nid = Number(msg.npcId);
+          const tgt = G.npcs.find(n => n.syncId === nid);
+          if (tgt && tgt.mesh) {
+            tgt.mesh.userData.crewDeckCombatT = Math.max(tgt.mesh.userData.crewDeckCombatT || 0, 0.48);
+          }
+        }
         break;
       case 'cannon_fx':
         spawnCannonMuzzleSmoke(msg.x, msg.y, msg.z, msg.dx, msg.dz);
@@ -4801,6 +4842,8 @@ function connectToServer() {
    };
   ws.onerror = () => {};
   ws.onclose = () => {
+    G.serverSimT = null;
+    G.serverSimTTarget = null;
     if (wsUserBanned) return;
     wsReconnectTimer = setTimeout(() => {
       wsReconnectTimer = null;
@@ -8000,6 +8043,12 @@ let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0, wildlifePruneAcc = 0;
 function update(dt) {
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
+  if (ws?.readyState === 1 && G.myId != null && G.serverSimT != null) {
+    G.serverSimT += dt;
+    if (G.serverSimTTarget != null) {
+      G.serverSimT += (G.serverSimTTarget - G.serverSimT) * Math.min(1, 18 * dt);
+    }
+  }
   updateSeaDebrisBattleClock(dt);
   tickTownEconomy(dt);
   checkExploreQuestProgress();
@@ -8102,9 +8151,10 @@ function update(dt) {
     }
   }
 
-  const waveH = Math.sin(G.time * 0.7 + G.player.x * 0.04) * 0.15 + Math.sin(G.time * 1.1 + G.player.z * 0.06) * 0.1 + Math.sin(G.time * 1.8 + G.player.x * 0.08) * 0.05;
-  const wavePitch = Math.sin(G.time * 0.9 + G.player.z * 0.05) * 0.03 + Math.sin(G.time * 1.5 + G.player.x * 0.07) * 0.015;
-  const waveRoll = Math.sin(G.time * 0.7 + G.player.x * 0.06) * 0.04 + Math.sin(G.time * 1.3 + G.player.z * 0.04) * 0.02;
+  const ntShip = getNetworkAnimTime();
+  const waveH = Math.sin(ntShip * 0.7 + G.player.x * 0.04) * 0.15 + Math.sin(ntShip * 1.1 + G.player.z * 0.06) * 0.1 + Math.sin(ntShip * 1.8 + G.player.x * 0.08) * 0.05;
+  const wavePitch = Math.sin(ntShip * 0.9 + G.player.z * 0.05) * 0.03 + Math.sin(ntShip * 1.5 + G.player.x * 0.07) * 0.015;
+  const waveRoll = Math.sin(ntShip * 0.7 + G.player.x * 0.06) * 0.04 + Math.sin(ntShip * 1.3 + G.player.z * 0.04) * 0.02;
   if (G.dockingAnim) {
     G.dockingAnim.timer += dt;
     const t = Math.min(G.dockingAnim.timer / 2.0, 1);
@@ -8197,13 +8247,13 @@ function update(dt) {
       for (let i = 0; i < p.count; i++) {
         const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
         const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
-        const flutter = Math.sin(G.time * 2.0 + by * 3 + bx * 1.5) * 0.025 * (1 - furl);
+        const flutter = Math.sin(getNetworkAnimTime() * 2.0 + by * 3 + bx * 1.5) * 0.025 * (1 - furl);
         p.setY(i, by * (1 - furl * 0.85));
         p.setZ(i, bz * (1 - furl * 0.9) + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
       }
       p.needsUpdate = true; child.geometry.computeVertexNormals();
     }
-    if (child.userData.isFlag) child.rotation.y = Math.sin(G.time * 3) * 0.3;
+    if (child.userData.isFlag) child.rotation.y = Math.sin(getNetworkAnimTime() * 3) * 0.3;
     if (child.userData.isCrew) {
       if (!G.crewReloading || child.userData.crewIdx <= 0) return;
       const bp = child.userData.basePos;
@@ -8264,11 +8314,12 @@ function update(dt) {
       sg.rotation.x += dt * 0.04;
       if (sg.userData.sinkY < SEA_LEVEL - 8) { scene.remove(sg); otherShipGroups.delete(id); }
     } else {
-      const owH = Math.sin(G.time * 0.7 + p.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + p.z * 0.06) * 0.08;
+      const ntRem = getNetworkAnimTime();
+      const owH = Math.sin(ntRem * 0.7 + p.x * 0.04) * 0.12 + Math.sin(ntRem * 1.1 + p.z * 0.06) * 0.08;
       sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.35 + owH, p.z), 5 * dt);
       sg.rotation.y = p.rotation || 0;
-      sg.rotation.x = Math.sin(G.time * 0.9 + p.z * 0.05) * 0.02;
-      sg.rotation.z = Math.sin(G.time * 0.7 + p.x * 0.06) * 0.03;
+      sg.rotation.x = Math.sin(ntRem * 0.9 + p.z * 0.05) * 0.02;
+      sg.rotation.z = Math.sin(ntRem * 0.7 + p.x * 0.06) * 0.03;
       animateRemoteShipSails(sg, p.x, p.z, p.rotation || 0, p.speed || 0, dt);
       updateRemoteCrewDeckAnimations(dt, sg, p, p.shipType || 'sloop');
       applyRiggingVisualToGroup(sg, p.riggingHealth != null ? p.riggingHealth : 100);
@@ -8669,12 +8720,13 @@ function update(dt) {
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
   if (isMultiplayerHost() && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
-    G.npcSyncTimer = 0.125;
+    G.npcSyncTimer = 0.05;
     const npcData = G.npcs.filter(n => n.health > -900).map(n => ({
       id: n.syncId,
-      x: Math.round(n.x * 10) / 10,
-      z: Math.round(n.z * 10) / 10,
+      x: Math.round(n.x * 100) / 100,
+      z: Math.round(n.z * 100) / 100,
       r: Math.round(n.rotation * 1000) / 1000,
+      sp: Math.round((n.speed || 0) * 100) / 100,
       h: Math.round(n.health),
       aggro: !!n.aggro,
       sinking: !!n.sinking,
