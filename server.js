@@ -11,6 +11,10 @@ const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __d
 const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
 /** Primary notorious-pirates store (array JSON); also mirrored inside world_seed.json. */
 const LEADERBOARD_FILE = path.join(DATA_DIR, 'leaderboard.json');
+/** Secondary copy beside server.js so a cold DATA_DIR (ephemeral volume) can still recover from disk. */
+const LEADERBOARD_SHADOW = path.join(__dirname, 'leaderboard.shadow.json');
+/** After a full disk load, ignore client `leaderboard_offer` unless admin cleared ranks. */
+let leaderboardClientSeeded = false;
 /** Stable default when no file/env (matches client `CANONICAL_DEFAULT_WORLD_SEED`). Commit `world_seed.json` so restarts and deploys reload the same archipelago; live rankings persist in the same file under `leaderboard`. */
 const DEFAULT_WORLD_SEED = 42;
 let WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
@@ -261,26 +265,59 @@ function writeFileAtomic(filePath, dataStr) {
   }
 }
 
-function readStandaloneLeaderboardRaw() {
+function parseLeaderboardArrayFromJsonText(t) {
   try {
-    if (!fs.existsSync(LEADERBOARD_FILE)) return null;
-    const t = fs.readFileSync(LEADERBOARD_FILE, 'utf-8');
     const p = JSON.parse(t);
     if (Array.isArray(p)) return p;
     if (p && Array.isArray(p.leaderboard)) return p.leaderboard;
-  } catch (e) {
-    console.error('[playground] leaderboard.json read error:', e.message);
-  }
+  } catch (e) {}
   return null;
 }
 
-function pickLeaderboardArrays(worldArr, fileArr) {
-  const w = Array.isArray(worldArr) ? worldArr : [];
-  const f = Array.isArray(fileArr) ? fileArr : [];
-  if (f.length > w.length) return f;
-  if (w.length > f.length) return w;
-  if (f.length > 0) return f;
-  return w;
+function readLeaderboardFileCandidate(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return { arr: null, mtime: 0 };
+    const st = fs.statSync(filePath);
+    const text = fs.readFileSync(filePath, 'utf-8');
+    const arr = parseLeaderboardArrayFromJsonText(text);
+    return { arr, mtime: st.mtimeMs };
+  } catch (e) {
+    console.error('[playground] leaderboard read error:', filePath, e.message);
+    return { arr: null, mtime: 0 };
+  }
+}
+
+/** Prefer the longest list; tie-break by newer file mtime. */
+function pickBestLeaderboardArrays(candidates) {
+  let best = [];
+  let bestLen = -1;
+  let bestMtime = -1;
+  for (const { arr, mtime } of candidates) {
+    const a = Array.isArray(arr) ? arr : [];
+    const len = a.length;
+    const mt = Number(mtime) || 0;
+    if (len > bestLen) {
+      best = a;
+      bestLen = len;
+      bestMtime = mt;
+    } else if (len === bestLen && len > 0 && mt > bestMtime) {
+      best = a;
+      bestMtime = mt;
+    }
+  }
+  return best;
+}
+
+function collectLeaderboardCandidatesFromDisk(worldRaw, worldMtimeMs) {
+  const c = [];
+  if (worldRaw && Array.isArray(worldRaw.leaderboard)) {
+    c.push({ arr: worldRaw.leaderboard, mtime: worldMtimeMs || 0 });
+  }
+  c.push(readLeaderboardFileCandidate(LEADERBOARD_FILE));
+  c.push(readLeaderboardFileCandidate(LEADERBOARD_SHADOW));
+  const lbBesideServer = path.join(__dirname, 'leaderboard.json');
+  if (lbBesideServer !== LEADERBOARD_FILE) c.push(readLeaderboardFileCandidate(lbBesideServer));
+  return c;
 }
 
 function persistWorldSeedFile() {
@@ -289,6 +326,7 @@ function persistWorldSeedFile() {
   try {
     writeFileAtomic(SEED_FILE, worldPayload);
     writeFileAtomic(LEADERBOARD_FILE, lbOnly);
+    writeFileAtomic(LEADERBOARD_SHADOW, lbOnly);
   } catch (e) {
     console.error('[playground] persist world/leaderboard failed:', e.message);
   }
@@ -296,29 +334,33 @@ function persistWorldSeedFile() {
 
 function migrateLegacyStandaloneLeaderboard() {
   if (leaderboardHistory.length > 0) return;
-  try {
-    if (!fs.existsSync(LEADERBOARD_FILE)) return;
-    const lbRaw = fs.readFileSync(LEADERBOARD_FILE, 'utf-8');
-    const parsed = JSON.parse(lbRaw);
-    const arr = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.leaderboard) ? parsed.leaderboard : null);
-    if (!arr || !arr.length) return;
-    leaderboardHistory = arr.map(normalizeLbEntry);
-    persistWorldSeedFile();
-  } catch (e) {}
+  const tryPaths = [...new Set([LEADERBOARD_FILE, LEADERBOARD_SHADOW, path.join(__dirname, 'leaderboard.json')])];
+  for (const p of tryPaths) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const lbRaw = fs.readFileSync(p, 'utf-8');
+      const arr = parseLeaderboardArrayFromJsonText(lbRaw);
+      if (!arr || !arr.length) continue;
+      leaderboardHistory = arr.map(normalizeLbEntry);
+      persistWorldSeedFile();
+      return;
+    } catch (e) {}
+  }
 }
 
 function loadPersistedState() {
   let raw = null;
+  let worldMtime = 0;
   const seedFileExists = fs.existsSync(SEED_FILE);
   if (seedFileExists) {
     try {
+      worldMtime = fs.statSync(SEED_FILE).mtimeMs;
       const o = JSON.parse(fs.readFileSync(SEED_FILE, 'utf-8'));
       raw = o && typeof o === 'object' ? o : null;
     } catch (e) {
       console.error('[playground] world_seed.json invalid JSON:', e.message);
     }
   }
-  const standaloneLb = readStandaloneLeaderboardRaw();
   if (raw == null) {
     const envS = process.env.WORLD_SEED;
     if (envS != null && String(envS).trim() !== '') {
@@ -326,9 +368,8 @@ function loadPersistedState() {
     } else {
       WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
     }
-    leaderboardHistory = (standaloneLb && standaloneLb.length)
-      ? standaloneLb.map(normalizeLbEntry)
-      : [];
+    const picked = pickBestLeaderboardArrays(collectLeaderboardCandidatesFromDisk(null, 0));
+    leaderboardHistory = picked.map(normalizeLbEntry);
     if (!seedFileExists) {
       try {
         writeFileAtomic(SEED_FILE, JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory }));
@@ -338,8 +379,7 @@ function loadPersistedState() {
     return;
   }
   WORLD_SEED = raw.seed != null ? Number(raw.seed) >>> 0 : DEFAULT_WORLD_SEED >>> 0;
-  const fromWorld = Array.isArray(raw.leaderboard) ? raw.leaderboard : [];
-  const picked = pickLeaderboardArrays(fromWorld, standaloneLb);
+  const picked = pickBestLeaderboardArrays(collectLeaderboardCandidatesFromDisk(raw, worldMtime));
   leaderboardHistory = picked.map(normalizeLbEntry);
   migrateLegacyStandaloneLeaderboard();
 }
@@ -348,7 +388,18 @@ loadPersistedState();
 backfillLeaderboardCaptainKeys();
 mergeLeaderboardByIdentity();
 sortLeaderboardHistory();
+leaderboardClientSeeded = leaderboardHistory.length > 0;
 if (leaderboardHistory.length) persistWorldSeedFile();
+
+setInterval(() => {
+  if (leaderboardHistory.length > 0) persistWorldSeedFile();
+}, 20000);
+
+process.on('beforeExit', () => {
+  try {
+    if (leaderboardHistory.length > 0) persistWorldSeedFile();
+  } catch (e) {}
+});
 
 function saveLeaderboard() {
   persistWorldSeedFile();
@@ -918,6 +969,7 @@ wss.on('connection', (ws, req) => {
           }
           if (action === 'reset_leaderboard') {
             leaderboardHistory = [];
+            leaderboardClientSeeded = true;
             sortLeaderboardHistory();
             saveLeaderboard();
             broadcast({ type: 'leaderboard', entries: leaderboardHistory });
@@ -926,6 +978,7 @@ wss.on('connection', (ws, req) => {
           }
           if (action === 'reset_all_time_data') {
             leaderboardHistory = [];
+            leaderboardClientSeeded = true;
             sortLeaderboardHistory();
             saveLeaderboard();
             broadcast({ type: 'leaderboard', entries: leaderboardHistory });
@@ -1016,6 +1069,19 @@ wss.on('connection', (ws, req) => {
         }
         case 'get_leaderboard': {
           ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
+          break;
+        }
+        case 'leaderboard_offer': {
+          if (leaderboardClientSeeded || leaderboardHistory.length > 0) break;
+          const entries = msg.entries;
+          if (!Array.isArray(entries) || entries.length === 0) break;
+          leaderboardHistory = entries.slice(0, 50).map(normalizeLbEntry);
+          mergeLeaderboardByIdentity();
+          sortLeaderboardHistory();
+          leaderboardHistory = leaderboardHistory.slice(0, 50);
+          saveLeaderboard();
+          leaderboardClientSeeded = true;
+          broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
         }
       }

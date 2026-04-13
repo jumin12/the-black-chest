@@ -4090,6 +4090,7 @@ function connectToServer() {
         if (msg.players) msg.players.forEach(p => G.otherPlayers.set(p.id, p));
         if (G.mode === 'playing' && !hasSave) ensurePlayerInOpenOcean();
         if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
+        tryOfferLeaderboardSeedToServer();
         break;
       case 'player_join': G.otherPlayers.set(msg.player.id, msg.player); notify(`${networkPlayerCaptainName(msg.player)} joined`); break;
       case 'player_leave': G.otherPlayers.delete(msg.id); if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); } break;
@@ -4128,8 +4129,22 @@ function connectToServer() {
         break;
       }
       case 'leaderboard': {
-        leaderboardData = msg.entries || [];
-        try { localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData)); } catch (e) {}
+        let entries = msg.entries;
+        const serverHad = Array.isArray(entries) && entries.length > 0;
+        if (!serverHad) {
+          try {
+            const raw = localStorage.getItem('pirates_lb_cache');
+            if (raw) {
+              const c = JSON.parse(raw);
+              if (Array.isArray(c) && c.length) entries = c;
+            }
+          } catch (e) {}
+        }
+        if (!Array.isArray(entries)) entries = [];
+        leaderboardData = entries;
+        if (serverHad) {
+          try { localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData)); } catch (e) {}
+        }
         syncLocalLegendFromEntries(leaderboardData);
         updatePiratesPanel();
         break;
@@ -4356,7 +4371,14 @@ window.addEventListener('keydown', e => {
     const panel = document.getElementById('log-panel');
     const vis = panel.style.display !== 'none' && panel.style.display !== '';
     closeAllPanels();
-    if (!vis) { panel.style.display = 'block'; switchLogTab(k === 'b' ? 'ship' : k === 'i' ? 'inv' : 'crew'); }
+    if (!vis) {
+      panel.style.display = 'block';
+      switchLogTab(k === 'b' ? 'ship' : k === 'i' ? 'inv' : 'crew');
+      startCaptainsLogLiveRefresh();
+      hideMobileControls();
+      document.getElementById('btn-log')?.classList.add('active');
+      syncAnchorToolbarButton();
+    }
   }
   if (k === 't') {
     const cb = document.getElementById('chat-box');
@@ -4445,7 +4467,7 @@ window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 (function initDebugModalUi() {
   const dm = document.getElementById('debug-modal-root');
   if (!dm) return;
-  const close = () => { dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); };
+  const close = () => { stopDebugAdminPolling(); dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); };
   document.getElementById('debug-backdrop')?.addEventListener('click', close);
   document.getElementById('debug-panel-close-x')?.addEventListener('click', close);
   document.getElementById('debug-panel-close-btn')?.addEventListener('click', close);
@@ -4532,6 +4554,30 @@ function closeDebugPasswordModal() {
   const inp = document.getElementById('debug-password-input');
   if (inp) inp.value = '';
 }
+let debugAdminPollTimer = null;
+function stopDebugAdminPolling() {
+  if (debugAdminPollTimer) {
+    clearInterval(debugAdminPollTimer);
+    debugAdminPollTimer = null;
+  }
+}
+function startDebugAdminPolling() {
+  stopDebugAdminPolling();
+  const tick = () => {
+    const dm = document.getElementById('debug-modal-root');
+    if (!dm || dm.style.display !== 'flex') {
+      stopDebugAdminPolling();
+      return;
+    }
+    if (!getNavigatorSessToken()) return;
+    if (!ws || ws.readyState !== 1) return;
+    requestAdminPlayerRoster();
+    requestAdminBanList();
+    requestAdminChatLog();
+  };
+  tick();
+  debugAdminPollTimer = setInterval(tick, 2200);
+}
 function openDebugConsolePanel() {
   const dm = document.getElementById('debug-modal-root');
   if (!dm) return;
@@ -4551,6 +4597,17 @@ function openDebugConsolePanel() {
   requestAdminPlayerRoster();
   requestAdminBanList();
   requestAdminChatLog();
+  startDebugAdminPolling();
+}
+function tryOfferLeaderboardSeedToServer() {
+  if (!ws || ws.readyState !== 1) return;
+  try {
+    const raw = localStorage.getItem('pirates_lb_cache');
+    if (!raw) return;
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr) || arr.length === 0) return;
+    ws.send(JSON.stringify({ type: 'leaderboard_offer', entries: arr.slice(0, 50) }));
+  } catch (e) {}
 }
 function getNavigatorSessToken() {
   try { return sessionStorage.getItem('pirates_navigator_sess'); } catch (e) { return null; }
@@ -5093,12 +5150,13 @@ function restoreMobileGameControls() {
 }
 
 function closeAllPanels() {
+  stopCaptainsLogLiveRefresh();
   document.querySelectorAll('.side-panel,#chat-box').forEach(p => p.style.display = 'none');
   document.getElementById('log-panel')?.classList.remove('log-panel--cargo');
   const sm = document.getElementById('settings-modal');
   if (sm) sm.style.display = 'none';
   const dm = document.getElementById('debug-modal-root');
-  if (dm) { dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); }
+  if (dm) { stopDebugAdminPolling(); dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); }
   closeDebugPasswordModal();
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
   restoreMobileGameControls();
@@ -6242,11 +6300,54 @@ document.getElementById('btn-log').onclick = () => {
   const panel = document.getElementById('log-panel');
   const vis = panel.style.display !== 'none' && panel.style.display !== '';
   closeAllPanels();
-  if (!vis) { panel.style.display = 'block'; switchLogTab('ship'); hideMobileControls(); document.getElementById('btn-log').classList.add('active'); syncAnchorToolbarButton(); }
+  if (!vis) {
+    panel.style.display = 'block';
+    switchLogTab('ship');
+    startCaptainsLogLiveRefresh();
+    hideMobileControls();
+    document.getElementById('btn-log').classList.add('active');
+    syncAnchorToolbarButton();
+  }
 };
 document.querySelectorAll('.log-tab').forEach(tab => {
   tab.onclick = () => switchLogTab(tab.dataset.tab);
 });
+let captainsLogPollTimer = null;
+function stopCaptainsLogLiveRefresh() {
+  if (captainsLogPollTimer) {
+    clearInterval(captainsLogPollTimer);
+    captainsLogPollTimer = null;
+  }
+}
+function getActiveLogTabName() {
+  const t = document.querySelector('.log-tab.active');
+  return t ? t.getAttribute('data-tab') : null;
+}
+function refreshCaptainsLogActiveTab() {
+  const name = getActiveLogTabName();
+  if (!name) return;
+  if (name === 'ship') updateShipPanel();
+  else if (name === 'inv') updateInventoryPanel();
+  else if (name === 'crew') updateCrewPanel();
+  else if (name === 'missions') updateMissionsPanel();
+  else if (name === 'pirates') {
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'get_leaderboard' }));
+    updatePiratesPanel();
+  } else if (name === 'world') updateWorldPanel();
+}
+function startCaptainsLogLiveRefresh() {
+  stopCaptainsLogLiveRefresh();
+  const tick = () => {
+    const lp = document.getElementById('log-panel');
+    if (!lp || lp.style.display === 'none' || lp.style.display === '') {
+      stopCaptainsLogLiveRefresh();
+      return;
+    }
+    refreshCaptainsLogActiveTab();
+  };
+  tick();
+  captainsLogPollTimer = setInterval(tick, 2000);
+}
 function switchLogTab(name) {
   document.querySelectorAll('.log-tab').forEach(t => { t.classList.remove('active'); t.style.borderBottom = 'none'; t.style.color = '#8a7a60'; });
   document.querySelectorAll('.log-content').forEach(c => c.style.display = 'none');
