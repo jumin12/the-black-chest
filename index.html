@@ -760,7 +760,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <kbd>W</kbd><kbd>S</kbd> Sail &nbsp; <kbd>A</kbd><kbd>D</kbd> Turn<br>
     <kbd>Z</kbd> Fire Port &nbsp; <kbd>X</kbd> Fire Starboard &nbsp; <kbd>Space</kbd> Fire Both — choose shot type under the top bar (round / grape / chain)<br>
     <span style="color:#a89878;">PC: click the sea view to the left or right of your ship to fire that broadside (not on HUD)</span><br>
-    <kbd>Q</kbd><kbd>E</kbd> Rotate Camera &nbsp; <kbd>Scroll</kbd> Horizon ↔ Deck &nbsp; <kbd>M</kbd> Map &nbsp; <kbd>F3</kbd> Debug console &nbsp; <kbd>Esc</kbd> close<br>
+    <kbd>Q</kbd><kbd>E</kbd> Rotate Camera &nbsp; <kbd>Scroll</kbd> Horizon ↔ Deck &nbsp; <kbd>M</kbd> Map &nbsp; <kbd>F3</kbd> Debug console &nbsp; <kbd>Esc</kbd> settings / close panels<br>
     <kbd>B</kbd> Ship &nbsp; <kbd>I</kbd> Inventory &nbsp; <kbd>C</kbd> Crew &nbsp; <kbd>T</kbd> Chat
   </div>
 </div>
@@ -780,6 +780,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
       </select>
     </div>
     <button type="button" id="settings-close">Close</button>
+    <button type="button" id="settings-exit-game" class="menu-btn-secondary" style="display:none;margin-top:10px;">Exit to main menu (save)</button>
   </div>
 </div>
 
@@ -6378,6 +6379,11 @@ window.addEventListener('keydown', e => {
       e.preventDefault();
       return;
     }
+    if (G.mode === 'playing') {
+      openSettingsPanel({});
+      e.preventDefault();
+      return;
+    }
     closeAllPanels();
   }
 });
@@ -7841,11 +7847,11 @@ function ensureCargoSlots() {
         const s = old[i];
         if (s && s.count > 0) {
           const c = s.count;
-          spawnHoldOverflowLootAstern(s.id, c);
+          if (G.mode === 'playing') spawnHoldOverflowLootAstern(s.id, c);
           subtractFromInventoryLedger(s.id, c);
         }
       }
-      notify('Hold shrank — excess cargo floated free!');
+      if (G.mode === 'playing') notify('Hold shrank — excess cargo floated free!');
     }
     if (hadOldStacks) syncInventoryFromCargoSlots();
   }
@@ -7866,7 +7872,7 @@ function ensureCargoSlots() {
       }
       while (left > 0) {
         const drop = Math.min(ITEM_MAX_STACK, left);
-        spawnHoldOverflowLootAstern(id, drop);
+        if (G.mode === 'playing') spawnHoldOverflowLootAstern(id, drop);
         subtractFromInventoryLedger(id, drop);
         left -= drop;
       }
@@ -11186,7 +11192,7 @@ function gameLoop(time) {
     if (fullmapOpen) drawFullmap();
     if (Math.floor(G.time * 4) !== Math.floor((G.time - dt) * 4)) updateHUD();
     autoSaveTimer += dt;
-    if (autoSaveTimer > 15) { saveProgress(); autoSaveTimer = 0; }
+    if (autoSaveTimer > 5) { saveProgress(); autoSaveTimer = 0; }
   }
 }
 
@@ -11753,6 +11759,8 @@ function openSettingsPanel(options = {}) {
   const m = document.getElementById('settings-modal');
   if (!m) return;
   m.style.display = 'flex';
+  const ex = document.getElementById('settings-exit-game');
+  if (ex) ex.style.display = fromMainMenu || G.mode !== 'playing' ? 'none' : 'block';
   if (!fromMainMenu) document.getElementById('btn-settings')?.classList.add('active');
   const vol = document.getElementById('settings-volume');
   if (vol) vol.value = String(Math.round(G.soundVolume * 100));
@@ -11781,7 +11789,69 @@ document.getElementById('settings-close')?.addEventListener('click', () => {
   if (m) m.style.display = 'none';
   document.getElementById('btn-settings')?.classList.remove('active');
   restoreMobileGameControls();
+  if (G.mode === 'playing') saveProgressDebounced();
 });
+
+function refreshMainMenuSavePanel() {
+  let hasSaveNow = false;
+  try { hasSaveNow = !!localStorage.getItem(SAVE_KEY); } catch (e) {}
+  const startBtn = document.getElementById('start-btn');
+  const saveInfo = document.getElementById('save-info');
+  const newGameBtn = document.getElementById('new-game-btn');
+  if (startBtn) startBtn.textContent = hasSaveNow ? 'Continue Voyage' : 'Create Your Crew';
+  if (saveInfo) saveInfo.style.display = hasSaveNow ? 'block' : 'none';
+  if (newGameBtn) newGameBtn.style.display = hasSaveNow ? 'block' : 'none';
+  if (hasSaveNow) {
+    const sn = document.getElementById('save-ship-name');
+    const sd = document.getElementById('save-details');
+    if (sn) sn.textContent = G.player.shipName || 'Unknown Ship';
+    if (sd) {
+      const capName = G.player.crew[0]?.name || 'Unknown Captain';
+      const gold = getInvCount('gold');
+      const shipSpec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+      sd.innerHTML =
+        `Captain: <span style="color:#e0d6c2">${capName}</span><br>` +
+        `Ship: <span style="color:#e0d6c2">${shipSpec.name}</span> | ` +
+        `HP: <span style="color:#e0d6c2">${Math.round(G.player.health)}</span><br>` +
+        `Crew: <span style="color:#e0d6c2">${G.player.crew.length}</span> | ` +
+        `Gold: <span style="color:#e0d6c2">${gold}</span><br>` +
+        `Position: <span style="color:#e0d6c2">${Math.round(G.player.x)}, ${Math.round(G.player.z)}</span>`;
+    }
+  }
+}
+
+function exitGameToMainMenu() {
+  if (G.mode !== 'playing') return;
+  try {
+    saveProgress();
+  } catch (e) {}
+  G.mode = 'start';
+  G.player.speed = 0;
+  G.playWorldAwaitingNetInit = false;
+  try {
+    if (ws) {
+      ws.onclose = null;
+      ws.close();
+    }
+  } catch (err) {}
+  ws = null;
+  clearGameTabLockIfMine();
+  closeAllPanels();
+  const sm = document.getElementById('settings-modal');
+  if (sm) sm.style.display = 'none';
+  document.getElementById('btn-settings')?.classList.remove('active');
+  document.getElementById('ui-layer').style.display = 'none';
+  document.getElementById('touch-controls').style.display = 'none';
+  document.getElementById('touch-zoom').style.display = 'none';
+  document.getElementById('touch-broadsides-layer').style.display = 'none';
+  document.getElementById('controls-help').style.display = 'none';
+  restoreMobileGameControls();
+  document.getElementById('start-screen').style.display = 'flex';
+  refreshMainMenuSavePanel();
+  notify('Voyage saved — welcome back at port.');
+}
+
+document.getElementById('settings-exit-game')?.addEventListener('click', () => exitGameToMainMenu());
 
 document.getElementById('settings-volume')?.addEventListener('input', e => {
   const v = Math.max(0, Math.min(100, parseInt(e.target.value, 10))) / 100;
@@ -11873,6 +11943,11 @@ function flushPendingSaveProgress() {
 function saveProgress() {
   try {
     ensurePlayerStats();
+    normalizeInventoryMergeStacks();
+    consolidateGoldPurse();
+    ensureCargoSlots();
+    if (G.mode === 'playing') reconcileSlotsWithInventory();
+    else syncInventoryFromCargoSlots();
     const data = {
       x: G.player.x, z: G.player.z, rotation: G.player.rotation,
       health: G.player.health, shipType: G.player.shipType,
@@ -11959,13 +12034,8 @@ function loadProgress() {
     else G.player.morale = 100;
     if (data.riggingHealth != null) G.player.riggingHealth = Math.max(0, Math.min(100, Number(data.riggingHealth)));
     else G.player.riggingHealth = 100;
-    ensureCargoSlots();
-    consolidateGoldPurse();
-    syncInventoryFromCargoSlots();
-    reconcileSlotsWithInventory();
-    ensureSpecialAmmoRowsInInventory();
     ensurePlayerInOpenOcean();
-    saveProgressDebounced();
+    saveProgress();
     return true;
   } catch (e) { return false; }
 }
@@ -12108,6 +12178,11 @@ document.getElementById('start-btn').onclick = () => {
     spawnNPCs();
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
     rebuildPlayerShip();
+    normalizeInventoryMergeStacks();
+    consolidateGoldPurse();
+    ensureCargoSlots();
+    reconcileSlotsWithInventory();
+    saveProgress();
     document.getElementById('start-screen').style.display = 'none';
     revealGameHudAfterFirstStableFrame(() => {
       document.getElementById('ui-layer').style.display = 'block';
@@ -12168,22 +12243,7 @@ document.getElementById('new-game-btn').onclick = () => {
 document.getElementById('new-voyage-cancel')?.addEventListener('click', closeNewVoyageConfirmModal);
 document.getElementById('new-voyage-confirm-delete')?.addEventListener('click', executeStartNewVoyageAfterConfirm);
 
-document.getElementById('start-btn').textContent = hasSave ? 'Continue Voyage' : 'Create Your Crew';
-if (hasSave) {
-  document.getElementById('new-game-btn').style.display = 'block';
-  document.getElementById('save-info').style.display = 'block';
-  document.getElementById('save-ship-name').textContent = G.player.shipName || 'Unknown Ship';
-  const capName = G.player.crew[0]?.name || 'Unknown Captain';
-  const gold = getInvCount('gold');
-  const shipSpec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
-  document.getElementById('save-details').innerHTML =
-    `Captain: <span style="color:#e0d6c2">${capName}</span><br>` +
-    `Ship: <span style="color:#e0d6c2">${shipSpec.name}</span> | ` +
-    `HP: <span style="color:#e0d6c2">${Math.round(G.player.health)}</span><br>` +
-    `Crew: <span style="color:#e0d6c2">${G.player.crew.length}</span> | ` +
-    `Gold: <span style="color:#e0d6c2">${gold}</span><br>` +
-    `Position: <span style="color:#e0d6c2">${Math.round(G.player.x)}, ${Math.round(G.player.z)}</span>`;
-}
+refreshMainMenuSavePanel();
 
 document.getElementById('create-launch').onclick = launchGame;
 document.getElementById('create-back').onclick = () => {
@@ -12192,6 +12252,7 @@ document.getElementById('create-back').onclick = () => {
   document.getElementById('create-screen').style.display = 'none';
   document.getElementById('start-screen').style.display = 'flex';
   document.getElementById('ui-layer').style.display = 'none';
+  refreshMainMenuSavePanel();
 };
 
 document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(tab => {
