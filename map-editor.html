@@ -342,12 +342,15 @@
     uSunDir: { value: new THREE.Vector3(0.4, 0.6, 0.2).normalize() },
     uCamPos: { value: new THREE.Vector3() }
   };
+  /* Slightly reduced wave amplitude vs main game — avoids depth fighting with terrain at large world coords. */
+  const WATER_WAVE_SCALE = 0.45;
   const waterVS = `
     uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
+    const float WSCALE = ${WATER_WAVE_SCALE.toFixed(4)};
     vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
       float k=6.2831853/wl; float c=sqrt(9.8/k); float a=s/k; vec2 dn=normalize(d);
       float f=k*(dot(dn,p.xz)-c*sp*uTime);
-      return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
+      return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f)) * WSCALE;
     }
     void main(){
       vec3 pos=position;
@@ -403,7 +406,10 @@
   let water = null;
   const waterMaterial = new THREE.ShaderMaterial({
     uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
-    transparent: false, depthWrite: true, side: THREE.FrontSide
+    transparent: false,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.FrontSide
   });
   function rebuildWaterPlane() {
     if (water) {
@@ -416,7 +422,7 @@
     waterGeom.rotateX(-Math.PI / 2);
     water = new THREE.Mesh(waterGeom, waterMaterial);
     water.position.set(0, SEA_LEVEL - 0.5, 0);
-    water.renderOrder = -1;
+    water.renderOrder = -2;
     scene.add(water);
   }
   function resizeSkyDome() {
@@ -453,9 +459,15 @@
     pos.needsUpdate = true;
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
-    terrainMesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    terrainMesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      vertexColors: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1
+    }));
     terrainMesh.position.set(0, 0, 0);
     terrainMesh.receiveShadow = true;
+    terrainMesh.renderOrder = 0;
     scene.add(terrainMesh);
   }
   buildTerrainMesh();
@@ -502,6 +514,7 @@
   }
 
   const entRoot = new THREE.Group();
+  entRoot.renderOrder = 2;
   scene.add(entRoot);
 
   const previewBoat = new THREE.Group();
@@ -517,6 +530,7 @@
   mastPm.position.y = 8;
   previewBoat.add(hullPm, mastPm);
   previewBoat.visible = false;
+  previewBoat.renderOrder = 3;
   scene.add(previewBoat);
 
   const spawnMarker = new THREE.Group();
@@ -532,6 +546,7 @@
   spawnPole.position.y = 2.75;
   spawnMarker.add(spawnRing, spawnPole);
   spawnMarker.visible = false;
+  spawnMarker.renderOrder = 3;
   scene.add(spawnMarker);
 
   function refreshSpawnHud() {
@@ -837,7 +852,7 @@
       const f = k * ((dnx * wx + dnz * wz) - c * sp[i] * time);
       sy += (s[i] / k) * Math.sin(f);
     }
-    return sy;
+    return sy * WATER_WAVE_SCALE;
   }
   document.getElementById('btn-sail-toggle').addEventListener('click', () => setSailPreview(!sailPreviewOn));
   document.getElementById('btn-spawn-boat').addEventListener('click', () => {
