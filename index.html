@@ -19,6 +19,31 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 #stats-ammo-stack > *{pointer-events:auto;}
 #stats-ammo-stack #hud-top{position:relative;top:auto;left:auto;transform:none;margin:0;max-width:100%;}
 #stats-ammo-stack #ammo-type-bar{position:relative;top:auto;left:auto;transform:none;margin:0;z-index:12;display:flex;gap:6px;pointer-events:auto;flex-wrap:wrap;justify-content:center;max-width:100%;}
+@media(max-width:768px){
+  #stats-ammo-stack #ammo-type-bar,
+  #ammo-type-bar{
+    position:fixed !important;
+    left:auto !important;
+    top:auto !important;
+    transform:none !important;
+    margin:0 !important;
+    flex-direction:column;
+    flex-wrap:nowrap;
+    align-items:stretch;
+    justify-content:flex-end;
+    gap:5px;
+    z-index:17;
+    max-width:min(108px,30vw);
+    width:min(108px,30vw);
+    bottom:calc(224px + env(safe-area-inset-bottom,0px));
+    pointer-events:auto;
+  }
+  #ammo-type-bar.ammo-bar--sc0{right:max(96px, calc(50vw - 52px));}
+  #ammo-type-bar.ammo-bar--sc1{right:max(6px, env(safe-area-inset-right));}
+  #ammo-type-bar.ammo-bar--sc2{right:calc(74px + env(safe-area-inset-right, 0px));}
+  #ammo-type-bar.ammo-bar--sc3{right:calc(22vw + max(6px, env(safe-area-inset-right)));}
+  #ammo-type-bar .ammo-type-btn{padding:7px 5px;font-size:8px;line-height:1.15;}
+}
 #compass-stack{position:absolute;top:8px;left:10px;z-index:12;display:flex;flex-direction:column;align-items:center;gap:2px;pointer-events:none;}
 #compass-stack > .quest-toggle-btn{pointer-events:auto;flex-shrink:0;}
 #compass{width:90px;height:90px;pointer-events:none;}
@@ -279,8 +304,6 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   .hud-box{font-size:10px;padding:3px 7px;}
   #stats-ammo-stack .hud-box{white-space:normal;text-align:center;max-width:100%;line-height:1.25;}
   #hud-top{gap:4px;}
-  #ammo-type-bar{gap:4px;}
-  .ammo-type-btn{padding:5px 8px;font-size:9px;}
   #compass-stack{top:max(4px,env(safe-area-inset-top));left:4px;align-items:flex-start;gap:3px;}
   #compass{width:64px;height:64px;}
   .quest-toggle-btn{display:block;}
@@ -511,7 +534,6 @@ input,textarea{-webkit-user-select:text;user-select:text;}
       <div class="hud-box" id="hud-morale">Morale 100</div>
       <div class="hud-box" id="hud-food">Food 0</div>
       <div class="hud-box" id="hud-crew">Crew 0</div>
-      <div class="hud-box" id="hud-ammo">Ammo —</div>
     </div>
     <div id="ammo-type-bar" aria-label="Shot type">
       <button type="button" class="ammo-type-btn sel" data-ammo="ball" title="Round shot — hull damage">Round shot</button>
@@ -6033,6 +6055,7 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
   resizeCargoPreview();
   if (typeof repositionTutorialHighlight === 'function') repositionTutorialHighlight();
+  if (isMobile) applyMobileControlScheme(G.mobileControlScheme);
 });
 
 let audioCtx, masterGain;
@@ -6063,6 +6086,11 @@ function playCannonSound() {
 
 function applyMobileControlScheme(sc) {
   G.mobileControlScheme = sc;
+  const ammoBar = document.getElementById('ammo-type-bar');
+  if (ammoBar) {
+    ammoBar.classList.remove('ammo-bar--sc0', 'ammo-bar--sc1', 'ammo-bar--sc2', 'ammo-bar--sc3');
+    if (isMobile) ammoBar.classList.add('ammo-bar--sc' + sc);
+  }
   if (!isMobile) return;
   const jz = document.getElementById('joystick-zone');
   const tp = document.getElementById('touch-port');
@@ -8604,7 +8632,8 @@ fmCanvas.addEventListener('touchend', e => { e.stopPropagation(); fmTouchId = nu
 document.getElementById('minimap').onclick = toggleFullmap;
 document.getElementById('fullmap-close').onclick = toggleFullmap;
 
-let mmZoom = 0.08;
+/** Pixels per world unit; higher = more zoomed-in on the small minimap. */
+let mmZoom = 0.125;
 function drawMinimap() {
   ensureMapChartLayerListeners();
   const w = mmCanvas.width, h = mmCanvas.height, s = mmZoom, cx = w / 2, cy = h / 2;
@@ -9690,14 +9719,13 @@ function updateHUD() {
   const effectiveKn = Math.abs(G.player.speed * wEff);
   const windLabel = windDot > 0.3 ? 'Tailwind' : windDot < -0.3 ? 'Headwind' : 'Crosswind';
    document.getElementById('hud-speed').textContent = `${effectiveKn.toFixed(1)} kn (${windLabel})`;
-  document.getElementById('hud-health').textContent = `Hull ${Math.round(G.player.health)}`;
+  const rig = G.player.riggingHealth != null ? G.player.riggingHealth : 100;
+  document.getElementById('hud-health').textContent = `Hull ${Math.round(G.player.health)} · Rig ${Math.round(rig)}%`;
   const hm = document.getElementById('hud-morale');
   if (hm) hm.textContent = `Morale ${Math.round(G.player.morale != null ? G.player.morale : 100)}`;
   document.getElementById('hud-food').textContent = `Food ${getInvCount('food')}`;
   const _sp = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
   document.getElementById('hud-crew').textContent = `Crew ${countSailorCrew()}/${_sp.maxCrew} · Brig ${countPrisonerCrew()}/${_sp.maxPrisoners}`;
-  const rig = G.player.riggingHealth != null ? G.player.riggingHealth : 100;
-  document.getElementById('hud-ammo').textContent = `R${getInvCount('cannonballs')} G${getInvCount('grapeshot')} C${getInvCount('chainshot')} · Rig ${Math.round(rig)}%`;
   drawCompass();
   updateStoryBriefHud();
 }
