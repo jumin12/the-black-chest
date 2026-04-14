@@ -396,6 +396,13 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 #debug-seed-apply-btn.debug-seed-apply:hover{filter:brightness(1.05);}
 .debug-seed-status{font-size:10px;color:#8aa0b0;margin:6px 0 0;min-height:1.2em;}
 #debug-seed-preview-canvas{display:block;width:100%;height:auto;cursor:default;}
+.debug-panel-tabs{display:flex;gap:6px;margin:0 0 14px;padding-bottom:10px;border-bottom:1px solid rgba(100,140,180,0.22);flex-wrap:wrap;}
+.debug-panel-tabs button{
+  flex:1;min-width:118px;padding:8px 10px;border-radius:10px;border:1px solid rgba(100,140,180,0.4);
+  background:linear-gradient(180deg,rgba(36,56,78,0.92),rgba(18,28,42,0.96));color:#d0e4f8;font-size:11px;cursor:pointer;font-family:Georgia,serif;
+}
+.debug-panel-tabs button.sel{border-color:#5ab0c8;box-shadow:0 0 0 2px rgba(90,176,200,0.2);}
+.debug-tab-panel{display:block;}
 .debug-panel-footer{padding:10px 16px 14px;border-top:1px solid rgba(100,140,180,0.18);background:rgba(8,12,20,0.5);}
 .debug-panel-footer button{width:100%;padding:10px 16px;border-radius:10px;border:1px solid rgba(180,100,100,0.45);
   background:linear-gradient(180deg,rgba(120,48,48,0.95),rgba(70,28,28,0.98));color:#f8e0e0;font-family:Georgia,serif;font-size:13px;cursor:pointer;letter-spacing:0.04em;}
@@ -635,6 +642,23 @@ input,textarea{-webkit-user-select:text;user-select:text;}
         <button type="button" class="debug-panel-close" id="debug-panel-close-x" aria-label="Close debug panel">&times;</button>
       </header>
       <div class="debug-panel-body">
+        <div class="debug-panel-tabs" role="tablist">
+          <button type="button" class="debug-tab sel" data-debug-tab="main" role="tab" aria-selected="true">Navigator console</button>
+          <button type="button" class="debug-tab" data-debug-tab="maped" role="tab" aria-selected="false">Map editor</button>
+        </div>
+        <div id="debug-tab-panel-maped" class="debug-tab-panel" style="display:none;margin-bottom:18px;" aria-label="Custom map">
+          <h4 class="debug-section-head">3D map editor (new window)</h4>
+          <p class="debug-map-hint">Sculpt terrain, paint water, place trees, docks, houses, flagpoles, and define towns with faction, export good, and stockpiles. Save from the editor to a JSON file or to this browser via <em>Store for game</em>.</p>
+          <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
+            <button type="button" id="debug-open-map-editor">Open 3D map editor</button>
+            <button type="button" id="debug-load-stored-map">Load stored map (localStorage)</button>
+            <button type="button" id="debug-load-map-file">Load map from JSON file</button>
+            <button type="button" id="debug-clear-custom-map" style="background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Clear custom map &amp; restore procedural</button>
+          </div>
+          <p id="debug-custom-map-status" class="debug-seed-status" style="min-height:2.4em;"></p>
+          <input type="file" id="debug-custom-map-file" accept=".json,application/json" style="display:none;" />
+        </div>
+        <div id="debug-tab-panel-main" class="debug-tab-panel">
         <section class="debug-section" aria-label="World chart">
           <h4 class="debug-section-head">World chart</h4>
           <p class="debug-map-hint">Full archipelago — drag to pan, wheel to zoom (same layers as the M map). Use checkboxes for wind and ship overlays.</p>
@@ -728,6 +752,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
           <h4 class="debug-section-head">Ship lab</h4>
           <div id="debug-ship-builder"><div id="ship-type-selector"></div><div id="ship-parts-list"></div></div>
         </section>
+        </div>
       </div>
       <footer class="debug-panel-footer">
         <button type="button" id="debug-panel-close-btn">Close console</button>
@@ -911,12 +936,16 @@ const CAM_ZOOM_DEFAULT = clampCameraZoomLevel(Math.round(
 
 /** Must match server `DEFAULT_WORLD_SEED` and `world_seed.json` — stable offline / pre-sync fallback so the archipelago never drifts between sessions. */
 const CANONICAL_DEFAULT_WORLD_SEED = 42;
+/** Matches `map-editor.html` — custom heightmap + towns / props (local dev; not synced to server). */
+const CUSTOM_MAP_STORAGE_KEY = 'pirates_custom_map_v1';
 
 const G = {
   mode: 'start',
   myId: null,
   seed: 42,
   worldSeed: 42,
+  /** @type {null | { heights: Float32Array, gridN: number, waterThreshold: number, maxLandHeight: number, worldEdgeClamp: number, entities: object[], towns: object[], wind?: object, seed?: number }} */
+  customMap: null,
   playWorldAwaitingNetInit: false,
   fallbackWorldSeed: 42,
   time: 0,
@@ -1856,6 +1885,9 @@ function dryLandSampleForMeta(wx, wz, meta) {
   return ht > 0.15 && warpedDist < 0.93;
 }
 function dryLandAtWorldPosition(wx, wz) {
+  if (G.customMap && G.customMap.heights && G.customMap.gridN) {
+    return sampleCustomMapLand(wx, wz);
+  }
   const cxi = Math.floor(wx / CHUNK_SIZE), czi = Math.floor(wz / CHUNK_SIZE);
   for (let dc = -1; dc <= 1; dc++) {
     for (let dr = -1; dr <= 1; dr++) {
@@ -1866,6 +1898,123 @@ function dryLandAtWorldPosition(wx, wz) {
   }
   return false;
 }
+
+function decodeCustomMapHeightsB64(b64) {
+  const raw = atob(b64);
+  const buf = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+  return new Float32Array(buf.buffer);
+}
+function normalizeCustomTownForGame(t) {
+  if (!t || t.dockX == null || t.dockZ == null) return null;
+  const id = String(t.id || t.townName || 'town');
+  const cx = t.cx != null ? (t.cx | 0) : Math.floor(Number(t.dockX) / CHUNK_SIZE);
+  const cz = t.cz != null ? (t.cz | 0) : Math.floor(Number(t.dockZ) / CHUNK_SIZE);
+  return {
+    hasTown: true,
+    townName: t.townName || 'Port',
+    faction: t.faction != null ? (t.faction | 0) % 4 : 0,
+    exportGood: t.exportGood,
+    dockX: Number(t.dockX),
+    dockZ: Number(t.dockZ),
+    dockAngle: t.dockAngle != null ? Number(t.dockAngle) : 0,
+    worldX: t.worldX != null ? Number(t.worldX) : Number(t.dockX),
+    worldZ: t.worldZ != null ? Number(t.worldZ) : Number(t.dockZ),
+    cx, cz,
+    radius: t.radius != null ? Number(t.radius) : 120,
+    maxH: t.maxH != null ? Number(t.maxH) : 14,
+    customTownId: id,
+    stockpile: t.stockpile && typeof t.stockpile === 'object' ? t.stockpile : null
+  };
+}
+function sampleCustomMapHeight01(wx, wz) {
+  const cm = G.customMap;
+  if (!cm || !cm.heights) return 0;
+  const lim = cm.worldEdgeClamp != null ? cm.worldEdgeClamp : WORLD_EDGE_CLAMP;
+  const gn = cm.gridN | 0;
+  const heights = cm.heights;
+  const u = (wx + lim) / (2 * lim);
+  const v = (wz + lim) / (2 * lim);
+  if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+  const gx = u * (gn - 1);
+  const gz = v * (gn - 1);
+  const x0 = Math.floor(gx), z0 = Math.floor(gz);
+  const x1 = Math.min(gn - 1, x0 + 1), z1 = Math.min(gn - 1, z0 + 1);
+  const tx = gx - x0, tz = gz - z0;
+  const h00 = heights[z0 * gn + x0], h10 = heights[z0 * gn + x1];
+  const h01 = heights[z1 * gn + x0], h11 = heights[z1 * gn + x1];
+  const a = h00 * (1 - tx) + h10 * tx;
+  const b = h01 * (1 - tx) + h11 * tx;
+  return a * (1 - tz) + b * tz;
+}
+function sampleCustomMapLand(wx, wz) {
+  const cm = G.customMap;
+  const thr = cm.waterThreshold != null ? cm.waterThreshold : 0.12;
+  return sampleCustomMapHeight01(wx, wz) > thr;
+}
+function sampleCustomMapSurfaceY(wx, wz) {
+  const cm = G.customMap;
+  const thr = cm.waterThreshold != null ? cm.waterThreshold : 0.12;
+  const maxH = cm.maxLandHeight != null ? cm.maxLandHeight : 18;
+  const h01 = sampleCustomMapHeight01(wx, wz);
+  if (h01 <= thr) return SEA_LEVEL - 2 - (thr - h01) * 3;
+  return SEA_LEVEL + h01 * maxH;
+}
+function customMapPayloadFromObject(data) {
+  if (!data || !data.heightsB64 || !data.version) return null;
+  const gridN = data.gridN | 0;
+  const heights = decodeCustomMapHeightsB64(data.heightsB64);
+  if (!gridN || heights.length !== gridN * gridN) return null;
+  const townsRaw = Array.isArray(data.towns) ? data.towns : [];
+  const towns = townsRaw.map(normalizeCustomTownForGame).filter(Boolean);
+  return {
+    gridN,
+    heights,
+    waterThreshold: data.waterThreshold != null ? Number(data.waterThreshold) : 0.12,
+    maxLandHeight: data.maxLandHeight != null ? Number(data.maxLandHeight) : 18,
+    worldEdgeClamp: data.worldEdgeClamp != null ? Number(data.worldEdgeClamp) : WORLD_EDGE_CLAMP,
+    entities: Array.isArray(data.entities) ? data.entities : [],
+    towns,
+    wind: data.wind,
+    seed: data.seed != null ? (Number(data.seed) >>> 0) : null
+  };
+}
+function applyCustomMapPayload(data, statusEl) {
+  const cm = customMapPayloadFromObject(data);
+  if (!cm) {
+    if (statusEl) statusEl.textContent = 'Invalid map JSON (need version + heightsB64 + matching gridN).';
+    return false;
+  }
+  G.customMap = cm;
+  if (cm.wind && typeof cm.wind === 'object') {
+    if (cm.wind.angle != null) G.wind.angle = Number(cm.wind.angle);
+    if (cm.wind.speed != null) G.wind.speed = Number(cm.wind.speed);
+  }
+  G.townStockpiles = {};
+  initTownStockpiles();
+  G.chunks.clear();
+  islandGroup.clear();
+  G.islands = [];
+  G.townFlagMeshes = [];
+  destroyAmbientWildlife();
+  ensurePlayerInOpenOcean();
+  updateChunks();
+  spawnNPCs();
+  nudgePlayerSpawnClearOfShips();
+  scatterWindStreaksNearPlayer();
+  flushGameViewRender();
+  if (statusEl) statusEl.textContent = 'Custom map active — terrain & ports from editor.';
+  return true;
+}
+function clearCustomMapAndReloadWorld(statusEl) {
+  G.customMap = null;
+  try { localStorage.removeItem(CUSTOM_MAP_STORAGE_KEY); } catch (e) {}
+  G.townStockpiles = {};
+  initTownStockpiles();
+  applySharedWorldFromServerSeed(G.worldSeed >>> 0);
+  if (statusEl) statusEl.textContent = 'Procedural archipelago restored.';
+}
+
 /** Pier end sits just past the procedural shoreline along dockAngle so three sides are in water. */
 function placeTownDockSeaward(meta) {
   if (!meta || !meta.hasTown) return;
@@ -2021,6 +2170,16 @@ function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, ce
 /** Nearest trading port by procedural data (matches chart), not only loaded chunks — keeps story hint and markers aligned with the map. */
 const NEAREST_PORT_SEARCH_HALF = 9000;
 function findNearestPortDock(wx, wz) {
+  if (G.customMap && G.customMap.towns && G.customMap.towns.length) {
+    let best = null, bestD2 = 1e18;
+    for (const t of G.customMap.towns) {
+      if (!t.hasTown || t.dockX == null) continue;
+      const d = distToDockTrigger(t, wx, wz);
+      const d2 = d * d;
+      if (d2 < bestD2) { bestD2 = d2; best = t; }
+    }
+    if (best) return best;
+  }
   let best = null, bestD2 = 1e18;
   forEachProceduralIslandInWorldBounds(
     wx - NEAREST_PORT_SEARCH_HALF, wx + NEAREST_PORT_SEARCH_HALF,
@@ -2232,11 +2391,21 @@ function updateTownFlagWindAnimation() {
 }
 function portExportsGood(meta) {
   if (!meta || !meta.hasTown) return 'food';
+  if (meta.exportGood && PORT_EXPORT_POOL.includes(meta.exportGood)) return meta.exportGood;
   const idx = ((meta.cx * 5023 ^ meta.cz * 9839 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_EXPORT_POOL.length;
   return PORT_EXPORT_POOL[idx];
 }
 function collectPortsInArea(wx, wz, half) {
   const out = [];
+  if (G.customMap) {
+    if (G.customMap.towns) {
+      for (const t of G.customMap.towns) {
+        if (!t.hasTown || t.dockX == null) continue;
+        if (Math.abs(t.dockX - wx) <= half && Math.abs(t.dockZ - wz) <= half) out.push(t);
+      }
+    }
+    return out;
+  }
   forEachProceduralIslandInWorldBounds(wx - half, wx + half, wz - half, wz + half, m => {
     if (m.hasTown && m.dockX != null) out.push(m);
   }, wx, wz);
@@ -2244,6 +2413,9 @@ function collectPortsInArea(wx, wz, half) {
 }
 /** Every charted port in the world (for one merchant per town). */
 function collectAllTradingPorts() {
+  if (G.customMap && G.customMap.towns && G.customMap.towns.length) {
+    return G.customMap.towns.filter(t => t.hasTown && t.dockX != null);
+  }
   const out = [];
   const lim = WORLD_EDGE_CLAMP;
   forEachProceduralIslandInWorldBounds(-lim, lim, -lim, lim, m => {
@@ -2253,6 +2425,7 @@ function collectAllTradingPorts() {
 }
 const TRADE_DELIVERY_UNITS = 12;
 function portStockKey(meta) {
+  if (meta && meta.customTownId != null && String(meta.customTownId).length) return `c:${meta.customTownId}`;
   return `${meta.cx | 0},${meta.cz | 0}`;
 }
 function initTownStockpiles() {
@@ -2261,6 +2434,10 @@ function initTownStockpiles() {
   const ports = collectAllTradingPorts();
   for (const p of ports) {
     const k = portStockKey(p);
+    if (p.stockpile && typeof p.stockpile === 'object') {
+      G.townStockpiles[k] = { ...p.stockpile };
+      continue;
+    }
     const o = {};
     PORT_EXPORT_POOL.forEach(gid => {
       const h = ((G.worldSeed ^ p.cx * 1315423911 ^ p.cz * 19349663 ^ gid.length * 409) >>> 0) % 97;
@@ -2497,10 +2674,118 @@ function sampleIslandLandHeight(px, pz, worldX, worldZ, islandRadius, islandHeig
   return Math.max(0.4, ht);
 }
 
+function generateCustomMapChunk(cx, cz) {
+  const cm = G.customMap;
+  if (!cm || !cm.heights) return;
+  const lim = cm.worldEdgeClamp != null ? cm.worldEdgeClamp : WORLD_EDGE_CLAMP;
+  const gridN = cm.gridN | 0;
+  const heights = cm.heights;
+  const wThr = cm.waterThreshold != null ? cm.waterThreshold : 0.12;
+  const maxH = cm.maxLandHeight != null ? cm.maxLandHeight : 18;
+  const samp = (wx, wz) => {
+    const u = (wx + lim) / (2 * lim);
+    const v = (wz + lim) / (2 * lim);
+    if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+    const gx = u * (gridN - 1);
+    const gz = v * (gridN - 1);
+    const x0 = Math.floor(gx), z0 = Math.floor(gz);
+    const x1 = Math.min(gridN - 1, x0 + 1), z1 = Math.min(gridN - 1, z0 + 1);
+    const tx = gx - x0, tz = gz - z0;
+    const h00 = heights[z0 * gridN + x0], h10 = heights[z0 * gridN + x1];
+    const h01 = heights[z1 * gridN + x0], h11 = heights[z1 * gridN + x1];
+    const a = h00 * (1 - tx) + h10 * tx;
+    const b = h01 * (1 - tx) + h11 * tx;
+    return a * (1 - tz) + b * tz;
+  };
+  const minWx = cx * CHUNK_SIZE;
+  const minWz = cz * CHUNK_SIZE;
+  const seg = 28;
+  const geo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, seg, seg);
+  geo.rotateX(-Math.PI / 2);
+  const positions = geo.attributes.position;
+  const colors = new Float32Array(positions.count * 3);
+  let maxChunkH = 4;
+  for (let i = 0; i < positions.count; i++) {
+    const lx = positions.getX(i), lz = positions.getZ(i);
+    const wx = minWx + CHUNK_SIZE * 0.5 + lx;
+    const wz = minWz + CHUNK_SIZE * 0.5 + lz;
+    const h = samp(wx, wz);
+    const y = h <= wThr ? -2 - (wThr - h) * 3 : h * maxH;
+    positions.setY(i, y);
+    if (h > wThr) maxChunkH = Math.max(maxChunkH, h * maxH);
+    let r, g, b;
+    if (h <= wThr) { r = 0.05; g = 0.12; b = 0.2; }
+    else if (h < 0.35) { r = 0.93; g = 0.87; b = 0.60; }
+    else { const t = Math.min(1, (h - 0.35) / 0.65); r = 0.35 - t * 0.1; g = 0.55 - t * 0.05; b = 0.28; }
+    colors[i * 3] = r; colors[i * 3 + 1] = g; colors[i * 3 + 2] = b;
+  }
+  positions.needsUpdate = true;
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  const cwx = minWx + CHUNK_SIZE * 0.5;
+  const cwz = minWz + CHUNK_SIZE * 0.5;
+  terrain.position.set(cwx, SEA_LEVEL, cwz);
+  terrain.receiveShadow = true; terrain.castShadow = true; terrain.renderOrder = 1;
+
+  const group = new THREE.Group();
+  group.add(terrain);
+  group.userData = { cx, cz, worldX: cwx, worldZ: cwz, radius: CHUNK_SIZE * 0.75, maxH: maxChunkH, hasTown: false };
+  const rng = islandRng(cx, cz);
+  const pad = 50;
+  const em = cm.entities || [];
+  for (let ei = 0; ei < em.length; ei++) {
+    const e = em[ei];
+    if (e.x == null || e.z == null) continue;
+    if (e.x < minWx - pad || e.x > minWx + CHUNK_SIZE + pad || e.z < minWz - pad || e.z > minWz + CHUNK_SIZE + pad) continue;
+    const sh = samp(e.x, e.z);
+    const surf = sh <= wThr ? SEA_LEVEL - 1.5 : SEA_LEVEL + sh * maxH;
+    if (e.type === 'tree') group.add(createPalmTree(e.x, surf + 0.08, e.z, rng));
+    else if (e.type === 'bush') group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + rng() * 0.35, rng));
+    else if (e.type === 'building') {
+      const bH = 3.8 + rng() * 1.2;
+      const bW = 3.2 + rng();
+      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: 0xb0a078 }));
+      bldg.position.set(e.x, surf + bH * 0.5, e.z); bldg.castShadow = true; group.add(bldg);
+    } else if (e.type === 'house') {
+      const bH = 3.2 + rng() * 1.4;
+      const bW = 2.8 + rng() * 0.6;
+      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: 0x9a8868 }));
+      bldg.position.set(e.x, surf + bH * 0.5, e.z); bldg.castShadow = true; group.add(bldg);
+    } else if (e.type === 'dock') {
+      const ang = e.rot != null ? Number(e.rot) : 0;
+      const dock = new THREE.Mesh(new THREE.BoxGeometry(5, 0.4, 14), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+      dock.position.set(e.x, surf + 0.45, e.z);
+      dock.rotation.y = ang;
+      dock.receiveShadow = true; dock.castShadow = true;
+      group.add(dock);
+    } else if (e.type === 'flagpole') {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 9, 8), new THREE.MeshLambertMaterial({ color: 0x4a3a28 }));
+      pole.position.set(e.x, surf + 4.5, e.z);
+      pole.castShadow = true;
+      group.add(pole);
+      const fid = 0;
+      const tf = G.customMap.towns && e.townId ? G.customMap.towns.find(t => t.id === e.townId) : null;
+      const fCol = tf && tf.faction != null ? new THREE.Color(FACTION_TRADE_COLORS[tf.faction % 4]) : new THREE.Color(0xc94a4a);
+      const flag = new THREE.Mesh(new THREE.PlaneGeometry(2, 1.2), new THREE.MeshLambertMaterial({ color: fCol, side: THREE.DoubleSide }));
+      flag.position.set(e.x + 1.05, surf + 8.6, e.z);
+      group.add(flag);
+    }
+  }
+  islandGroup.add(group);
+  G.islands.push(group.userData);
+  const sgN = 2 + Math.floor(rng() * 3);
+  spawnSeagulls(cwx, cwz, sgN, rng);
+}
+
 function generateIsland(cx, cz) {
   const key = `${cx},${cz}`;
   if (G.chunks.has(key)) return;
   G.chunks.set(key, true);
+  if (G.customMap && G.customMap.heights && G.customMap.gridN) {
+    generateCustomMapChunk(cx, cz);
+    return;
+  }
   const meta0 = getProceduralIslandMeta(cx, cz);
   if (!meta0) return;
   const rng = islandRng(cx, cz);
@@ -2956,6 +3241,7 @@ function isOnIsland(x, z) {
 }
 
 function approxTerrainHeightAt(x, z) {
+  if (G.customMap && G.customMap.heights) return sampleCustomMapSurfaceY(x, z);
   let peak = SEA_LEVEL - 50;
   for (const isl of G.islands) {
     const dx = x - isl.worldX, dz = z - isl.worldZ;
@@ -2972,6 +3258,14 @@ function approxTerrainHeightAt(x, z) {
 
 /** Extra meters above approx terrain for trees / town buildings so cannonballs collide with the whole island volume. */
 function maxIslandStructureClearanceAt(x, z) {
+  if (G.customMap && G.customMap.heights) {
+    let add = 8;
+    if (sampleCustomMapLand(x, z)) {
+      const m = G.customMap.maxLandHeight != null ? G.customMap.maxLandHeight : 18;
+      add = Math.max(add, 6 + m * 0.35);
+    }
+    return add;
+  }
   let add = 7;
   for (const isl of G.islands) {
     const dx = x - isl.worldX, dz = z - isl.worldZ;
@@ -5751,6 +6045,7 @@ function destroyAmbientWildlife() {
 
 function applySharedWorldFromServerSeed(s) {
   const seed = Number(s) >>> 0;
+  G.customMap = null;
   G.worldSeed = seed;
   G.seed = seed;
   noise = new SimplexNoise(G.worldSeed);
@@ -6408,6 +6703,62 @@ window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
   document.getElementById('debug-panel-close-x')?.addEventListener('click', close);
   document.getElementById('debug-panel-close-btn')?.addEventListener('click', close);
   document.getElementById('debug-roster-filter')?.addEventListener('input', () => { _debugRosterLast = -1e9; updateDebugRoster(); });
+  const mapTabStatus = document.getElementById('debug-custom-map-status');
+  const showDbgTab = id => {
+    const main = document.getElementById('debug-tab-panel-main');
+    const map = document.getElementById('debug-tab-panel-maped');
+    const tabs = dm.querySelectorAll('.debug-tab');
+    tabs.forEach(t => {
+      const on = t.getAttribute('data-debug-tab') === id;
+      t.classList.toggle('sel', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    if (main) main.style.display = id === 'main' ? 'block' : 'none';
+    if (map) map.style.display = id === 'maped' ? 'block' : 'none';
+  };
+  dm.querySelectorAll('.debug-tab').forEach(btn => {
+    btn.addEventListener('click', () => showDbgTab(btn.getAttribute('data-debug-tab') || 'main'));
+  });
+  document.getElementById('debug-open-map-editor')?.addEventListener('click', () => {
+    const seed = G.worldSeed >>> 0;
+    const url = new URL(`map-editor.html?seed=${seed}`, location.href).href;
+    window.open(url, 'ArchipelagoMapEditor', 'noopener,noreferrer,width=1240,height=860');
+    if (mapTabStatus) mapTabStatus.textContent = 'Editor window opened · sculpt terrain, then use Store for game or download JSON.';
+  });
+  document.getElementById('debug-load-stored-map')?.addEventListener('click', () => {
+    try {
+      const raw = localStorage.getItem(CUSTOM_MAP_STORAGE_KEY);
+      if (!raw) {
+        if (mapTabStatus) mapTabStatus.textContent = 'No map in localStorage — use the editor’s “Store for game”.';
+        return;
+      }
+      const data = JSON.parse(raw);
+      if (applyCustomMapPayload(data, mapTabStatus)) notify('Custom map loaded from localStorage.');
+    } catch (err) {
+      if (mapTabStatus) mapTabStatus.textContent = 'Could not read stored map.';
+    }
+  });
+  document.getElementById('debug-load-map-file')?.addEventListener('click', () => document.getElementById('debug-custom-map-file')?.click());
+  document.getElementById('debug-custom-map-file')?.addEventListener('change', ev => {
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        if (applyCustomMapPayload(data, mapTabStatus)) notify('Custom map loaded from file.');
+      } catch (err) {
+        if (mapTabStatus) mapTabStatus.textContent = 'Invalid map JSON file.';
+      }
+    };
+    reader.readAsText(f);
+    ev.target.value = '';
+  });
+  document.getElementById('debug-clear-custom-map')?.addEventListener('click', () => {
+    if (!confirm('Remove the custom heightmap and restore the procedural archipelago for this session?')) return;
+    clearCustomMapAndReloadWorld(mapTabStatus);
+    notify('Procedural world restored.');
+  });
   dm.addEventListener('click', e => {
     const btn = e.target.closest('.debug-locate-btn');
     if (!btn || !dm.contains(btn)) return;
@@ -6552,6 +6903,7 @@ function openDebugConsolePanel() {
   if (!dm) return;
   dm.style.display = 'flex';
   dm.setAttribute('aria-hidden', 'false');
+  document.querySelector('#debug-modal-root .debug-tab[data-debug-tab="main"]')?.click();
   debugMapPanX = 0;
   debugMapPanZ = 0;
   debugMapZoom = clampFullmapZoom(0.12);
@@ -9788,39 +10140,84 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   const pad = CHUNK_SIZE * 1.5;
   const bMinX = centerX - w / (2 * s) - pad, bMaxX = centerX + w / (2 * s) + pad;
   const bMinZ = centerZ - h / (2 * s) - pad, bMaxZ = centerZ + h / (2 * s) + pad;
-  forEachProceduralIslandInWorldBounds(bMinX, bMaxX, bMinZ, bMaxZ, d => {
-    const sx = wx2sx(d.worldX), sy = wz2sy(d.worldZ);
-    if (sx < -50 || sx > w + 50 || sy < -50 || sy > h + 50) return;
-    const ir = Math.max(4, d.radius * s);
-    ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 4;
-    const fmPts = 16;
-    ctx.fillStyle = '#c0a060'; ctx.beginPath();
-    for (let p = 0; p < fmPts; p++) {
-      const a = (p / fmPts) * Math.PI * 2;
-      const warp = 0.75 + Math.sin(d.cx * 3 + p * 1.3) * 0.12 + Math.cos(d.cz * 5 + p * 2.1) * 0.13;
-      const px = sx + Math.cos(a) * ir * warp, py = sy + Math.sin(a) * ir * warp;
-      p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+  const useCustomChart = G.customMap && G.customMap.heights && !previewIslandsOnly;
+  if (useCustomChart) {
+    const cm = G.customMap;
+    const lim = cm.worldEdgeClamp != null ? cm.worldEdgeClamp : WORLD_EDGE_CLAMP;
+    const gn = cm.gridN | 0;
+    const arr = cm.heights;
+    const wThr = cm.waterThreshold != null ? cm.waterThreshold : 0.12;
+    const stepPx = Math.max(1, Math.min(8, Math.floor(2.2 / Math.max(s, 0.04))));
+    for (let iy = 0; iy < h; iy += stepPx) {
+      for (let ix = 0; ix < w; ix += stepPx) {
+        const wx = centerX - (ix + stepPx * 0.5 - cx) / s;
+        const wz = centerZ - (iy + stepPx * 0.5 - cy) / s;
+        const u = (wx + lim) / (2 * lim);
+        const v = (wz + lim) / (2 * lim);
+        if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+        const gx = u * (gn - 1);
+        const gz = v * (gn - 1);
+        const x0 = Math.floor(gx), z0 = Math.floor(gz);
+        const x1 = Math.min(gn - 1, x0 + 1), z1 = Math.min(gn - 1, z0 + 1);
+        const tx = gx - x0, tz = gz - z0;
+        const h00 = arr[z0 * gn + x0], h10 = arr[z0 * gn + x1];
+        const h01 = arr[z1 * gn + x0], h11 = arr[z1 * gn + x1];
+        const a = h00 * (1 - tx) + h10 * tx;
+        const b = h01 * (1 - tx) + h11 * tx;
+        const hh = a * (1 - tz) + b * tz;
+        if (hh > wThr) {
+          const sx = wx2sx(wx), sy = wz2sy(wz);
+          const beach = hh < 0.35;
+          ctx.fillStyle = beach ? '#c2a060' : '#2e7a32';
+          ctx.fillRect(sx - stepPx * 0.5, sy - stepPx * 0.5, stepPx + 1, stepPx + 1);
+        }
+      }
     }
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#2a6a20'; ctx.beginPath();
-    for (let p = 0; p < fmPts; p++) {
-      const a = (p / fmPts) * Math.PI * 2;
-      const warp = 0.55 + Math.sin(d.cx * 3 + p * 1.3) * 0.08 + Math.cos(d.cz * 5 + p * 2.1) * 0.08;
-      const px = sx + Math.cos(a) * ir * warp, py = sy + Math.sin(a) * ir * warp;
-      p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-    }
-    ctx.closePath(); ctx.fill();
-    ctx.shadowBlur = 0;
-    if (d.hasTown && mapChartTownVisible(d)) {
+    for (const d of cm.towns || []) {
+      if (!d.hasTown || d.dockX == null || !mapChartTownVisible(d)) continue;
       const tx = wx2sx(d.dockX), ty = wz2sy(d.dockZ);
-      if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
+      if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) continue;
       const fcol = FACTION_TRADE_COLORS[townFaction(d) % 4];
       ctx.fillStyle = fcol; ctx.fillRect(tx - 3, ty - 3, 6, 6);
       ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
       ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
       ctx.fillText(d.townName, tx, ty - 7);
     }
-  }, centerX, centerZ, mapSeedOpt);
+  } else {
+    forEachProceduralIslandInWorldBounds(bMinX, bMaxX, bMinZ, bMaxZ, d => {
+      const sx = wx2sx(d.worldX), sy = wz2sy(d.worldZ);
+      if (sx < -50 || sx > w + 50 || sy < -50 || sy > h + 50) return;
+      const ir = Math.max(4, d.radius * s);
+      ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 4;
+      const fmPts = 16;
+      ctx.fillStyle = '#c0a060'; ctx.beginPath();
+      for (let p = 0; p < fmPts; p++) {
+        const a = (p / fmPts) * Math.PI * 2;
+        const warp = 0.75 + Math.sin(d.cx * 3 + p * 1.3) * 0.12 + Math.cos(d.cz * 5 + p * 2.1) * 0.13;
+        const px = sx + Math.cos(a) * ir * warp, py = sy + Math.sin(a) * ir * warp;
+        p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#2a6a20'; ctx.beginPath();
+      for (let p = 0; p < fmPts; p++) {
+        const a = (p / fmPts) * Math.PI * 2;
+        const warp = 0.55 + Math.sin(d.cx * 3 + p * 1.3) * 0.08 + Math.cos(d.cz * 5 + p * 2.1) * 0.08;
+        const px = sx + Math.cos(a) * ir * warp, py = sy + Math.sin(a) * ir * warp;
+        p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.shadowBlur = 0;
+      if (d.hasTown && mapChartTownVisible(d)) {
+        const tx = wx2sx(d.dockX), ty = wz2sy(d.dockZ);
+        if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
+        const fcol = FACTION_TRADE_COLORS[townFaction(d) % 4];
+        ctx.fillStyle = fcol; ctx.fillRect(tx - 3, ty - 3, 6, 6);
+        ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
+        ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
+        ctx.fillText(d.townName, tx, ty - 7);
+      }
+    }, centerX, centerZ, mapSeedOpt);
+  }
 
   if (!previewIslandsOnly) {
   G.npcs.forEach(n => {

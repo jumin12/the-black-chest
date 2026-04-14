@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Archipelago map editor</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; font-family: Georgia, 'Times New Roman', serif; background: #0a1018; color: #e8e4dc; }
+    #app { display: flex; height: 100%; }
+    #sidebar {
+      width: 300px; flex-shrink: 0; overflow-y: auto; padding: 12px 14px 80px;
+      background: linear-gradient(180deg, rgba(22,32,48,0.98), rgba(8,12,20,0.99));
+      border-right: 1px solid rgba(120,180,220,0.28);
+      font-size: 12px;
+    }
+    #sidebar h2 { margin: 0 0 8px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #7ab8d8; }
+    #sidebar h3 { margin: 14px 0 6px; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #6a8ab8; }
+    #viewport-wrap { flex: 1; position: relative; min-width: 0; }
+    #viewport { display: block; width: 100%; height: 100%; }
+    .hint { font-size: 10px; color: #7a98b0; line-height: 1.45; margin: 0 0 10px; }
+    .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+    button.tool {
+      padding: 8px 6px; border-radius: 8px; border: 1px solid rgba(100,140,180,0.4);
+      background: linear-gradient(180deg, #2a4a62, #1a3048); color: #d8e8f8; font-size: 11px; cursor: pointer; font-family: inherit;
+    }
+    button.tool.sel { border-color: #5ab0c8; box-shadow: 0 0 0 2px rgba(90,176,200,0.25); }
+    label.row { display: block; margin: 6px 0 4px; font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: #6a8ab8; }
+    input[type="range"] { width: 100%; }
+    input[type="text"], input[type="number"], select {
+      width: 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid rgba(100,140,180,0.4);
+      background: rgba(8,12,22,0.95); color: #e8e4dc; font-size: 12px; font-family: inherit;
+    }
+    .actions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .actions button {
+      padding: 9px 10px; border-radius: 10px; border: 1px solid rgba(100,160,200,0.45);
+      background: linear-gradient(180deg, #2a5a78, #1a4060); color: #d8f0ff; font-size: 11px; cursor: pointer; font-family: inherit;
+    }
+    .actions button.danger { border-color: rgba(180,100,100,0.55); background: linear-gradient(180deg, #6a3030, #401818); color: #f8d8d8; }
+    .actions button.gold { border-color: rgba(200,160,80,0.5); background: linear-gradient(180deg, #6a5020, #402810); color: #f8e8c8; }
+    #entity-list { max-height: 120px; overflow-y: auto; font-size: 10px; background: rgba(6,10,18,0.6); border-radius: 8px; padding: 6px; }
+    #status-bar {
+      position: absolute; bottom: 0; left: 0; right: 0; padding: 8px 12px;
+      background: rgba(4,8,14,0.88); border-top: 1px solid rgba(100,140,180,0.2); font-size: 10px; color: #8aa0b8;
+    }
+    #file-png, #file-json { display: none; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <h2>Map editor</h2>
+      <p class="hint">Drag on terrain to sculpt. Greyscale PNG: <strong>grey = land</strong>, <strong>white = water</strong>. Uses the same world bounds as the voyage.</p>
+
+      <h3>Tool</h3>
+      <div class="tool-grid" id="tools"></div>
+      <label class="row">Brush radius (world units)</label>
+      <input type="range" id="brush-r" min="8" max="120" value="36" />
+      <label class="row">Strength</label>
+      <input type="range" id="brush-s" min="1" max="40" value="14" />
+
+      <h3>World &amp; wind (preview)</h3>
+      <label class="row">Seed (32-bit)</label>
+      <input type="text" id="inp-seed" inputmode="numeric" value="42" />
+      <label class="row">Wind angle (turns)</label>
+      <input type="range" id="wind-a" min="0" max="1" step="0.002" value="0.125" />
+      <label class="row">Wind speed</label>
+      <input type="range" id="wind-sp" min="0" max="18" step="0.1" value="5" />
+
+      <h3>Towns</h3>
+      <label class="row">Town name</label>
+      <input type="text" id="town-name" placeholder="e.g. Salt Haven" />
+      <label class="row">Faction</label>
+      <select id="town-fac">
+        <option value="0">Crimson Compact</option>
+        <option value="1">Azure Covenant</option>
+        <option value="2">Verdant League</option>
+        <option value="3">Amber Syndicate</option>
+      </select>
+      <label class="row">Production export</label>
+      <select id="town-export"></select>
+      <label class="row">Stockpile (base amount)</label>
+      <input type="number" id="town-stock" min="0" max="9999" value="120" />
+      <div class="actions">
+        <button type="button" id="btn-add-town" class="gold">Add town at camera target</button>
+        <button type="button" id="btn-flag-here">Place flagpole for last town here</button>
+      </div>
+
+      <h3>Assign building</h3>
+      <p class="hint">Select an entity in the list, choose a town, then Assign.</p>
+      <select id="assign-town"></select>
+      <div class="actions" style="flex-direction: row; flex-wrap: wrap;">
+        <button type="button" id="btn-assign">Assign</button>
+        <button type="button" id="btn-del-ent" class="danger">Delete selected</button>
+      </div>
+      <label class="row">Entities</label>
+      <div id="entity-list"></div>
+
+      <h3>Water physics demo</h3>
+      <p class="hint">Buoyancy + drag against the animated water surface (same idea as the voyage shader).</p>
+      <div class="actions" style="flex-direction: row;">
+        <button type="button" id="btn-phys-toggle">Toggle physics cubes</button>
+        <button type="button" id="btn-phys-spawn">Spawn cube</button>
+      </div>
+
+      <h3>IO</h3>
+      <div class="actions">
+        <button type="button" id="btn-save-json">Download map JSON</button>
+        <button type="button" id="btn-load-json">Load JSON file</button>
+        <button type="button" id="btn-png">Import height PNG</button>
+        <button type="button" id="btn-send-game" class="gold">Store for game (localStorage)</button>
+      </div>
+      <input type="file" id="file-json" accept=".json,application/json" />
+      <input type="file" id="file-png" accept="image/png" />
+    </aside>
+    <div id="viewport-wrap">
+      <canvas id="viewport"></canvas>
+      <div id="status-bar">Ready · Left drag: sculpt / place · Right drag: orbit · Scroll: zoom</div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}
+  </script>
+  <script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+  const CHUNK_SIZE = 300;
+  const WORLD_CHUNK_HALF = 7;
+  const WORLD_EDGE_CLAMP = WORLD_CHUNK_HALF * CHUNK_SIZE + CHUNK_SIZE * 0.5;
+  const GRID_N = 256;
+  const WATER_THR = 0.12;
+  const MAX_H = 18;
+  const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
+  const STORAGE_KEY = 'pirates_custom_map_v1';
+
+  const qs = new URLSearchParams(location.search);
+  const initialSeed = Number(qs.get('seed')) >>> 0;
+  document.getElementById('inp-seed').value = String(initialSeed || 42);
+
+  const expSel = document.getElementById('town-export');
+  PORT_EXPORT_POOL.forEach(g => { const o = document.createElement('option'); o.value = g; o.textContent = g; expSel.appendChild(o); });
+
+  let tool = 'raise';
+  const toolsEl = document.getElementById('tools');
+  const TOOL_DEFS = [
+    ['raise', 'Raise land'],
+    ['lower', 'Lower land'],
+    ['smooth', 'Smooth'],
+    ['water', 'Carve water'],
+    ['tree', 'Tree'],
+    ['bush', 'Bush'],
+    ['building', 'Building'],
+    ['house', 'House'],
+    ['dock', 'Dock'],
+    ['flagpole', 'Flagpole']
+  ];
+  TOOL_DEFS.forEach(([id, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'tool' + (id === tool ? ' sel' : '');
+    b.textContent = label;
+    b.dataset.tool = id;
+    b.addEventListener('click', () => {
+      tool = id;
+      toolsEl.querySelectorAll('.tool').forEach(x => x.classList.toggle('sel', x.dataset.tool === tool));
+    });
+    toolsEl.appendChild(b);
+  });
+
+  const heights = new Float32Array(GRID_N * GRID_N);
+  for (let i = 0; i < heights.length; i++) heights[i] = 0;
+
+  function worldToGrid(wx, wz) {
+    const lim = WORLD_EDGE_CLAMP;
+    const u = (wx + lim) / (2 * lim);
+    const v = (wz + lim) / (2 * lim);
+    const gx = u * (GRID_N - 1);
+    const gz = v * (GRID_N - 1);
+    return { gx, gz, u, v };
+  }
+  function sampleHeight(wx, wz) {
+    const { gx, gz } = worldToGrid(wx, wz);
+    const x0 = Math.floor(gx), z0 = Math.floor(gz);
+    const x1 = Math.min(GRID_N - 1, x0 + 1), z1 = Math.min(GRID_N - 1, z0 + 1);
+    const tx = gx - x0, tz = gz - z0;
+    const h00 = heights[z0 * GRID_N + x0], h10 = heights[z0 * GRID_N + x1];
+    const h01 = heights[z1 * GRID_N + x0], h11 = heights[z1 * GRID_N + x1];
+    const a = h00 * (1 - tx) + h10 * tx;
+    const b = h01 * (1 - tx) + h11 * tx;
+    return a * (1 - tz) + b * tz;
+  }
+  function isLand(wx, wz) {
+    return sampleHeight(wx, wz) > WATER_THR;
+  }
+
+  let towns = [];
+  let entities = [];
+  let townSeq = 1;
+  let entSeq = 1;
+
+  const canvas = document.getElementById('viewport');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0c1828);
+  const camera = new THREE.PerspectiveCamera(55, 2, 1, 20000);
+  camera.position.set(400, 520, 400);
+  const controls = new OrbitControls(camera, canvas);
+  controls.target.set(0, 0, 0);
+  controls.enableDamping = true;
+  const amb = new THREE.AmbientLight(0x8899aa, 0.55);
+  scene.add(amb);
+  const sun = new THREE.DirectionalLight(0xfff0dd, 1.05);
+  sun.position.set(400, 900, 200);
+  scene.add(sun);
+
+  const waterUniforms = {
+    uTime: { value: 0 },
+    uWind: { value: new THREE.Vector2(0.7, 0.7) },
+    uWaveScale: { value: 0.65 }
+  };
+  const wSize = WORLD_EDGE_CLAMP * 2.4;
+  const waterGeom = new THREE.PlaneGeometry(wSize, wSize, 120, 120);
+  waterGeom.rotateX(-Math.PI / 2);
+  const waterMat = new THREE.ShaderMaterial({
+    transparent: true,
+    uniforms: waterUniforms,
+    vertexShader: `
+      uniform float uTime;
+      uniform vec2 uWind;
+      uniform float uWaveScale;
+      varying float vHeight;
+      void main() {
+        vec3 p = position;
+        float wx = p.x * 0.004 + uWind.x * uTime * 0.08;
+        float wz = p.z * 0.004 + uWind.y * uTime * 0.08;
+        float h = sin(wx) * cos(wz) * 0.55 + sin(wx * 2.1 + wz * 0.7) * 0.22;
+        h += sin(length(p.xz) * 0.012 - uTime * 1.4) * uWaveScale * 0.35;
+        p.y += h;
+        vHeight = h;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying float vHeight;
+      void main() {
+        vec3 deep = vec3(0.04, 0.12, 0.22);
+        vec3 foam = vec3(0.55, 0.72, 0.82);
+        float f = smoothstep(0.15, 0.55, vHeight + 0.35);
+        vec3 col = mix(deep, foam, f * 0.35);
+        gl_FragColor = vec4(col, 0.86);
+      }
+    `
+  });
+  const water = new THREE.Mesh(waterGeom, waterMat);
+  water.position.y = 0;
+  water.renderOrder = -1;
+  scene.add(water);
+
+  let terrainMesh = null;
+  function buildTerrainMesh() {
+    if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); terrainMesh = null; }
+    const lim = WORLD_EDGE_CLAMP;
+    const geo = new THREE.PlaneGeometry(2 * lim, 2 * lim, GRID_N - 1, GRID_N - 1);
+    geo.rotateX(-Math.PI / 2);
+    const pos = geo.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      const lx = pos.getX(i), lz = pos.getZ(i);
+      const wx = lx + lim;
+      const wz = lz + lim;
+      const h = sampleHeight(wx, wz);
+      const y = h <= WATER_THR ? -2 - (WATER_THR - h) * 3 : h * MAX_H;
+      pos.setY(i, y);
+      let r, g, b;
+      if (h <= WATER_THR) { r = 0.05; g = 0.12; b = 0.2; }
+      else if (h < 0.35) { r = 0.85; g = 0.78; b = 0.55; }
+      else { const t = Math.min(1, (h - 0.35) / 0.65); r = 0.35 - t * 0.1; g = 0.55 - t * 0.05; b = 0.28; }
+      colors[i * 3] = r; colors[i * 3 + 1] = g; colors[i * 3 + 2] = b;
+    }
+    pos.needsUpdate = true;
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+    terrainMesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    terrainMesh.position.set(0, 0, 0);
+    terrainMesh.receiveShadow = true;
+    scene.add(terrainMesh);
+  }
+  buildTerrainMesh();
+
+  const entRoot = new THREE.Group();
+  scene.add(entRoot);
+
+  function makeTree(x, z) {
+    const g = new THREE.Group();
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.25, 0.35, 2.2, 6),
+      new THREE.MeshLambertMaterial({ color: 0x5a3a18 })
+    );
+    trunk.position.y = 1.1;
+    const top = new THREE.Mesh(
+      new THREE.ConeGeometry(1.8, 3.5, 7),
+      new THREE.MeshLambertMaterial({ color: 0x2a7a30 })
+    );
+    top.position.y = 3.2;
+    g.add(trunk, top);
+    const y = Math.max(0.2, sampleHeight(x, z) * MAX_H);
+    g.position.set(x, y, z);
+    return g;
+  }
+  function makeBush(x, z) {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.65, 6, 5),
+      new THREE.MeshLambertMaterial({ color: 0x3a8a40 })
+    );
+    const y = Math.max(0.1, sampleHeight(x, z) * MAX_H);
+    m.position.set(x, y + 0.35, z);
+    return m;
+  }
+  function makeBuilding(x, z, col) {
+    const h = 4 + Math.random() * 2;
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(4, h, 4),
+      new THREE.MeshLambertMaterial({ color: col || 0xa08868 })
+    );
+    const y = Math.max(0.2, sampleHeight(x, z) * MAX_H);
+    m.position.set(x, y + h / 2, z);
+    return m;
+  }
+  function makeDock(x, z, ang) {
+    const g = new THREE.Group();
+    const deck = new THREE.Mesh(
+      new THREE.BoxGeometry(5, 0.45, 14),
+      new THREE.MeshLambertMaterial({ color: 0x6a4a28 })
+    );
+    deck.position.y = 0.25;
+    g.add(deck);
+    g.rotation.y = ang;
+    const y = Math.max(0.3, sampleHeight(x, z) * MAX_H) + 0.35;
+    g.position.set(x, y, z);
+    return g;
+  }
+  function makeFlagpole(x, z) {
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.15, 10, 8),
+      new THREE.MeshLambertMaterial({ color: 0x4a3a28 })
+    );
+    pole.position.y = 5;
+    const flag = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.2, 1.4),
+      new THREE.MeshLambertMaterial({ color: 0xc94a4a, side: THREE.DoubleSide })
+    );
+    flag.position.set(1.1, 9.2, 0);
+    g.add(pole, flag);
+    const y = Math.max(0.2, sampleHeight(x, z) * MAX_H);
+    g.position.set(x, y, z);
+    return g;
+  }
+
+  function syncEntityMeshes() {
+    while (entRoot.children.length) entRoot.remove(entRoot.children[0]);
+    for (const e of entities) {
+      let m = null;
+      if (e.type === 'tree') m = makeTree(e.x, e.z);
+      else if (e.type === 'bush') m = makeBush(e.x, e.z);
+      else if (e.type === 'building') m = makeBuilding(e.x, e.z, 0xb0a078);
+      else if (e.type === 'house') m = makeBuilding(e.x, e.z, 0x9a8868);
+      else if (e.type === 'dock') m = makeDock(e.x, e.z, e.rot || 0);
+      else if (e.type === 'flagpole') m = makeFlagpole(e.x, e.z);
+      if (m) { m.userData.editorEntityId = e.id; entRoot.add(m); }
+    }
+  }
+
+  let selectedEntId = null;
+  function refreshEntityList() {
+    const el = document.getElementById('entity-list');
+    const at = document.getElementById('assign-town');
+    at.innerHTML = '<option value="">— town —</option>';
+    towns.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.townName || t.id;
+      at.appendChild(o);
+    });
+    el.innerHTML = entities.map(e => {
+      const tn = e.townId ? towns.find(t => t.id === e.townId) : null;
+      const tag = tn ? ` [${tn.townName}]` : '';
+      const sel = e.id === selectedEntId ? ' <strong>*</strong>' : '';
+      return `<div data-eid="${e.id}" style="cursor:pointer;padding:2px 0;border-bottom:1px solid rgba(80,100,130,0.2);">${e.type} @ ${e.x.toFixed(0)},${e.z.toFixed(0)}${tag}${sel}</div>`;
+    }).join('') || '<div style="opacity:0.6;">No entities</div>';
+    el.querySelectorAll('[data-eid]').forEach(row => {
+      row.addEventListener('click', () => {
+        selectedEntId = row.getAttribute('data-eid');
+        refreshEntityList();
+      });
+    });
+  }
+
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  let painting = false;
+
+  function paintAt(wx, wz) {
+    const r = Number(document.getElementById('brush-r').value);
+    const s = Number(document.getElementById('brush-s').value) * 0.0015;
+    const lim = WORLD_EDGE_CLAMP;
+    for (let iz = 0; iz < GRID_N; iz++) {
+      for (let ix = 0; ix < GRID_N; ix++) {
+        const px = (ix / (GRID_N - 1)) * 2 * lim - lim;
+        const pz = (iz / (GRID_N - 1)) * 2 * lim - lim;
+        const d = Math.hypot(px - wx, pz - wz);
+        if (d > r) continue;
+        const fall = 1 - d / r;
+        const i = iz * GRID_N + ix;
+        if (tool === 'raise') heights[i] = Math.min(1, heights[i] + s * fall);
+        else if (tool === 'lower') heights[i] = Math.max(0, heights[i] - s * fall);
+        else if (tool === 'water') heights[i] = Math.min(WATER_THR * 0.85, heights[i] - s * fall * 2.5);
+        else if (tool === 'smooth') {
+          let acc = 0, c = 0;
+          for (let dz = -1; dz <= 1; dz++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const ix2 = ix + dx, iz2 = iz + dz;
+              if (ix2 < 0 || ix2 >= GRID_N || iz2 < 0 || iz2 >= GRID_N) continue;
+              acc += heights[iz2 * GRID_N + ix2]; c++;
+            }
+          }
+          heights[i] = heights[i] * 0.5 + (acc / c) * 0.5;
+        }
+      }
+    }
+    buildTerrainMesh();
+    syncEntityMeshes();
+  }
+
+  function placeEntity(wx, wz) {
+    const lastTown = towns[towns.length - 1];
+    const tid = (lastTown && ['dock', 'house', 'flagpole', 'building'].includes(tool)) ? lastTown.id : null;
+    const e = {
+      id: 'e' + (entSeq++),
+      type: tool,
+      x: wx, z: wz,
+      rot: controls.getAzimuthalAngle(),
+      townId: tid
+    };
+    if (tool === 'dock' || tool === 'house') e.townId = lastTown ? lastTown.id : null;
+    entities.push(e);
+    selectedEntId = e.id;
+    syncEntityMeshes();
+    refreshEntityList();
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObject(terrainMesh, false);
+    if (!hits.length) return;
+    const pt = hits[0].point;
+    painting = true;
+    if (['raise', 'lower', 'smooth', 'water'].includes(tool)) paintAt(pt.x, pt.z);
+    else placeEntity(pt.x, pt.z);
+  });
+  window.addEventListener('pointerup', () => { painting = false; });
+  canvas.addEventListener('pointermove', e => {
+    if (!painting) return;
+    if (!['raise', 'lower', 'smooth', 'water'].includes(tool)) return;
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObject(terrainMesh, false);
+    if (!hits.length) return;
+    const pt = hits[0].point;
+    paintAt(pt.x, pt.z);
+  });
+
+  document.getElementById('btn-add-town').addEventListener('click', () => {
+    const townName = document.getElementById('town-name').value.trim() || `Town ${townSeq}`;
+    const faction = Number(document.getElementById('town-fac').value) | 0;
+    const exportGood = document.getElementById('town-export').value;
+    const stockBase = Math.max(0, Number(document.getElementById('town-stock').value) | 0);
+    const t = controls.target;
+    const wx = t.x, wz = t.z;
+    const id = 't' + (townSeq++);
+    const cx = Math.floor(wx / CHUNK_SIZE), cz = Math.floor(wz / CHUNK_SIZE);
+    const dockAngle = controls.getAzimuthalAngle();
+    const inland = 48;
+    towns.push({
+      id,
+      townName,
+      hasTown: true,
+      faction,
+      exportGood,
+      stockpileBase: stockBase,
+      cx, cz,
+      worldX: wx - Math.sin(dockAngle) * inland,
+      worldZ: wz - Math.cos(dockAngle) * inland,
+      dockX: wx,
+      dockZ: wz,
+      dockAngle
+    });
+    document.getElementById('status-bar').textContent = `Added ${townName} — place dock & buildings, then use Assign for each.`;
+    refreshEntityList();
+  });
+
+  document.getElementById('btn-flag-here').addEventListener('click', () => {
+    const t = towns[towns.length - 1];
+    if (!t) { alert('Add a town first.'); return; }
+    const p = controls.target;
+    entities.push({ id: 'e' + (entSeq++), type: 'flagpole', x: p.x, z: p.z, townId: t.id });
+    syncEntityMeshes();
+    refreshEntityList();
+  });
+
+  document.getElementById('btn-assign').addEventListener('click', () => {
+    const e = entities.find(x => x.id === selectedEntId);
+    const tid = document.getElementById('assign-town').value;
+    if (!e || !tid) return;
+    e.townId = tid;
+    refreshEntityList();
+  });
+  document.getElementById('btn-del-ent').addEventListener('click', () => {
+    entities = entities.filter(x => x.id !== selectedEntId);
+    selectedEntId = null;
+    syncEntityMeshes();
+    refreshEntityList();
+  });
+
+  /* Physics demo */
+  let physOn = false;
+  const physBodies = [];
+  function waterHeightAt(wx, wz, time) {
+    const wx2 = wx * 0.004 + waterUniforms.uWind.value.x * time * 0.08;
+    const wz2 = wz * 0.004 + waterUniforms.uWind.value.y * time * 0.08;
+    let h = Math.sin(wx2) * Math.cos(wz2) * 0.55 + Math.sin(wx2 * 2.1 + wz2 * 0.7) * 0.22;
+    h += Math.sin(Math.hypot(wx, wz) * 0.012 - time * 1.4) * waterUniforms.uWaveScale.value * 0.35;
+    return h;
+  }
+  document.getElementById('btn-phys-toggle').addEventListener('click', () => {
+    physOn = !physOn;
+    document.getElementById('status-bar').textContent = physOn ? 'Physics demo ON' : 'Physics demo OFF';
+  });
+  document.getElementById('btn-phys-spawn').addEventListener('click', () => {
+    const p = controls.target;
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(2.2, 1.1, 3),
+      new THREE.MeshLambertMaterial({ color: 0x8b6914 })
+    );
+    box.position.set(p.x + 20, 8, p.z + 10);
+    scene.add(box);
+    physBodies.push({ mesh: box, vy: 0, buoy: 38, drag: 2.2 });
+  });
+
+  function serializeMap() {
+    const buf = new Uint8Array(heights.buffer.slice(0));
+    let bin = '';
+    for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+    const heightsB64 = btoa(bin);
+    const seed = Number(document.getElementById('inp-seed').value) >>> 0;
+    const windAngle = Number(document.getElementById('wind-a').value) * Math.PI * 2;
+    const windSpeed = Number(document.getElementById('wind-sp').value);
+    return {
+      version: 1,
+      gridN: GRID_N,
+      waterThreshold: WATER_THR,
+      maxLandHeight: MAX_H,
+      worldEdgeClamp: WORLD_EDGE_CLAMP,
+      heightsB64,
+      wind: { angle: windAngle, speed: windSpeed },
+      seed,
+      towns: towns.map(t => ({
+        ...t,
+        stockpile: t.stockpile && typeof t.stockpile === 'object' ? t.stockpile : buildStockpileObject(t)
+      })),
+      entities
+    };
+  }
+  function buildStockpileObject(t) {
+    const base = t.stockpileBase != null ? t.stockpileBase : 100;
+    const sid = (t.id && t.id.length > 1) ? t.id.charCodeAt(1) : 0;
+    const o = {};
+    PORT_EXPORT_POOL.forEach(g => { o[g] = base + ((g.length * 7 + sid) % 40); });
+    if (t.exportGood) o[t.exportGood] = (o[t.exportGood] || 0) + 50;
+    return o;
+  }
+
+  function applySerialized(data) {
+    if (!data || !data.heightsB64) return;
+    const raw = atob(data.heightsB64);
+    const buf = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+    const h = new Float32Array(buf.buffer);
+    if (h.length === heights.length) heights.set(h);
+    towns = Array.isArray(data.towns) ? data.towns.map(t => ({
+      ...t,
+      hasTown: true
+    })) : [];
+    entities = Array.isArray(data.entities) ? data.entities.slice() : [];
+    if (data.seed != null) document.getElementById('inp-seed').value = String(Number(data.seed) >>> 0);
+    if (data.wind) {
+      const turns = Number(data.wind.angle) / (Math.PI * 2);
+      document.getElementById('wind-a').value = String(turns - Math.floor(turns));
+      document.getElementById('wind-sp').value = String(Number(data.wind.speed) || 5);
+    }
+    townSeq = towns.length + 1;
+    entSeq = entities.length + 1;
+    buildTerrainMesh();
+    syncEntityMeshes();
+    refreshEntityList();
+  }
+
+  document.getElementById('btn-save-json').addEventListener('click', () => {
+    const json = JSON.stringify(serializeMap(), null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `archipelago-map-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  document.getElementById('btn-load-json').addEventListener('click', () => document.getElementById('file-json').click());
+  document.getElementById('file-json').addEventListener('change', ev => {
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        applySerialized(JSON.parse(String(reader.result)));
+      } catch (err) { alert('Invalid JSON'); }
+    };
+    reader.readAsText(f);
+    ev.target.value = '';
+  });
+
+  document.getElementById('btn-png').addEventListener('click', () => document.getElementById('file-png').click());
+  document.getElementById('file-png').addEventListener('change', ev => {
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = GRID_N; c.height = GRID_N;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, GRID_N, GRID_N);
+      const d = ctx.getImageData(0, 0, GRID_N, GRID_N).data;
+      for (let iz = 0; iz < GRID_N; iz++) {
+        for (let ix = 0; ix < GRID_N; ix++) {
+          const i = (iz * GRID_N + ix) * 4;
+          const lum = (d[i] + d[i + 1] + d[i + 2]) / (3 * 255);
+          const idx = iz * GRID_N + ix;
+          if (lum > 0.88) heights[idx] = WATER_THR * 0.35;
+          else heights[idx] = Math.max(0.15, Math.min(1, 1 - lum));
+        }
+      }
+      buildTerrainMesh();
+      syncEntityMeshes();
+      document.getElementById('status-bar').textContent = 'Imported PNG (white=water, grey=land).';
+    };
+    img.src = URL.createObjectURL(f);
+    ev.target.value = '';
+  });
+
+  document.getElementById('btn-send-game').addEventListener('click', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeMap()));
+      document.getElementById('status-bar').textContent = 'Saved to localStorage — use Navigator console → Map tab → Load stored map.';
+    } catch (e) { alert('Storage failed'); }
+  });
+
+  function resize() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / Math.max(h, 1);
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  let lastT = performance.now();
+  function tick(now) {
+    const dt = Math.min(0.05, (now - lastT) * 0.001);
+    lastT = now;
+    waterUniforms.uTime.value = now * 0.001;
+    const wa = Number(document.getElementById('wind-a').value) * Math.PI * 2;
+    const ws = Number(document.getElementById('wind-sp').value);
+    waterUniforms.uWind.value.set(Math.sin(wa) * (0.3 + ws * 0.04), Math.cos(wa) * (0.3 + ws * 0.04));
+
+    if (physOn) {
+      const t = waterUniforms.uTime.value;
+      for (const b of physBodies) {
+        const wx = b.mesh.position.x, wz = b.mesh.position.z;
+        const surface = waterHeightAt(wx, wz, t);
+        const sub = surface - b.mesh.position.y;
+        if (b.mesh.position.y < surface + 0.2) {
+          b.vy += b.buoy * sub * dt;
+          b.vy -= b.drag * b.vy * dt;
+        } else {
+          b.vy -= 9.8 * dt;
+        }
+        b.mesh.position.y += b.vy * dt;
+        if (b.mesh.position.y < surface - 2) b.mesh.position.y = surface - 2;
+      }
+    }
+
+    controls.update();
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) applySerialized(JSON.parse(raw));
+  } catch (e) {}
+  </script>
+</body>
+</html>
