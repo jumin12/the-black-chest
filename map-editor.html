@@ -79,13 +79,37 @@
       cursor: crosshair; touch-action: none; background: #0a1018;
       border: 1px solid rgba(80, 120, 160, 0.4);
     }
+    #me-f3-overlay {
+      display: none; position: fixed; inset: 0; z-index: 80; background: rgba(4, 8, 14, 0.82);
+      align-items: center; justify-content: center; padding: 16px;
+    }
+    #me-f3-overlay.open { display: flex; }
+    #me-f3-panel {
+      width: min(920px, 96vw); max-height: 90vh; overflow: auto;
+      background: linear-gradient(180deg, rgba(22,32,48,0.98), rgba(8,12,20,0.99));
+      border: 1px solid rgba(120,180,220,0.35); border-radius: 12px; padding: 14px 16px 18px;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.55);
+    }
+    #me-f3-panel h3 { margin: 0 0 8px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #8ab8d8; }
+    .me-f3-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 12px; }
+    .me-f3-row input[type="password"] {
+      flex: 1; min-width: 160px; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid rgba(100,140,180,0.45); background: rgba(8,12,22,0.95); color: #e8e4dc;
+    }
+    .me-ship-lab .part-slot {
+      padding: 6px 8px; margin: 0 6px 6px 0; border-radius: 6px; display: inline-block;
+      border: 1px solid rgba(100,140,180,0.35); background: rgba(35,32,28,0.9); cursor: pointer; font-size: 11px;
+    }
+    .me-ship-lab .part-slot.active { border-color: #5ab0c8; box-shadow: 0 0 0 2px rgba(90,176,200,0.22); }
+    .me-ship-lab .part-slot .value { color: #d0c8b8; font-weight: 600; }
+    .me-ship-lab .part-slot .label { color: #6a6058; font-size: 9px; margin-top: 2px; }
   </style>
 </head>
 <body>
   <div id="app">
     <aside id="sidebar">
       <h2>Chart editor</h2>
-      <p class="tagline">Build terrain, ports, props, and player start. Export JSON includes heights, objects, spawn, wind, and factions.</p>
+      <p class="tagline">Build terrain, ports, props, and player start. <strong>F3</strong> — navigator tools &amp; publish chart to server. Export JSON includes heights, objects, spawn, wind, and factions.</p>
 
       <details class="me-section" open>
         <summary>1 · Terrain &amp; brush</summary>
@@ -222,6 +246,7 @@
             <button type="button" id="btn-send-game" class="gold">Store for game</button>
             <button type="button" id="btn-clear-map">Clear props &amp; ports (keep land)</button>
             <button type="button" id="btn-fresh-map" class="danger">New blank ocean</button>
+            <button type="button" id="btn-gen-deco" class="gold">Generate decorations</button>
             <button type="button" id="btn-png">PNG heightmap / mask…</button>
           </div>
           <div id="png-import-panel" style="display:none;">
@@ -249,6 +274,25 @@
       <div id="status-bar">Ready · Left drag / one finger: sculpt · Right drag / two fingers: orbit &amp; zoom · Scroll: zoom</div>
     </div>
   </div>
+  <div id="me-f3-overlay" aria-hidden="true">
+    <div id="me-f3-panel">
+      <h3>Navigator · publish live world</h3>
+      <p class="hint" style="margin-top:0;">Same password as the voyage <strong>F3</strong> console. Publishes the current chart (terrain, ports, props, wind) for all players.</p>
+      <div class="me-f3-row">
+        <input type="password" id="me-nav-pw" placeholder="Navigator password" autocomplete="off" />
+        <button type="button" id="me-nav-unlock">Get session</button>
+        <button type="button" id="me-publish-world" class="gold">Publish world to server</button>
+      </div>
+      <div id="me-nav-status" class="hint" style="margin-bottom:12px;"></div>
+      <h3>Ship lab (preview)</h3>
+      <p class="hint" style="margin-top:0;">Same upgrades as the voyage ship builder — updates the preview boat and crew.</p>
+      <div class="me-ship-lab" id="me-ship-type"></div>
+      <div class="me-ship-lab" id="me-ship-parts"></div>
+      <div class="actions" style="margin-top:14px;">
+        <button type="button" id="me-f3-close">Close</button>
+      </div>
+    </div>
+  </div>
 
   <script type="importmap">
   {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}
@@ -256,6 +300,12 @@
   <script type="module">
   import * as THREE from 'three';
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import {
+    SHIP_TYPES_ME,
+    SHIP_PARTS_ME,
+    buildShipMeshME,
+    buildCrewMeshesME
+  } from './editor-ship-builders.js';
 
   const CHUNK_SIZE = 300;
   const WORLD_CHUNK_HALF = 7;
@@ -263,7 +313,9 @@
   const MAP_HALF_MIN = 400;
   const MAP_HALF_MAX = 12000;
   let worldEdgeClamp = DEFAULT_WORLD_EDGE_CLAMP;
-  const GRID_N = 256;
+  const GRID_N = 384;
+  /** Extra mesh vertices per height cell — smoother silhouettes (height still sampled from GRID_N). */
+  const TERRAIN_MESH_SUB = 2;
   const WATER_THR = 0.12;
   /** World vertical scale; editor allows height01 up to EDITOR_HEIGHT_01_MAX for grey peaks. */
   const MAX_H = 26;
@@ -826,7 +878,7 @@
   /** Mild lift — keep imported heightmap closer to in-game island relief. */
   const PNG_LAND_GAIN = 1.05;
   /** After PNG decode, compress land range toward sea (editor preview vs chunky mesas). */
-  const EDITOR_PNG_LAND_REL_SCALE = 0.66;
+  const EDITOR_PNG_LAND_REL_SCALE = 0.74;
   function boostLandHeight01(h) {
     if (h <= WATER_THR) return h;
     return Math.min(1, WATER_THR + 0.045 + (h - WATER_THR) * PNG_LAND_GAIN);
@@ -890,6 +942,35 @@
         if (delta < 0.028) continue;
         const lift = hi + Math.min(delta * 0.42, 0.09);
         if (lift > hi + 0.01) heights[i] = Math.min(1, lift);
+      }
+    }
+  }
+
+  /** Blend inland cells toward local mean so PNG imports read as filled plateaus like procedural islands. */
+  function flattenImportedLandInteriorPasses(passes) {
+    const p = Math.max(1, passes | 0);
+    for (let pass = 0; pass < p; pass++) {
+      const copy = Float32Array.from(heights);
+      for (let gz = 1; gz < GRID_N - 1; gz++) {
+        for (let gx = 1; gx < GRID_N - 1; gx++) {
+          const i = gz * GRID_N + gx;
+          if (copy[i] <= WATER_THR + 0.03) continue;
+          let nearW = false;
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            if (copy[(gz + dz) * GRID_N + gx + dx] <= WATER_THR) { nearW = true; break; }
+          }
+          if (nearW) continue;
+          let sum = 0, c = 0;
+          for (let dz = -1; dz <= 1; dz++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const h = copy[(gz + dz) * GRID_N + gx + dx];
+              if (h > WATER_THR) { sum += h; c++; }
+            }
+          }
+          if (!c) continue;
+          const mean = sum / c;
+          heights[i] = Math.min(1, copy[i] * 0.52 + mean * 0.48);
+        }
       }
     }
   }
@@ -1224,23 +1305,28 @@
       terrainGridMesh = null;
     }
     const lim = worldEdgeClamp;
-    const seg = GRID_N - 1;
+    const baseSeg = GRID_N - 1;
+    const sub = Math.max(1, TERRAIN_MESH_SUB | 0);
+    const seg = baseSeg * sub;
+    const vxN = seg + 1;
     const geo = new THREE.PlaneGeometry(2 * lim, 2 * lim, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
     for (let i = 0; i < pos.count; i++) {
-      const ix = i % GRID_N;
-      const iy = Math.floor(i / GRID_N);
-      const wx = (ix / seg) * 2 * lim - lim;
-      const wz = -((iy / seg) * 2 * lim - lim);
+      const ix = i % vxN;
+      const iy = Math.floor(i / vxN);
+      const u = ix / seg;
+      const v = iy / seg;
+      const wx = u * 2 * lim - lim;
+      const wz = -((v * 2 * lim - lim));
       const h = sampleHeight(wx, wz);
       const y = h <= WATER_THR ? SEA_LEVEL - 2 - (WATER_THR - h) * 3 : SEA_LEVEL + h * MAX_H;
       pos.setX(i, wx);
       pos.setZ(i, wz);
       pos.setY(i, y);
-      const gx = ix;
-      const gz = GRID_N - 1 - iy;
+      const gx = Math.max(0, Math.min(GRID_N - 1, Math.round(u * (GRID_N - 1))));
+      const gz = GRID_N - 1 - Math.max(0, Math.min(GRID_N - 1, Math.round(v * (GRID_N - 1))));
       const hG = heights[gz * GRID_N + gx];
       let r, gcol, b;
       if (hG <= WATER_THR) { r = 0.05; gcol = 0.12; b = 0.2; }
@@ -1375,128 +1461,209 @@
   buildTerrainMesh();
   refreshTownOverlays();
 
-  /** Cutter + default player parts — mirrors index.html G.player starting ship. */
-  function buildEditorPlayerCutterMesh() {
-    const spec = { hullLen: 5, hullW: 1.6, hullH: 1.0, masts: 1, cannonSlots: 1, bowStyle: 'pointed' };
-    const flagColor = '#1a1a1a';
-    const sc = 0xf5f0e0;
-    const g = new THREE.Group();
-    const hc = 0x6b3a1f;
-    const hw = spec.hullW / 2, hl = spec.hullLen / 2;
-    const shape = new THREE.Shape();
-    shape.moveTo(-hw, -hl); shape.lineTo(-hw * 1.1, -hl * 0.3); shape.lineTo(-hw, hl * 0.5);
-    shape.lineTo(-hw * 0.6, hl * 0.9); shape.lineTo(0, hl); shape.lineTo(hw * 0.6, hl * 0.9);
-    shape.lineTo(hw, hl * 0.5); shape.lineTo(hw * 1.1, -hl * 0.3); shape.lineTo(hw, -hl);
-    shape.lineTo(0, -hl * 1.05); shape.closePath();
-    const hull = new THREE.Mesh(
-      new THREE.ExtrudeGeometry(shape, { depth: spec.hullH, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.1, bevelSegments: 2 }),
-      new THREE.MeshPhongMaterial({ color: hc, shininess: 20 })
-    );
-    hull.geometry.rotateX(-Math.PI / 2); hull.castShadow = true; hull.receiveShadow = true;
-    hull.position.y = -spec.hullH * 0.3; g.add(hull);
-    const dg = new THREE.PlaneGeometry(spec.hullW * 0.85, spec.hullLen * 0.9); dg.rotateX(-Math.PI / 2);
-    const deck = new THREE.Mesh(dg, new THREE.MeshLambertMaterial({ color: 0xa0825a }));
-    deck.position.y = spec.hullH * 0.65; deck.receiveShadow = true; g.add(deck);
-    const rm = new THREE.MeshLambertMaterial({ color: 0x5a3a1a });
-    const rg = new THREE.BoxGeometry(0.08, 0.4, spec.hullLen * 0.8);
-    const rl = new THREE.Mesh(rg, rm); rl.position.set(-spec.hullW * 0.42, spec.hullH * 0.85, 0); g.add(rl);
-    const rr = new THREE.Mesh(rg.clone(), rm); rr.position.set(spec.hullW * 0.42, spec.hullH * 0.85, 0); g.add(rr);
-    const qdH = spec.hullH * 0.55, qdLen = spec.hullLen * 0.25;
-    const qdMat = new THREE.MeshPhongMaterial({ color: 0x5a3010, shininess: 12 });
-    const qDeck = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.88, qdH, qdLen), qdMat);
-    qDeck.position.set(0, spec.hullH * 0.65 + qdH / 2, -spec.hullLen * 0.38); qDeck.castShadow = true; g.add(qDeck);
-    const qdFloor = new THREE.Mesh(new THREE.PlaneGeometry(spec.hullW * 0.8, qdLen * 0.9), new THREE.MeshLambertMaterial({ color: 0x8a6a40 }));
-    qdFloor.rotation.x = -Math.PI / 2; qdFloor.position.set(0, spec.hullH * 0.65 + qdH + 0.02, -spec.hullLen * 0.38); g.add(qdFloor);
-    for (let si = 0; si < 3; si++) {
-      const step = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.4, 0.08, 0.2), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
-      step.position.set(0, spec.hullH * 0.65 + si * (qdH / 3), -spec.hullLen * 0.24 - si * 0.15); g.add(step);
-    }
-    const wheelPost = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.8, 6), rm);
-    wheelPost.position.set(0, spec.hullH * 0.65 + qdH + 0.4, -spec.hullLen * 0.42); g.add(wheelPost);
-    const sternWall = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.88, spec.hullH * 0.5 + qdH, spec.hullLen * 0.06),
-      new THREE.MeshPhongMaterial({ color: 0x4a2810, shininess: 10 }));
-    sternWall.position.set(0, spec.hullH * 0.4 + qdH * 0.3, -spec.hullLen * 0.49); sternWall.castShadow = true; g.add(sternWall);
-    for (let m = 0; m < spec.masts; m++) {
-      const mH = spec.hullLen * 0.7, mZ = (m - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
-      const mastRig = new THREE.Group();
-      mastRig.position.set(0, spec.hullH * 0.6, mZ);
-      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.11, mH, 5), rm);
-      mast.position.set(0, mH / 2, 0); mast.castShadow = true;
-      mastRig.add(mast);
-      const sW = spec.hullW * 1.2, sH = mH * 0.55;
-      const sailPivot = new THREE.Group();
-      sailPivot.position.set(0, mH, 0);
-      const yg = new THREE.CylinderGeometry(0.04, 0.04, sW + 0.4, 4); yg.rotateZ(Math.PI / 2);
-      sailPivot.add(new THREE.Mesh(yg, rm));
-      const sg = new THREE.PlaneGeometry(sW, sH, 6, 6);
-      const sail = new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide }));
-      sail.position.set(0, -sH / 2, 0.08); sail.userData.isSail = true; sail.castShadow = true;
-      sailPivot.add(sail);
-      mastRig.add(sailPivot);
-      g.add(mastRig);
-    }
-    const fmH = spec.hullLen * 0.45;
-    const foreRig = new THREE.Group();
-    foreRig.position.set(0, spec.hullH * 0.5, spec.hullLen * 0.35);
-    const foremast = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, fmH, 4), rm);
-    foremast.position.set(0, fmH / 2, 0); foremast.castShadow = true;
-    foreRig.add(foremast);
-    const jibW = spec.hullW * 0.5, jibH = fmH * 0.5;
-    const jibGeo = new THREE.PlaneGeometry(jibW, jibH, 3, 3);
-    const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
-    jib.position.set(0, -jibH / 2, 0.08); jib.rotation.y = 0.22; jib.userData.isSail = true; jib.castShadow = true;
-    const jibPivot = new THREE.Group(); jibPivot.position.set(0, fmH, 0); jibPivot.add(jib); foreRig.add(jibPivot);
-    g.add(foreRig);
-    const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, spec.hullLen * 0.35, 4), rm);
-    bowsprit.position.set(0, spec.hullH * 0.35, spec.hullLen * 0.55); bowsprit.rotation.x = 0.45; g.add(bowsprit);
-    const cc = spec.cannonSlots || 1;
-    const visualCount = cc === 1 ? 2 : cc;
-    const cg = new THREE.CylinderGeometry(0.088, 0.132, 1.012, 6); cg.rotateZ(Math.PI / 2);
-    const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
-    for (let c = 0; c < visualCount; c++) {
-      const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
-      const cn = new THREE.Mesh(c === 0 ? cg : cg.clone(), cm);
-      cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * 1.8);
-      cn.castShadow = true; g.add(cn);
-    }
-    const poleMat = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
-    const mH = spec.hullLen * 0.7, mastIdx = Math.max(0, spec.masts - 1);
-    const mZ = (mastIdx - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
-    const mastBaseY = spec.hullH * 0.6;
-    const fc = document.createElement('canvas'); fc.width = 64; fc.height = 48;
-    const ctx = fc.getContext('2d');
-    ctx.fillStyle = flagColor; ctx.fillRect(0, 0, 64, 48);
-    ctx.fillStyle = '#1a1008'; ctx.font = 'bold 28px Georgia, serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('\u2620', 32, 26);
-    const ftex = new THREE.CanvasTexture(fc);
-    const flagRig = new THREE.Group();
-    const poleH = Math.max(0.48, spec.hullLen * 0.1);
-    flagRig.position.set(0, mastBaseY + mH, mZ);
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.054, poleH, 6), poleMat);
-    pole.position.y = poleH * 0.5; flagRig.add(pole);
-    const flagHinge = new THREE.Group();
-    flagHinge.position.set(0, poleH * 0.94, 0.02);
-    const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78),
-      new THREE.MeshBasicMaterial({ map: ftex, side: THREE.DoubleSide }));
-    fmesh.position.set(0.56, 0, 0); flagHinge.add(fmesh); flagRig.add(flagHinge); g.add(flagRig);
-    const fcc = new THREE.Color(flagColor);
-    g.traverse(ch => {
-      if (ch.userData && ch.userData.isSail && ch.material && ch.material.color) {
-        const b = ch.material.color.clone();
-        b.lerp(fcc, 0.2);
-        ch.material.color.copy(b);
-      }
-    });
-    return g;
-  }
+  let editorPreviewShipType = 'cutter';
+  let editorPreviewShipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
+  let editorPreviewFlagColor = '#1a1a1a';
+  let editorPreviewCrew = [
+    { name: 'Captain Blackwood', role: 'captain', health: 100, task: 'helm', color: '#8b0000', hat: 'tricorn' },
+    { name: 'Salty Pete', role: 'gunner', health: 100, task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
+    { name: 'One-Eye Jack', role: 'sailor', health: 100, task: 'sails', color: '#2a4a2a' }
+  ];
 
   const entRoot = new THREE.Group();
   scene.add(entRoot);
 
   const previewBoat = new THREE.Group();
-  previewBoat.add(buildEditorPlayerCutterMesh());
-  previewBoat.visible = false;
   scene.add(previewBoat);
+
+  function disposePreviewBoatChildren() {
+    while (previewBoat.children.length) {
+      const ch = previewBoat.children[0];
+      ch.traverse(obj => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          if (Array.isArray(obj.material)) obj.material.forEach(m => m && m.dispose && m.dispose());
+          else if (obj.material.dispose) obj.material.dispose();
+        }
+      });
+      previewBoat.remove(ch);
+    }
+  }
+  function rebuildEditorPreviewBoat() {
+    disposePreviewBoatChildren();
+    const mesh = buildShipMeshME(editorPreviewShipType, editorPreviewShipParts, editorPreviewFlagColor, {
+      honorPlayerLoadout: editorPreviewShipParts.cannon === 'none'
+    });
+    previewBoat.add(mesh);
+    buildCrewMeshesME(mesh, editorPreviewCrew, editorPreviewShipType);
+  }
+  rebuildEditorPreviewBoat();
+
+  function renderMeShipLab() {
+    const td = document.getElementById('me-ship-type');
+    const pd = document.getElementById('me-ship-parts');
+    if (!td || !pd) return;
+    td.innerHTML = '<div style="color:#cc4444;font-size:10px;margin-bottom:6px;">CHANGE SHIP TYPE</div>';
+    Object.entries(SHIP_TYPES_ME).forEach(([key, spec]) => {
+      const b = document.createElement('div');
+      b.className = 'part-slot' + (key === editorPreviewShipType ? ' active' : '');
+      b.innerHTML = `<div class="value">${spec.name}</div><div class="label">${spec.desc}</div>`;
+      b.onclick = () => { editorPreviewShipType = key; rebuildEditorPreviewBoat(); renderMeShipLab(); };
+      td.appendChild(b);
+    });
+    pd.innerHTML = '';
+    Object.entries(SHIP_PARTS_ME).forEach(([slot, opts]) => {
+      const sd = document.createElement('div');
+      const hdr = slot === 'flag' ? 'FLAG POSITION' : slot.toUpperCase();
+      sd.innerHTML = `<div style="color:#cc4444;font-size:10px;margin:8px 0 4px;">${hdr}</div>`;
+      opts.forEach(opt => {
+        const b = document.createElement('div');
+        b.className = 'part-slot' + (editorPreviewShipParts[slot] === opt.id ? ' active' : '');
+        b.innerHTML = `<div class="value">${opt.name}</div>`;
+        b.onclick = () => { editorPreviewShipParts[slot] = opt.id; rebuildEditorPreviewBoat(); renderMeShipLab(); };
+        sd.appendChild(b);
+      });
+      pd.appendChild(sd);
+    });
+  }
+
+  const EDITOR_FISH_SPECIES = [
+    { color: 0x4488bb, size: 0.08, len: 0.3 },
+    { color: 0x88bb44, size: 0.06, len: 0.22 },
+    { color: 0xcc8833, size: 0.1, len: 0.35 },
+    { color: 0x7799aa, size: 0.2, len: 0.65 }
+  ];
+  const editorSeagulls = [];
+  const editorFishSchools = [];
+  const editorFishLeaders = [];
+  function clearEditorWildlife() {
+    editorSeagulls.forEach(sg => scene.remove(sg));
+    editorSeagulls.length = 0;
+    editorFishSchools.forEach(f => scene.remove(f));
+    editorFishSchools.length = 0;
+    editorFishLeaders.length = 0;
+  }
+  function editorSpawnSeagull(wx, wz, rng) {
+    const r = decoRand(rng);
+    const sg = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 3), new THREE.MeshLambertMaterial({ color: 0xeeeeee }));
+    body.rotation.x = Math.PI / 2; sg.add(body);
+    const wingL = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
+    wingL.position.set(-0.2, 0, 0); sg.add(wingL);
+    const wingR = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
+    wingR.position.set(0.2, 0, 0); sg.add(wingR);
+    sg.position.set(wx + (r() - 0.5) * 52, 24 + r() * 10, wz + (r() - 0.5) * 52);
+    sg.userData.cx = wx; sg.userData.cz = wz; sg.userData.phase = r() * Math.PI * 2;
+    sg.userData.radius = 26 + r() * 42; sg.userData.speed = 0.12 + r() * 0.16;
+    sg.userData.wingL = wingL; sg.userData.wingR = wingR;
+    scene.add(sg); editorSeagulls.push(sg);
+  }
+  function editorSpawnFish(wx, wz, count, rng) {
+    if (count <= 0 || isLand(wx, wz)) return;
+    const r = decoRand(rng);
+    const species = EDITOR_FISH_SPECIES[Math.floor(r() * EDITOR_FISH_SPECIES.length)];
+    const depth = SEA_LEVEL - 0.08 - r() * 0.12;
+    const leader = { x: wx, z: wz, dir: r() * Math.PI * 2, speed: 1.2 + r() * 2.5, turnTimer: 2 + r() * 4, depth };
+    editorFishLeaders.push(leader);
+    for (let i = 0; i < count; i++) {
+      const fg = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 5), new THREE.MeshBasicMaterial({ color: species.color }));
+      body.rotation.x = Math.PI / 2; fg.add(body);
+      fg.position.set(wx + (r() - 0.5) * 3, depth, wz + (r() - 0.5) * 3);
+      fg.userData.leader = leader;
+      fg.userData.offsetX = (r() - 0.5) * 2.5;
+      fg.userData.offsetZ = (r() - 0.5) * 2.5;
+      fg.userData.wiggle = r() * Math.PI * 2;
+      scene.add(fg); editorFishSchools.push(fg);
+    }
+  }
+  function refreshEditorWildlife() {
+    clearEditorWildlife();
+    const rng = mulberry32(parseWorldSeed32(document.getElementById('inp-seed').value) ^ 0x5eefbeef);
+    const centers = [];
+    for (const t of towns) {
+      const wx = t.dockX != null ? t.dockX : t.worldX;
+      const wz = t.dockZ != null ? t.dockZ : t.worldZ;
+      centers.push({ wx, wz, r: 120 });
+    }
+    if (!centers.length) centers.push({ wx: 0, wz: 0, r: worldEdgeClamp * 0.4 });
+    for (const c of centers) {
+      const nBird = 3 + Math.floor(rng() * 5);
+      for (let i = 0; i < nBird; i++) {
+        editorSpawnSeagull(c.wx + (rng() - 0.5) * c.r * 1.2, c.wz + (rng() - 0.5) * c.r * 1.2, rng);
+      }
+      for (let fi = 0; fi < 10; fi++) {
+        const ang = rng() * Math.PI * 2;
+        const d = c.r * 0.35 + rng() * c.r * 1.8;
+        const fxx = c.wx + Math.cos(ang) * d, fzz = c.wz + Math.sin(ang) * d;
+        if (!isLand(fxx, fzz)) editorSpawnFish(fxx, fzz, 4 + Math.floor(rng() * 8), rng);
+      }
+    }
+    for (let k = 0; k < 28; k++) {
+      const wx = (rng() * 2 - 1) * worldEdgeClamp * 0.85;
+      const wz = (rng() * 2 - 1) * worldEdgeClamp * 0.85;
+      if (!isLand(wx, wz)) editorSpawnFish(wx, wz, 3 + Math.floor(rng() * 7), rng);
+    }
+  }
+  function updateEditorWildlife(dt, timeSec) {
+    editorFishLeaders.forEach(l => {
+      l.turnTimer -= dt;
+      if (l.turnTimer <= 0) { l.dir += (Math.random() - 0.5) * 2; l.turnTimer = 2 + Math.random() * 5; }
+      l.x += Math.sin(l.dir) * l.speed * dt;
+      l.z += Math.cos(l.dir) * l.speed * dt;
+      if (isLand(l.x, l.z)) {
+        l.dir += Math.PI + (Math.random() - 0.5);
+        l.x -= Math.sin(l.dir) * l.speed * dt * 2;
+        l.z -= Math.cos(l.dir) * l.speed * dt * 2;
+      }
+    });
+    editorFishSchools.forEach(f => {
+      const l = f.userData.leader;
+      const tx = l.x + f.userData.offsetX, tz = l.z + f.userData.offsetZ;
+      f.position.x += (tx - f.position.x) * 2 * dt;
+      f.position.z += (tz - f.position.z) * 2 * dt;
+      f.position.y = l.depth + Math.sin(timeSec * 3 + f.userData.wiggle) * 0.08;
+      f.userData.wiggle += dt * 5;
+      const fdx = l.x - f.position.x, fdz = l.z - f.position.z;
+      const moveLen = Math.sqrt(fdx * fdx + fdz * fdz);
+      if (moveLen > 0.05) f.rotation.y = Math.atan2(fdx, fdz);
+    });
+    editorSeagulls.forEach(sg => {
+      sg.userData.phase += sg.userData.speed * dt;
+      const p = sg.userData.phase;
+      sg.position.x = sg.userData.cx + Math.cos(p) * sg.userData.radius;
+      sg.position.z = sg.userData.cz + Math.sin(p) * sg.userData.radius;
+      sg.position.y = 22 + Math.sin(p * 2) * 4;
+      sg.rotation.y = p + Math.PI / 2;
+      const wingFlap = Math.sin(timeSec * 2.6 + sg.userData.phase * 3) * 0.4;
+      sg.userData.wingL.rotation.z = wingFlap;
+      sg.userData.wingR.rotation.z = -wingFlap;
+    });
+  }
+  function updateAmbientPreviewBoat(timeSec) {
+    if (sailPreviewOn) return;
+    let wx, wz, rot;
+    if (playerSpawn) {
+      wx = playerSpawn.x; wz = playerSpawn.z;
+      rot = playerSpawn.rotation != null ? playerSpawn.rotation : 0;
+    } else {
+      wx = controls.target.x; wz = controls.target.z;
+      const sea = findOpenWaterNear(wx, wz);
+      wx = sea.x; wz = sea.z;
+      rot = controls.getAzimuthalAngle();
+    }
+    const waveB = waterGerstnerY(wx, wz, timeSec);
+    previewBoat.position.set(wx, EDITOR_WATER_BASE_Y + waveB + 0.9, wz);
+    previewBoat.rotation.y = rot;
+    previewBoat.visible = true;
+    previewBoat.traverse(ch => {
+      if (ch.userData && ch.userData.isCrew) {
+        const k = ch.userData.animKey || 0;
+        const bp = ch.userData.basePos || { y: 0 };
+        ch.position.y = bp.y + Math.sin(timeSec * 2.2 + k) * 0.04;
+      }
+    });
+  }
 
   const spawnMarker = new THREE.Group();
   const spawnRing = new THREE.Mesh(
@@ -1638,7 +1805,6 @@
       document.getElementById('status-bar').textContent =
         'Sail preview — WASD / arrows, Esc to exit. Set spawn from boat or orbit target.';
     } else {
-      previewBoat.visible = false;
       previewKeys.clear();
       document.getElementById('status-bar').textContent =
         'Ready · Sculpt: left drag · Pan chart: WASD / arrows · Orbit: right drag · Zoom: scroll';
@@ -2250,6 +2416,18 @@
   });
 
   window.addEventListener('keydown', e => {
+    if (e.key === 'F3') {
+      if (isTypingInFormField()) return;
+      e.preventDefault();
+      const ov = document.getElementById('me-f3-overlay');
+      if (ov) {
+        const open = !ov.classList.contains('open');
+        ov.classList.toggle('open', open);
+        ov.setAttribute('aria-hidden', open ? 'false' : 'true');
+        if (open) renderMeShipLab();
+      }
+      return;
+    }
     if (e.key === 'Escape' && sailPreviewOn) {
       e.preventDefault();
       setSailPreview(false);
@@ -2348,6 +2526,12 @@
         stockpile: t.stockpile && typeof t.stockpile === 'object' ? t.stockpile : buildStockpileObject(t)
       })),
       entities: JSON.parse(JSON.stringify(entities)),
+      shipPreview: {
+        shipType: editorPreviewShipType,
+        shipParts: { ...editorPreviewShipParts },
+        flagColor: editorPreviewFlagColor,
+        crew: JSON.parse(JSON.stringify(editorPreviewCrew))
+      },
       factions: {
         names: editorFactionNames.slice(0, 4),
         colors: editorFactionColors.slice(0, 4)
@@ -2397,6 +2581,8 @@
     refreshEntityList();
     document.getElementById('status-bar').textContent =
       'Map cleared — terrain unchanged; add ports and props or load a JSON.';
+    refreshTownOverlays();
+    refreshEditorWildlife();
   }
 
   /** Flat ocean chart: no land, no towns, no props. */
@@ -2414,6 +2600,7 @@
     buildTerrainMesh();
     refreshEntityList();
     frameEntireMap();
+    refreshEditorWildlife();
     document.getElementById('status-bar').textContent =
       'New blank chart — open ocean only; sculpt land, generate from seed, or load JSON.';
   }
@@ -2505,9 +2692,53 @@
     return new Float32Array(buf.buffer, 0, nf);
   }
 
+  function decodeMapHeightsB64Flexible(b64) {
+    const t = String(b64 == null ? '' : b64).replace(/\s+/g, '');
+    if (!t) return null;
+    let raw;
+    try { raw = atob(t); } catch (e) { return null; }
+    if (raw.length % 4 !== 0) return null;
+    const nf = raw.length / 4;
+    const gn = Math.round(Math.sqrt(nf));
+    if (gn * gn !== nf || gn < 8 || gn > 512) return null;
+    const buf = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+    return { gridN: gn, heights: new Float32Array(buf.buffer, 0, nf) };
+  }
+
+  function resampleHeightsToGrid(src, srcN, dst, dstN) {
+    for (let iz = 0; iz < dstN; iz++) {
+      for (let ix = 0; ix < dstN; ix++) {
+        const u = ix / Math.max(1, dstN - 1), v = iz / Math.max(1, dstN - 1);
+        const fx = u * (srcN - 1), fz = v * (srcN - 1);
+        const x0 = Math.floor(fx), z0 = Math.floor(fz);
+        const x1 = Math.min(srcN - 1, x0 + 1), z1 = Math.min(srcN - 1, z0 + 1);
+        const tx = fx - x0, tz = fz - z0;
+        const h00 = src[z0 * srcN + x0], h10 = src[z0 * srcN + x1];
+        const h01 = src[z1 * srcN + x0], h11 = src[z1 * srcN + x1];
+        const a = h00 * (1 - tx) + h10 * tx, b = h01 * (1 - tx) + h11 * tx;
+        dst[iz * dstN + ix] = a * (1 - tz) + b * tz;
+      }
+    }
+  }
+
+  function applyShipPreviewFromData(data) {
+    if (!data || !data.shipPreview || typeof data.shipPreview !== 'object') return;
+    const sp = data.shipPreview;
+    if (sp.shipType && SHIP_TYPES_ME[sp.shipType]) editorPreviewShipType = sp.shipType;
+    if (sp.shipParts && typeof sp.shipParts === 'object') {
+      editorPreviewShipParts = { ...editorPreviewShipParts, ...sp.shipParts };
+    }
+    if (sp.flagColor) editorPreviewFlagColor = String(sp.flagColor);
+    if (Array.isArray(sp.crew) && sp.crew.length) editorPreviewCrew = sp.crew.map(c => ({ ...c }));
+    rebuildEditorPreviewBoat();
+    renderMeShipLab();
+  }
+
   function applySerialized(data) {
     if (!data || typeof data !== 'object') return;
     applyEditorFactionsFromSerializedData(data);
+    applyShipPreviewFromData(data);
     const sb = document.getElementById('status-bar');
     const seedSrc = data.seed != null ? data.seed : data.worldSeed;
     const hasSeed = seedSrc !== undefined && seedSrc !== null && String(seedSrc).trim() !== '';
@@ -2525,21 +2756,24 @@
           ? `Procedural map (seed ${s}) — ${nT} port(s) (from file or generated).`
           : `Procedural map from seed ${s} — same generator as the main game.`;
       }
+      refreshEditorWildlife();
       return;
     }
-    const decoded = decodeMapHeightsB64(data.heightsB64, heights.length);
-    if (!decoded) {
+    const flex = decodeMapHeightsB64Flexible(data.heightsB64);
+    if (!flex) {
       if (hasSeed) {
         const s = Number(seedSrc) >>> 0;
         applyProceduralWorldPayload(data, s);
         if (sb) sb.textContent = `Heights could not be decoded (wrong size or bad base64) — filled archipelago from seed ${s}.`;
+        refreshEditorWildlife();
       } else if (sb) sb.textContent = 'Heights could not be decoded and JSON has no seed to fall back on.';
       return;
     }
     editorUseProceduralTerrainChunks = false;
     lastProceduralTerrainSeed = null;
     disposeProceduralTerrainChunks();
-    heights.set(decoded);
+    if (flex.gridN !== GRID_N) resampleHeightsToGrid(flex.heights, flex.gridN, heights, GRID_N);
+    else heights.set(flex.heights);
     towns = Array.isArray(data.towns) ? data.towns.map(t => ({
       ...t,
       hasTown: true
@@ -2593,6 +2827,7 @@
     syncEntityMeshes();
     refreshEntityList();
     frameEntireMap();
+    refreshEditorWildlife();
   }
 
   document.getElementById('btn-gen-procedural').addEventListener('click', () => {
@@ -2627,7 +2862,39 @@
     frameEntireMap();
     document.getElementById('status-bar').textContent =
       `Procedural archipelago (seed ${s >>> 0}) — ${towns.length} port(s) listed at left with dock markers; paint or export JSON.`;
+    refreshEditorWildlife();
   });
+
+  function generateDecorations() {
+    const rng = mulberry32(parseWorldSeed32(document.getElementById('inp-seed').value) ^ 0xdec0de81);
+    let placed = 0;
+    const tries = Math.min(200000, Math.floor(GRID_N * GRID_N * 0.045));
+    for (let n = 0; n < tries; n++) {
+      const gx = Math.floor(rng() * GRID_N);
+      const gz = Math.floor(rng() * GRID_N);
+      const h = heights[gz * GRID_N + gx];
+      if (h <= WATER_THR + 0.05) continue;
+      let coastal = false;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = gx + dx, nz = gz + dz;
+        if (nx < 0 || nx >= GRID_N || nz < 0 || nz >= GRID_N) { coastal = true; break; }
+        if (heights[nz * GRID_N + nx] <= WATER_THR) { coastal = true; break; }
+      }
+      if (coastal || h > 0.9) continue;
+      const lim = worldEdgeClamp;
+      const wx = (gx / (GRID_N - 1)) * 2 * lim - lim;
+      const wz = (gz / (GRID_N - 1)) * 2 * lim - lim;
+      if (entities.some(e => e && Math.hypot(e.x - wx, e.z - wz) < 5)) continue;
+      const roll = rng();
+      const type = roll < 0.5 ? 'tree' : roll < 0.82 ? 'bush' : roll < 0.93 ? 'rock' : 'driftwood';
+      entities.push({ id: 'e' + (entSeq++), type, x: wx, z: wz, rot: rng() * Math.PI * 2 });
+      placed++;
+    }
+    syncEntityMeshes();
+    refreshEntityList();
+    document.getElementById('status-bar').textContent =
+      `Placed ${placed} decorations — trees, bushes, rocks, driftwood (inland, away from shore).`;
+  }
 
   document.getElementById('btn-save-json').addEventListener('click', () => {
     const json = JSON.stringify(serializeMap(), null, 2);
@@ -2819,8 +3086,13 @@
         heights[iz * GRID_N + ix] = h;
       }
     }
-    /* Skip dilate — it bridges narrow channels; PNG is already nearest-pixel sampled. */
-    if (resolvedMode === 'height') plateauLandDepressions();
+    if (resolvedMode === 'height') {
+      plateauLandDepressions();
+    } else {
+      dilateLandIntoShallowWater();
+      dilateLandIntoShallowWater();
+    }
+    flattenImportedLandInteriorPasses(resolvedMode === 'height' ? 2 : 1);
     for (let i = 0; i < heights.length; i++) {
       if (heights[i] > WATER_THR) {
         heights[i] = WATER_THR + (heights[i] - WATER_THR) * EDITOR_PNG_LAND_REL_SCALE;
@@ -2831,6 +3103,7 @@
     syncEntityMeshes();
     refreshEntityList();
     frameEntireMap();
+    refreshEditorWildlife();
     const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
     document.getElementById('status-bar').textContent =
       `PNG applied (${modeNote}), nearest-pixel crop → grid. Top → world −Z, left → −X.`;
@@ -2933,6 +3206,9 @@
       sky.material.uniforms.uTime.value = t;
       sky.material.uniforms.uSunPos.value.set(200 + sx * 80, 300, 100 + sz * 80);
     }
+
+    updateEditorWildlife(dt, t);
+    updateAmbientPreviewBoat(t);
 
     if (physOn) {
       for (const b of physBodies) {
@@ -3041,6 +3317,48 @@
     readFactionEditorFromDom();
     document.getElementById('status-bar').textContent = 'Faction labels saved for this session — export JSON to persist.';
   });
+
+  const meF3 = document.getElementById('me-f3-overlay');
+  document.getElementById('me-f3-close')?.addEventListener('click', () => {
+    if (meF3) { meF3.classList.remove('open'); meF3.setAttribute('aria-hidden', 'true'); }
+  });
+  meF3?.addEventListener('click', ev => {
+    if (ev.target === meF3) { meF3.classList.remove('open'); meF3.setAttribute('aria-hidden', 'true'); }
+  });
+  document.getElementById('me-nav-unlock')?.addEventListener('click', () => {
+    const pw = document.getElementById('me-nav-pw')?.value || '';
+    const st = document.getElementById('me-nav-status');
+    fetch(`${location.protocol}//${location.host}/api/navigator-auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw })
+    }).then(r => r.json()).then(j => {
+      if (j.ok && j.token) {
+        try { sessionStorage.setItem('pirates_navigator_sess', j.token); } catch (err) {}
+        if (st) st.textContent = 'Session OK — you can publish.';
+      } else if (st) st.textContent = j.error || 'Auth failed.';
+    }).catch(() => { if (st) st.textContent = 'Network error.'; });
+  });
+  document.getElementById('me-publish-world')?.addEventListener('click', () => {
+    const st = document.getElementById('me-nav-status');
+    let tok;
+    try { tok = sessionStorage.getItem('pirates_navigator_sess'); } catch (err) {}
+    if (!tok) {
+      if (st) st.textContent = 'Unlock with password first (Get session).';
+      return;
+    }
+    fetch(`${location.protocol}//${location.host}/api/world-map`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tok, map: serializeMap() })
+    }).then(r => r.json()).then(j => {
+      if (j.ok) {
+        if (st) st.textContent = `Published — revision ${j.revision}. Players sync this chart when they connect.`;
+      } else if (st) st.textContent = j.error || 'Publish failed.';
+    }).catch(() => { if (st) st.textContent = 'Network error.'; });
+  });
+  document.getElementById('btn-gen-deco')?.addEventListener('click', () => generateDecorations());
+
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) applySerialized(JSON.parse(raw));
@@ -3048,6 +3366,8 @@
   requestAnimationFrame(() => {
     resize();
     frameEntireMap();
+    renderMeShipLab();
+    refreshEditorWildlife();
   });
   refreshSpawnHud();
   </script>
