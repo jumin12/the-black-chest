@@ -408,6 +408,14 @@ function loadPersistedState() {
     return;
   }
   WORLD_SEED = raw.seed != null ? Number(raw.seed) >>> 0 : DEFAULT_WORLD_SEED >>> 0;
+  // If `world_seed.json` defines `leaderboard` (even `[]`), treat it as authoritative. Otherwise
+  // `pickBestLeaderboardArrays` would prefer a longer stale `leaderboard.json` / shadow copy and
+  // undo navigator wipes after restart.
+  if (Object.prototype.hasOwnProperty.call(raw, 'leaderboard')) {
+    const lb = raw.leaderboard;
+    leaderboardHistory = Array.isArray(lb) ? lb.map(normalizeLbEntry) : [];
+    return;
+  }
   const picked = pickBestLeaderboardArrays(collectLeaderboardCandidatesFromDisk(raw, worldMtime));
   leaderboardHistory = picked.map(normalizeLbEntry);
   migrateLegacyStandaloneLeaderboard();
