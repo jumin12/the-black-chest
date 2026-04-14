@@ -777,7 +777,7 @@ wss.on('connection', (ws, req) => {
     z: Math.sin(spawnAngle) * spawnDist,
     rotation: 0,
     speed: 0,
-    shipType: 'sloop',
+    shipType: 'cutter',
     shipName: '',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
