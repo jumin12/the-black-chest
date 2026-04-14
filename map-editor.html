@@ -143,8 +143,8 @@
         <h3>PNG → heightmap</h3>
         <label class="row">Interpretation</label>
         <select id="png-mode">
+          <option value="mask" selected>Coast mask — dark land, bright water</option>
           <option value="auto">Auto (detect mask vs heightmap)</option>
-          <option value="mask">Coast mask — dark land, bright water</option>
           <option value="height">Heightmap — dark low / shallow, bright high</option>
         </select>
         <label class="row" style="margin-top:8px;display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;">
@@ -184,6 +184,9 @@
   const WATER_THR = 0.12;
   const MAX_H = 18;
   const SEA_LEVEL = 0;
+  /** Editor ocean: lower base + smaller Gerstner vs main game so swell never reads as “over” islands. */
+  const EDITOR_WATER_BASE_Y = SEA_LEVEL - 0.92;
+  const EDITOR_WAVE_SCALE = 0.42;
   const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
   const STORAGE_KEY = 'pirates_custom_map_v1';
 
@@ -274,13 +277,29 @@
     const dx = (cw - dw) * 0.5, dy = (ch - dh) * 0.5;
     return { dx, dy, dw, dh };
   }
-  function detectPngModeFromLum(samples) {
-    let sum = 0;
-    for (let k = 0; k < samples.length; k++) sum += samples[k];
-    const mean = samples.length ? sum / samples.length : 0.5;
-    return mean > 0.56 ? 'height' : 'mask';
+  /** Auto: coast masks usually have big bright “ocean” regions; heightmaps are smoother with few near-white pixels. */
+  function detectPngModeFromImageData(d) {
+    let n = 0, sum = 0, sumSq = 0, bright = 0;
+    const step = 6;
+    for (let iz = 0; iz < GRID_N; iz += step) {
+      for (let ix = 0; ix < GRID_N; ix += step) {
+        const p = (iz * GRID_N + ix) * 4;
+        const lum = (d[p] + d[p + 1] + d[p + 2]) / (3 * 255);
+        n++;
+        sum += lum;
+        sumSq += lum * lum;
+        if (lum > 0.85) bright++;
+      }
+    }
+    if (!n) return 'mask';
+    const mean = sum / n;
+    const variance = Math.max(0, sumSq / n - mean * mean);
+    const fracBright = bright / n;
+    if (fracBright > 0.07 || mean > 0.54) return 'mask';
+    if (variance > 0.032 && fracBright < 0.035 && mean > 0.18 && mean < 0.75) return 'height';
+    return 'mask';
   }
-  /** Returns stored height 0..1 (deep water uses ~DEEP_WATER_H). */
+  /** Stored height 0..1. Mask mode matches original editor: bright = water shelf, dark = land. */
   function lumToHeight01(lum, mode) {
     if (mode === 'height') {
       if (lum < 0.14) return DEEP_WATER_H;
@@ -288,9 +307,9 @@
       const shaped = Math.pow(t, 1.05);
       return Math.max(WATER_THR + 0.07, Math.min(1, shaped * 0.96 + 0.04));
     }
-    if (lum > 0.82) return DEEP_WATER_H;
+    if (lum > 0.88) return WATER_THR * 0.35;
     const t = Math.max(0, 1 - lum);
-    return Math.max(WATER_THR + 0.08, Math.min(1, Math.pow(t, 0.78) * 1.35));
+    return Math.max(0.15, Math.min(1, Math.pow(t, 0.82) * 1.55));
   }
 
   const canvas = document.getElementById('viewport');
@@ -339,28 +358,29 @@
 
   const waterUniforms = {
     uTime: { value: 0 },
+    uWaveScale: { value: EDITOR_WAVE_SCALE },
     uSunDir: { value: new THREE.Vector3(0.4, 0.6, 0.2).normalize() },
     uCamPos: { value: new THREE.Vector3() }
   };
-  /* Slightly reduced wave amplitude vs main game — avoids depth fighting with terrain at large world coords. */
-  const WATER_WAVE_SCALE = 0.45;
   const waterVS = `
-    uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
-    const float WSCALE = ${WATER_WAVE_SCALE.toFixed(4)};
+    uniform float uTime; uniform float uWaveScale; varying vec3 vWorldPos; varying vec3 vNormal;
     vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
       float k=6.2831853/wl; float c=sqrt(9.8/k); float a=s/k; vec2 dn=normalize(d);
       float f=k*(dot(dn,p.xz)-c*sp*uTime);
-      return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f)) * WSCALE;
+      return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
+    }
+    vec3 wsum(vec3 p){
+      return gw(p,0.05,65.0,vec2(1,.2),0.6) + gw(p,0.03,40.0,vec2(.35,1),.45)
+        + gw(p,0.02,22.0,vec2(-.55,.75),0.7) + gw(p,0.015,13.0,vec2(.8,-.35),0.85)
+        + gw(p,0.008,7.5,vec2(-.25,-.85),1.1) + gw(p,0.005,4.5,vec2(.85,.45),1.4);
     }
     void main(){
       vec3 pos=position;
-      pos += gw(pos,0.05,65.0,vec2(1,.2),0.6) + gw(pos,0.03,40.0,vec2(.35,1),.45)
-         + gw(pos,0.02,22.0,vec2(-.55,.75),0.7) + gw(pos,0.015,13.0,vec2(.8,-.35),0.85)
-         + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4);
+      pos += wsum(pos) * uWaveScale;
       vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
       float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
-      pX += gw(pX,.05,65.,vec2(1,.2),.6) + gw(pX,.03,40.,vec2(.35,1),.45) + gw(pX,.02,22.,vec2(-.55,.75),.7) + gw(pX,.015,13.,vec2(.8,-.35),.85);
-      pZ += gw(pZ,.05,65.,vec2(1,.2),.6) + gw(pZ,.03,40.,vec2(.35,1),.45) + gw(pZ,.02,22.,vec2(-.55,.75),.7) + gw(pZ,.015,13.,vec2(.8,-.35),.85);
+      pX += wsum(pX) * uWaveScale;
+      pZ += wsum(pZ) * uWaveScale;
       vNormal = normalize(cross(pZ-pos, pX-pos));
       gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
     }`;
@@ -406,10 +426,8 @@
   let water = null;
   const waterMaterial = new THREE.ShaderMaterial({
     uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
-    transparent: false,
-    depthWrite: false,
-    depthTest: true,
-    side: THREE.FrontSide
+    transparent: false, depthWrite: true, side: THREE.FrontSide,
+    polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2
   });
   function rebuildWaterPlane() {
     if (water) {
@@ -421,8 +439,8 @@
     const waterGeom = new THREE.PlaneGeometry(wSize, wSize, 200, 200);
     waterGeom.rotateX(-Math.PI / 2);
     water = new THREE.Mesh(waterGeom, waterMaterial);
-    water.position.set(0, SEA_LEVEL - 0.5, 0);
-    water.renderOrder = -2;
+    water.position.set(0, EDITOR_WATER_BASE_Y, 0);
+    water.renderOrder = 0;
     scene.add(water);
   }
   function resizeSkyDome() {
@@ -459,15 +477,10 @@
     pos.needsUpdate = true;
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
-    terrainMesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
-      vertexColors: true,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1
-    }));
+    terrainMesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
     terrainMesh.position.set(0, 0, 0);
     terrainMesh.receiveShadow = true;
-    terrainMesh.renderOrder = 0;
+    terrainMesh.renderOrder = 1;
     scene.add(terrainMesh);
   }
   buildTerrainMesh();
@@ -514,7 +527,6 @@
   }
 
   const entRoot = new THREE.Group();
-  entRoot.renderOrder = 2;
   scene.add(entRoot);
 
   const previewBoat = new THREE.Group();
@@ -530,7 +542,6 @@
   mastPm.position.y = 8;
   previewBoat.add(hullPm, mastPm);
   previewBoat.visible = false;
-  previewBoat.renderOrder = 3;
   scene.add(previewBoat);
 
   const spawnMarker = new THREE.Group();
@@ -546,7 +557,6 @@
   spawnPole.position.y = 2.75;
   spawnMarker.add(spawnRing, spawnPole);
   spawnMarker.visible = false;
-  spawnMarker.renderOrder = 3;
   scene.add(spawnMarker);
 
   function refreshSpawnHud() {
@@ -608,7 +618,7 @@
     spawnMarker.visible = true;
     const wx = playerSpawn.x, wz = playerSpawn.z;
     const wave = waterGerstnerY(wx, wz, timeSec);
-    spawnMarker.position.set(wx, SEA_LEVEL - 0.15 + wave + 0.15, wz);
+    spawnMarker.position.set(wx, EDITOR_WATER_BASE_Y + wave + 0.35, wz);
     spawnMarker.rotation.y = timeSec * 0.2;
   }
 
@@ -852,7 +862,7 @@
       const f = k * ((dnx * wx + dnz * wz) - c * sp[i] * time);
       sy += (s[i] / k) * Math.sin(f);
     }
-    return sy * WATER_WAVE_SCALE;
+    return sy * EDITOR_WAVE_SCALE;
   }
   document.getElementById('btn-sail-toggle').addEventListener('click', () => setSailPreview(!sailPreviewOn));
   document.getElementById('btn-spawn-boat').addEventListener('click', () => {
@@ -1145,17 +1155,7 @@
     const d = tctx.getImageData(0, 0, GRID_N, GRID_N).data;
     let modeSel = document.getElementById('png-mode').value;
     let resolvedMode = modeSel;
-    if (modeSel === 'auto') {
-      const samples = [];
-      const step = 8;
-      for (let iz = 0; iz < GRID_N; iz += step) {
-        for (let ix = 0; ix < GRID_N; ix += step) {
-          const p = (iz * GRID_N + ix) * 4;
-          samples.push((d[p] + d[p + 1] + d[p + 2]) / (3 * 255));
-        }
-      }
-      resolvedMode = detectPngModeFromLum(samples);
-    }
+    if (modeSel === 'auto') resolvedMode = detectPngModeFromImageData(d);
     const circular = document.getElementById('png-circular').checked;
     for (let iz = 0; iz < GRID_N; iz++) {
       for (let ix = 0; ix < GRID_N; ix++) {
@@ -1280,7 +1280,7 @@
     if (physOn) {
       for (const b of physBodies) {
         const wx = b.mesh.position.x, wz = b.mesh.position.z;
-        const surface = SEA_LEVEL - 0.5 + waterGerstnerY(wx, wz, t);
+        const surface = EDITOR_WATER_BASE_Y + waterGerstnerY(wx, wz, t);
         const sub = surface - b.mesh.position.y;
         if (b.mesh.position.y < surface + 0.2) {
           b.vy += b.buoy * sub * dt;
@@ -1320,7 +1320,7 @@
       previewBoatState.z = Math.max(-lim, Math.min(lim, previewBoatState.z));
       const bx = previewBoatState.x, bz = previewBoatState.z, br = previewBoatState.rot;
       const waveB = waterGerstnerY(bx, bz, t);
-      previewBoat.position.set(bx, SEA_LEVEL - 0.5 + waveB + 0.9, bz);
+      previewBoat.position.set(bx, EDITOR_WATER_BASE_Y + waveB + 0.9, bz);
       previewBoat.rotation.y = br;
       const camDist = 54, camElev = 28;
       camera.position.set(
