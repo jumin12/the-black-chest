@@ -268,6 +268,14 @@ function sortLeaderboardHistory() {
   });
 }
 
+/** Fold duplicate captain rows (same `captainKey` or same `playerId`) after backfilling keys from display names. */
+function reconcileLeaderboardRows() {
+  backfillLeaderboardCaptainKeys();
+  mergeLeaderboardByIdentity();
+  sortLeaderboardHistory();
+  leaderboardHistory = leaderboardHistory.slice(0, 50);
+}
+
 function writeFileAtomic(filePath, dataStr) {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
@@ -806,6 +814,7 @@ wss.on('connection', (ws, req) => {
     worldStory: sanitizeWorldStory(worldStoryQuest),
     worldQuests: worldQuests && worldQuests.length ? worldQuests : null
   }));
+  reconcileLeaderboardRows();
   ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
 
   for (const m of chatHistory.slice(-40)) {
@@ -1101,13 +1110,14 @@ wss.on('connection', (ws, req) => {
           kp.kills = (kp.kills || 0) + dk;
           kp.loot = (kp.loot || 0) + dl;
           const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
-          const idx = getLeaderboardRowIndex(killerId, capName, kp.captainKey || null, kp.shipName);
+          const killerWs = findWsByPlayerId(killerId);
+          const killerCk = killerWs && killerWs.captainAccountKey ? killerWs.captainAccountKey : (kp.captainKey || null);
+          const idx = getLeaderboardRowIndex(killerId, capName, killerCk, kp.shipName);
           const row = normalizeLbEntry(leaderboardHistory[idx]);
           row.sinksPlayer += dk;
           row.gold += dl;
           leaderboardHistory[idx] = row;
-          sortLeaderboardHistory();
-          leaderboardHistory = leaderboardHistory.slice(0, 50);
+          reconcileLeaderboardRows();
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
@@ -1132,8 +1142,7 @@ wss.on('connection', (ws, req) => {
           row.ransoms += dr;
           row.deaths += dd;
           leaderboardHistory[idx] = row;
-          sortLeaderboardHistory();
-          leaderboardHistory = leaderboardHistory.slice(0, 50);
+          reconcileLeaderboardRows();
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
@@ -1160,8 +1169,7 @@ wss.on('connection', (ws, req) => {
           row.gold += dg;
           row.sinksAi += dAi;
           leaderboardHistory[idx] = row;
-          sortLeaderboardHistory();
-          leaderboardHistory = leaderboardHistory.slice(0, 50);
+          reconcileLeaderboardRows();
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           broadcastAll({
@@ -1324,6 +1332,7 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'get_leaderboard': {
+          reconcileLeaderboardRows();
           ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
           break;
         }
@@ -1332,9 +1341,7 @@ wss.on('connection', (ws, req) => {
           const entries = msg.entries;
           if (!Array.isArray(entries) || entries.length === 0) break;
           leaderboardHistory = entries.slice(0, 50).map(normalizeLbEntry);
-          mergeLeaderboardByIdentity();
-          sortLeaderboardHistory();
-          leaderboardHistory = leaderboardHistory.slice(0, 50);
+          reconcileLeaderboardRows();
           saveLeaderboard();
           leaderboardClientSeeded = true;
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
