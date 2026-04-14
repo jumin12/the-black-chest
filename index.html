@@ -1848,7 +1848,8 @@ const waterFS = `
     float sss = pow(max(dot(V,-L+N*0.4),0.0),2.5)*0.3;
     vec3 sub = vec3(0.0,0.45,0.35)*sss;
     float wh = vWorldPos.y;
-    float foam = smoothstep(0.12,0.25,wh)*0.25;
+    /* Narrower, softer foam so the shore read as terrain sand, not a painted white band. */
+    float foam = smoothstep(0.16,0.24,wh)*0.14;
     float fx=vWorldPos.x*0.1+uTime*0.05, fz=vWorldPos.z*0.1+uTime*0.04;
     float fn1 = sin(fx*4.1+fz*2.3)*sin(fz*3.7-fx*2.1);
     float fn2 = sin(fx*8.3-fz*6.1+uTime*0.08)*0.4;
@@ -1857,7 +1858,7 @@ const waterFS = `
     foam += smoothstep(0.55,0.75,foamPattern)*smoothstep(0.05,0.2,wh)*0.2;
     foam += smoothstep(0.7,0.9,foamPattern)*0.1;
     vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
-    color = mix(color,vec3(0.92,0.95,0.98),foam*0.5);
+    color = mix(color,vec3(0.92,0.95,0.98),foam*0.32);
     color = pow(color,vec3(1.0/2.2));
     gl_FragColor = vec4(color,1.0);
   }`;
@@ -2064,6 +2065,24 @@ function sampleCustomMapSurfaceY(wx, wz) {
   const h01 = sampleCustomMapHeight01(wx, wz);
   if (h01 <= thr) return SEA_LEVEL - 2 - (thr - h01) * 3;
   return SEA_LEVEL + h01 * maxH;
+}
+/**
+ * Land tint for custom-map terrain / chart: sand only in cells that border water (or shallow shelf),
+ * not a fake ring from `h < 0.35` everywhere inland.
+ * @param {Float32Array} heights
+ * @param {number} ix iz — floor grid cell from bilinear sample (same as chunk vertex cell).
+ */
+function customMapShoreLandRgb(heights, gridN, wThr, ix, iz, h) {
+  let coastal = false;
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const nx = ix + dx, nz = iz + dz;
+    if (nx < 0 || nx >= gridN || nz < 0 || nz >= gridN) { coastal = true; break; }
+    if (heights[nz * gridN + nx] <= wThr) { coastal = true; break; }
+  }
+  if (coastal || h <= wThr + 0.055) return [0.92, 0.82, 0.58];
+  if (h < 0.36) return [0.32, 0.58, 0.26];
+  const t = Math.min(1, (h - 0.36) / 0.64);
+  return [0.28 - t * 0.07, 0.48 - t * 0.06, 0.22 - t * 0.05];
 }
 function customMapPayloadFromObject(data) {
   if (!data || !data.heightsB64 || !data.version) return null;
@@ -2862,8 +2881,15 @@ function generateCustomMapChunk(cx, cz) {
     if (h > wThr) maxChunkH = Math.max(maxChunkH, h * maxH);
     let r, g, b;
     if (h <= wThr) { r = 0.05; g = 0.12; b = 0.2; }
-    else if (h < 0.35) { r = 0.93; g = 0.87; b = 0.60; }
-    else { const t = Math.min(1, (h - 0.35) / 0.65); r = 0.35 - t * 0.1; g = 0.55 - t * 0.05; b = 0.28; }
+    else {
+      const u = (wx + lim) / (2 * lim);
+      const v = (wz + lim) / (2 * lim);
+      const gxF = u * (gridN - 1);
+      const gzF = v * (gridN - 1);
+      const ix = Math.min(gridN - 1, Math.max(0, Math.floor(gxF)));
+      const iz = Math.min(gridN - 1, Math.max(0, Math.floor(gzF)));
+      [r, g, b] = customMapShoreLandRgb(heights, gridN, wThr, ix, iz, h);
+    }
     colors[i * 3] = r; colors[i * 3 + 1] = g; colors[i * 3 + 2] = b;
   }
   positions.needsUpdate = true;
@@ -10502,8 +10528,8 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
         const hh = a * (1 - tz) + b * tz;
         if (hh > wThr) {
           const sx = wx2sx(wx), sy = wz2sy(wz);
-          /* One land color — shoreline follows height threshold only (no extra “beach ring” overlay). */
-          ctx.fillStyle = '#2e7a32';
+          const [lr, lg, lb] = customMapShoreLandRgb(arr, gn, wThr, x0, z0, hh);
+          ctx.fillStyle = `rgb(${Math.round(lr * 255)},${Math.round(lg * 255)},${Math.round(lb * 255)})`;
           ctx.fillRect(sx - stepPx * 0.5, sy - stepPx * 0.5, stepPx + 1, stepPx + 1);
         }
       }
@@ -10847,7 +10873,8 @@ function drawMinimap() {
         const hh = a * (1 - tz) + b * tz;
         if (hh > wThr) {
           const sx = wx2sx(wx), sy = wz2sy(wz);
-          ctx.fillStyle = '#2e7a32';
+          const [lr, lg, lb] = customMapShoreLandRgb(arr, gn, wThr, x0, z0, hh);
+          ctx.fillStyle = `rgb(${Math.round(lr * 255)},${Math.round(lg * 255)},${Math.round(lb * 255)})`;
           ctx.fillRect(sx - stepPx * 0.5, sy - stepPx * 0.5, stepPx + 1, stepPx + 1);
         }
       }
