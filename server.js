@@ -469,7 +469,7 @@ function validateWorldMapPayload(map) {
   if (!map || typeof map !== 'object') return false;
   if (map.version == null) return false;
   const gn = Number(map.gridN);
-  if (!Number.isFinite(gn) || gn < 16 || gn > 512) return false;
+  if (!Number.isFinite(gn) || gn < 16 || gn > 768) return false;
   const b64 = map.heightsB64;
   if (typeof b64 !== 'string' || b64.length < 64) return false;
   if (b64.length > 14 * 1024 * 1024) return false;
@@ -701,7 +701,7 @@ const server = http.createServer((req, res) => {
       const mapObj = body.map;
       if (!validateWorldMapPayload(mapObj)) {
         res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-        res.end(JSON.stringify({ ok: false, error: 'Invalid map (need version, gridN 16–512, heightsB64).' }));
+        res.end(JSON.stringify({ ok: false, error: 'Invalid map (need version, gridN 16–768, heightsB64).' }));
         return;
       }
       if (!setWorldMapAndBroadcast(mapObj)) {

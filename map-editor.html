@@ -133,7 +133,7 @@
       <details class="me-section" open>
         <summary>2 · Objects &amp; spawn</summary>
         <div class="inner">
-          <p class="hint" style="margin-top:0;"><strong>Select &amp; move</strong> / <strong>Rotate</strong>: click a prop or port marker. <strong>Arrow ↑↓</strong> adjust lift, <strong>←→</strong> yaw whenever an object is selected (any tool). <strong>Player spawn</strong> marker uses arrows for its height/yaw. <strong>WASD</strong> pans the chart.</p>
+          <p class="hint" style="margin-top:0;"><strong>Select &amp; move</strong> — drag props on the terrain (no gizmo; arrows do not move props). <strong>Adjust (gizmo · arrows)</strong> — gizmo on selection; <strong>arrows</strong> change lift and yaw (no click-drag move). Port markers and spawn work in both. <strong>WASD</strong> pans.</p>
           <div class="actions" style="flex-direction:row;flex-wrap:wrap;">
             <button type="button" id="btn-clear-sel">Clear selection</button>
             <button type="button" id="btn-del-ent" class="danger">Delete selected</button>
@@ -318,7 +318,7 @@
   const MAP_HALF_MAX = 12000;
   let worldEdgeClamp = DEFAULT_WORLD_EDGE_CLAMP;
   /** Higher grid = finer PNG islands & coast detail (keep ≤ server cap, typically 512). */
-  const GRID_N = 512;
+  const GRID_N = 640;
   /** Extra mesh vertices per height cell — smoother silhouettes (height still sampled from GRID_N). */
   const TERRAIN_MESH_SUB = 2;
   const WATER_THR = 0.12;
@@ -382,7 +382,7 @@
     ['smooth', 'Smooth'],
     ['water', 'Carve water'],
     ['select', 'Select & move'],
-    ['rotate', 'Rotate entity'],
+    ['adjust', 'Adjust (gizmo · arrows)'],
     ['spawn', 'Player spawn'],
     ['tree', 'Tree'],
     ['bush', 'Bush'],
@@ -898,7 +898,7 @@
   /** Mild lift — keep imported heightmap closer to in-game island relief. */
   const PNG_LAND_GAIN = 0.92;
   /** After PNG decode, compress land range toward sea (editor preview vs chunky mesas). */
-  const EDITOR_PNG_LAND_REL_SCALE = 0.56;
+  const EDITOR_PNG_LAND_REL_SCALE = 0.46;
   function boostLandHeight01(h) {
     if (h <= WATER_THR) return h;
     return Math.min(1, WATER_THR + 0.045 + (h - WATER_THR) * PNG_LAND_GAIN);
@@ -910,7 +910,7 @@
       if (lum < 0.11) return DEEP_WATER_H;
       const t = clamp01((lum - 0.11) / 0.89);
       const shaped = Math.pow(t, 0.92);
-      let h = Math.max(WATER_THR + 0.045, Math.min(0.56, shaped * 0.48 + 0.035));
+      let h = Math.max(WATER_THR + 0.04, Math.min(0.44, shaped * 0.38 + 0.03));
       return boostLandHeight01(h);
     }
     if (lum > 0.93) return WATER_THR * 0.35;
@@ -1802,6 +1802,7 @@
   function refreshSelectionGizmo(timeSec) {
     selGizmo.visible = false;
     if (sailPreviewOn) return;
+    if (tool !== 'adjust') return;
     const t = timeSec != null ? timeSec : performance.now() * 0.001;
     if (selectedSpawnOnly && playerSpawn) {
       const wx = playerSpawn.x, wz = playerSpawn.z;
@@ -1903,12 +1904,13 @@
     return createBush(x, y, z, 0.28 + r() * 0.42, rng);
   }
   /** Port warehouse / town building — matches index.html procedural port meshes (box + foundation + hipped cone). */
-  function makeBuilding(x, z, col, rng, lift) {
+  function makeBuilding(x, z, col, rng, lift, ent) {
     const r = decoRand(rng);
-    const bH = 2.5 + r() * 1.5;
-    const bW = 2.5 + r() * 2;
+    const bH = ent && ent.buildH != null ? Number(ent.buildH) : (2.5 + r() * 1.5);
+    const bW = ent && ent.buildW != null ? Number(ent.buildW) : (2.5 + r() * 2);
     const pal = [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868];
-    const wallCol = col != null ? col : pal[Math.floor(r() * pal.length)];
+    const wallCol = ent && ent.wallColor != null ? Number(ent.wallColor)
+      : (ent && ent.color != null ? Number(ent.color) : (col != null ? col : pal[Math.floor(r() * pal.length)]));
     const g = new THREE.Group();
     const baseOff = 0.08;
     const bldg = new THREE.Mesh(
@@ -1940,12 +1942,12 @@
     return g;
   }
   /** Cottage with peaked roof — distinct from flat-roof `building`. */
-  function makeHouse(x, z, rng, lift) {
+  function makeHouse(x, z, rng, lift, ent) {
     const r = decoRand(rng);
     const g = new THREE.Group();
-    const w = 2.7 + r() * 0.35;
-    const d = 2.5 + r() * 0.3;
-    const wallH = 2.05 + r() * 0.35;
+    const w = ent && ent.houseW != null ? Number(ent.houseW) : (2.7 + r() * 0.35);
+    const d = ent && ent.houseD != null ? Number(ent.houseD) : (2.5 + r() * 0.3);
+    const wallH = ent && ent.houseWallH != null ? Number(ent.houseWallH) : (2.05 + r() * 0.35);
     const walls = new THREE.Mesh(
       new THREE.BoxGeometry(w, wallH, d),
       new THREE.MeshLambertMaterial({ color: 0xe2d2b8 })
@@ -2014,8 +2016,8 @@
       let m = null;
       if (e.type === 'tree') m = makeTree(e.x, e.z, rng, lift);
       else if (e.type === 'bush') m = makeBush(e.x, e.z, rng, lift);
-      else if (e.type === 'building') m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng, lift);
-      else if (e.type === 'house') m = makeHouse(e.x, e.z, rng, lift);
+      else if (e.type === 'building') m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng, lift, e);
+      else if (e.type === 'house') m = makeHouse(e.x, e.z, rng, lift, e);
       else if (e.type === 'dock') m = makeDock(e.x, e.z, e.rot || 0, lift);
       else if (e.type === 'flagpole') m = makeFlagpole(e.x, e.z, lift);
       else if (e.type === 'rock') {
@@ -2259,7 +2261,7 @@
     return v || null;
   }
   function placeEntity(wx, wz) {
-    if (tool === 'select' || tool === 'rotate') return;
+    if (tool === 'select' || tool === 'adjust') return;
     if (tool === 'spawn') {
       playerSpawn = {
         x: wx,
@@ -2303,7 +2305,7 @@
     if (sailPreviewOn) return;
     const left = e.button === 0 || (e.pointerType === 'pen' && (e.buttons & 1));
     if (!left) return;
-    if (tool === 'select' || tool === 'rotate') {
+    if (tool === 'select' || tool === 'adjust') {
       const rect = canvas.getBoundingClientRect();
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -2352,24 +2354,24 @@
           if (entPick && entPick.townId) showTownInspectorForTown(entPick.townId);
           else hideTownInspector();
           refreshEntityList();
-          entPointerDrag = {
-            kind: tool === 'rotate' ? 'rotate' : 'move',
-            eid,
-            lastClientX: e.clientX,
-            pointerId: e.pointerId
-          };
-          try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+          if (tool === 'select') {
+            entPointerDrag = {
+              kind: 'move',
+              eid,
+              lastClientX: e.clientX,
+              pointerId: e.pointerId
+            };
+            try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+          }
           e.preventDefault();
           e.stopImmediatePropagation();
           return;
         }
       }
-      if (tool === 'select') {
-        selectedEntId = null;
-        selectedSpawnOnly = false;
-        hideTownInspector();
-        refreshEntityList();
-      }
+      selectedEntId = null;
+      selectedSpawnOnly = false;
+      hideTownInspector();
+      refreshEntityList();
       return;
     }
     const rect = canvas.getBoundingClientRect();
@@ -2405,23 +2407,18 @@
   window.addEventListener('pointercancel', endPaintOrEntityPointer, true);
   canvas.addEventListener('pointermove', e => {
     if (sailPreviewOn) return;
-    if (entPointerDrag) {
+    if (entPointerDrag && tool === 'select') {
       const ent = entities.find(x => x.id === entPointerDrag.eid);
       if (!ent) { entPointerDrag = null; return; }
-      if (entPointerDrag.kind === 'rotate') {
-        ent.rot = (ent.rot || 0) + (e.clientX - entPointerDrag.lastClientX) * 0.014;
-        entPointerDrag.lastClientX = e.clientX;
-      } else {
-        const rect = canvas.getBoundingClientRect();
-        pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-        pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-        raycaster.setFromCamera(pointer, camera);
-        const th = raycaster.intersectObjects(terrainPickTargets(), false);
-        th.sort((a, b) => a.distance - b.distance);
-        if (th.length) {
-          ent.x = th[0].point.x;
-          ent.z = th[0].point.z;
-        }
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const th = raycaster.intersectObjects(terrainPickTargets(), false);
+      th.sort((a, b) => a.distance - b.distance);
+      if (th.length) {
+        ent.x = th[0].point.x;
+        ent.z = th[0].point.z;
       }
       refreshEntityPlacementInScene(ent);
       refreshEntityList();
@@ -2611,7 +2608,7 @@
       refreshSpawnHud();
       return;
     }
-    if (selectedEntId && !selectedSpawnOnly
+    if (selectedEntId && !selectedSpawnOnly && tool === 'adjust'
       && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
       const ent = entities.find(x => x.id === selectedEntId);
       if (ent) {
@@ -2652,7 +2649,42 @@
     physBodies.push({ mesh: box, vy: 0, buoy: 38, drag: 2.2 });
   });
 
+  function syncTownDockPositionsFromEntities() {
+    const dockByTown = {};
+    for (const ent of entities) {
+      if (ent.type === 'dock' && ent.townId) dockByTown[ent.townId] = ent;
+    }
+    const inland = 48;
+    for (const t of towns) {
+      const d = dockByTown[t.id];
+      if (!d) continue;
+      t.dockX = d.x;
+      t.dockZ = d.z;
+      t.dockAngle = d.rot != null ? d.rot : t.dockAngle;
+      const da = Number(t.dockAngle) || 0;
+      t.worldX = d.x - Math.sin(da) * inland;
+      t.worldZ = d.z - Math.cos(da) * inland;
+    }
+  }
+  function enrichEntityPersistenceClone(e) {
+    const o = JSON.parse(JSON.stringify(e));
+    if (o.type === 'building') {
+      const rng = entityRng(o);
+      const r = decoRand(rng);
+      if (o.buildW == null) o.buildW = 2.5 + r() * 2;
+      if (o.buildH == null) o.buildH = 2.5 + r() * 1.5;
+      if (o.wallColor == null && o.color != null) o.wallColor = Number(o.color);
+    } else if (o.type === 'house') {
+      const rng = entityRng(o);
+      const r = decoRand(rng);
+      if (o.houseW == null) o.houseW = 2.7 + r() * 0.35;
+      if (o.houseD == null) o.houseD = 2.5 + r() * 0.3;
+      if (o.houseWallH == null) o.houseWallH = 2.05 + r() * 0.35;
+    }
+    return o;
+  }
   function serializeMap() {
+    syncTownDockPositionsFromEntities();
     const buf = new Uint8Array(heights.buffer.slice(0));
     let bin = '';
     for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
@@ -2687,7 +2719,7 @@
         ...t,
         stockpile: t.stockpile && typeof t.stockpile === 'object' ? t.stockpile : buildStockpileObject(t)
       })),
-      entities: JSON.parse(JSON.stringify(entities)),
+      entities: entities.map(enrichEntityPersistenceClone),
       shipPreview: {
         shipType: editorPreviewShipType,
         shipParts: { ...editorPreviewShipParts },
@@ -2779,6 +2811,7 @@
     for (const e of entities) {
       if (e && e.rot == null && e.rotation != null) e.rot = Number(e.rotation);
     }
+    syncTownDockPositionsFromEntities();
     if (data.worldEdgeClamp != null) {
       const w = Number(data.worldEdgeClamp);
       if (w >= MAP_HALF_MIN && w <= MAP_HALF_MAX) worldEdgeClamp = w;
@@ -2944,6 +2977,7 @@
     for (const e of entities) {
       if (e && e.rot == null && e.rotation != null) e.rot = Number(e.rotation);
     }
+    syncTownDockPositionsFromEntities();
     if (data.worldEdgeClamp != null) {
       const w = Number(data.worldEdgeClamp);
       if (w >= MAP_HALF_MIN && w <= MAP_HALF_MAX) worldEdgeClamp = w;

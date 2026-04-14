@@ -693,6 +693,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
             <button type="button" id="debug-open-map-editor">Open 3D map editor</button>
             <button type="button" id="debug-load-stored-map">Load stored map (localStorage)</button>
             <button type="button" id="debug-load-map-file">Load map from JSON file</button>
+            <button type="button" id="debug-publish-world-map" style="border:1px solid rgba(200,160,80,0.55);background:linear-gradient(180deg,#6a5020,#402810);color:#f8e8c8;">Save current map to server</button>
             <button type="button" id="debug-clear-custom-map" style="background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Clear custom map &amp; restore procedural</button>
           </div>
           <p id="debug-custom-map-status" class="debug-seed-status" style="min-height:2.4em;"></p>
@@ -2026,6 +2027,7 @@ function normalizeCustomTownForGame(t) {
   const cx = t.cx != null ? (t.cx | 0) : Math.floor(Number(t.dockX) / CHUNK_SIZE);
   const cz = t.cz != null ? (t.cz | 0) : Math.floor(Number(t.dockZ) / CHUNK_SIZE);
   return {
+    id: String(t.id != null ? t.id : id),
     hasTown: true,
     townName: t.townName || 'Port',
     faction: t.faction != null ? (t.faction | 0) % 4 : 0,
@@ -2120,13 +2122,15 @@ function customMapPayloadFromObject(data) {
     heights,
     waterThreshold: data.waterThreshold != null ? Number(data.waterThreshold) : 0.12,
     maxLandHeight: data.maxLandHeight != null ? Number(data.maxLandHeight) : 18,
+    maxHeight01: data.maxHeight01 != null ? Number(data.maxHeight01) : 1.42,
     worldEdgeClamp: data.worldEdgeClamp != null ? Number(data.worldEdgeClamp) : WORLD_EDGE_CLAMP,
     entities: Array.isArray(data.entities) ? data.entities : [],
     towns,
     wind: data.wind,
     seed: data.seed != null ? (Number(data.seed) >>> 0) : null,
     playerSpawn,
-    factions
+    factions,
+    pngImport: data.pngImport && typeof data.pngImport === 'object' ? data.pngImport : undefined
   };
 }
 function applyCustomMapPayload(data, statusEl) {
@@ -2154,6 +2158,7 @@ function applyCustomMapPayload(data, statusEl) {
   spawnNPCs();
   nudgePlayerSpawnClearOfShips();
   scatterWindStreaksNearPlayer();
+  seedDecorativeWildlifeNearPlayer();
   flushGameViewRender();
   if (statusEl) statusEl.textContent = 'Custom map active — terrain & ports from editor.';
   return true;
@@ -2814,6 +2819,44 @@ function islandRng(cx, cz) {
     return s / 4294967296;
   };
 }
+/** Deterministic PRNG from editor entity id + type — same building dimensions in editor, export, and game. */
+function entityRngFromMapEntity(e) {
+  let s = 2166136261;
+  const id = String(e && e.id != null ? e.id : 'e0');
+  for (let i = 0; i < id.length; i++) s = Math.imul(s ^ id.charCodeAt(i), 16777619);
+  const typ = String(e && e.type ? e.type : '');
+  for (let i = 0; i < typ.length; i++) s = Math.imul(s ^ typ.charCodeAt(i), 16777619);
+  return function rand() {
+    s = (Math.imul(1664525, s) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+function mulberry32Wild(s0) {
+  let a = (Number(s0) >>> 0) || 1;
+  return function () {
+    let t = (a += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+/** After custom or procedural world (re)build, ensure fish and gulls exist near the player. */
+function seedDecorativeWildlifeNearPlayer() {
+  if (G.mode !== 'playing') return;
+  const rng = mulberry32Wild((G.worldSeed ^ 0x91d4f5a3) >>> 0);
+  const px = G.player.x, pz = G.player.z;
+  if (seagulls.length < 52) spawnSeagulls(px, pz, 8 + Math.floor(rng() * 7), rng);
+  let added = 0;
+  for (let i = 0; i < 48 && added < 32; i++) {
+    const ang = rng() * Math.PI * 2;
+    const dist = 140 + rng() * 4800;
+    const ox = px + Math.cos(ang) * dist, oz = pz + Math.sin(ang) * dist;
+    if (!isSeaObstructed(ox, oz)) {
+      spawnFish(ox, oz, 5 + Math.floor(rng() * 11), rng);
+      added++;
+    }
+  }
+}
 function decoRand(rng) {
   return typeof rng === 'function' ? rng : Math.random;
 }
@@ -2977,22 +3020,57 @@ function generateCustomMapChunk(cx, cz) {
     if (e.x == null || e.z == null) continue;
     if (e.x < minWx - pad || e.x > minWx + CHUNK_SIZE + pad || e.z < minWz - pad || e.z > minWz + CHUNK_SIZE + pad) continue;
     const sh = samp(e.x, e.z);
-    const surf = sh <= wThr ? SEA_LEVEL - 1.5 : SEA_LEVEL + sh * maxH;
-    if (e.type === 'tree') group.add(createPalmTree(e.x, surf + 0.08, e.z, rng));
-    else if (e.type === 'bush') group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + rng() * 0.35, rng));
+    const lift = e.yLift != null ? Number(e.yLift) : 0;
+    const surf = (sh <= wThr ? SEA_LEVEL - 1.5 : SEA_LEVEL + sh * maxH) + lift;
+    const er = entityRngFromMapEntity(e);
+    const er0 = decoRand(er);
+    if (e.type === 'tree') group.add(createPalmTree(e.x, surf + 0.08, e.z, er));
+    else if (e.type === 'bush') group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + er0() * 0.35, er));
     else if (e.type === 'building') {
-      const bH = 3.8 + rng() * 1.2;
-      const bW = 3.2 + rng();
-      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: 0xb0a078 }));
-      bldg.position.set(e.x, surf + bH * 0.5, e.z); bldg.castShadow = true; group.add(bldg);
+      const bH = e.buildH != null ? Number(e.buildH) : (2.5 + er0() * 1.5);
+      const bW = e.buildW != null ? Number(e.buildW) : (2.5 + er0() * 2);
+      const pal = [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868];
+      const wallHex = e.wallColor != null ? Number(e.wallColor)
+        : (e.color != null ? Number(e.color) : pal[Math.floor(er0() * 5)]);
+      const rot = e.rot != null ? Number(e.rot) : 0;
+      const baseOff = 0.08;
+      const baseY = surf + baseOff;
+      const pivot = new THREE.Group();
+      pivot.position.set(e.x, 0, e.z);
+      pivot.rotation.y = rot;
+      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: wallHex }));
+      bldg.position.set(0, baseY + bH / 2, 0);
+      bldg.castShadow = true;
+      const foundation = new THREE.Mesh(new THREE.BoxGeometry(bW + 0.5, 0.3, bW + 0.5), new THREE.MeshLambertMaterial({ color: 0x5a4a38 }));
+      foundation.position.set(0, baseY - 0.12, 0);
+      foundation.castShadow = true;
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(bW * 0.8, 1.5, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
+      roof.position.set(0, baseY + bH + 0.7, 0);
+      roof.rotation.y = Math.PI / 4;
+      roof.castShadow = true;
+      pivot.add(bldg, foundation, roof);
+      group.add(pivot);
     } else if (e.type === 'house') {
-      const bH = 3.2 + rng() * 1.4;
-      const bW = 2.8 + rng() * 0.6;
-      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: 0x9a8868 }));
-      bldg.position.set(e.x, surf + bH * 0.5, e.z); bldg.castShadow = true; group.add(bldg);
+      const w = e.houseW != null ? Number(e.houseW) : (2.7 + er0() * 0.35);
+      const d = e.houseD != null ? Number(e.houseD) : (2.5 + er0() * 0.3);
+      const wallH = e.houseWallH != null ? Number(e.houseWallH) : (2.05 + er0() * 0.35);
+      const hg = new THREE.Group();
+      hg.position.set(e.x, surf + 0.06, e.z);
+      hg.rotation.y = e.rot != null ? Number(e.rot) : 0;
+      const walls = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), new THREE.MeshLambertMaterial({ color: 0xe2d2b8 }));
+      walls.position.y = wallH / 2;
+      hg.add(walls);
+      const hRoof = new THREE.Mesh(
+        new THREE.ConeGeometry(Math.hypot(w, d) * 0.36, 1.35 + er0() * 0.25, 4),
+        new THREE.MeshLambertMaterial({ color: 0x6b3d22 })
+      );
+      hRoof.rotation.y = Math.PI / 4;
+      hRoof.position.y = wallH + 0.55;
+      hg.add(hRoof);
+      group.add(hg);
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
-      const dock = new THREE.Mesh(new THREE.BoxGeometry(5, 0.4, 14), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+      const dock = new THREE.Mesh(new THREE.BoxGeometry(5, 0.45, 14), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
       dock.position.set(e.x, surf + 0.45, e.z);
       dock.rotation.y = ang;
       dock.receiveShadow = true; dock.castShadow = true;
@@ -3002,8 +3080,9 @@ function generateCustomMapChunk(cx, cz) {
       pole.position.set(e.x, surf + 4.5, e.z);
       pole.castShadow = true;
       group.add(pole);
-      const fid = 0;
-      const tf = G.customMap.towns && e.townId ? G.customMap.towns.find(t => t.id === e.townId) : null;
+      const tf = G.customMap.towns && e.townId
+        ? G.customMap.towns.find(t => t.id === e.townId || String(t.customTownId) === String(e.townId))
+        : null;
       const fCol = tf && tf.faction != null ? new THREE.Color(FACTION_TRADE_COLORS[tf.faction % 4]) : new THREE.Color(0xc94a4a);
       const flag = new THREE.Mesh(new THREE.PlaneGeometry(2, 1.2), new THREE.MeshLambertMaterial({ color: fCol, side: THREE.DoubleSide }));
       flag.position.set(e.x + 1.05, surf + 8.6, e.z);
@@ -6430,6 +6509,7 @@ function applySharedWorldFromServerSeed(s, opts) {
   spawnNPCs();
   nudgePlayerSpawnClearOfShips();
   scatterWindStreaksNearPlayer();
+  seedDecorativeWildlifeNearPlayer();
   flushGameViewRender();
   if (!opts.skipServerMapReapply && knownServerWorldMapRev > 0 && G.mode === 'playing') {
     queueFetchServerWorldMap(knownServerWorldMapRev);
@@ -7133,6 +7213,51 @@ window.addEventListener('keydown', e => {
   }
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+function buildWorldMapJsonFromCustomMapSession() {
+  const cm = G.customMap;
+  if (!cm || !cm.heights) return null;
+  const h = cm.heights;
+  if (!(h instanceof Float32Array) || h.length !== (cm.gridN | 0) * (cm.gridN | 0)) return null;
+  const buf = new Uint8Array(h.buffer, h.byteOffset, h.byteLength);
+  let bin = '';
+  for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+  const heightsB64 = btoa(bin);
+  const townsOut = (cm.towns || []).map(t => ({
+    id: t.id != null ? t.id : t.customTownId,
+    townName: t.townName,
+    hasTown: true,
+    faction: t.faction,
+    exportGood: t.exportGood,
+    stockpile: t.stockpile,
+    stockpileBase: t.stockpileBase,
+    cx: t.cx,
+    cz: t.cz,
+    worldX: t.worldX,
+    worldZ: t.worldZ,
+    dockX: t.dockX,
+    dockZ: t.dockZ,
+    dockAngle: t.dockAngle,
+    radius: t.radius,
+    maxH: t.maxH
+  }));
+  return {
+    version: 1,
+    gridN: cm.gridN,
+    waterThreshold: cm.waterThreshold,
+    maxLandHeight: cm.maxLandHeight,
+    maxHeight01: cm.maxHeight01 != null ? cm.maxHeight01 : 1.42,
+    worldEdgeClamp: cm.worldEdgeClamp,
+    heightsB64,
+    wind: cm.wind && typeof cm.wind === 'object' ? cm.wind : { angle: G.wind.angle, speed: G.wind.speed },
+    seed: cm.seed != null ? (Number(cm.seed) >>> 0) : (G.worldSeed >>> 0),
+    worldSeed: cm.seed != null ? (Number(cm.seed) >>> 0) : (G.worldSeed >>> 0),
+    playerSpawn: cm.playerSpawn || null,
+    towns: townsOut,
+    entities: JSON.parse(JSON.stringify(cm.entities || [])),
+    factions: cm.factions,
+    pngImport: cm.pngImport
+  };
+}
 (function initDebugModalUi() {
   const dm = document.getElementById('debug-modal-root');
   if (!dm) return;
@@ -7196,6 +7321,32 @@ window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
     if (!confirm('Remove the custom heightmap and restore the procedural archipelago for this session?')) return;
     clearCustomMapAndReloadWorld(mapTabStatus);
     notify('Procedural world restored.');
+  });
+  document.getElementById('debug-publish-world-map')?.addEventListener('click', () => {
+    const mapObj = buildWorldMapJsonFromCustomMapSession();
+    if (!mapObj) {
+      if (mapTabStatus) mapTabStatus.textContent = 'Load a custom map first (editor → Store for game, localStorage, or JSON file).';
+      return;
+    }
+    let tok = null;
+    try { tok = sessionStorage.getItem('pirates_navigator_sess'); } catch (e) {}
+    if (!tok) {
+      if (mapTabStatus) mapTabStatus.textContent = 'Unlock the Navigator console from the main tab (password) first to get a session token.';
+      return;
+    }
+    if (mapTabStatus) mapTabStatus.textContent = 'Publishing map…';
+    fetch(`${getHttpOrigin()}/api/world-map`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tok, map: mapObj })
+    }).then(r => r.json()).then(j => {
+      if (j.ok) {
+        if (mapTabStatus) mapTabStatus.textContent = `Saved to server — revision ${j.revision}. Connected players receive the chart on sync.`;
+        notify('World map published to server.');
+      } else if (mapTabStatus) mapTabStatus.textContent = j.error || 'Publish failed.';
+ }).catch(() => {
+      if (mapTabStatus) mapTabStatus.textContent = 'Network error — is the game running on a host with the API?';
+    });
   });
   dm.addEventListener('click', e => {
     const btn = e.target.closest('.debug-locate-btn');
@@ -11851,6 +12002,13 @@ function update(dt) {
     const dd = distToDockTrigger(isl, G.player.x, G.player.z);
     if (dd < nearestDockDist) { nearestDock = isl; nearestDockDist = dd; }
   });
+  if (G.customMap && G.customMap.towns && G.customMap.towns.length) {
+    for (const t of G.customMap.towns) {
+      if (!t.hasTown || t.dockX == null) continue;
+      const dd = distToDockTrigger(t, G.player.x, G.player.z);
+      if (dd < nearestDockDist) { nearestDock = t; nearestDockDist = dd; }
+    }
+  }
   G.nearDock = nearestDock;
   const dockPrompt = document.getElementById('dock-prompt');
   if (nearestDock && !G.docked) {
