@@ -95,6 +95,19 @@ function readJsonBody(req, limit = 65536) {
 }
 
 const players = new Map();
+/** Shared narrative + contracts for all captains on this server (merged from clients, broadcast on change). */
+let worldStoryQuest = {
+  phase: 'intro',
+  step: 0,
+  turnInCx: null,
+  turnInCz: null,
+  turnInTown: null,
+  bountyX: null,
+  bountyZ: null,
+  bountyRot: null
+};
+/** @type {object[]|null} */
+let worldQuests = null;
 let nextId = 1;
 let nextLootNetId = 1;
 let nextSwimmerNetId = 1;
@@ -642,6 +655,84 @@ function findWsByPlayerId(pid) {
   return null;
 }
 
+function storyProgressRank(st) {
+  if (!st || typeof st !== 'object') return -1;
+  const ph = String(st.phase || 'intro');
+  const step = Math.max(0, Math.min(99, Math.floor(Number(st.step) || 0)));
+  const tier = ph === 'complete' ? 4 : ph === 'report' ? 3 : ph === 'active' ? 2 : ph === 'intro' ? 1 : 0;
+  return tier * 100 + step;
+}
+
+function sanitizeWorldStory(st) {
+  const def = {
+    phase: 'intro',
+    step: 0,
+    turnInCx: null,
+    turnInCz: null,
+    turnInTown: null,
+    bountyX: null,
+    bountyZ: null,
+    bountyRot: null
+  };
+  if (!st || typeof st !== 'object') return { ...def };
+  const phase = ['intro', 'active', 'report', 'complete'].includes(String(st.phase)) ? String(st.phase) : 'intro';
+  const step = Math.max(0, Math.min(10, Math.floor(Number(st.step) || 0)));
+  return {
+    phase,
+    step,
+    turnInCx: st.turnInCx != null && Number.isFinite(Number(st.turnInCx)) ? Math.floor(Number(st.turnInCx)) : null,
+    turnInCz: st.turnInCz != null && Number.isFinite(Number(st.turnInCz)) ? Math.floor(Number(st.turnInCz)) : null,
+    turnInTown: st.turnInTown != null ? String(st.turnInTown).slice(0, 48) : null,
+    bountyX: st.bountyX != null && Number.isFinite(Number(st.bountyX)) ? Number(st.bountyX) : null,
+    bountyZ: st.bountyZ != null && Number.isFinite(Number(st.bountyZ)) ? Number(st.bountyZ) : null,
+    bountyRot: st.bountyRot != null && Number.isFinite(Number(st.bountyRot)) ? Number(st.bountyRot) : null
+  };
+}
+
+function mergeWorldStory(cur, inc) {
+  const a = sanitizeWorldStory(cur);
+  const b = sanitizeWorldStory(inc);
+  const ra = storyProgressRank(a);
+  const rb = storyProgressRank(b);
+  if (rb > ra) return b;
+  if (rb < ra) return a;
+  if (b.bountyX != null && b.bountyZ != null && (a.bountyX == null || a.bountyZ == null)) return { ...a, ...b };
+  return a;
+}
+
+function sanitizeWorldQuests(arr) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (let i = 0; i < arr.length && out.length < 12; i++) {
+    const q = arr[i];
+    if (!q || typeof q !== 'object') continue;
+    const type = q.type === 'hunt' || q.type === 'explore' || q.type === 'delivery' ? q.type : null;
+    if (!type) continue;
+    const row = {
+      type,
+      desc: String(q.desc != null ? q.desc : '').slice(0, 220),
+      reward: Math.max(0, Math.floor(Number(q.reward) || 0)),
+      accepted: !!q.accepted
+    };
+    if (type === 'hunt') row.target = String(q.target != null ? q.target : '').slice(0, 48);
+    if (type === 'explore') {
+      row.x = q.x != null ? Math.round(Number(q.x)) : 0;
+      row.z = q.z != null ? Math.round(Number(q.z)) : 0;
+    }
+    if (type === 'delivery') {
+      row.item = String(q.item != null ? q.item : 'wood').slice(0, 24);
+      row.count = Math.max(1, Math.min(99, Math.floor(Number(q.count) || 1)));
+      row.destCx = q.destCx != null ? Math.floor(Number(q.destCx)) : null;
+      row.destCz = q.destCz != null ? Math.floor(Number(q.destCz)) : null;
+      row.destTown = q.destTown != null ? String(q.destTown).slice(0, 48) : '';
+      row.destDockX = q.destDockX != null ? Number(q.destDockX) : null;
+      row.destDockZ = q.destDockZ != null ? Number(q.destDockZ) : null;
+    }
+    out.push(row);
+  }
+  return out;
+}
+
 function collectAdminPlayerList() {
   const out = [];
   for (const c of wss.clients) {
@@ -711,7 +802,9 @@ wss.on('connection', (ws, req) => {
     id,
     seed: WORLD_SEED,
     player: playerData,
-    players: Array.from(players.values()).filter(p => p.id !== id)
+    players: Array.from(players.values()).filter(p => p.id !== id),
+    worldStory: sanitizeWorldStory(worldStoryQuest),
+    worldQuests: worldQuests && worldQuests.length ? worldQuests : null
   }));
   ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
 
@@ -911,6 +1004,21 @@ wss.on('connection', (ws, req) => {
           const y = Number(msg.y);
           if (!Number.isFinite(x) || !Number.isFinite(z)) break;
           broadcast({ type: 'ship_hit_fx', x, z, y: Number.isFinite(y) ? y : null }, id);
+          break;
+        }
+        case 'world_story_push': {
+          const merged = mergeWorldStory(worldStoryQuest, msg.story);
+          const before = JSON.stringify(worldStoryQuest);
+          worldStoryQuest = merged;
+          if (JSON.stringify(worldStoryQuest) !== before) {
+            broadcastAll({ type: 'world_story', story: sanitizeWorldStory(worldStoryQuest) });
+          }
+          break;
+        }
+        case 'world_quests_push': {
+          const next = sanitizeWorldQuests(msg.quests);
+          worldQuests = next;
+          broadcastAll({ type: 'world_quests', quests: next });
           break;
         }
         case 'npc_sync': {
