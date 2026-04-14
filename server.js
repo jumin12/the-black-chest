@@ -1056,6 +1056,54 @@ wss.on('connection', (ws, req) => {
           broadcast({ type: 'npc_cannon', x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, y: msg.y }, id);
           break;
         }
+        case 'npc_ram_report': {
+          const hull = Math.max(0, Math.floor(Number(msg.hull) || 0));
+          const rig = Math.max(0, Math.floor(Number(msg.rigging) || 0));
+          if (hull === 0 && rig === 0) break;
+          if (msg.npcId === undefined || msg.npcId === null) break;
+          broadcastAll({
+            type: 'npc_ram_report',
+            fromId: id,
+            npcId: msg.npcId,
+            hull,
+            rigging: rig
+          });
+          break;
+        }
+        case 'delete_captain_career': {
+          const ck = msg.captainKey != null ? normalizeCaptainKey(String(msg.captainKey)) : '';
+          const tok = msg.captainToken != null ? String(msg.captainToken).trim() : '';
+          if (!ck || !tok) {
+            try {
+              ws.send(JSON.stringify({ type: 'captain_career_delete_failed', error: 'missing_fields' }));
+            } catch (e) {}
+            break;
+          }
+          const acc = captainAccounts[ck];
+          if (!acc || !secureTokenEquals(acc.token, tok)) {
+            try {
+              ws.send(JSON.stringify({ type: 'captain_career_delete_failed', error: 'invalid_or_unknown_captain' }));
+            } catch (e) {}
+            break;
+          }
+          delete captainAccounts[ck];
+          captainAccountsDirty = true;
+          saveCaptainAccounts();
+          const before = leaderboardHistory.length;
+          leaderboardHistory = leaderboardHistory.filter(r => normalizeLbEntry(r).captainKey !== ck);
+          const removedLb = before - leaderboardHistory.length;
+          reconcileLeaderboardRows();
+          saveLeaderboard();
+          broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          try {
+            ws.send(JSON.stringify({
+              type: 'captain_career_deleted',
+              captainKey: ck,
+              leaderboardRowsRemoved: removedLb
+            }));
+          } catch (e) {}
+          break;
+        }
         case 'cannon_fx': {
           broadcast({ type: 'cannon_fx', x: msg.x, y: msg.y, z: msg.z, dx: msg.dx, dz: msg.dz }, id);
           break;
