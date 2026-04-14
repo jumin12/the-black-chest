@@ -701,7 +701,8 @@ wss.on('connection', (ws, req) => {
     dockAngle: null,
     riggingHealth: 100,
     morale: 100,
-    clientIp
+    clientIp,
+    worldHidden: false
   };
 
   players.set(id, playerData);
@@ -711,7 +712,7 @@ wss.on('connection', (ws, req) => {
     id,
     seed: WORLD_SEED,
     player: playerData,
-    players: Array.from(players.values()).filter(p => p.id !== id)
+    players: Array.from(players.values()).filter(p => p.id !== id && !p.worldHidden)
   }));
   ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
 
@@ -761,6 +762,7 @@ wss.on('connection', (ws, req) => {
             };
           }
           if (msg.crewData && Array.isArray(msg.crewData)) p.crewData = msg.crewData.slice(0, 32);
+          if (msg.worldHidden !== undefined) p.worldHidden = !!msg.worldHidden;
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {
             const now = Date.now();
@@ -1173,7 +1175,7 @@ wss.on('connection', (ws, req) => {
 
 setInterval(() => {
   if (players.size === 0) return;
-  const snapshot = Array.from(players.values()).map(p => ({
+  const snapshot = Array.from(players.values()).filter(p => !p.worldHidden).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
     name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
