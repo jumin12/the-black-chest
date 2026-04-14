@@ -1208,6 +1208,40 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'reset_all_time_data' }));
             break;
           }
+          if (action === 'wipe_all_client_voyage_data') {
+            captainAccounts = {};
+            captainAccountsDirty = true;
+            saveCaptainAccounts();
+            broadcastAll({ type: 'navigator_wipe_local_voyage_data' });
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'wipe_all_client_voyage_data' }));
+            break;
+          }
+          if (action === 'list_registered_captains') {
+            const list = Object.keys(captainAccounts).map((k) => {
+              const a = captainAccounts[k];
+              return {
+                key: k,
+                displayName: a && a.displayName ? String(a.displayName).slice(0, 28) : k,
+                lastActiveMs: a && a.lastActiveMs ? a.lastActiveMs : 0
+              };
+            }).sort((a, b) => (b.lastActiveMs || 0) - (a.lastActiveMs || 0));
+            ws.send(JSON.stringify({ type: 'admin_registered_captains', accounts: list }));
+            break;
+          }
+          if (action === 'delete_registered_captain') {
+            const ck = msg.captainKey != null ? normalizeCaptainKey(String(msg.captainKey)) : '';
+            if (!ck) {
+              ws.send(JSON.stringify({ type: 'admin_error', error: 'Missing captain key.' }));
+              break;
+            }
+            if (captainAccounts[ck]) {
+              delete captainAccounts[ck];
+              captainAccountsDirty = true;
+              saveCaptainAccounts();
+            }
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'delete_registered_captain', captainKey: ck }));
+            break;
+          }
           if (action === 'list_bans') {
             ws.send(JSON.stringify({ type: 'admin_bans', ips: Array.from(bannedIps).sort() }));
             break;
