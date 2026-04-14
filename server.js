@@ -118,6 +118,8 @@ const chatHistory = [];
 
 const BANS_FILE = path.join(DATA_DIR, 'bans.json');
 let leaderboardHistory = [];
+/** Max rows kept after merge/sort (large enough for full roster; still bounded for memory). */
+const LEADERBOARD_CAP = 2000;
 /** @type {Set<string>} */
 let bannedIps = new Set();
 /** @type {Set<number>} */
@@ -273,7 +275,7 @@ function reconcileLeaderboardRows() {
   backfillLeaderboardCaptainKeys();
   mergeLeaderboardByIdentity();
   sortLeaderboardHistory();
-  leaderboardHistory = leaderboardHistory.slice(0, 50);
+  leaderboardHistory = leaderboardHistory.slice(0, LEADERBOARD_CAP);
 }
 
 function writeFileAtomic(filePath, dataStr) {
@@ -1213,12 +1215,35 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ type: 'admin_players', players: collectAdminPlayerList() }));
             break;
           }
+          if (action === 'clear_leaderboard_entry') {
+            const lbCk = msg.lbCaptainKey != null ? normalizeCaptainKey(String(msg.lbCaptainKey)) : '';
+            const lbPid = msg.lbPlayerId != null ? Number(msg.lbPlayerId) : null;
+            if (!lbCk && !Number.isFinite(lbPid)) {
+              ws.send(JSON.stringify({ type: 'admin_error', error: 'Missing captain key or player id for leaderboard row.' }));
+              break;
+            }
+            const before = leaderboardHistory.length;
+            leaderboardHistory = leaderboardHistory.filter(r => {
+              const n = normalizeLbEntry(r);
+              if (lbCk && n.captainKey === lbCk) return false;
+              if (Number.isFinite(lbPid) && n.playerId != null && Number(n.playerId) === lbPid) return false;
+              return true;
+            });
+            const removed = before - leaderboardHistory.length;
+            if (removed > 0) {
+              sortLeaderboardHistory();
+              saveLeaderboard();
+              broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+            }
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'clear_leaderboard_entry', removed }));
+            break;
+          }
           if (action === 'reset_leaderboard') {
             leaderboardHistory = [];
             leaderboardClientSeeded = true;
             sortLeaderboardHistory();
             saveLeaderboard();
-            broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+            broadcast({ type: 'leaderboard', entries: leaderboardHistory, cleared: true });
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'reset_leaderboard' }));
             break;
           }
@@ -1227,7 +1252,7 @@ wss.on('connection', (ws, req) => {
             leaderboardClientSeeded = true;
             sortLeaderboardHistory();
             saveLeaderboard();
-            broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+            broadcast({ type: 'leaderboard', entries: leaderboardHistory, cleared: true });
             broadcastAll({ type: 'reset_local_career_data' });
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'reset_all_time_data' }));
             break;
@@ -1356,7 +1381,7 @@ wss.on('connection', (ws, req) => {
           if (leaderboardClientSeeded || leaderboardHistory.length > 0) break;
           const entries = msg.entries;
           if (!Array.isArray(entries) || entries.length === 0) break;
-          leaderboardHistory = entries.slice(0, 50).map(normalizeLbEntry);
+          leaderboardHistory = entries.slice(0, LEADERBOARD_CAP).map(normalizeLbEntry);
           reconcileLeaderboardRows();
           saveLeaderboard();
           leaderboardClientSeeded = true;

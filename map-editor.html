@@ -148,6 +148,7 @@
         <label class="row">Interpretation</label>
         <select id="png-mode">
           <option value="mask" selected>Coast mask — dark land, bright water</option>
+          <option value="mask_inv">Coast mask — inverted (bright land, dark water)</option>
           <option value="auto">Auto (detect mask vs heightmap)</option>
           <option value="height">Heightmap — dark low / shallow, bright high</option>
         </select>
@@ -233,7 +234,8 @@
       this.p = new Uint8Array(512);
       const p = new Uint8Array(256);
       for (let i = 0; i < 256; i++) p[i] = i;
-      let s = seed >>> 0;
+      /* Match index.html SimplexNoise (signed float seed — not >>> 0) so editor terrain matches the voyage. */
+      let s = Number(seed);
       for (let i = 255; i > 0; i--) {
         s = (s * 16807 + 0) % 2147483647;
         const j = s % (i + 1);
@@ -287,7 +289,7 @@
     return cx >= -WORLD_CHUNK_HALF && cx <= WORLD_CHUNK_HALF && cz >= -WORLD_CHUNK_HALF && cz <= WORLD_CHUNK_HALF;
   }
   function resetProceduralNoise(seed) {
-    proceduralNoiseInst = new SimplexNoiseEd(Number(seed) >>> 0);
+    proceduralNoiseInst = new SimplexNoiseEd(Number(seed));
     chunkIslandNoiseCacheEd = Object.create(null);
   }
   function getCachedIslandNoiseEd(cx, cz) {
@@ -306,6 +308,7 @@
     return { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
   }
   function sampleIslandLandHeightEd(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise) {
+    if (!proceduralNoiseInst) return -1;
     const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
     const n1 = proceduralNoiseInst.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
     const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
@@ -327,8 +330,8 @@
   function proceduralHeight01AtWorld(wx, wz, worldSeed) {
     const cxi = Math.floor(wx / CHUNK_SIZE), czi = Math.floor(wz / CHUNK_SIZE);
     let best = -999;
-    for (let dc = -1; dc <= 1; dc++) {
-      for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -2; dc <= 2; dc++) {
+      for (let dr = -2; dr <= 2; dr++) {
         const meta = getProceduralIslandMetaEd(cxi + dc, czi + dr, worldSeed);
         if (!meta) continue;
         const px = wx - meta.worldX, pz = wz - meta.worldZ;
@@ -437,6 +440,7 @@
   }
   /** Stored height 0..1. Mask: bright = water; mid-bright = shoal so land “fills” visually. */
   function lumToHeight01(lum, mode) {
+    if (mode === 'mask_inv') return lumToHeight01(1 - lum, 'mask');
     if (mode === 'height') {
       if (lum < 0.11) return DEEP_WATER_H;
       const t = clamp01((lum - 0.11) / 0.89);
@@ -1321,22 +1325,51 @@
     frameEntireMap();
   }
 
-  function applySerialized(data) {
-    if (!data || typeof data !== 'object') return;
-    if (!data.heightsB64) {
-      const rs = data.seed != null ? data.seed : data.worldSeed;
-      if (rs === undefined || rs === null) return;
-      applyProceduralWorldPayload(data, Number(rs) >>> 0);
-      const nT = Array.isArray(data.towns) ? data.towns.length : 0;
-      document.getElementById('status-bar').textContent =
-        nT ? `Procedural map (seed ${Number(rs) >>> 0}) with ${nT} towns from file.` : `Procedural map from seed ${Number(rs) >>> 0} — same generator as the main game.`;
-      return;
-    }
-    const raw = atob(data.heightsB64);
+  /** Decode float height grid from base64; must be exactly `expectedFloats` IEEE754 values (4 bytes each). */
+  function decodeMapHeightsB64(b64, expectedFloats) {
+    const t = String(b64 == null ? '' : b64).replace(/\s+/g, '');
+    if (!t) return null;
+    let raw;
+    try { raw = atob(t); } catch (e) { return null; }
+    if (raw.length % 4 !== 0) return null;
+    const nf = raw.length / 4;
+    if (nf !== expectedFloats) return null;
     const buf = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
-    const h = new Float32Array(buf.buffer);
-    if (h.length === heights.length) heights.set(h);
+    return new Float32Array(buf.buffer, 0, nf);
+  }
+
+  function applySerialized(data) {
+    if (!data || typeof data !== 'object') return;
+    const sb = document.getElementById('status-bar');
+    const seedSrc = data.seed != null ? data.seed : data.worldSeed;
+    const hasSeed = seedSrc !== undefined && seedSrc !== null && String(seedSrc).trim() !== '';
+    const b64Trim = data.heightsB64 == null ? '' : String(data.heightsB64).replace(/\s+/g, '');
+    if (!b64Trim) {
+      if (!hasSeed) {
+        if (sb) sb.textContent = 'Map JSON has no heightsB64 and no seed — nothing to load.';
+        return;
+      }
+      const s = Number(seedSrc) >>> 0;
+      applyProceduralWorldPayload(data, s);
+      const nT = Array.isArray(data.towns) ? data.towns.length : 0;
+      if (sb) {
+        sb.textContent = nT
+          ? `Procedural map (seed ${s}) with ${nT} towns from file.`
+          : `Procedural map from seed ${s} — same generator as the main game.`;
+      }
+      return;
+    }
+    const decoded = decodeMapHeightsB64(data.heightsB64, heights.length);
+    if (!decoded) {
+      if (hasSeed) {
+        const s = Number(seedSrc) >>> 0;
+        applyProceduralWorldPayload(data, s);
+        if (sb) sb.textContent = `Heights could not be decoded (wrong size or bad base64) — filled archipelago from seed ${s}.`;
+      } else if (sb) sb.textContent = 'Heights could not be decoded and JSON has no seed to fall back on.';
+      return;
+    }
+    heights.set(decoded);
     towns = Array.isArray(data.towns) ? data.towns.map(t => ({
       ...t,
       hasTown: true
@@ -1535,7 +1568,9 @@
     pctx.drawImage(img, sx, sy, sw, sh, 0, 0, PN, PN);
     const probeD = pctx.getImageData(0, 0, PN, PN).data;
     let modeSel = document.getElementById('png-mode').value;
-    let resolvedMode = modeSel === 'auto' ? detectPngModeFromImageData(probeD) : modeSel;
+    let resolvedMode = (modeSel === 'auto' || modeSel === 'mask_inv')
+      ? (modeSel === 'mask_inv' ? 'mask_inv' : detectPngModeFromImageData(probeD))
+      : modeSel;
     const tmp = document.createElement('canvas');
     tmp.width = GRID_N;
     tmp.height = GRID_N;
@@ -1550,7 +1585,14 @@
     const dx = (GRID_N - dw) * 0.5;
     const dy = (GRID_N - dh) * 0.5;
     tctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
-    const d = tctx.getImageData(0, 0, GRID_N, GRID_N).data;
+    let d;
+    try {
+      d = tctx.getImageData(0, 0, GRID_N, GRID_N).data;
+    } catch (err) {
+      document.getElementById('status-bar').textContent =
+        'Could not read PNG pixels (try another export or reload the image).';
+      return;
+    }
     for (let iz = 0; iz < GRID_N; iz++) {
       for (let ix = 0; ix < GRID_N; ix++) {
         const p = (iz * GRID_N + ix) * 4;
@@ -1560,7 +1602,7 @@
         heights[gz * GRID_N + ix] = h;
       }
     }
-    if (resolvedMode === 'mask') dilateLandIntoShallowWater();
+    if (resolvedMode === 'mask' || resolvedMode === 'mask_inv') dilateLandIntoShallowWater();
     plateauLandDepressions();
     buildTerrainMesh();
     syncEntityMeshes();

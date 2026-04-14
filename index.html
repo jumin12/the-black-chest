@@ -755,6 +755,14 @@ input,textarea{-webkit-user-select:text;user-select:text;}
           </div>
           <div class="debug-roster-scroll" id="debug-admin-players" style="max-height:240px;margin-top:10px;"></div>
         </section>
+        <section class="debug-section" aria-label="Full notorious leaderboard">
+          <h4 class="debug-section-head">Notorious pirates (full board)</h4>
+          <p class="debug-map-hint" style="margin-bottom:10px;">Everyone on the server leaderboard — same stats as the captain’s log. <strong>Clear rank</strong> removes only that row from notorious ranks (not the player’s voyage save).</p>
+          <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <button type="button" id="debug-lb-refresh">Refresh board</button>
+          </div>
+          <div class="debug-roster-scroll" id="debug-admin-leaderboard" style="max-height:min(52vh,420px);margin-top:10px;"></div>
+        </section>
         <section class="debug-section" aria-label="Bans and global career reset">
           <h4 class="debug-section-head">Bans &amp; all-time reset</h4>
           <p class="debug-map-hint" style="margin-bottom:10px;">Banned client addresses (from navigator ban). Remove a ban to allow that address back. <strong>Reset all-time data</strong> clears server notorious ranks and wipes local career stats on <em>every</em> connected browser.</p>
@@ -1940,10 +1948,16 @@ function dryLandAtWorldPosition(wx, wz) {
 }
 
 function decodeCustomMapHeightsB64(b64) {
-  const raw = atob(b64);
+  if (b64 == null) return null;
+  const t = String(b64).replace(/\s+/g, '');
+  if (!t) return null;
+  let raw;
+  try { raw = atob(t); } catch (e) { return null; }
+  if (raw.length % 4 !== 0) return null;
   const buf = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
-  return new Float32Array(buf.buffer);
+  const n = raw.length / 4;
+  return new Float32Array(buf.buffer, 0, n);
 }
 function normalizeCustomTownForGame(t) {
   if (!t || t.dockX == null || t.dockZ == null) return null;
@@ -2004,7 +2018,7 @@ function customMapPayloadFromObject(data) {
   if (!data || !data.heightsB64 || !data.version) return null;
   const gridN = data.gridN | 0;
   const heights = decodeCustomMapHeightsB64(data.heightsB64);
-  if (!gridN || heights.length !== gridN * gridN) return null;
+  if (!heights || !gridN || heights.length !== gridN * gridN) return null;
   const townsRaw = Array.isArray(data.towns) ? data.towns : [];
   const towns = townsRaw.map(normalizeCustomTownForGame).filter(Boolean);
   let playerSpawn = null;
@@ -6386,24 +6400,30 @@ function connectToServer() {
         applyLocalNpcKillLootFromNet(msg);
         break;
       case 'leaderboard': {
-        let entries = msg.entries;
-        const serverHad = Array.isArray(entries) && entries.length > 0;
-        if (!serverHad) {
-          try {
-            const raw = localStorage.getItem('pirates_lb_cache');
-            if (raw) {
-              const c = JSON.parse(raw);
-              if (Array.isArray(c) && c.length) entries = c;
-            }
-          } catch (e) {}
+        let entries = Array.isArray(msg.entries) ? msg.entries : [];
+        const cleared = !!msg.cleared;
+        const serverHad = entries.length > 0;
+        if (cleared) {
+          leaderboardData = entries.slice();
+        } else if (serverHad) {
+          leaderboardData = dedupeLeaderboardForDisplay(entries);
+        } else {
+          if (leaderboardData.length === 0) {
+            try {
+              const raw = localStorage.getItem('pirates_lb_cache');
+              if (raw) {
+                const c = JSON.parse(raw);
+                if (Array.isArray(c) && c.length) leaderboardData = dedupeLeaderboardForDisplay(c);
+              }
+            } catch (e) {}
+          }
         }
-        if (!Array.isArray(entries)) entries = [];
-        leaderboardData = entries;
-        if (serverHad) {
-          try { localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData)); } catch (e) {}
-        }
+        try {
+          localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData));
+        } catch (e) {}
         syncLocalLegendFromEntries(leaderboardData);
         updatePiratesPanel();
+        renderDebugLeaderboardPanel();
         break;
       }
       case 'admin_players':
@@ -6434,6 +6454,12 @@ function connectToServer() {
         if (msg.action === 'delete_registered_captain') {
           notify('Captain removed from server registry.');
           requestRegisteredCaptainsList();
+        }
+        if (msg.action === 'clear_leaderboard_entry') {
+          notify((msg.removed && msg.removed > 0)
+            ? `Removed ${msg.removed} notorious rank row(s).`
+            : 'No matching rank entry on the server.');
+          renderDebugLeaderboardPanel();
         }
         break;
       case 'kicked':
@@ -7002,6 +7028,8 @@ function openDebugConsolePanel() {
   requestAdminChatLog();
   requestRegisteredCaptainsList();
   renderDebugLocalAccountsPanel();
+  renderDebugLeaderboardPanel();
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'get_leaderboard' }));
   startDebugAdminPolling();
 }
 function tryOfferLeaderboardSeedToServer() {
@@ -7011,7 +7039,7 @@ function tryOfferLeaderboardSeedToServer() {
     if (!raw) return;
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr) || arr.length === 0) return;
-    ws.send(JSON.stringify({ type: 'leaderboard_offer', entries: arr.slice(0, 50) }));
+    ws.send(JSON.stringify({ type: 'leaderboard_offer', entries: arr.slice(0, 2000) }));
   } catch (e) {}
 }
 function getNavigatorSessToken() {
@@ -7131,6 +7159,44 @@ function renderDebugAdminPlayers(players) {
       </div></div>`;
   }).join('');
 }
+function renderDebugLeaderboardPanel() {
+  const el = document.getElementById('debug-admin-leaderboard');
+  if (!el) return;
+  const board = dedupeLeaderboardForDisplay(leaderboardData).slice().sort(sortLbEntries);
+  if (!board.length) {
+    el.innerHTML = '<div style="color:#8a7a60;font-size:11px;">No notorious ranks loaded. Connect to the server and tap <strong>Refresh board</strong>, or open the captain’s log pirates tab.</div>';
+    return;
+  }
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const head = `<div style="font-size:10px;color:#8aa0b8;margin-bottom:10px;">Showing <strong style="color:#d4a848;">${board.length}</strong> entr${board.length === 1 ? 'y' : 'ies'} (full server board).</div>`;
+  const rows = board.map((e, i) => {
+    const ck = e.captainKey ? String(e.captainKey) : '';
+    const pid = e.playerId != null && Number.isFinite(Number(e.playerId)) ? Number(e.playerId) : null;
+    const shipNm = e.shipName && String(e.shipName).trim();
+    const canClear = !!(ck || pid != null);
+    const ckAttr = ck ? esc(encodeURIComponent(ck)) : '';
+    const clearBtn = canClear
+      ? `<button type="button" class="debug-lb-clear" data-lb-ck="${ckAttr}"${pid != null ? ` data-lb-pid="${pid}"` : ''} style="font-size:10px;padding:6px 10px;cursor:pointer;font-family:inherit;flex-shrink:0;background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Clear rank</button>`
+      : '<span style="font-size:9px;color:#6a6a58;flex-shrink:0;">No key/id</span>';
+    return `<div class="debug-roster-row" style="margin-bottom:8px;">
+      <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:flex-start;">
+        <div style="min-width:0;flex:1;">
+          <div class="debug-roster-name">${i + 1}. ${esc(e.name || 'Unknown')}</div>
+          <div class="debug-roster-meta">${shipNm ? esc(shipNm) : '<span style="opacity:0.65">Ship unknown</span>'}</div>
+          <div class="debug-roster-kv"><span>Gold</span><span>${lbRowGold(e)}</span></div>
+          <div class="debug-roster-kv"><span>AI sunk</span><span>${lbRowSinksAi(e)}</span></div>
+          <div class="debug-roster-kv"><span>Captains sunk</span><span>${lbRowSinksPl(e)}</span></div>
+          <div class="debug-roster-kv"><span>Ransoms</span><span>${lbRowRansoms(e)}</span></div>
+          <div class="debug-roster-kv"><span>Deaths</span><span>${lbRowDeaths(e)}</span></div>
+          ${ck ? `<div class="debug-roster-meta" style="margin-top:6px;">Key: <code style="font-size:9px;">${esc(ck)}</code></div>` : ''}
+          ${pid != null ? `<div class="debug-roster-meta">Conn. id: ${pid}</div>` : ''}
+        </div>
+        ${clearBtn}
+      </div>
+    </div>`;
+  }).join('');
+  el.innerHTML = head + rows;
+}
 (function initDebugAdminRoster() {
   document.getElementById('debug-admin-refresh')?.addEventListener('click', () => requestAdminPlayerRoster());
   document.getElementById('debug-admin-reset-lb')?.addEventListener('click', () => {
@@ -7180,6 +7246,27 @@ function renderDebugAdminPlayers(players) {
       if (!confirm('Ban this connection? They will not be able to rejoin until the host removes the ban.')) return;
       sendAdminNav({ action: 'ban', targetId: pid });
     }
+  });
+  document.getElementById('debug-lb-refresh')?.addEventListener('click', () => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'get_leaderboard' }));
+    else renderDebugLeaderboardPanel();
+  });
+  document.getElementById('debug-admin-leaderboard')?.addEventListener('click', e => {
+    const btn = e.target.closest('.debug-lb-clear');
+    if (!btn) return;
+    const ckEnc = btn.getAttribute('data-lb-ck') || '';
+    const ck = ckEnc ? decodeURIComponent(ckEnc) : '';
+    const pidS = btn.getAttribute('data-lb-pid');
+    const pid = pidS !== '' && pidS != null ? +pidS : null;
+    if (!ck && !Number.isFinite(pid)) {
+      notify('Cannot clear this row (missing captain key and connection id).');
+      return;
+    }
+    if (!confirm('Remove this captain from the notorious ranks on the server?')) return;
+    const payload = { action: 'clear_leaderboard_entry' };
+    if (ck) payload.lbCaptainKey = ck;
+    if (Number.isFinite(pid)) payload.lbPlayerId = pid;
+    sendAdminNav(payload);
   });
 })();
 function unlockDebugConsole() {
@@ -8980,7 +9067,6 @@ function clearLocalCareerDataFromServerReset() {
 }
 
 let leaderboardData = [];
-let piratesLbPage = 0;
 try {
   const _lbc = localStorage.getItem('pirates_lb_cache');
   if (_lbc) leaderboardData = JSON.parse(_lbc);
@@ -9018,13 +9104,9 @@ function updatePiratesPanel() {
     l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No live rankings yet. Connect to the server to share the board — your all-time career stats above stay on this device.</div>';
     return;
   }
-  const PAGE_SZ = 5;
-  const nPages = Math.max(1, Math.ceil(board.length / PAGE_SZ));
-  if (piratesLbPage >= nPages) piratesLbPage = nPages - 1;
-  if (piratesLbPage < 0) piratesLbPage = 0;
-  const pageSlice = board.slice(piratesLbPage * PAGE_SZ, piratesLbPage * PAGE_SZ + PAGE_SZ);
-  pageSlice.forEach((e, pi) => {
-    const i = piratesLbPage * PAGE_SZ + pi;
+  const scrollWrap = document.createElement('div');
+  scrollWrap.style.cssText = 'max-height:min(52vh,420px);overflow-y:auto;-webkit-overflow-scrolling:touch;margin-top:8px;padding-right:4px;';
+  board.forEach((e, i) => {
     const medal = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? '3rd' : `${i + 1}th`;
     const medalColor = i === 0 ? '#ffd700' : i === 1 ? '#c0c0c0' : i === 2 ? '#cd7f32' : '#8a7a60';
     const d = document.createElement('div');
@@ -9034,35 +9116,9 @@ function updatePiratesPanel() {
     d.innerHTML = `<div style="color:${medalColor};font-weight:bold;font-size:13px;min-width:32px;text-align:center;">${medal}</div>
       <div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${escapeDebugHtml(e.name)}</div>${shipLine}
  <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:4px;">${lbRowGold(e)}g · AI ${lbRowSinksAi(e)} · captains ${lbRowSinksPl(e)} · ransoms ${lbRowRansoms(e)} · deaths ${lbRowDeaths(e)}</div></div>`;
-    l.appendChild(d);
+    scrollWrap.appendChild(d);
   });
-  if (nPages > 1) {
-    const nav = document.createElement('div');
-    nav.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:14px;margin:12px 0 6px;padding-top:8px;border-top:1px solid rgba(120,90,50,0.25);';
-    const mkBtn = (label, disabled) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = label;
-      b.style.cssText = 'min-width:40px;padding:6px 12px;font-size:14px;line-height:1;border-radius:6px;border:1px solid rgba(180,140,60,0.45);background:rgba(40,28,18,0.75);color:#d4a848;cursor:pointer;font-family:Georgia,serif;';
-      if (disabled) {
-        b.disabled = true;
-        b.style.opacity = '0.35';
-        b.style.cursor = 'default';
-      }
-      return b;
-    };
-    const prev = mkBtn('\u25C0', piratesLbPage <= 0);
-    const pg = document.createElement('span');
-    pg.style.cssText = 'color:#c8b8a0;font-size:11px;min-width:120px;text-align:center;';
-    pg.textContent = `Page ${piratesLbPage + 1} / ${nPages}`;
-    const next = mkBtn('\u25B6', piratesLbPage >= nPages - 1);
-    if (!prev.disabled) prev.onclick = () => { piratesLbPage = Math.max(0, piratesLbPage - 1); updatePiratesPanel(); };
-    if (!next.disabled) next.onclick = () => { piratesLbPage = Math.min(nPages - 1, piratesLbPage + 1); updatePiratesPanel(); };
-    nav.appendChild(prev);
-    nav.appendChild(pg);
-    nav.appendChild(next);
-    l.appendChild(nav);
-  }
+  l.appendChild(scrollWrap);
 }
 
 function updateWorldPanel() {
