@@ -2164,7 +2164,7 @@ function clearCustomMapAndReloadWorld(statusEl) {
   resetFactionVisualsToDefault();
   G.townStockpiles = {};
   initTownStockpiles();
-  applySharedWorldFromServerSeed(G.worldSeed >>> 0);
+  applySharedWorldFromServerSeed(G.worldSeed >>> 0, { skipServerMapReapply: true });
   if (statusEl) statusEl.textContent = 'Procedural archipelago restored.';
 }
 
@@ -6125,6 +6125,10 @@ let wsReconnectTimer = null;
 let wsUserBanned = false;
 let playWorldNetTimeoutId = null;
 let prefetchedServerSeed = null;
+/** Server-published chart revision (from init / health / `world_map`);0 = procedural-only. */
+let knownServerWorldMapRev = 0;
+let appliedServerWorldMapRev = 0;
+let serverWorldMapFetchToken = 0;
 
 function getServerUrl() {
   const p = new URLSearchParams(location.search), ex = p.get('server');
@@ -6150,6 +6154,34 @@ function getHttpOrigin() {
     } catch (e) {}
   }
   return `${location.protocol}//${location.host}`;
+}
+
+function getWorldMapApiUrl() {
+  return `${getHttpOrigin()}/api/world-map`;
+}
+
+function queueFetchServerWorldMap(rev) {
+  const targetRev = Number(rev) >>> 0;
+  if (targetRev <= 0) return;
+  const runId = ++serverWorldMapFetchToken;
+  fetch(getWorldMapApiUrl(), { cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error('map http'))))
+    .then(data => {
+      if (runId !== serverWorldMapFetchToken || !data || !data.map) return;
+      const mr = Number(data.revision) >>> 0;
+      if (applyCustomMapPayload(data.map, null)) {
+        appliedServerWorldMapRev = mr || targetRev;
+        if (mr) knownServerWorldMapRev = Math.max(knownServerWorldMapRev, mr);
+        notify('Live world chart from server.');
+      }
+    })
+    .catch(() => {});
+}
+
+function tryApplyServerWorldMapIfNeeded() {
+  if (G.mode !== 'playing') return;
+  if (knownServerWorldMapRev <= 0) return;
+  queueFetchServerWorldMap(knownServerWorldMapRev);
 }
 
 function randomCaptainNameForServer() {
@@ -6374,7 +6406,8 @@ function destroyAmbientWildlife() {
   schoolLeaders.length = 0;
 }
 
-function applySharedWorldFromServerSeed(s) {
+function applySharedWorldFromServerSeed(s, opts) {
+  opts = opts || {};
   const seed = Number(s) >>> 0;
   G.customMap = null;
   G.worldSeed = seed;
@@ -6398,12 +6431,22 @@ function applySharedWorldFromServerSeed(s) {
   nudgePlayerSpawnClearOfShips();
   scatterWindStreaksNearPlayer();
   flushGameViewRender();
+  if (!opts.skipServerMapReapply && knownServerWorldMapRev > 0 && G.mode === 'playing') {
+    queueFetchServerWorldMap(knownServerWorldMapRev);
+  }
 }
 function startServerSeedPrefetch() {
   prefetchedServerSeed = null;
   fetch(getHealthUrl(), { cache: 'no-store' })
     .then(r => (r.ok ? r.json() : Promise.reject()))
     .then(j => {
+      if (j && j.worldMapRevision != null) {
+        const wr = Number(j.worldMapRevision) >>> 0;
+        if (wr > 0) {
+          knownServerWorldMapRev = Math.max(knownServerWorldMapRev, wr);
+          tryApplyServerWorldMapIfNeeded();
+        }
+      }
       if (j && j.seed != null) {
         prefetchedServerSeed = Number(j.seed) >>> 0;
         if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
@@ -6438,6 +6481,13 @@ function schedulePlayWorldNetFallback() {
         const r = await fetch(getHealthUrl(), { cache: 'no-store' });
         if (r.ok) {
           const j = await r.json();
+          if (j.worldMapRevision != null) {
+            const wr = Number(j.worldMapRevision) >>> 0;
+            if (wr > 0) {
+              knownServerWorldMapRev = Math.max(knownServerWorldMapRev, wr);
+              tryApplyServerWorldMapIfNeeded();
+            }
+          }
           if (j.seed != null) {
             s = Number(j.seed) >>> 0;
             fromHttp = true;
@@ -6495,6 +6545,12 @@ function connectToServer() {
     switch (msg.type) {
       case 'init':
         G.myId = msg.id;
+        if (msg.worldMapRevision != null) {
+          const wr = Number(msg.worldMapRevision) >>> 0;
+          if (wr > 0) {
+            knownServerWorldMapRev = Math.max(knownServerWorldMapRev, wr);
+          }
+        }
         if (msg.seed != null) {
           const s = Number(msg.seed) >>> 0;
           if (G.mode === 'playing' && (G.playWorldAwaitingNetInit || (G.worldSeed >>> 0) !== s)) {
@@ -6507,6 +6563,7 @@ function connectToServer() {
         } else if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
           applySharedWorldFromServerSeed(G.fallbackWorldSeed >>> 0);
         }
+        if (knownServerWorldMapRev > 0) tryApplyServerWorldMapIfNeeded();
         if (msg.player) {
           if (!voyageSaveExistsInStorage()) { G.player.x = msg.player.x; G.player.z = msg.player.z; }
           G.player.color = msg.player.color;
@@ -6752,6 +6809,16 @@ function connectToServer() {
         }
         prefetchedServerSeed = ns;
         notify('The archipelago has been recharted (new world seed).');
+        break;
+      }
+      case 'world_map': {
+        if (msg.revision == null) break;
+        const wr = Number(msg.revision) >>> 0;
+        if (wr > 0) {
+          knownServerWorldMapRev = wr;
+          tryApplyServerWorldMapIfNeeded();
+          notify('Server published a new world chart — downloading…');
+        }
         break;
       }
       case 'world_story':

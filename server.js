@@ -10,6 +10,10 @@ const TICK_RATE = 45;
 /** Optional directory for persistent JSON (e.g. Docker volume). Defaults next to server.js. */
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
 const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
+const WORLD_MAP_FILE = path.join(DATA_DIR, 'world_map.json');
+/** Full map JSON (same shape as editor export); null if no published chart. */
+let WORLD_MAP_PAYLOAD = null;
+let WORLD_MAP_REVISION = 0;
 /** Primary notorious-pirates store (array JSON); also mirrored inside world_seed.json. */
 const LEADERBOARD_FILE = path.join(DATA_DIR, 'leaderboard.json');
 /** Secondary copy beside server.js so a cold DATA_DIR (ephemeral volume) can still recover from disk. */
@@ -460,6 +464,60 @@ function loadPersistedState() {
 }
 
 loadPersistedState();
+
+function validateWorldMapPayload(map) {
+  if (!map || typeof map !== 'object') return false;
+  if (map.version == null) return false;
+  const gn = Number(map.gridN);
+  if (!Number.isFinite(gn) || gn < 16 || gn > 512) return false;
+  const b64 = map.heightsB64;
+  if (typeof b64 !== 'string' || b64.length < 64) return false;
+  if (b64.length > 14 * 1024 * 1024) return false;
+  return true;
+}
+
+function loadWorldMapFromDisk() {
+  WORLD_MAP_PAYLOAD = null;
+  WORLD_MAP_REVISION = 0;
+  try {
+    if (!fs.existsSync(WORLD_MAP_FILE)) return;
+    const raw = fs.readFileSync(WORLD_MAP_FILE, 'utf8');
+    const o = JSON.parse(raw);
+    if (!o || typeof o !== 'object' || !o.map) return;
+    if (!validateWorldMapPayload(o.map)) return;
+    WORLD_MAP_PAYLOAD = o.map;
+    WORLD_MAP_REVISION = Number(o.revision) >>> 0;
+    if (!WORLD_MAP_REVISION) WORLD_MAP_REVISION = 1;
+  } catch (e) {
+    WORLD_MAP_PAYLOAD = null;
+    WORLD_MAP_REVISION = 0;
+  }
+}
+
+function persistWorldMapToDisk() {
+  if (!WORLD_MAP_PAYLOAD || !validateWorldMapPayload(WORLD_MAP_PAYLOAD)) return;
+  try {
+    writeFileAtomic(WORLD_MAP_FILE, JSON.stringify({
+      revision: WORLD_MAP_REVISION,
+      updatedAt: Date.now(),
+      map: WORLD_MAP_PAYLOAD
+    }));
+  } catch (e) {
+    console.error('[playground] persist world_map.json failed:', e.message);
+  }
+}
+
+function setWorldMapAndBroadcast(mapObj) {
+  if (!validateWorldMapPayload(mapObj)) return false;
+  WORLD_MAP_PAYLOAD = mapObj;
+  WORLD_MAP_REVISION = (WORLD_MAP_REVISION >>> 0) + 1;
+  if (!WORLD_MAP_REVISION) WORLD_MAP_REVISION = 1;
+  persistWorldMapToDisk();
+  broadcastAll({ type: 'world_map', revision: WORLD_MAP_REVISION });
+  return true;
+}
+
+loadWorldMapFromDisk();
 reconcileLeaderboardRows();
 leaderboardClientSeeded = leaderboardHistory.length > 0;
 if (leaderboardHistory.length) persistWorldSeedFile();
@@ -619,6 +677,48 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url === '/api/world-map') {
+    if (!WORLD_MAP_PAYLOAD || !WORLD_MAP_REVISION) {
+      res.writeHead(404, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: false, error: 'No world map published' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({ ok: true, revision: WORLD_MAP_REVISION, map: WORLD_MAP_PAYLOAD }));
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/world-map') {
+    readJsonBody(req, 32 * 1024 * 1024).then(body => {
+      pruneAdminSessions();
+      const token = body.token;
+      const exp = token ? adminSessions.get(token) : 0;
+      if (!token || !exp || exp <= Date.now()) {
+        res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Session expired or missing. Unlock the navigator console again.' }));
+        return;
+      }
+      const mapObj = body.map;
+      if (!validateWorldMapPayload(mapObj)) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid map (need version, gridN 16–512, heightsB64).' }));
+        return;
+      }
+      if (!setWorldMapAndBroadcast(mapObj)) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Could not persist world map.' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: true, revision: WORLD_MAP_REVISION }));
+    }).catch(e => {
+      const tooBig = e && String(e.message || '').includes('too large');
+      res.writeHead(tooBig ? 413 : 400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: false, error: tooBig ? 'Map JSON too large' : 'Bad request' }));
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/world-seed') {
     readJsonBody(req).then(body => {
       pruneAdminSessions();
@@ -651,6 +751,7 @@ const server = http.createServer((req, res) => {
       status: 'ok',
       players: players.size,
       seed: WORLD_SEED,
+      worldMapRevision: WORLD_MAP_REVISION >>> 0,
       navigatorAuthConfigured: !!(NAVIGATOR_ADMIN_PASSWORD && String(NAVIGATOR_ADMIN_PASSWORD).length > 0)
     }));
     return;
@@ -668,6 +769,14 @@ const server = http.createServer((req, res) => {
     fs.readFile(path.join(__dirname, 'map-editor.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
+      res.end(data);
+    });
+    return;
+  }
+  if (req.url === '/editor-ship-builders.js' || req.url.startsWith('/editor-ship-builders.js?')) {
+    fs.readFile(path.join(__dirname, 'editor-ship-builders.js'), (err, data) => {
+      if (err) { res.writeHead(500); res.end('Error'); return; }
+      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', ...CORS_HEADERS });
       res.end(data);
     });
     return;
@@ -861,6 +970,7 @@ wss.on('connection', (ws, req) => {
     type: 'init',
     id,
     seed: WORLD_SEED,
+    worldMapRevision: WORLD_MAP_REVISION >>> 0,
     player: playerData,
     players: Array.from(players.values()).filter(p => p.id !== id),
     worldStory: sanitizeWorldStory(worldStoryQuest),
