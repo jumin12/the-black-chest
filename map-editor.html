@@ -489,6 +489,132 @@
     towns = out;
     townSeq = nextNum;
   }
+  function islandRngEd(cx, cz, worldSeedU) {
+    let s = (worldSeedU >>> 0) ^ (Math.imul(cx, 73856093) >>> 0) ^ (Math.imul(cz, 19349663) >>> 0) ^ 0x6eed1e5d;
+    if (s === 0) s = 0xa341316c;
+    return function rand() {
+      s = (Math.imul(1664525, s) + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+  const PROC_BUILDING_COLORS = [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868];
+  /** Match index.html `generateIsland` props + town dock/buildings/flag when entities are empty. */
+  function syncProceduralEntitiesFromWorldSeed(worldSeedU) {
+    const w = Number(worldSeedU) >>> 0;
+    resetProceduralNoise(w);
+    const next = [];
+    let eNum = 1;
+    const push = o => { next.push({ id: 'e' + (eNum++), ...o }); };
+    for (let cz = -WORLD_CHUNK_HALF; cz <= WORLD_CHUNK_HALF; cz++) {
+      for (let cx = -WORLD_CHUNK_HALF; cx <= WORLD_CHUNK_HALF; cx++) {
+        const meta = getProceduralIslandMetaWithTownEd(cx, cz, w);
+        if (!meta) continue;
+        const rng = islandRngEd(cx, cz, w);
+        const ln = new SimplexNoiseEd(cx * 1000 + cz);
+        const worldX = meta.worldX, worldZ = meta.worldZ;
+        const islandRadius = meta.radius, islandHeight = meta.maxH, h = meta.h;
+        const islandNoise = getCachedIslandNoiseEd(cx, cz);
+
+        const treeCount = Math.floor(16 + h * 58);
+        for (let ti = 0; ti < treeCount; ti++) {
+          const a = ln.noise2D(ti * 0.7, 0) * Math.PI * 2;
+          const rad = (0.15 + Math.abs(ln.noise2D(ti * 0.3, 1)) * 0.72) * islandRadius;
+          const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
+          const d = Math.sqrt(tx * tx + tz * tz) / islandRadius;
+          if (d > 0.93) continue;
+          const ty = sampleIslandLandHeightEd(tx, tz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+          if (ty > 0.35 && ty < islandHeight * 0.74) {
+            push({ type: 'tree', x: worldX + tx, z: worldZ + tz, rot: rng() * Math.PI * 2 });
+          }
+        }
+        const bushCount = Math.floor(14 + h * 38);
+        for (let bi = 0; bi < bushCount; bi++) {
+          const a = ln.noise2D(bi * 0.88, 50) * Math.PI * 2;
+          const rad = (0.18 + Math.abs(ln.noise2D(bi * 0.33, 51)) * 0.68) * islandRadius;
+          const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
+          const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
+          if (d > 0.94 || d < 0.12) continue;
+          const by = sampleIslandLandHeightEd(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+          if (by < 0.2 || by > islandHeight * 0.78) continue;
+          push({ type: 'bush', x: worldX + bx, z: worldZ + bz, rot: rng() * Math.PI * 2 });
+        }
+        const rockCount = Math.floor(7 + h * 22);
+        for (let ri = 0; ri < rockCount; ri++) {
+          const a = ln.noise2D(ri * 0.5, 10) * Math.PI * 2;
+          const rad = (0.3 + Math.abs(ln.noise2D(ri * 0.4, 11)) * 0.65) * islandRadius;
+          const rx = Math.cos(a) * rad, rz = Math.sin(a) * rad;
+          const d = Math.sqrt(rx * rx + rz * rz) / islandRadius;
+          if (d > 0.96) continue;
+          const ry = sampleIslandLandHeightEd(rx, rz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+          if (ry < 0.12) continue;
+          push({ type: 'rock', x: worldX + rx, z: worldZ + rz, rot: rng() * Math.PI * 2, scale: 0.4 + rng() * 1.2 });
+        }
+        const driftN = Math.floor(3 + h * 10 + islandRadius * 0.06);
+        for (let di = 0; di < driftN; di++) {
+          const a = ln.noise2D(di * 0.6, 60) * Math.PI * 2;
+          const rad = (0.72 + Math.abs(ln.noise2D(di * 0.4, 61)) * 0.22) * islandRadius;
+          const dx = Math.cos(a) * rad, dz = Math.sin(a) * rad;
+          const d = Math.sqrt(dx * dx + dz * dz) / islandRadius;
+          if (d < 0.62 || d > 0.98) continue;
+          const dy = sampleIslandLandHeightEd(dx, dz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+          if (dy < 0.08) continue;
+          push({ type: 'driftwood', x: worldX + dx, z: worldZ + dz, rot: rng() * Math.PI * 2 });
+        }
+        const barrelN = Math.floor(2 + h * 5 + (meta.hasTown ? 5 : 0));
+        for (let bi = 0; bi < barrelN; bi++) {
+          const a = ln.noise2D(bi * 1.1, 70) * Math.PI * 2;
+          const rad = (0.2 + Math.abs(ln.noise2D(bi * 0.5, 71)) * 0.5) * islandRadius;
+          const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
+          const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
+          if (d > 0.88) continue;
+          const by = sampleIslandLandHeightEd(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+          if (by < 0.08 || by > islandHeight * 0.42) continue;
+          push({ type: 'barrel', x: worldX + bx, z: worldZ + bz, rot: rng() * Math.PI * 2 });
+        }
+
+        if (meta.hasTown) {
+          const townRow = towns.find(t => t.cx === cx && t.cz === cz);
+          const townId = townRow ? townRow.id : null;
+          if (!townId) continue;
+          const dockAngle = meta.dockAngle;
+          const dockX = meta.dockX, dockZ = meta.dockZ;
+          push({ type: 'dock', x: dockX, z: dockZ, rot: dockAngle, townId });
+          for (let bi = 0; bi < 5; bi++) {
+            const ba = dockAngle + Math.PI + (bi - 2) * 0.3;
+            const bOff = (bi % 2 === 0 ? 1 : -1) * (2 + bi * 1.5);
+            const bx = dockX + Math.cos(ba) * (8 + bi * 4) + Math.cos(ba + Math.PI / 2) * bOff;
+            const bz = dockZ + Math.sin(ba) * (8 + bi * 4) + Math.sin(ba + Math.PI / 2) * bOff;
+            push({
+              type: 'building',
+              x: bx,
+              z: bz,
+              rot: rng() * Math.PI * 2,
+              townId,
+              color: PROC_BUILDING_COLORS[bi]
+            });
+          }
+          const dockWidX = Math.cos(dockAngle), dockWidZ = -Math.sin(dockAngle);
+          const toInX = worldX - dockX, toInZ = worldZ - dockZ;
+          const inLen = Math.hypot(toInX, toInZ) || 1;
+          const ux = toInX / inLen, uz = toInZ / inLen;
+          const sideOff = 3.6;
+          let fxx = dockX + dockWidX * sideOff;
+          let fzz = dockZ + dockWidZ * sideOff;
+          for (let dist = 2; dist <= Math.min(140, islandRadius * 1.45); dist += 2) {
+            const tx = dockX + ux * dist + dockWidX * (sideOff * 0.35);
+            const tz = dockZ + uz * dist + dockWidZ * (sideOff * 0.35);
+            if (isLand(tx, tz)) {
+              fxx = tx;
+              fzz = tz;
+              break;
+            }
+          }
+          push({ type: 'flagpole', x: fxx, z: fzz, rot: dockAngle, townId });
+        }
+      }
+    }
+    entities = next;
+  }
   function sampleIslandLandHeightEd(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise) {
     if (!proceduralNoiseInst) return -1;
     const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
@@ -952,6 +1078,7 @@
 
   const matTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
   const matPalm = new THREE.MeshLambertMaterial({ color: 0x4a9e3f });
+  const matRockEd = new THREE.MeshLambertMaterial({ color: 0x7a7a7a });
   function decoRand(rng) { return typeof rng === 'function' ? rng : Math.random; }
   function createPalmTree(x, y, z, rng) {
     const r = decoRand(rng);
@@ -1338,10 +1465,53 @@
       let m = null;
       if (e.type === 'tree') m = makeTree(e.x, e.z, rng);
       else if (e.type === 'bush') m = makeBush(e.x, e.z, rng);
-      else if (e.type === 'building') m = makeBuilding(e.x, e.z, 0xb0a078, rng);
+      else if (e.type === 'building') m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng);
       else if (e.type === 'house') m = makeHouse(e.x, e.z, rng);
       else if (e.type === 'dock') m = makeDock(e.x, e.z, e.rot || 0);
       else if (e.type === 'flagpole') m = makeFlagpole(e.x, e.z);
+      else if (e.type === 'rock') {
+        const s = e.scale != null ? e.scale : 0.8;
+        const geo = new THREE.DodecahedronGeometry(s, 1);
+        const p = geo.attributes.position;
+        for (let i = 0; i < p.count; i++) {
+          p.setX(i, p.getX(i) + (rng() - 0.5) * s * 0.3);
+          p.setY(i, p.getY(i) * (0.5 + rng() * 0.5));
+          p.setZ(i, p.getZ(i) + (rng() - 0.5) * s * 0.3);
+        }
+        p.needsUpdate = true;
+        geo.computeVertexNormals();
+        const rock = new THREE.Mesh(geo, matRockEd);
+        const y = terrainSurfaceY(e.x, e.z) + 0.08;
+        rock.position.set(e.x, y + s * 0.35, e.z);
+        rock.rotation.y = e.rot != null ? e.rot : 0;
+        rock.castShadow = true;
+        rock.receiveShadow = true;
+        m = rock;
+      } else if (e.type === 'barrel') {
+        const g = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.85, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
+        body.position.y = 0.42;
+        body.castShadow = true;
+        g.add(body);
+        const band = new THREE.Mesh(new THREE.TorusGeometry(0.35, 0.035, 4, 10), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+        band.position.y = 0.32;
+        band.rotation.x = Math.PI / 2;
+        g.add(band);
+        const y = terrainSurfaceY(e.x, e.z) + 0.02;
+        g.position.set(e.x, y, e.z);
+        g.rotation.y = e.rot != null ? e.rot : 0;
+        m = g;
+      } else if (e.type === 'driftwood') {
+        const log = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.07, 0.11, 1.1 + rng() * 0.9, 5),
+          new THREE.MeshLambertMaterial({ color: [0x5a4030, 0x6a5040, 0x4a3828][Math.floor(rng() * 3)] })
+        );
+        log.rotation.z = Math.PI / 2 * (0.82 + rng() * 0.28);
+        log.rotation.y = e.rot != null ? e.rot : rng() * Math.PI * 2;
+        log.position.set(e.x, terrainSurfaceY(e.x, e.z) + 0.1, e.z);
+        log.castShadow = true;
+        m = log;
+      }
       if (m) {
         m.userData.editorEntityId = e.id;
         if (e.type === 'tree') {
@@ -1851,10 +2021,21 @@
       };
     } else playerSpawn = null;
     refreshSpawnHud();
-    townSeq = Math.max(1, towns.length + 1);
-    entSeq = Math.max(1, entities.length + 1);
     fillHeightsFromProceduralSeed(seed);
     if (!towns.length) syncTownsFromProceduralSeed(seed);
+    if (!entities.length) syncProceduralEntitiesFromWorldSeed(seed);
+    let maxT = 0;
+    for (const t of towns) {
+      const mt = /^t(\d+)$/.exec(String(t.id || ''));
+      if (mt) maxT = Math.max(maxT, parseInt(mt[1], 10));
+    }
+    townSeq = Math.max(1, maxT + 1);
+    let maxE = 0;
+    for (const e of entities) {
+      const me = /^e(\d+)$/.exec(String(e.id || ''));
+      if (me) maxE = Math.max(maxE, parseInt(me[1], 10));
+    }
+    entSeq = Math.max(1, maxE + 1);
     buildTerrainMesh();
     syncEntityMeshes();
     refreshEntityList();
@@ -1969,6 +2150,19 @@
     refreshSpawnHud();
     fillHeightsFromProceduralSeed(s);
     syncTownsFromProceduralSeed(s);
+    syncProceduralEntitiesFromWorldSeed(s);
+    let maxTb = 0;
+    for (const t of towns) {
+      const mt = /^t(\d+)$/.exec(String(t.id || ''));
+      if (mt) maxTb = Math.max(maxTb, parseInt(mt[1], 10));
+    }
+    townSeq = Math.max(1, maxTb + 1);
+    let maxEb = 0;
+    for (const e of entities) {
+      const me = /^e(\d+)$/.exec(String(e.id || ''));
+      if (me) maxEb = Math.max(maxEb, parseInt(me[1], 10));
+    }
+    entSeq = Math.max(1, maxEb + 1);
     buildTerrainMesh();
     syncEntityMeshes();
     refreshEntityList();
@@ -2110,41 +2304,49 @@
     let resolvedMode = (modeSel === 'auto' || modeSel === 'mask_inv')
       ? (modeSel === 'mask_inv' ? 'mask_inv' : detectPngModeFromImageData(probeD))
       : modeSel;
-    const tmp = document.createElement('canvas');
-    tmp.width = GRID_N;
-    tmp.height = GRID_N;
-    const tctx = tmp.getContext('2d');
-    if (!tctx) return;
-    /* Nearest sampling for masks keeps narrow channels / small islets; heightmaps stay smooth. */
-    tctx.imageSmoothingEnabled = resolvedMode === 'height';
-    /* Uniform scale (contain): no stretch; letterbox is water (mask) or deep sea (height) */
-    tctx.fillStyle = resolvedMode === 'height' ? 'rgb(8,12,22)' : 'rgb(255,255,255)';
-    tctx.fillRect(0, 0, GRID_N, GRID_N);
-    const scale = Math.min(GRID_N / sw, GRID_N / sh);
-    const dw = sw * scale;
-    const dh = sh * scale;
-    const dx = (GRID_N - dw) * 0.5;
-    const dy = (GRID_N - dh) * 0.5;
-    tctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
-    let d;
+    const full = document.createElement('canvas');
+    full.width = iw;
+    full.height = ih;
+    const fctx = full.getContext('2d', { willReadFrequently: true });
+    if (!fctx) return;
+    fctx.drawImage(img, 0, 0);
+    let imgD;
     try {
-      d = tctx.getImageData(0, 0, GRID_N, GRID_N).data;
+      imgD = fctx.getImageData(0, 0, iw, ih).data;
     } catch (err) {
       document.getElementById('status-bar').textContent =
         'Could not read PNG pixels (try another export or reload the image).';
       return;
     }
+    const sx0 = Math.max(0, Math.min(iw - 1, Math.floor(sx)));
+    const sy0 = Math.max(0, Math.min(ih - 1, Math.floor(sy)));
+    const swI = Math.max(1, Math.min(iw - sx0, Math.ceil(sw)));
+    const shI = Math.max(1, Math.min(ih - sy0, Math.ceil(sh)));
+    const scale = Math.min(GRID_N / swI, GRID_N / shI);
+    const destW = swI * scale;
+    const destH = shI * scale;
+    const ox = Math.floor((GRID_N - destW) * 0.5);
+    const oy = Math.floor((GRID_N - destH) * 0.5);
+    const letterLum = resolvedMode === 'height' ? 0.04 : 0.96;
     for (let iz = 0; iz < GRID_N; iz++) {
       for (let ix = 0; ix < GRID_N; ix++) {
-        const p = (iz * GRID_N + ix) * 4;
-        const lum = (d[p] + d[p + 1] + d[p + 2]) / (3 * 255);
+        const lx = ix - ox;
+        const lz = iz - oy;
+        let lum;
+        if (lx < 0 || lz < 0 || lx >= destW || lz >= destH) {
+          lum = letterLum;
+        } else {
+          const srcX = sx0 + Math.min(swI - 1, Math.floor((lx + 0.5) * swI / destW));
+          const srcY = sy0 + Math.min(shI - 1, Math.floor((lz + 0.5) * shI / destH));
+          const ii = (srcY * iw + srcX) * 4;
+          lum = (imgD[ii] + imgD[ii + 1] + imgD[ii + 2]) / (3 * 255);
+        }
         const h = lumToHeight01(lum, resolvedMode);
-        /* Canvas row 0 = image top → gz = 0 (world −Z); matches worldToGrid / voyage sampling. */
         heights[iz * GRID_N + ix] = h;
       }
     }
-    if (resolvedMode === 'mask' || resolvedMode === 'mask_inv') dilateLandIntoShallowWater();
-    plateauLandDepressions();
+    /* Skip dilate — it bridges narrow channels; PNG is already nearest-pixel sampled. */
+    if (resolvedMode === 'height') plateauLandDepressions();
     for (let i = 0; i < heights.length; i++) {
       if (heights[i] > WATER_THR) {
         heights[i] = WATER_THR + (heights[i] - WATER_THR) * EDITOR_PNG_LAND_REL_SCALE;
@@ -2153,10 +2355,11 @@
     applyBeachShelfAndInlandGrassLift();
     buildTerrainMesh();
     syncEntityMeshes();
+    refreshEntityList();
     frameEntireMap();
     const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
     document.getElementById('status-bar').textContent =
-      `PNG applied (${modeNote}). Image top → world −Z, left → −X (upright vs canvas).`;
+      `PNG applied (${modeNote}), nearest-pixel crop → grid. Top → world −Z, left → −X.`;
   }
 
   pngPreview.addEventListener('pointerdown', e => {
