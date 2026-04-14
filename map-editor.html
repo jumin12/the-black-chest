@@ -60,6 +60,12 @@
       <input type="range" id="brush-s" min="1" max="40" value="14" />
 
       <h3>World &amp; wind (preview)</h3>
+      <label class="row">Map half-extent (world units, matches voyage)</label>
+      <input type="number" id="inp-map-half" min="400" max="12000" step="50" value="2250" />
+      <div class="actions" style="margin-top:4px;">
+        <button type="button" id="btn-apply-map-half">Apply &amp; scale islands / props</button>
+      </div>
+      <p class="hint" style="margin-top:6px;">Changing this rescales town docks and placed entities so they stay on the same relative chart. Saved JSON includes this value.</p>
       <label class="row">Seed (32-bit)</label>
       <input type="text" id="inp-seed" inputmode="numeric" value="42" />
       <label class="row">Wind angle (turns)</label>
@@ -128,7 +134,10 @@
 
   const CHUNK_SIZE = 300;
   const WORLD_CHUNK_HALF = 7;
-  const WORLD_EDGE_CLAMP = WORLD_CHUNK_HALF * CHUNK_SIZE + CHUNK_SIZE * 0.5;
+  const DEFAULT_WORLD_EDGE_CLAMP = WORLD_CHUNK_HALF * CHUNK_SIZE + CHUNK_SIZE * 0.5;
+  const MAP_HALF_MIN = 400;
+  const MAP_HALF_MAX = 12000;
+  let worldEdgeClamp = DEFAULT_WORLD_EDGE_CLAMP;
   const GRID_N = 256;
   const WATER_THR = 0.12;
   const MAX_H = 18;
@@ -173,7 +182,7 @@
   for (let i = 0; i < heights.length; i++) heights[i] = 0;
 
   function worldToGrid(wx, wz) {
-    const lim = WORLD_EDGE_CLAMP;
+    const lim = worldEdgeClamp;
     const u = (wx + lim) / (2 * lim);
     const v = (wz + lim) / (2 * lim);
     const gx = u * (GRID_N - 1);
@@ -210,7 +219,7 @@
   const controls = new OrbitControls(camera, canvas);
   controls.target.set(0, 0, 0);
   controls.enableDamping = true;
-  controls.maxDistance = WORLD_EDGE_CLAMP * 12;
+  controls.maxDistance = worldEdgeClamp * 12;
   controls.maxPolarAngle = Math.PI * 0.48;
 
   const ambientLight = new THREE.AmbientLight(0x7799bb, 0.7);
@@ -220,8 +229,9 @@
   scene.add(sunLight);
   scene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4));
 
+  const skyRadius = () => Math.max(3600, worldEdgeClamp * 3.6);
   const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(700, 24, 24),
+    new THREE.SphereGeometry(skyRadius(), 40, 40),
     new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
@@ -306,21 +316,35 @@
       gl_FragColor = vec4(color,1.0);
     }`;
 
-  const wSize = WORLD_EDGE_CLAMP * 2.4;
-  const waterGeom = new THREE.PlaneGeometry(wSize, wSize, 200, 200);
-  waterGeom.rotateX(-Math.PI / 2);
-  const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
+  let water = null;
+  const waterMaterial = new THREE.ShaderMaterial({
     uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
     transparent: false, depthWrite: true, side: THREE.FrontSide
-  }));
-  water.position.set(0, SEA_LEVEL - 0.5, 0);
-  water.renderOrder = -1;
-  scene.add(water);
+  });
+  function rebuildWaterPlane() {
+    if (water) {
+      scene.remove(water);
+      water.geometry.dispose();
+      water = null;
+    }
+    const wSize = worldEdgeClamp * 2.4;
+    const waterGeom = new THREE.PlaneGeometry(wSize, wSize, 200, 200);
+    waterGeom.rotateX(-Math.PI / 2);
+    water = new THREE.Mesh(waterGeom, waterMaterial);
+    water.position.set(0, SEA_LEVEL - 0.5, 0);
+    water.renderOrder = -1;
+    scene.add(water);
+  }
+  function resizeSkyDome() {
+    sky.geometry.dispose();
+    sky.geometry = new THREE.SphereGeometry(skyRadius(), 40, 40);
+  }
+  rebuildWaterPlane();
 
   let terrainMesh = null;
   function buildTerrainMesh() {
     if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); terrainMesh = null; }
-    const lim = WORLD_EDGE_CLAMP;
+    const lim = worldEdgeClamp;
     const seg = GRID_N - 1;
     const geo = new THREE.PlaneGeometry(2 * lim, 2 * lim, seg, seg);
     geo.rotateX(-Math.PI / 2);
@@ -490,7 +514,7 @@
   function paintAt(wx, wz) {
     const r = Number(document.getElementById('brush-r').value);
     const s = Number(document.getElementById('brush-s').value) * 0.0015;
-    const lim = WORLD_EDGE_CLAMP;
+    const lim = worldEdgeClamp;
     for (let iz = 0; iz < GRID_N; iz++) {
       for (let ix = 0; ix < GRID_N; ix++) {
         const px = (ix / (GRID_N - 1)) * 2 * lim - lim;
@@ -664,7 +688,7 @@
       gridN: GRID_N,
       waterThreshold: WATER_THR,
       maxLandHeight: MAX_H,
-      worldEdgeClamp: WORLD_EDGE_CLAMP,
+      worldEdgeClamp,
       heightsB64,
       wind: { angle: windAngle, speed: windSpeed },
       seed,
@@ -696,6 +720,14 @@
       hasTown: true
     })) : [];
     entities = Array.isArray(data.entities) ? data.entities.slice() : [];
+    if (data.worldEdgeClamp != null) {
+      const w = Number(data.worldEdgeClamp);
+      if (w >= MAP_HALF_MIN && w <= MAP_HALF_MAX) worldEdgeClamp = w;
+    }
+    document.getElementById('inp-map-half').value = String(Math.round(worldEdgeClamp));
+    controls.maxDistance = worldEdgeClamp * 12;
+    resizeSkyDome();
+    rebuildWaterPlane();
     if (data.seed != null) document.getElementById('inp-seed').value = String(Number(data.seed) >>> 0);
     if (data.wind) {
       const turns = Number(data.wind.angle) / (Math.PI * 2);
@@ -733,13 +765,44 @@
   });
 
   function frameEntireMap() {
-    const lim = WORLD_EDGE_CLAMP;
+    const lim = worldEdgeClamp;
     controls.target.set(0, 0, 0);
     const span = lim * 2.15;
     const dist = span * 0.72;
     camera.position.set(dist * 0.92, dist * 0.58, dist * 0.92);
     controls.update();
   }
+
+  document.getElementById('inp-map-half').value = String(Math.round(worldEdgeClamp));
+  document.getElementById('btn-apply-map-half').addEventListener('click', () => {
+    const raw = Number(document.getElementById('inp-map-half').value);
+    const newLim = Math.max(MAP_HALF_MIN, Math.min(MAP_HALF_MAX, raw || worldEdgeClamp));
+    const prevLim = worldEdgeClamp;
+    if (newLim !== worldEdgeClamp) {
+      const s = newLim / worldEdgeClamp;
+      worldEdgeClamp = newLim;
+      for (const t of towns) {
+        if (t.dockX != null) t.dockX *= s;
+        if (t.dockZ != null) t.dockZ *= s;
+        if (t.worldX != null) t.worldX *= s;
+        if (t.worldZ != null) t.worldZ *= s;
+      }
+      for (const e of entities) {
+        e.x *= s;
+        e.z *= s;
+      }
+    }
+    controls.maxDistance = worldEdgeClamp * 12;
+    resizeSkyDome();
+    rebuildWaterPlane();
+    buildTerrainMesh();
+    syncEntityMeshes();
+    frameEntireMap();
+    document.getElementById('inp-map-half').value = String(Math.round(worldEdgeClamp));
+    document.getElementById('status-bar').textContent = newLim !== prevLim
+      ? `Map half-extent ${worldEdgeClamp} — scaled docks & props; rebuilt terrain, ocean, sky.`
+      : `Map half-extent ${worldEdgeClamp} — rebuilt terrain, ocean, sky.`;
+  });
 
   document.getElementById('btn-png').addEventListener('click', () => document.getElementById('file-png').click());
   document.getElementById('file-png').addEventListener('change', ev => {
@@ -767,7 +830,10 @@
           const lum = (d[i] + d[i + 1] + d[i + 2]) / (3 * 255);
           const idx = iz * GRID_N + ix;
           if (lum > 0.88) heights[idx] = WATER_THR * 0.35;
-          else heights[idx] = Math.max(0.15, Math.min(1, 1 - lum));
+          else {
+            const t = Math.max(0, 1 - lum);
+            heights[idx] = Math.max(0.16, Math.min(1, Math.pow(t, 0.82) * 1.55));
+          }
         }
       }
       buildTerrainMesh();
