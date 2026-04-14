@@ -475,7 +475,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <div id="death-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,0,0,0.5);z-index:40;pointer-events:none;flex-direction:column;align-items:center;justify-content:center;">
     <div style="color:#cc3333;font-size:clamp(28px,6vw,48px);font-weight:bold;text-shadow:0 0 20px rgba(200,30,30,0.6);">SHIP SINKING</div>
     <div id="death-killer" style="color:#e0d6c2;font-size:16px;margin-top:8px;"></div>
-    <div id="death-timer" style="color:#d4a848;font-size:18px;margin-top:12px;">Respawning in 8s</div>
+    <div id="death-timer" style="color:#d4a848;font-size:18px;margin-top:12px;">Respawning…</div>
   </div>
    <div id="fullmap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,12,25,0.97);z-index:50;pointer-events:auto;">
     <div id="fullmap-frame" class="fullmap-frame">
@@ -878,7 +878,8 @@ const G = {
   combatPopups3D: [],
   swimmers: [],
   selectedAmmoType: 'ball',
-  playerSinking: false, playerSinkTimer: 0, respawnAnchorX: 0, respawnAnchorZ: 0, lastAttacker: '', lastAttackerId: null,
+  playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
+  deathSpawnX: null, deathSpawnZ: null, lastBroadsideSide: 1,
   nearDock: null, docked: false, quests: [],
   /** Recent finished contracts & story beats for Captains Log (newest first). */
   completedMissionLog: [],
@@ -1453,29 +1454,6 @@ function ensurePlayerInOpenOcean() {
     }
   }
   clampPlayerIntoWorldBounds();
-}
-
-function pickOpenRespawnNear(deathX, deathZ) {
-  let s = ((G.worldSeed | 0) ^ 0x4d2e6b9a ^ (Math.floor(deathX * 0.01) * 2654435761 >>> 0) ^ (Math.floor(deathZ * 0.01) * 1597334677 >>> 0)) >>> 0;
-  const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-  const tryRing = (minD, maxD, trials) => {
-    for (let attempt = 0; attempt < trials; attempt++) {
-      const ang = rnd() * Math.PI * 2;
-      const dist = minD + rnd() * (maxD - minD);
-      const nx = deathX + Math.cos(ang) * dist;
-      const nz = deathZ + Math.sin(ang) * dist;
-      if (!isSeaObstructed(nx, nz)) {
-        G.player.x = nx;
-        G.player.z = nz;
-        clampPlayerIntoWorldBounds();
-        if (!isSeaObstructed(G.player.x, G.player.z)) return true;
-      }
-    }
-    return false;
-  };
-  if (tryRing(RESPAWN_RING_MIN, RESPAWN_RING_MAX, 56)) return;
-  if (tryRing(380, 980, 44)) return;
-  ensurePlayerInOpenOcean();
 }
 
 function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, centerWx, centerWz, worldSeedOpt) {
@@ -2569,11 +2547,11 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     sail.castShadow = true;
     mastRig.add(sail);
 
-    const yg = new THREE.CylinderGeometry(0.04, 0.04, sW + 0.4, 4); yg.rotateZ(Math.PI / 2);
+       const yg = new THREE.CylinderGeometry(0.04, 0.04, sW + 0.4, 4); yg.rotateZ(Math.PI / 2);
     const yard = new THREE.Mesh(yg, rm);
-    yard.position.set(0, mH * 0.85, 0);
+    yard.position.set(0, mH * 0.25, -0.3);
     yard.userData.isYard = true;
-    mastRig.add(yard);
+    sail.add(yard);
     g.add(mastRig);
   }
 
@@ -2645,14 +2623,28 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   }
 
   {
+    const poleH = spec.hullLen * 0.4;
+    const flagRig = new THREE.Group();
+    flagRig.position.set(spec.hullW * 0.42, spec.hullH * 0.58, -spec.hullLen * 0.4);
+    const poleMat = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.052, poleH, 6), poleMat);
+    pole.position.y = poleH * 0.5;
+    flagRig.add(pole);
+    const flagHinge = new THREE.Group();
+    flagHinge.position.set(0, poleH * 0.94, 0.02);
+    flagHinge.userData.isFlagHinge = true;
     const fc = document.createElement('canvas'); fc.width = 64; fc.height = 48;
     const ctx = fc.getContext('2d');
     ctx.fillStyle = flagColor || '#1a1a1a'; ctx.fillRect(0, 0, 64, 48);
-    ctx.fillStyle = flagColor ? '#000' : '#ddd'; ctx.font = '28px serif'; ctx.fillText('\u2620', 18, 36);
-    const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8),
-      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(fc), side: THREE.DoubleSide }));
-    fmesh.position.set(0.7, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.95, 0);
-    fmesh.userData.isFlag = true; g.add(fmesh);
+    ctx.fillStyle = flagColor ? '#1a1008' : '#ddd'; ctx.font = 'bold 28px Georgia, serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('\u2620', 32, 26);
+    const ftex = new THREE.CanvasTexture(fc);
+    const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78),
+      new THREE.MeshBasicMaterial({ map: ftex, side: THREE.DoubleSide }));
+    fmesh.position.set(0.56, 0, 0);
+    flagHinge.add(fmesh);
+    flagRig.add(flagHinge);
+    g.add(flagRig);
   }
 
   if (flagColor) {
@@ -2668,7 +2660,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
 
   if (shipName) {
     const swatch = flagColor ? String(flagColor) : '';
-    const label = makeTextSprite(shipName, '#d4a848', '', swatch);
+    const label = makeTextSprite(shipName, '#e8dcc8', '', swatch);
     label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     g.add(label);
   }
@@ -2867,6 +2859,10 @@ function updateCrewDeckAnimations(dt) {
   const posLerp = 1 - Math.exp(-(6.2 + broadsideBusy * 2.2 + reloadT * 1.5) * dt);
   const rotLerp = 1 - Math.exp(-(4.8 + broadsideBusy * 1.2) * dt);
   const fireKick = Math.min(1, G.crewDeckCombatT * 2.2);
+  if (G._crewGunBlendSm == null) G._crewGunBlendSm = 0;
+  const gunTgt = (G.crewDeckCombatT > 0.04 || G.crewReloading) ? 1 : 0;
+  G._crewGunBlendSm += (gunTgt - G._crewGunBlendSm) * Math.min(1, 6 * dt);
+  const gunRun = G._crewGunBlendSm * G._crewGunBlendSm * (3 - 2 * G._crewGunBlendSm);
 
   ship.children.forEach(ch => {
     if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx == null) return;
@@ -2883,14 +2879,21 @@ function updateCrewDeckAnimations(dt) {
       ty = b.y;
       tryRot = Math.sin(t * 0.26 + k) * 0.28;
     } else if (member.task === 'cannons') {
+      const ci = ch.userData.crewIdx;
+      const cannonSide = ci % 2 === 0 ? 1 : -1;
+      const gx = cannonSide * spec.hullW * 0.36;
+      const gz = (Math.floor(ci / 2) - 1) * 1.8;
       const run = Math.sin(t * 0.55 + k * 1.3);
       const ram = Math.sin(t * 0.48 + k) * 0.09 * gunAmp * ampBase;
       const sway = Math.cos(t * 0.38 + k * 0.7) * 0.07 * gunAmp * ampBase;
       const kick = fireKick * 0.07 * Math.sin(t * 22 + k);
-      tx = b.x + ram + kick;
-      tz = b.z + sway + run * 0.05 * (0.65 + reloadPhase * 0.35);
-      ty = b.y + Math.abs(Math.sin(t * 1.25 + k)) * 0.035 * gunAmp * ampBase + fireKick * 0.025;
-      tryRot = Math.sin(t * 0.85 + k) * 0.18 * gunAmp + run * 0.08;
+      const g = gunRun;
+      const ix = b.x + ram + kick;
+      const iz = b.z + sway + run * 0.05 * (0.65 + reloadPhase * 0.35);
+      tx = ix + (gx - ix) * g;
+      tz = iz + (gz - iz) * g;
+      ty = b.y + Math.abs(Math.sin(t * 1.25 + k)) * 0.035 * gunAmp * ampBase * (1 - g * 0.75) + fireKick * 0.025;
+      tryRot = Math.sin(t * 0.85 + k) * 0.18 * gunAmp * (1 - g * 0.55) + run * 0.08 * (1 - g * 0.6) + g * cannonSide * 0.35;
     } else if (member.task === 'sails') {
       const steer = Math.max(-1, Math.min(1, (G._playerYawRateSm || 0) * 0.35));
       const pull = Math.sin(t * 0.42 + k);
@@ -2930,7 +2933,7 @@ function updateCrewDeckAnimations(dt) {
     ch.position.set(sm.x, sm.y, sm.z);
     let leanX = 0;
     if (member.task === 'clean') leanX = Math.sin(t * 0.72 + k) * 0.05 * ampBase;
-    else if (member.task === 'cannons') leanX = Math.sin(t * 0.5 + k) * 0.04 * gunAmp * ampBase + fireKick * 0.06;
+    else if (member.task === 'cannons') leanX = Math.sin(t * 0.5 + k) * 0.04 * gunAmp * ampBase * (1 - gunRun * 0.85) + fireKick * 0.06;
     ch.rotation.x = leanX;
     ch.rotation.z = 0;
     ch.rotation.y = sm.ry;
@@ -2966,8 +2969,10 @@ function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
       p.needsUpdate = true;
       child.geometry.computeVertexNormals();
     }
-    if (child.userData && child.userData.isFlag) {
-      child.rotation.y = Math.sin(G.time * 3 + wx * 0.01) * 0.3;
+    if (child.userData && child.userData.isFlagHinge) {
+      const rw = wHere.angle - rotation;
+      child.rotation.y = Math.sin(G.time * 2.7 + wx * 0.01 + rw * 1.1) * 0.42 + Math.sin(rw) * 0.14;
+      child.rotation.z = Math.sin(G.time * 3.05 + wx * 0.02) * 0.07;
     }
   });
 }
@@ -3195,29 +3200,32 @@ function processProvisionsDrain(dt) {
 
 let shipNameSprite = null;
 
-/** 2D pirate flag (field + skull) for nametag swatch — matches ship flag style. */
-function drawPirateFlagSwatch2d(ctx, x, y, fw, fh, flagColorHex) {
-  const fc = String(flagColorHex || '#1a1a1a').trim();
-  ctx.save();
+function drawNametagMiniFlag(ctx, x, y, w, h, flagHex) {
+  let fill = '#2a2018';
+  if (flagHex != null && String(flagHex).trim()) {
+    const s = String(flagHex).trim();
+    fill = s.startsWith('#') ? s : `#${s}`;
+  }
+  ctx.fillStyle = fill;
   ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(x, y, fw, fh, 6);
-  else ctx.rect(x, y, fw, fh);
-  ctx.clip();
-  ctx.fillStyle = fc;
-  ctx.fillRect(x, y, fw, fh);
-  ctx.fillStyle = fc ? '#000' : '#ddd';
-  const skullPx = Math.max(11, Math.min(fw, fh) * 0.52);
-  ctx.font = `${skullPx}px serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('\u2620', x + fw * 0.5, y + fh * 0.52);
-  ctx.restore();
-  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(x, y, fw, fh, 6);
-  else ctx.rect(x, y, fw, fh);
+  ctx.roundRect(x, y, w, h, 5);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.42)'; ctx.lineWidth = 1;
   ctx.stroke();
+  const lum = (() => {
+    const m = fill.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (!m) return 0.25;
+    let hx = m[1];
+    if (hx.length === 3) hx = hx[0] + hx[0] + hx[1] + hx[1] + hx[2] + hx[2];
+    const r = parseInt(hx.slice(0, 2), 16) / 255;
+    const g = parseInt(hx.slice(2, 4), 16) / 255;
+    const b = parseInt(hx.slice(4, 6), 16) / 255;
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  })();
+  ctx.font = 'bold 23px Georgia, serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = lum < 0.45 ? '#e8dcc8' : '#2a1810';
+  ctx.fillText('\u2620', x + w / 2, y + h / 2 + 1);
 }
 
 function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex = '') {
@@ -3225,21 +3233,19 @@ function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex 
   canvas.width = 512; canvas.height = 80;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, 512, 80);
-  ctx.fillStyle = 'rgba(10,6,4,0.65)';
+  ctx.fillStyle = 'rgba(22,18,14,0.88)';
   ctx.roundRect(8, 4, 496, 72, 10); ctx.fill();
-  ctx.strokeStyle = 'rgba(180,140,60,0.4)'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(160,130,80,0.45)'; ctx.lineWidth = 1.5;
   ctx.roundRect(8, 4, 496, 72, 10); ctx.stroke();
   const hasFac = !!factionColorHex;
-  if (hasFac) {
-    drawPirateFlagSwatch2d(ctx, 18, 20, 44, 36, factionColorHex);
-  }
+  if (hasFac) drawNametagMiniFlag(ctx, 18, 20, 44, 36, factionColorHex);
   ctx.font = 'bold 28px Georgia, serif';
   ctx.fillStyle = color;
   ctx.textAlign = hasFac ? 'left' : 'center'; ctx.textBaseline = 'middle';
   const tx = hasFac ? 76 : 256;
   ctx.fillText(text.length > 20 ? text.slice(0,19)+'..' : text, tx, subtitle ? 28 : 40);
   if (subtitle) {
-    ctx.font = '18px sans-serif'; ctx.fillStyle = 'rgba(200,190,170,0.8)';
+    ctx.font = '18px sans-serif'; ctx.fillStyle = 'rgba(200,190,170,0.82)';
     ctx.fillText(subtitle.length > 24 ? subtitle.slice(0,23)+'..' : subtitle, tx, 56);
   }
   const tex = new THREE.CanvasTexture(canvas);
@@ -3273,7 +3279,7 @@ function rebuildPlayerShip() {
   buildCrewMeshes(ship, G.player.crew, G.player.shipType);
 
   const spec = SHIP_TYPES[G.player.shipType];
-  shipNameSprite = makeTextSprite(G.player.shipName, '#d4a848', G.player.crew[0]?.name || '', G.player.flagColor || '');
+  shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', G.player.crew[0]?.name || '', G.player.flagColor || '');
   shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
   playerShipGroup.add(shipNameSprite);
   updateCargo3DMesh();
@@ -3750,9 +3756,8 @@ const PLAYER_BROADSIDE_COOLDOWN = 2.5;
 const PLAYER_DEATH_SINK_SEC = 5.2;
 /** After the sink animation, wait this many seconds before respawning. */
 const PLAYER_RESPAWN_DELAY_SEC = 5;
-/** Respawn point is chosen in open water between these radii from the death position. */
-const RESPAWN_RING_MIN = 220;
-const RESPAWN_RING_MAX = 420;
+const PLAYER_RESPAWN_MIN_DIST = 92;
+const PLAYER_RESPAWN_TARGET_DIST = 175;
 function getPlayerVelocityForLead() {
   const spec = SHIP_TYPES[G.player.shipType];
   const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
@@ -4807,23 +4812,10 @@ function connectToServer() {
           G.player.color = msg.player.color;
         }
         if (msg.players) {
-          const incoming = new Set();
           msg.players.forEach(p => {
-            incoming.add(p.id);
             G.otherPlayers.set(p.id, p);
             refreshOtherPlayerShipCacheKey(G.otherPlayers.get(p.id));
           });
-          for (const oid of Array.from(G.otherPlayers.keys())) {
-            if (incoming.has(oid)) continue;
-            disposeRemoteDockRopes(oid);
-            const lid = Number(oid);
-            if (Number.isFinite(lid)) G.pendingRemoteShipSink.delete(lid);
-            G.otherPlayers.delete(oid);
-            if (otherShipGroups.has(oid)) {
-              scene.remove(otherShipGroups.get(oid));
-              otherShipGroups.delete(oid);
-            }
-          }
         }
         if (G.mode === 'playing' && !hasSave) ensurePlayerInOpenOcean();
         if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
@@ -4856,31 +4848,16 @@ function connectToServer() {
         if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); }
         break;
       }
-      case 'state': {
-        if (!msg.players || !Array.isArray(msg.players)) break;
-        const incoming = new Set();
+      case 'state':
         msg.players.forEach(p => {
           if (p.id === G.myId) return;
-          incoming.add(p.id);
           const ex = G.otherPlayers.get(p.id);
           if (ex) Object.assign(ex, p);
           else G.otherPlayers.set(p.id, p);
           const row = G.otherPlayers.get(p.id);
           if (row) refreshOtherPlayerShipCacheKey(row);
         });
-        for (const oid of Array.from(G.otherPlayers.keys())) {
-          if (incoming.has(oid)) continue;
-          disposeRemoteDockRopes(oid);
-          const lid = Number(oid);
-          if (Number.isFinite(lid)) G.pendingRemoteShipSink.delete(lid);
-          G.otherPlayers.delete(oid);
-          if (otherShipGroups.has(oid)) {
-            scene.remove(otherShipGroups.get(oid));
-            otherShipGroups.delete(oid);
-          }
-        }
         break;
-      }
       case 'ship_update': {
         const p = G.otherPlayers.get(msg.id);
         if (p) {
@@ -5161,8 +5138,7 @@ function sendUpdate() {
     shipName: G.player.shipName,
     shipParts: { ...G.player.shipParts },
     flagColor: G.player.flagColor || '#1a1a1a',
-    crewData: buildCrewSyncPayload(),
-    worldHidden: !!(G.playerSinking || (G.player.health <= 0 && G.mode === 'playing'))
+    crewData: buildCrewSyncPayload()
   };
   ws.send(JSON.stringify(payload));
 }
@@ -5926,6 +5902,7 @@ function doFireSide(fireSide) {
   ammoRow.count -= perSide;
   reconcileSlotsWithInventory();
 
+  G.lastBroadsideSide = fireSide;
   if (fireSide === 1) G.starboardCooldown = PLAYER_BROADSIDE_COOLDOWN;
   else G.portCooldown = PLAYER_BROADSIDE_COOLDOWN;
   G.crewDeckCombatT = 1;
@@ -8140,16 +8117,14 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     ctx.fillText(p.shipName || p.name || 'Player', sx, sy - 10);
   });
 
-  if (!G.playerSinking && G.player.health > 0) {
-    const px = wx2sx(G.player.x), py = wz2sy(G.player.z);
-    ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
-    const pr = G.player.rotation;
-    ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2.5; ctx.beginPath();
-    ctx.moveTo(px, py); ctx.lineTo(px - Math.sin(pr) * 14, py - Math.cos(pr) * 14); ctx.stroke();
-    ctx.fillStyle = '#d4a848'; ctx.font = 'bold 12px Georgia,serif'; ctx.textAlign = 'center';
-    ctx.fillText(G.player.shipName || 'You', px, py + 18);
-  }
+  const px = wx2sx(G.player.x), py = wz2sy(G.player.z);
+  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
+  const pr = G.player.rotation;
+  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2.5; ctx.beginPath();
+  ctx.moveTo(px, py); ctx.lineTo(px - Math.sin(pr) * 14, py - Math.cos(pr) * 14); ctx.stroke();
+  ctx.fillStyle = '#d4a848'; ctx.font = 'bold 12px Georgia,serif'; ctx.textAlign = 'center';
+  ctx.fillText(G.player.shipName || 'You', px, py + 18);
 
   G.quests.filter(q => q.accepted).forEach(q => {
     if (q.type === 'explore') {
@@ -8455,11 +8430,9 @@ function drawMinimap() {
       }
     }
   }
-  if (!G.playerSinking && G.player.health > 0) {
-    ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
-    ctx.lineTo(cx - Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
-  }
+  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.lineTo(cx - Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
   ctx.strokeStyle = 'rgba(180,140,60,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(1, 1, w - 2, h - 2);
 }
 document.getElementById('minimap').addEventListener('wheel', e => {
@@ -8657,10 +8630,9 @@ function update(dt) {
   }
 
   const hasGuns = G.player.shipParts.cannon && G.player.shipParts.cannon !== 'none';
-  const showCombatArcs = hasGuns && !G.playerSinking && G.player.health > 0;
-  arcLeft.visible = showCombatArcs;
-  arcRight.visible = showCombatArcs;
-  if (showCombatArcs) {
+  arcLeft.visible = hasGuns;
+  arcRight.visible = hasGuns;
+  if (hasGuns) {
     arcLeft.position.set(G.player.x, SEA_LEVEL + 2, G.player.z);
     arcLeft.rotation.y = G.player.rotation + Math.PI / 2;
     arcRight.position.set(G.player.x, SEA_LEVEL + 2, G.player.z);
@@ -8701,16 +8673,10 @@ function update(dt) {
       }
       p.needsUpdate = true; child.geometry.computeVertexNormals();
     }
-    if (child.userData.isFlag) child.rotation.y = Math.sin(G.time * 3) * 0.3;
-    if (child.userData.isCrew) {
-      if (!G.crewReloading || child.userData.crewIdx <= 0) return;
-      const bp = child.userData.basePos;
-      const spec = SHIP_TYPES[G.player.shipType];
-      const cannonSide = child.userData.crewIdx % 2 === 0 ? 1 : -1;
-      const cannonZ = (Math.floor(child.userData.crewIdx / 2) - 1) * 1.8;
-      const tx = cannonSide * spec.hullW * 0.35;
-      child.position.x += (tx - child.position.x) * 6 * dt;
-      child.position.z += (cannonZ - child.position.z) * 6 * dt;
+    if (child.userData && child.userData.isFlagHinge) {
+      const rw = G.wind.angle - G.player.rotation;
+      child.rotation.y = Math.sin(G.time * 2.7 + rw * 1.1) * 0.42 + Math.sin(rw) * 0.14;
+      child.rotation.z = Math.sin(G.time * 3.05) * 0.07;
     }
   });
 
@@ -8730,7 +8696,7 @@ function update(dt) {
       const visualParts = normalizeShipPartsForRemoteView(p.shipParts);
       const sm = buildShipMesh(st, visualParts, p.flagColor || p.color || '#4488cc', shipTitle);
       if (captainName && shipTitle !== captainName) {
-        const capLabel = makeTextSprite(shipTitle, '#88bbff', captainName, (p.flagColor || p.color || ''));
+        const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, (p.flagColor || p.color || ''));
         const spec = SHIP_TYPES[st];
         capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
         sm.children = sm.children.filter(c => !(c instanceof THREE.Sprite));
@@ -9092,10 +9058,9 @@ function update(dt) {
       const lootEst = Math.min(250, Math.floor(goldN * 0.4) + 25);
       ws.send(JSON.stringify({ type: 'pvp_kill_credit', killerId: G.lastAttackerId, kills: 1, loot: lootEst }));
     }
+    G.deathSpawnX = G.player.x;
+    G.deathSpawnZ = G.player.z;
     G.playerSinking = true; G.playerSinkTimer = 0;
-    G.respawnAnchorX = G.player.x;
-    G.respawnAnchorZ = G.player.z;
-    playerShipGroup.visible = true;
     G.playerSinkY = playerShipGroup.position.y;
     G.dockingAnim = null;
     G.player.speed = 0; G.player.anchored = true;
@@ -9115,13 +9080,10 @@ function update(dt) {
     }
     document.getElementById('death-overlay').style.display = 'flex';
     document.getElementById('death-killer').textContent = G.lastAttacker ? `Sunk by: ${G.lastAttacker}` : 'Lost at sea';
-    if (ws?.readyState === 1) sendUpdate();
   }
   if (G.playerSinking) {
     G.playerSinkTimer += dt;
     const sinkDone = G.playerSinkTimer >= PLAYER_DEATH_SINK_SEC;
-    if (sinkDone) playerShipGroup.visible = false;
-    else playerShipGroup.visible = true;
     const elTimer = document.getElementById('death-timer');
     if (elTimer) {
       if (!sinkDone) elTimer.textContent = 'Ship going under…';
@@ -9138,15 +9100,27 @@ function update(dt) {
       G.playerSinkTimer = 0;
       G.player.health = 100; G.player.anchored = false;
       syncAnchorToolbarButton();
-      pickOpenRespawnNear(G.respawnAnchorX, G.respawnAnchorZ);
+      const dx = G.deathSpawnX != null ? G.deathSpawnX : G.player.x;
+      const dz = G.deathSpawnZ != null ? G.deathSpawnZ : G.player.z;
+      let nx = G.player.x, nz = G.player.z;
+      for (let tries = 0; tries < 32; tries++) {
+        const ang = Math.random() * Math.PI * 2;
+        const dist = PLAYER_RESPAWN_TARGET_DIST + Math.random() * 72;
+        nx = dx + Math.sin(ang) * dist;
+        nz = dz + Math.cos(ang) * dist;
+        if (Math.hypot(nx - dx, nz - dz) >= PLAYER_RESPAWN_MIN_DIST) break;
+      }
+      G.player.x = nx;
+      G.player.z = nz;
+      G.deathSpawnX = null;
+      G.deathSpawnZ = null;
+      ensurePlayerInOpenOcean();
       G.player.speed = 1;
       G.lastAttackerId = null;
       G.lastAttacker = '';
-      playerShipGroup.visible = true;
       applyDefaultStartingLoadout({ preserveCaptainIdentity: true });
       document.getElementById('death-overlay').style.display = 'none';
       notify('Respawned with a fresh crew and hold — your captain name and ship are unchanged.');
-      if (ws?.readyState === 1) sendUpdate();
     }
   }
 
