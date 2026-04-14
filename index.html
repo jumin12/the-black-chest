@@ -250,6 +250,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   .cargo-screen-title{font-size:13px;}
   #cargo-3d-wrap{min-height:240px;height:min(36vh,320px);}
 }
+#shipyard-3d-wrap{width:100%;height:min(32vh,300px);min-height:220px;position:relative;border-radius:12px;overflow:hidden;background:radial-gradient(ellipse 85% 75% at 50% 45%,rgba(22,38,58,0.97),rgba(6,10,18,1) 72%,rgba(2,4,10,1));flex-shrink:0;touch-action:none;box-shadow:inset 0 0 80px rgba(0,0,0,0.35);margin-bottom:12px;}
+#shipyard-3d{width:100%;height:100%;min-height:200px;}
+#shipyard-3d canvas{display:block;}
+.shipyard-preview-hint{margin:-4px 0 10px;font-size:10px;color:#7a6a58;text-align:center;line-height:1.45;letter-spacing:0.02em;}
 #touch-broadsides-layer{display:none;position:fixed;inset:0;pointer-events:none;z-index:11;touch-action:manipulation;}
 .touch-fire-edge{position:absolute;left:0;width:22%;top:max(72px,9vh);bottom:max(28px,4vh);height:auto;pointer-events:none;touch-action:manipulation;display:none;}
 #touch-edge-right{left:auto;right:0;}
@@ -1347,7 +1351,82 @@ const SHIP_TYPES = {
 
 function shipHullRadius(shipType) {
   const s = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
-  return Math.max(s.hullLen, s.hullW * 2.4) * 0.36;
+  return Math.max(3.1, s.hullLen * 0.5 + s.hullW * 0.42);
+}
+function shipRamMass(shipType) {
+  const s = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
+  return Math.max(1.15, s.hullLen * 0.62 + s.hullW * 0.38);
+}
+function computePlayerEffectiveSpeedScalar() {
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  const sailPart = SHIP_PARTS.sail.find(s => s.id === (G.player.shipParts && G.player.shipParts.sail));
+  const speedMult = spec.speed + (sailPart ? sailPart.speedBonus : 0);
+  const windDot = Math.cos(G.wind.angle - G.player.rotation);
+  const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
+  const rigPct = (G.player.riggingHealth != null ? G.player.riggingHealth : 100) / 100;
+  const rigF = Math.max(0.12, Math.pow(Math.max(0.05, rigPct), 1.35));
+  const morF = (G.player.morale != null ? G.player.morale : 100) < 32 ? 0.9 : 1;
+  return G.player.speed * windEffect * rigF * morF;
+}
+function getPlayerWorldVelocityXZ() {
+  const eff = computePlayerEffectiveSpeedScalar();
+  return { vx: Math.sin(G.player.rotation) * eff, vz: Math.cos(G.player.rotation) * eff };
+}
+function networkShipVelocityXZ(p) {
+  const sp = p && p.speed != null ? Number(p.speed) : 0;
+  const rot = p && p.rotation != null ? Number(p.rotation) : 0;
+  return { vx: Math.sin(rot) * sp, vz: Math.cos(rot) * sp };
+}
+function npcShipVelocityXZ(npc) {
+  const sp = npc && npc.speed != null ? Number(npc.speed) : 0;
+  const rot = npc.rotation != null ? Number(npc.rotation) : 0;
+  return { vx: Math.sin(rot) * sp, vz: Math.cos(rot) * sp };
+}
+/** Bow hit = low mult, beam = high, stern = mid (victim frame). hitBowDot = normalize(A−V)·victimForward. */
+function ramStrikeZoneMultiplier(hitBowDot) {
+  if (hitBowDot > 0.4) return 0.36;
+  if (hitBowDot < -0.4) return 0.66;
+  return 0.4 + (1 - Math.abs(hitBowDot)) * 0.95;
+}
+function ensureRamCooldownMap() {
+  if (!G._ramPairCooldown) G._ramPairCooldown = Object.create(null);
+  return G._ramPairCooldown;
+}
+function canApplyRamPair(key, now) {
+  const m = ensureRamCooldownMap();
+  const t = m[key] || 0;
+  if (now - t < 0.42) return false;
+  m[key] = now;
+  return true;
+}
+function computeRamStrike(victim, attacker, victimType, attackerType, vRot, vvx, vvz, avx, avz) {
+  const Ax = attacker.x, Az = attacker.z, Vx = victim.x, Vz = victim.z;
+  const dx = Vx - Ax, dz = Vz - Az;
+  const d = Math.hypot(dx, dz) || 1e-4;
+  const nx = dx / d, nz = dz / d;
+  const relVx = avx - vvx, relVz = avz - vvz;
+  const closing = relVx * nx + relVz * nz;
+  if (closing < 0.45) return { dmg: 0, bowDot: 0, closing };
+  const toAttX = (Ax - Vx) / d, toAttZ = (Az - Vz) / d;
+  const fwdX = Math.sin(vRot), fwdZ = Math.cos(vRot);
+  const hitBowDot = toAttX * fwdX + toAttZ * fwdZ;
+  const zone = ramStrikeZoneMultiplier(hitBowDot);
+  const massRat = Math.min(1.85, Math.max(0.55, shipRamMass(attackerType) / Math.max(0.8, shipRamMass(victimType))));
+  let dmg = (1.8 + closing * 0.95) * zone * massRat;
+  dmg = Math.min(26, Math.max(0.85, dmg));
+  return { dmg, bowDot: hitBowDot, closing };
+}
+function ramRiggingLossFromBowDot(bowDot, closing) {
+  if (Math.abs(bowDot) > 0.5) return 0;
+  return Math.min(18, 4 + closing * 0.85);
+}
+function cannonballStrikeHitRadius(shipType, ammoType, isPellet) {
+  const hull = shipHullRadius(shipType || 'sloop');
+  const at = ammoType || 'ball';
+  if (isPellet) return Math.max(1.5, Math.min(7, hull * 0.42 + 0.5));
+  if (at === 'grape') return Math.max(2.8, Math.min(11, hull * 0.78 + 1.15));
+  if (at === 'chain') return Math.max(2.6, Math.min(10, hull * 0.68 + 1.05));
+  return Math.max(2.5, Math.min(9.5, hull * 0.62 + 1.0));
 }
 
 const SHIP_PURCHASE_PRICE = { cutter: 85, sloop: 125, brigantine: 245, galleon: 395, warship: 575 };
@@ -1403,8 +1482,15 @@ function getItemMeta(id) {
   return ITEM_DEFS[id] || { name: String(id), icon: '?' };
 }
 function getInvCount(id) {
+  if (id === 'gold') {
+    let t = 0;
+    for (const i of G.player.inventory || []) {
+      if (i && i.id === 'gold') t += Math.max(0, Math.floor(Number(i.count) || 0));
+    }
+    return t;
+  }
   const it = G.player.inventory.find(i => i.id === id);
-  return it ? it.count : 0;
+  return it ? Math.max(0, Math.floor(Number(it.count) || 0)) : 0;
 }
 function ensureSpecialAmmoRowsInInventory() {
   const add = (id, name, icon, count) => {
@@ -1733,6 +1819,68 @@ function hashChunk(cx, cz, worldSeedOpt) {
   return (h >>> 0) / 4294967296;
 }
 
+function getCachedIslandNoise(cx, cz) {
+  if (!G._chunkIslandNoise) G._chunkIslandNoise = Object.create(null);
+  const key = cx + ',' + cz;
+  if (!G._chunkIslandNoise[key]) G._chunkIslandNoise[key] = new SimplexNoise(cx * 777 + cz * 333);
+  return G._chunkIslandNoise[key];
+}
+/** Land mask aligned with generateIsland terrain vertices (not the old circular0.85·R shortcut). */
+function dryLandSampleForMeta(wx, wz, meta) {
+  const worldX = meta.worldX, worldZ = meta.worldZ;
+  const islandRadius = meta.radius, islandHeight = meta.maxH;
+  const px = wx - worldX, pz = wz - worldZ;
+  if (px * px + pz * pz > islandRadius * islandRadius * 1.45 * 1.45) return false;
+  const islandNoise = getCachedIslandNoise(meta.cx, meta.cz);
+  const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+  const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
+  const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
+  const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
+  const combined = n1 * 0.6 + n2 + ridges;
+  const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.12 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.04;
+  const warpedDist = dist + edgeWarp;
+  const falloff = Math.max(0, 1 - warpedDist * warpedDist);
+  const ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
+  return ht > 0.15 && warpedDist < 0.93;
+}
+function dryLandAtWorldPosition(wx, wz) {
+  const cxi = Math.floor(wx / CHUNK_SIZE), czi = Math.floor(wz / CHUNK_SIZE);
+  for (let dc = -1; dc <= 1; dc++) {
+    for (let dr = -1; dr <= 1; dr++) {
+      const meta = getProceduralIslandMeta(cxi + dc, czi + dr);
+      if (!meta) continue;
+      if (dryLandSampleForMeta(wx, wz, meta)) return true;
+    }
+  }
+  return false;
+}
+/** Pier end sits just past the procedural shoreline along dockAngle so three sides are in water. */
+function placeTownDockSeaward(meta) {
+  if (!meta || !meta.hasTown) return;
+  const wx0 = meta.worldX, wz0 = meta.worldZ;
+  const R = meta.radius;
+  const da = meta.dockAngle || 0;
+  const dirX = Math.cos(da), dirZ = Math.sin(da);
+  let lo = R * 0.22;
+  if (!dryLandSampleForMeta(wx0 + dirX * lo, wz0 + dirZ * lo, meta)) lo = Math.max(4, R * 0.06);
+  let hi = R * 1.05;
+  let guard = 0;
+  while (dryLandSampleForMeta(wx0 + dirX * hi, wz0 + dirZ * hi, meta) && hi < R * 1.78 && guard++ < 28) hi += R * 0.055;
+  if (dryLandSampleForMeta(wx0 + dirX * hi, wz0 + dirZ * hi, meta)) {
+    meta.dockX = wx0 + dirX * (R * 1.02);
+    meta.dockZ = wz0 + dirZ * (R * 1.02);
+    return;
+  }
+  for (let i = 0; i < 26; i++) {
+    const mid = (lo + hi) * 0.5;
+    if (dryLandSampleForMeta(wx0 + dirX * mid, wz0 + dirZ * mid, meta)) lo = mid;
+    else hi = mid;
+  }
+  const seaDist = hi + Math.min(11, R * 0.085);
+  meta.dockX = wx0 + dirX * seaDist;
+  meta.dockZ = wz0 + dirZ * seaDist;
+}
+
 /** Deterministic island data for a chunk (matches generateIsland). Used for world map so all players see the full archipelago in view. */
 function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
   if (!isChunkInWorld(cx, cz)) return null;
@@ -1754,30 +1902,14 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
     const tagIdx = th % TOWN_NAME_TAGS.length;
     meta.townName = TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx];
     meta.dockAngle = (hashChunk(cx + 99, cz + 99, worldSeedOpt) * 2 - 1) * Math.PI;
-    const dockDist = islandRadius * 0.95;
-    meta.dockX = worldX + Math.cos(meta.dockAngle) * dockDist;
-    meta.dockZ = worldZ + Math.sin(meta.dockAngle) * dockDist;
+    placeTownDockSeaward(meta);
   }
   return meta;
 }
 
-/** True if (wx,wz) lies inside any procedural island footprint (no loaded meshes required). */
-function isPointInsideProceduralIsland(wx, wz) {
-  const ccx = Math.floor(wx / CHUNK_SIZE), ccz = Math.floor(wz / CHUNK_SIZE);
-  for (let dcx = -1; dcx <= 1; dcx++)
-    for (let dcz = -1; dcz <= 1; dcz++) {
-      const meta = getProceduralIslandMeta(ccx + dcx, ccz + dcz);
-      if (!meta) continue;
-      const dx = wx - meta.worldX, dz = wz - meta.worldZ;
-      const r = meta.radius * 0.85;
-      if (dx * dx + dz * dz < r * r) return true;
-    }
-  return false;
-}
-
-/** Land / beach footprint for ships and fish (procedural + any loaded mesh). */
+/** Land / beach footprint for ships and fish — matches rendered island coast. */
 function isSeaObstructed(x, z) {
-  return isPointInsideProceduralIsland(x, z) || isOnIsland(x, z);
+  return dryLandAtWorldPosition(x, z);
 }
 
 /** Move the player to open ocean if the current seed would place them on land. */
@@ -2808,12 +2940,7 @@ function updateSeagulls(dt) {
 }
 
 function isOnIsland(x, z) {
-  for (const isl of G.islands) {
-    const dx = x - isl.worldX, dz = z - isl.worldZ;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < isl.radius * 0.85) return true;
-  }
-  return false;
+  return dryLandAtWorldPosition(x, z);
 }
 
 function approxTerrainHeightAt(x, z) {
@@ -2957,8 +3084,8 @@ function refreshOtherPlayerShipCacheKey(p) {
   p._netShipCacheKey = otherPlayerShipCacheKey(p);
 }
 
-/** Hull flag: pole + hinge; `flagPlace` mast | side | stern */
-function attachPirateFlagToShip(g, spec, flagColor, flagPlace) {
+/** Hull flag: pole + hinge; `flagPlace` mast | side | stern. Mast flags parent to `mastRigForMastFlag` so they topple with rigging. */
+function attachPirateFlagToShip(g, spec, flagColor, flagPlace, mastRigForMastFlag) {
   const poleMat = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
   const mH = spec.hullLen * 0.7;
   const mastIdx = Math.max(0, spec.masts - 1);
@@ -2973,7 +3100,12 @@ function attachPirateFlagToShip(g, spec, flagColor, flagPlace) {
   const flagRig = new THREE.Group();
   let poleH = spec.hullLen * 0.36;
   let hingeZ = 0.02;
-  if (flagPlace === 'mast') {
+  let parent = g;
+  if (flagPlace === 'mast' && mastRigForMastFlag) {
+    poleH = Math.max(0.48, spec.hullLen * 0.1);
+    flagRig.position.set(0, mH, 0);
+    parent = mastRigForMastFlag;
+  } else if (flagPlace === 'mast') {
     poleH = Math.max(0.48, spec.hullLen * 0.1);
     flagRig.position.set(0, mastBaseY + mH, mZ);
   } else if (flagPlace === 'side') {
@@ -2994,7 +3126,7 @@ function attachPirateFlagToShip(g, spec, flagColor, flagPlace) {
   fmesh.position.set(0.56, 0, 0);
   flagHinge.add(fmesh);
   flagRig.add(flagHinge);
-  g.add(flagRig);
+  parent.add(flagRig);
 }
 
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
@@ -3063,6 +3195,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   if (parts.sail === 'silk') sc = 0xfff8e8;
   else if (parts.sail === 'war') sc = 0x2a2a2a;
 
+  let lastMainMastRig = null;
   for (let m = 0; m < spec.masts; m++) {
     const mH = spec.hullLen * 0.7, mZ = (m - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
     const mastRig = new THREE.Group();
@@ -3101,6 +3234,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     sailPivot.add(sail);
     mastRig.add(sailPivot);
     g.add(mastRig);
+    lastMainMastRig = mastRig;
   }
 
   if (spec.bowStyle === 'blunt') {
@@ -3182,7 +3316,8 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     fh.position.set(0, spec.hullH * 0.3, spec.hullLen * 0.55); fh.castShadow = true; g.add(fh);
   }
 
-  attachPirateFlagToShip(g, spec, flagColor, flagPlace);
+  const mastForFlag = flagPlace === 'mast' ? (lastMainMastRig || null) : null;
+  attachPirateFlagToShip(g, spec, flagColor, flagPlace, mastForFlag);
 
   if (flagColor) {
     const fc = new THREE.Color(flagColor);
@@ -4208,7 +4343,13 @@ function pushPlayerOutOfShipOverlaps() {
   if (G.dockingAnim) return;
   const px = G.player.x, pz = G.player.z, pr = shipHullRadius(G.player.shipType);
   const margin = 0.92;
+  const pPos = { x: G.player.x, z: G.player.z };
+  const pv = (!G.player.anchored && Math.abs(G.player.speed) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
+  const mp = ws && ws.readyState === 1;
+  const applyNpcRam = !mp || isMultiplayerHost();
   for (let pass = 0; pass < 3; pass++) {
+    pPos.x = G.player.x;
+    pPos.z = G.player.z;
     let moved = false;
     G.npcs.forEach(npc => {
       if (npc.sinking || npc.health <= 0) return;
@@ -4217,6 +4358,32 @@ function pushPlayerOutOfShipOverlaps() {
       const d = Math.hypot(dx, dz) || 1e-4;
       const minD = (pr + nr) * margin;
       if (d < minD) {
+        const sid = npc.syncId != null ? npc.syncId : `u${Math.round(npc.x)}_${Math.round(npc.z)}`;
+        const rKey = G.myId != null ? `me${G.myId}|npc${sid}` : `me|npc${sid}`;
+        if (canApplyRamPair(rKey, G.time)) {
+          const nv = npcShipVelocityXZ(npc);
+          const stN = computeRamStrike(npc, pPos, npc.type, G.player.shipType, npc.rotation, nv.vx, nv.vz, pv.vx, pv.vz);
+          const stP = computeRamStrike(pPos, npc, G.player.shipType, npc.type, G.player.rotation, pv.vx, pv.vz, nv.vx, nv.vz);
+          if (applyNpcRam && stN.dmg > 0) {
+            npc.health -= stN.dmg;
+            const rg = ramRiggingLossFromBowDot(stN.bowDot, stN.closing);
+            if (rg > 0) {
+              const rh = npc.riggingHealth != null ? npc.riggingHealth : getNpcRiggingHealth(npc);
+              npc.riggingHealth = Math.max(0, rh - rg);
+              if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
+            }
+            showCombatPopupWorld(npc.x, npc.z, `Ram · −${Math.round(stN.dmg)} hull`, { life: 1.35 });
+          }
+          if (stP.dmg > 0) {
+            G.player.health = Math.max(0, G.player.health - stP.dmg);
+            const rgP = ramRiggingLossFromBowDot(stP.bowDot, stP.closing);
+            if (rgP > 0) {
+              G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - rgP);
+              applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
+            }
+            notify(`Ramming impact — ${Math.round(stP.dmg)} hull damage`);
+          }
+        }
         const push = (minD - d) * 0.55;
         G.player.x += (dx / d) * push;
         G.player.z += (dz / d) * push;
@@ -4231,6 +4398,21 @@ function pushPlayerOutOfShipOverlaps() {
         const d = Math.hypot(dx, dz) || 1e-4;
         const minD = (pr + or) * margin;
         if (d < minD) {
+          const oid = op.id != null ? op.id : 0;
+          const rKey = G.myId != null ? `me${G.myId}|pl${oid}` : `me|pl${oid}`;
+          if (canApplyRamPair(rKey, G.time)) {
+            const ov = networkShipVelocityXZ(op);
+            const stP = computeRamStrike(pPos, op, G.player.shipType, op.shipType || 'sloop', G.player.rotation, pv.vx, pv.vz, ov.vx, ov.vz);
+            if (stP.dmg > 0) {
+              G.player.health = Math.max(0, G.player.health - stP.dmg);
+              const rgP = ramRiggingLossFromBowDot(stP.bowDot, stP.closing);
+              if (rgP > 0) {
+                G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - rgP);
+                applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
+              }
+              notify(`Ram! −${Math.round(stP.dmg)} hull`);
+            }
+          }
           const push = (minD - d) * 0.55;
           G.player.x += (dx / d) * push;
           G.player.z += (dz / d) * push;
@@ -4281,6 +4463,33 @@ function relaxHostNpcNpcOverlaps() {
         const d = Math.hypot(dx, dz) || 1e-4;
         const minD = (ra + rb) * margin;
         if (d < minD) {
+          const ida = a.syncId != null ? a.syncId : `i${i}`, idb = b.syncId != null ? b.syncId : `j${j}`;
+          const sa = String(ida), sb = String(idb);
+          const rrk = sa < sb ? `npc${sa}|npc${sb}` : `npc${sb}|npc${sa}`;
+          if (canApplyRamPair(rrk, G.time)) {
+            const va = npcShipVelocityXZ(a);
+            const vb = npcShipVelocityXZ(b);
+            const stA = computeRamStrike(a, b, a.type, b.type, a.rotation, va.vx, va.vz, vb.vx, vb.vz);
+            const stB = computeRamStrike(b, a, b.type, a.type, b.rotation, vb.vx, vb.vz, va.vx, va.vz);
+            if (stA.dmg > 0) {
+              a.health -= stA.dmg;
+              const rg = ramRiggingLossFromBowDot(stA.bowDot, stA.closing);
+              if (rg > 0) {
+                const rh = a.riggingHealth != null ? a.riggingHealth : getNpcRiggingHealth(a);
+                a.riggingHealth = Math.max(0, rh - rg);
+                if (a.mesh) applyRiggingVisualToGroup(a.mesh, a.riggingHealth);
+              }
+            }
+            if (stB.dmg > 0) {
+              b.health -= stB.dmg;
+              const rg = ramRiggingLossFromBowDot(stB.bowDot, stB.closing);
+              if (rg > 0) {
+                const rh = b.riggingHealth != null ? b.riggingHealth : getNpcRiggingHealth(b);
+                b.riggingHealth = Math.max(0, rh - rg);
+                if (b.mesh) applyRiggingVisualToGroup(b.mesh, b.riggingHealth);
+              }
+            }
+          }
           const pen = (minD - d) * 0.5;
           const nx = dx / d, nz = dz / d;
           const ax = a.x - nx * pen, az = a.z - nz * pen;
@@ -6582,6 +6791,7 @@ window.addEventListener('resize', () => {
   renderer.setPixelRatio(mainCanvasPixelRatio());
   renderer.setSize(window.innerWidth, window.innerHeight);
   resizeCargoPreview();
+  resizeYardShipPreview();
   if (typeof repositionTutorialHighlight === 'function') repositionTutorialHighlight();
   if (isMobile) applyMobileControlScheme(G.mobileControlScheme);
 });
@@ -7334,6 +7544,10 @@ function updateDebugBuilder() {
 
 let cargoRenderer, cargoScene, cargoCamera, cargoShipPreview;
 let cargoPtrDrag = { active: false, from: -1, x: 0, y: 0, pointerId: null };
+let yardShipRenderer, yardShipScene, yardShipCamera, yardShipGroup;
+let yardShipPreviewType = null;
+let yardShipYaw = 0;
+let yardShipDrag = { active: false, lastX: 0, pointerId: null };
 let cargoPreviewMeshSig = '';
 let cargoInvUiSig = '';
 function getCargoPreviewMeshSig() {
@@ -7388,18 +7602,30 @@ function slotSumById(id) {
   return t;
 }
 function syncInventoryFromCargoSlots() {
+  const slots = Array.isArray(G.player.cargoSlots) ? G.player.cargoSlots : [];
   const fromSlots = new Map();
-  (Array.isArray(G.player.cargoSlots) ? G.player.cargoSlots : []).forEach(s => {
+  slots.forEach(s => {
     if (s && s.count > 0) fromSlots.set(s.id, (fromSlots.get(s.id) || 0) + s.count);
   });
+  let goldTotal = 0;
+  for (const row of G.player.inventory || []) {
+    if (row && row.id === 'gold' && row.count > 0) {
+      goldTotal += Math.max(0, Math.floor(Number(row.count) || 0));
+    }
+  }
+  const slotGold = fromSlots.get('gold') || 0;
+  if (slotGold > 0) {
+    goldTotal += slotGold;
+    fromSlots.delete('gold');
+    for (let i = 0; i < slots.length; i++) {
+      if (slots[i] && slots[i].id === 'gold') slots[i] = null;
+    }
+  }
   const next = [];
   const usedSlotIds = new Set();
   for (const row of G.player.inventory || []) {
     if (!row || row.count <= 0) continue;
-    if (row.id === 'gold') {
-      next.push({ id: 'gold', name: row.name || 'Gold Coins', icon: row.icon || 'Au', count: row.count });
-      continue;
-    }
+    if (row.id === 'gold') continue;
     if (fromSlots.has(row.id)) {
       usedSlotIds.add(row.id);
       const m = getItemMeta(row.id);
@@ -7407,6 +7633,9 @@ function syncInventoryFromCargoSlots() {
     } else {
       next.push({ ...row });
     }
+  }
+  if (goldTotal > 0) {
+    next.push({ id: 'gold', name: 'Gold Coins', icon: 'Au', count: goldTotal });
   }
   for (const [id, count] of fromSlots) {
     if (count <= 0 || usedSlotIds.has(id)) continue;
@@ -7438,6 +7667,7 @@ function ensureCargoSlots() {
     G.player.inventory.forEach(it => { if (it.count > 0) map.set(it.id, (map.get(it.id) || 0) + it.count); });
     let idx = 0;
     for (const id of map.keys()) {
+      if (id === 'gold') continue;
       const total = map.get(id);
       const m = getItemMeta(id);
       let left = total;
@@ -7508,10 +7738,37 @@ function reconcileSlotsAfterPickup(itemId) {
   }
 }
 
+function consolidateGoldPurse() {
+  let total = 0;
+  const inv = G.player.inventory;
+  if (!Array.isArray(inv)) return;
+  for (let i = inv.length - 1; i >= 0; i--) {
+    const row = inv[i];
+    if (row && row.id === 'gold' && row.count > 0) {
+      total += Math.max(0, Math.floor(Number(row.count) || 0));
+      inv.splice(i, 1);
+    }
+  }
+  const slots = G.player.cargoSlots;
+  if (Array.isArray(slots)) {
+    for (let i = 0; i < slots.length; i++) {
+      const s = slots[i];
+      if (s && s.id === 'gold') {
+        total += Math.max(0, Math.floor(Number(s.count) || 0));
+        slots[i] = null;
+      }
+    }
+  }
+  if (total > 0) {
+    inv.push({ id: 'gold', name: 'Gold Coins', icon: 'Au', count: total });
+  }
+}
 function reconcileSlotsWithInventory() {
   ensureCargoSlots();
+  consolidateGoldPurse();
   const want = new Map();
-  G.player.inventory.forEach(row => { if (row.count > 0) want.set(row.id, row.count); });
+  G.player.inventory.forEach(row => { if (row && row.count > 0) want.set(row.id, row.count); });
+  want.delete('gold');
   for (const [id, target] of [...want.entries()]) {
     let cur = slotSumById(id);
     while (cur > target) {
@@ -7529,6 +7786,7 @@ function reconcileSlotsWithInventory() {
     }
   }
   for (const [id, target] of want) {
+    if (id === 'gold') continue;
     let cur = slotSumById(id);
     if (cur >= target) continue;
     let need = target - cur;
@@ -7705,6 +7963,133 @@ function renderCargoPreviewIfOpen() {
   const inv = document.getElementById('log-inv');
   if (!lp || !inv || lp.style.display === 'none' || inv.style.display === 'none') return;
   cargoRenderer.render(cargoScene, cargoCamera);
+}
+
+function disposeYardShipPreview() {
+  yardShipPreviewType = null;
+  yardShipDrag.active = false;
+  yardShipDrag.pointerId = null;
+  if (yardShipGroup && yardShipScene) {
+    yardShipScene.remove(yardShipGroup);
+    disposeObject3DSubtree(yardShipGroup);
+    yardShipGroup = null;
+  }
+  if (yardShipRenderer) {
+    try {
+      yardShipRenderer.dispose();
+    } catch (e) {}
+    const el = yardShipRenderer.domElement;
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    yardShipRenderer = null;
+  }
+  yardShipScene = null;
+  yardShipCamera = null;
+}
+function ensureYardShipPreview() {
+  const container = document.getElementById('shipyard-3d');
+  if (!container || yardShipRenderer) return;
+  const h = Math.max(200, container.clientHeight || 260);
+  const w = Math.max(200, container.clientWidth || 280);
+  yardShipRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  yardShipRenderer.setSize(w, h);
+  yardShipRenderer.setPixelRatio(mainCanvasPixelRatio());
+  yardShipRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  container.appendChild(yardShipRenderer.domElement);
+  yardShipScene = new THREE.Scene();
+  yardShipScene.add(new THREE.AmbientLight(0x8899bb, 0.88));
+  const sun = new THREE.DirectionalLight(0xffeedd, 1.45);
+  sun.position.set(8, 14, 6);
+  yardShipScene.add(sun);
+  yardShipScene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a4a30, 0.38));
+  yardShipCamera = new THREE.PerspectiveCamera(28, w / h, 0.1, 120);
+  yardShipCamera.position.set(0, 5.4, 12.5);
+  yardShipCamera.lookAt(0, 0.75, 0);
+}
+function resizeYardShipPreview() {
+  if (!yardShipRenderer || !yardShipCamera) return;
+  const container = document.getElementById('shipyard-3d');
+  if (!container) return;
+  const w = Math.max(200, container.clientWidth);
+  const h = Math.max(200, container.clientHeight || 260);
+  yardShipRenderer.setPixelRatio(mainCanvasPixelRatio());
+  yardShipRenderer.setSize(w, h);
+  yardShipCamera.aspect = w / h;
+  yardShipCamera.updateProjectionMatrix();
+  frameYardShipPreview();
+}
+function updateYardShipPreviewForType(shipType) {
+  if (!SHIP_TYPES[shipType] || !yardShipScene) return;
+  if (yardShipGroup) {
+    yardShipScene.remove(yardShipGroup);
+    disposeObject3DSubtree(yardShipGroup);
+    yardShipGroup = null;
+  }
+  const fc = G.player.flagColor || '#1a1a1a';
+  const parts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
+  yardShipGroup = buildShipMesh(shipType, parts, fc, '', { honorPlayerLoadout: true });
+  yardShipGroup.rotation.y = yardShipYaw;
+  yardShipScene.add(yardShipGroup);
+  yardShipPreviewType = shipType;
+  frameYardShipPreview();
+}
+function frameYardShipPreview() {
+  if (!yardShipGroup || !yardShipCamera) return;
+  yardShipGroup.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(yardShipGroup);
+  if (!isFinite(box.min.x) || box.min.x > box.max.x) return;
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z, 0.1);
+  const aspect = yardShipCamera.aspect || 1;
+  const vFov = yardShipCamera.fov * (Math.PI / 180);
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+  const distV = (maxDim * 0.55) / Math.tan(vFov / 2);
+  const distH = (maxDim * 0.55) / Math.tan(hFov / 2);
+  const dist = Math.max(distV, distH, maxDim * 1.2) * 1.12;
+  yardShipCamera.position.set(center.x - dist * 0.94, center.y + maxDim * 0.46, center.z + maxDim * 0.05);
+  yardShipCamera.near = Math.max(0.05, dist / 200);
+  yardShipCamera.far = dist * 12;
+  yardShipCamera.updateProjectionMatrix();
+  yardShipCamera.lookAt(center.x + maxDim * 0.04, center.y + size.y * 0.1, center.z);
+}
+function bindYardShipPreviewControls(wrap) {
+  if (!wrap) return;
+  const rotSpeed = 0.009;
+  const onDown = e => {
+    if (e.button != null && e.button !== 0) return;
+    yardShipDrag.active = true;
+    yardShipDrag.lastX = e.clientX;
+    yardShipDrag.pointerId = e.pointerId;
+    try { wrap.setPointerCapture(e.pointerId); } catch (err) {}
+  };
+  const onMove = e => {
+    if (!yardShipDrag.active) return;
+    const dx = e.clientX - yardShipDrag.lastX;
+    yardShipDrag.lastX = e.clientX;
+    yardShipYaw += dx * rotSpeed;
+    if (yardShipGroup) yardShipGroup.rotation.y = yardShipYaw;
+    frameYardShipPreview();
+  };
+  const endDrag = e => {
+    if (yardShipDrag.pointerId != null && e && e.pointerId != null && e.pointerId !== yardShipDrag.pointerId) return;
+    yardShipDrag.active = false;
+    if (yardShipDrag.pointerId != null) {
+      try { wrap.releasePointerCapture(yardShipDrag.pointerId); } catch (err) {}
+    }
+    yardShipDrag.pointerId = null;
+  };
+  wrap.addEventListener('pointerdown', onDown);
+  wrap.addEventListener('pointermove', onMove);
+  wrap.addEventListener('pointerup', endDrag);
+  wrap.addEventListener('pointercancel', endDrag);
+  wrap.addEventListener('lostpointercapture', () => { yardShipDrag.active = false; yardShipDrag.pointerId = null; });
+}
+function renderYardShipPreviewIfOpen() {
+  if (!yardShipRenderer || !yardShipScene || !yardShipCamera || G.mode !== 'playing') return;
+  const port = document.getElementById('port-panel');
+  const wrap = document.getElementById('shipyard-3d-wrap');
+  if (!port || port.style.display === 'none' || !wrap || wrap.offsetParent === null) return;
+  yardShipRenderer.render(yardShipScene, yardShipCamera);
 }
 
 function updateInventoryPanel() {
@@ -8332,6 +8717,7 @@ function leavePort() {
   G.player.dockBerthIndex = null;
   syncAnchorToolbarButton();
   G.dockingAnim = null; G.sailsFurled = false;
+  disposeYardShipPreview();
   dockRopes.forEach(r => { scene.remove(r); r.geometry.dispose(); r.material.dispose(); });
   dockRopes.length = 0;
   document.getElementById('port-panel').style.display = 'none';
@@ -8344,12 +8730,13 @@ function showPortTab(tab) {
   document.querySelectorAll('.port-tab').forEach(t => { t.classList.remove('active'); t.style.color = '#8a7a60'; t.style.borderBottom = 'none'; });
   const at = document.querySelector(`.port-tab[data-ptab="${tab}"]`);
   if (at) { at.classList.add('active'); at.style.color = '#d4a848'; at.style.borderBottom = '2px solid #d4a848'; }
+  disposeYardShipPreview();
   const content = document.getElementById('port-content');
   content.innerHTML = '';
 
   if (tab === 'trade') {
-    const gold = G.player.inventory.find(i => i.id === 'gold');
-    content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gold?.count || 0}</div>`;
+    const gHave = getInvCount('gold');
+    content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gHave}</div>`;
     const tradeIdSet = new Set(TRADE_GOODS.map(t => t.id));
     TRADE_GOODS.forEach(g => {
       const inv = G.player.inventory.find(i => i.id === g.id);
@@ -8464,12 +8851,15 @@ function showPortTab(tab) {
       content.appendChild(d);
     });
   } else if (tab === 'ships') {
-    const gold = G.player.inventory.find(i => i.id === 'gold');
+    const gHave = getInvCount('gold');
     const curSpec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
     const tradeIn = computePlayerShipTradeInGold();
+    const prev3d = document.createElement('div');
+    prev3d.innerHTML = `<div id="shipyard-3d-wrap"><div id="shipyard-3d"></div></div><div class="shipyard-preview-hint">Drag to rotate · same bearing as cargo hold view</div>`;
+    content.appendChild(prev3d);
     const hdr = document.createElement('div');
     hdr.style.cssText = 'color:#d4a848;font-size:12px;margin-bottom:10px;line-height:1.45;';
-    hdr.innerHTML = `Gold: <strong>${gold?.count || 0}</strong> · Current: <strong>${curSpec.name}</strong><br>
+    hdr.innerHTML = `Gold: <strong>${gHave}</strong> · Current: <strong>${curSpec.name}</strong><br>
       <span style="color:#9a9080;font-size:11px;">Trade-in value for your hull &amp; fittings: <strong style="color:#c9a24a;">${tradeIn}g</strong> (applied when you buy).</span>`;
     content.appendChild(hdr);
     const blurb = document.createElement('div');
@@ -8482,6 +8872,8 @@ function showPortTab(tab) {
       const net = Math.max(0, price - tradeIn);
       const spd = (spec.speed * 12).toFixed(1);
       const row = document.createElement('div');
+      row.className = 'port-ship-offer';
+      row.setAttribute('data-ship', key);
       row.style.cssText = 'padding:10px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.22);border-radius:6px;margin-bottom:8px;';
       const isCur = key === G.player.shipType;
       row.innerHTML = `<div style="color:#e0d6c2;font-size:14px;font-weight:bold;">${spec.name}</div>
@@ -8502,14 +8894,32 @@ function showPortTab(tab) {
         if (t) window.portBuyShip(t);
       });
     });
+    const yWrap = document.getElementById('shipyard-3d-wrap');
+    yardShipYaw = 0;
+    ensureYardShipPreview();
+    resizeYardShipPreview();
+    updateYardShipPreviewForType(G.player.shipType);
+    if (yWrap) bindYardShipPreviewControls(yWrap);
+    content.querySelectorAll('.port-ship-offer').forEach(row => {
+      const previewThisRow = () => {
+        const k = row.getAttribute('data-ship');
+        if (k && SHIP_TYPES[k]) updateYardShipPreviewForType(k);
+      };
+      row.addEventListener('mouseenter', previewThisRow);
+      row.addEventListener('focus', previewThisRow);
+      row.setAttribute('tabindex', '0');
+      row.addEventListener('click', e => {
+        if (e.target.closest('button')) return;
+        previewThisRow();
+      });
+    });
   } else if (tab === 'upgrades') {
-    const gold = G.player.inventory.find(i => i.id === 'gold');
     const hullMissing = Math.max(0, Math.ceil(100 - G.player.health));
     const sailPct = G.player.riggingHealth != null ? G.player.riggingHealth : 100;
     const sailMissing = Math.max(0, Math.ceil(100 - sailPct));
     const hullCost = hullMissing <= 0 ? 0 : Math.max(10, hullMissing * 2);
     const sailCost = sailMissing <= 0 ? 0 : Math.max(8, Math.floor(sailMissing * 1.5));
-    const gHave = gold?.count || 0;
+    const gHave = getInvCount('gold');
     const hullPart = hullMissing > 0 && gHave > 0 && gHave < hullCost ? Math.min(hullMissing, Math.floor(gHave / 2)) : 0;
     const sailPart = sailMissing > 0 && gHave > 0 && gHave < sailCost ? Math.min(sailMissing, Math.floor(gHave / 2)) : 0;
     content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gHave} | Shipwright Services</div>
@@ -9883,7 +10293,7 @@ function update(dt) {
         if (npc.sinking || npc.health <= 0) return;
         const at = b.ammoType || 'ball';
         const isPellet = !!b.isPellet;
-        const hitR = isPellet ? 1.65 : at === 'grape' ? 3.9 : at === 'chain' ? 3.2 : 3;
+        const hitR = cannonballStrikeHitRadius(npc.type, at, isPellet);
         if (Math.hypot(b.x - npc.x, b.z - npc.z) < hitR) {
           let dh = 15;
           if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
@@ -9956,7 +10366,7 @@ function update(dt) {
       const at = b.ammoType || 'ball';
       const isPellet = !!b.isPellet;
       const distP = Math.hypot(b.x - G.player.x, b.z - G.player.z);
-      const hitR = isPellet ? 2.0 : at === 'grape' ? 5.2 : at === 'chain' ? 4.2 : 5;
+      const hitR = cannonballStrikeHitRadius(G.player.shipType, at, isPellet);
       if (distP < hitR && b.y > SEA_LEVEL - 1) {
         if (b.owner === 'other_player') {
           G.lastAttackerId = b.sourcePlayerId != null ? b.sourcePlayerId : null;
@@ -9986,9 +10396,9 @@ function update(dt) {
     if (b.owner === 'player') {
       const at = b.ammoType || 'ball';
       const isPellet = !!b.isPellet;
-      const hitR = isPellet ? 2.2 : at === 'grape' ? 4.2 : at === 'chain' ? 3.6 : 3.5;
       G.otherPlayers.forEach((op, opId) => {
         if (op.docked) return;
+        const hitR = cannonballStrikeHitRadius(op.shipType || 'sloop', at, isPellet);
         if (Math.hypot(b.x - op.x, b.z - op.z) < hitR) {
           let msg = `Hit ${networkPlayerCaptainName(op)}!`;
           if (at === 'ball') msg = `Round shot · hull −9`;
@@ -10327,6 +10737,7 @@ function render() {
   sky.material.uniforms.uTime.value = G.time;
   renderer.render(scene, camera);
   renderCargoPreviewIfOpen();
+  renderYardShipPreviewIfOpen();
 }
 
 /** Align sea, sky, sun, and camera to the player and draw once — avoids a black frame when menus hide or the world reloads. */
