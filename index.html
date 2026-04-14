@@ -2615,7 +2615,8 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   }
 
   if (shipName) {
-    const label = makeTextSprite(shipName, flagColor ? '#ff8888' : '#d4a848');
+    const swatch = flagColor ? String(flagColor) : '';
+    const label = makeTextSprite(shipName, flagColor ? '#ff8888' : '#d4a848', '', swatch);
     label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     g.add(label);
   }
@@ -3198,7 +3199,7 @@ function rebuildPlayerShip() {
   buildCrewMeshes(ship, G.player.crew, G.player.shipType);
 
   const spec = SHIP_TYPES[G.player.shipType];
-  shipNameSprite = makeTextSprite(G.player.shipName, '#d4a848', G.player.crew[0]?.name || '');
+  shipNameSprite = makeTextSprite(G.player.shipName, '#d4a848', G.player.crew[0]?.name || '', G.player.flagColor || '');
   shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
   playerShipGroup.add(shipNameSprite);
   updateCargo3DMesh();
@@ -4741,8 +4742,22 @@ function connectToServer() {
       case 'player_join':
         G.otherPlayers.set(msg.player.id, msg.player);
         refreshOtherPlayerShipCacheKey(G.otherPlayers.get(msg.player.id));
-        notify(`${networkPlayerCaptainName(msg.player)} joined`);
         break;
+      case 'player_identity': {
+        const pid = msg.id;
+        if (pid == null) break;
+        const row = G.otherPlayers.get(pid);
+        if (row) {
+          if (msg.name != null) row.name = String(msg.name).slice(0, 28);
+          if (msg.shipName != null) row.shipName = String(msg.shipName).slice(0, 28);
+          refreshOtherPlayerShipCacheKey(row);
+        }
+        if (pid !== G.myId && msg.joinAnnounce) {
+          const cap = String(msg.name || '').trim();
+          if (cap) notify(`${cap} joined`);
+        }
+        break;
+      }
       case 'player_leave': {
         const lid = Number(msg.id);
         disposeRemoteDockRopes(msg.id);
@@ -6966,6 +6981,7 @@ function clearLocalCareerDataFromServerReset() {
 }
 
 let leaderboardData = [];
+let piratesLbPage = 0;
 try {
   const _lbc = localStorage.getItem('pirates_lb_cache');
   if (_lbc) leaderboardData = JSON.parse(_lbc);
@@ -6992,7 +7008,9 @@ function updatePiratesPanel() {
   const board = dedupeLeaderboardForDisplay(leaderboardData);
   if (board.length > 0) {
     const top = board[0];
-    head += `<div style="text-align:center;margin-bottom:10px;padding:8px;background:rgba(50,18,18,0.4);border:1px solid rgba(180,80,60,0.35);border-radius:8px;font-size:10px;color:#e8dcc8;line-height:1.5;"><strong style="color:#d4a848;">Most notorious:</strong> ${top.name}<br>
+    const topShip = top.shipName && String(top.shipName).trim()
+      ? `<br><span style="color:#a89878;font-style:italic;">${escapeDebugHtml(String(top.shipName).trim())}</span>` : '';
+    head += `<div style="text-align:center;margin-bottom:10px;padding:8px;background:rgba(50,18,18,0.4);border:1px solid rgba(180,80,60,0.35);border-radius:8px;font-size:10px;color:#e8dcc8;line-height:1.5;"><strong style="color:#d4a848;">Most notorious:</strong> ${escapeDebugHtml(top.name)}${topShip}<br>
       <span style="color:#d4a848;">${lbRowGold(top)}g</span> earned · <span style="color:#cc8888;">${lbRowSinksAi(top)}</span> AI · <span style="color:#88a8cc;">${lbRowSinksPl(top)}</span> captains<br>
       <span style="color:#a8c8a8;">${lbRowRansoms(top)}</span> ransoms · <span style="color:#9888a8;">${lbRowDeaths(top)}</span> deaths</div>`;
   }
@@ -7001,16 +7019,51 @@ function updatePiratesPanel() {
     l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No live rankings yet. Connect to the server to share the board — your all-time career stats above stay on this device.</div>';
     return;
   }
-  board.forEach((e, i) => {
-    const medal = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? '3rd' : `${i+1}th`;
+  const PAGE_SZ = 5;
+  const nPages = Math.max(1, Math.ceil(board.length / PAGE_SZ));
+  if (piratesLbPage >= nPages) piratesLbPage = nPages - 1;
+  if (piratesLbPage < 0) piratesLbPage = 0;
+  const pageSlice = board.slice(piratesLbPage * PAGE_SZ, piratesLbPage * PAGE_SZ + PAGE_SZ);
+  pageSlice.forEach((e, pi) => {
+    const i = piratesLbPage * PAGE_SZ + pi;
+    const medal = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? '3rd' : `${i + 1}th`;
     const medalColor = i === 0 ? '#ffd700' : i === 1 ? '#c0c0c0' : i === 2 ? '#cd7f32' : '#8a7a60';
     const d = document.createElement('div');
     d.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:8px;background:rgba(30,20,12,0.4);border:1px solid rgba(140,100,40,0.15);border-radius:5px;margin-bottom:4px;';
+    const shipLine = e.shipName && String(e.shipName).trim()
+      ? `<div style="color:#a89878;font-size:11px;font-style:italic;margin-top:2px;">${escapeDebugHtml(String(e.shipName).trim())}</div>` : '';
     d.innerHTML = `<div style="color:${medalColor};font-weight:bold;font-size:13px;min-width:32px;text-align:center;">${medal}</div>
-      <div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${e.name}</div>
+      <div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${escapeDebugHtml(e.name)}</div>${shipLine}
  <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:4px;">${lbRowGold(e)}g · AI ${lbRowSinksAi(e)} · captains ${lbRowSinksPl(e)} · ransoms ${lbRowRansoms(e)} · deaths ${lbRowDeaths(e)}</div></div>`;
     l.appendChild(d);
   });
+  if (nPages > 1) {
+    const nav = document.createElement('div');
+    nav.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:14px;margin:12px 0 6px;padding-top:8px;border-top:1px solid rgba(120,90,50,0.25);';
+    const mkBtn = (label, disabled) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.style.cssText = 'min-width:40px;padding:6px 12px;font-size:14px;line-height:1;border-radius:6px;border:1px solid rgba(180,140,60,0.45);background:rgba(40,28,18,0.75);color:#d4a848;cursor:pointer;font-family:Georgia,serif;';
+      if (disabled) {
+        b.disabled = true;
+        b.style.opacity = '0.35';
+        b.style.cursor = 'default';
+      }
+      return b;
+    };
+    const prev = mkBtn('\u25C0', piratesLbPage <= 0);
+    const pg = document.createElement('span');
+    pg.style.cssText = 'color:#c8b8a0;font-size:11px;min-width:120px;text-align:center;';
+    pg.textContent = `Page ${piratesLbPage + 1} / ${nPages}`;
+    const next = mkBtn('\u25B6', piratesLbPage >= nPages - 1);
+    if (!prev.disabled) prev.onclick = () => { piratesLbPage = Math.max(0, piratesLbPage - 1); updatePiratesPanel(); };
+    if (!next.disabled) next.onclick = () => { piratesLbPage = Math.min(nPages - 1, piratesLbPage + 1); updatePiratesPanel(); };
+    nav.appendChild(prev);
+    nav.appendChild(pg);
+    nav.appendChild(next);
+    l.appendChild(nav);
+  }
 }
 
 function updateWorldPanel() {
@@ -7094,26 +7147,7 @@ function updateMissionsPanel() {
     return h;
   };
 
-  l.appendChild(hdr('Completed', 'Recent turn-ins and contracts (newest first)', true));
-  if (!log.length) {
-    const e = document.createElement('div');
-    e.style.cssText = 'color:#8a7a60;font-size:11px;padding:6px 0 4px;';
-    e.textContent = 'No completed entries yet.';
-    l.appendChild(e);
-  } else {
-    log.slice(0, 12).forEach(ent => {
-      const d = document.createElement('div');
-      d.style.cssText = 'padding:8px 10px;background:rgba(22,28,22,0.45);border:1px solid rgba(100,130,90,0.28);border-radius:6px;margin-bottom:6px;';
-      const tag = ent.kind === 'main' ? 'MAIN' : 'SIDE';
-      const rew = ent.reward != null ? ` · +${ent.reward}g` : '';
-      d.innerHTML = `<div style="color:#a8c8a8;font-size:9px;letter-spacing:0.06em;">${tag}${rew}</div>
-        <div style="color:#c8b8a0;font-size:12px;margin-top:3px;">${ent.title || ''}</div>
-        <div style="color:#8a7a68;font-size:10px;margin-top:4px;line-height:1.35;">${ent.detail || ''}</div>`;
-      l.appendChild(d);
-    });
-  }
-
-  l.appendChild(hdr('Main story — active', 'Only your current letter of marque', false));
+  l.appendChild(hdr('Main story — active', 'Only your current letter of marque', true));
   let storyHtml = '';
   if (sq.phase === 'intro') {
     storyHtml = `<div style="padding:10px;background:rgba(40,20,50,0.45);border:1px solid rgba(180,100,160,0.35);border-radius:6px;margin-bottom:10px;">
@@ -7166,6 +7200,25 @@ function updateMissionsPanel() {
       d.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${q.desc}</div>
         <div style="color:#8a7a60;font-size:10px;margin-top:4px;">${details}</div>
         <div style="color:#d4a848;font-size:11px;margin-top:4px;">Reward: ${q.reward} gold</div>`;
+      l.appendChild(d);
+    });
+  }
+
+  l.appendChild(hdr('Completed', 'Recent turn-ins and contracts (newest first)', false));
+  if (!log.length) {
+    const e = document.createElement('div');
+    e.style.cssText = 'color:#8a7a60;font-size:11px;padding:6px 0 4px;';
+    e.textContent = 'No completed entries yet.';
+    l.appendChild(e);
+  } else {
+    log.slice(0, 12).forEach(ent => {
+      const d = document.createElement('div');
+      d.style.cssText = 'padding:8px 10px;background:rgba(22,28,22,0.45);border:1px solid rgba(100,130,90,0.28);border-radius:6px;margin-bottom:6px;';
+      const tag = ent.kind === 'main' ? 'MAIN' : 'SIDE';
+      const rew = ent.reward != null ? ` · +${ent.reward}g` : '';
+      d.innerHTML = `<div style="color:#a8c8a8;font-size:9px;letter-spacing:0.06em;">${tag}${rew}</div>
+        <div style="color:#c8b8a0;font-size:12px;margin-top:3px;">${ent.title || ''}</div>
+        <div style="color:#8a7a68;font-size:10px;margin-top:4px;line-height:1.35;">${ent.detail || ''}</div>`;
       l.appendChild(d);
     });
   }
@@ -8534,7 +8587,7 @@ function update(dt) {
       const visualParts = normalizeShipPartsForRemoteView(p.shipParts);
       const sm = buildShipMesh(st, visualParts, p.flagColor || p.color || '#4488cc', shipTitle);
       if (captainName && shipTitle !== captainName) {
-        const capLabel = makeTextSprite(shipTitle, '#88bbff', captainName, p.color || '');
+        const capLabel = makeTextSprite(shipTitle, '#88bbff', captainName, (p.flagColor || p.color || ''));
         const spec = SHIP_TYPES[st];
         capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
         sm.children = sm.children.filter(c => !(c instanceof THREE.Sprite));
