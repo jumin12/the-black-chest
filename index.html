@@ -241,7 +241,8 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 @keyframes combatEdgePulse{from{opacity:0.25}to{opacity:0.75}}
 /* Mobile touch controls */
 #touch-controls{display:none;position:fixed;bottom:0;left:0;width:100%;height:100%;pointer-events:none;z-index:15;}
-#joystick-zone{position:absolute;bottom:80px;left:16px;width:120px;height:120px;pointer-events:auto;touch-action:none;}
+#joystick-zone{position:absolute;bottom:80px;left:16px;width:120px;height:120px;pointer-events:auto;touch-action:none;z-index:14;}
+#touch-port,#touch-starboard{z-index:20;touch-action:manipulation;-webkit-user-select:none;user-select:none;}
 #joystick-base{width:100px;height:100px;background:rgba(180,140,60,0.12);border:2px solid rgba(180,140,60,0.3);border-radius:50%;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);}
 #joystick-knob{width:40px;height:40px;background:rgba(212,168,72,0.45);border:2px solid rgba(212,168,72,0.6);border-radius:50%;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);transition:none;}
 #touch-actions{position:absolute;bottom:80px;right:16px;display:flex;flex-direction:column;gap:10px;pointer-events:auto;}
@@ -429,7 +430,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
       <div class="scheme-grid">
         <label class="scheme-card"><input type="radio" name="mob-scheme" value="0" checked style="accent-color:#d4a848;" />
           <span class="scheme-title">Balanced</span>
-          <span class="scheme-desc">Joystick centered; port and starboard broadsides on either side.</span>
+          <span class="scheme-desc">Joystick centered; STAR (left) and PORT (right) match screen broadsides astern-cam.</span>
           <div class="scheme-mini"><div class="m-fire" style="left:8px;"></div><div class="m-joy" style="left:50%;transform:translateX(-50%);"></div><div class="m-fire" style="right:8px;left:auto;"></div></div>
         </label>
         <label class="scheme-card"><input type="radio" name="mob-scheme" value="1" style="accent-color:#d4a848;" />
@@ -5638,8 +5639,17 @@ window.addEventListener('touchmove', e => {
   }
 }, { capture: true, passive: true });
 
-document.getElementById('touch-port')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(-1); }, { passive: false });
-document.getElementById('touch-starboard')?.addEventListener('touchstart', e => { e.preventDefault(); doFireSide(1); }, { passive: false });
+/** Centered-joystick layout (scheme 0): screen-left/right must match chase-cam broadsides; other schemes keep nautical port/starboard mapping. */
+function mobileBroadsideSignFromTouchButton(which) {
+  if (isMobile && G.mobileControlScheme === 0) return which === 'port' ? 1 : -1;
+  return which === 'port' ? -1 : 1;
+}
+function onMobileBroadsideTouch(e, which) {
+  e.preventDefault();
+  doFireSide(mobileBroadsideSignFromTouchButton(which));
+}
+document.getElementById('touch-port')?.addEventListener('touchstart', e => onMobileBroadsideTouch(e, 'port'), { passive: false, capture: true });
+document.getElementById('touch-starboard')?.addEventListener('touchstart', e => onMobileBroadsideTouch(e, 'starboard'), { passive: false, capture: true });
 
 function bindEdgeBroadsideTap(el, fireSide) {
   if (!el) return;
@@ -5765,14 +5775,26 @@ function applyMobileControlScheme(sc) {
     jz.style.left = '50%'; jz.style.right = 'auto'; jz.style.bottom = '70px'; jz.style.transform = 'translateX(-50%)';
     tp.style.left = 'calc(50% - 110px)'; tp.style.right = 'auto'; tp.style.bottom = '95px';
     ts.style.right = 'calc(50% - 110px)'; ts.style.left = 'auto'; ts.style.bottom = '95px';
+    tp.textContent = 'STAR';
+    ts.textContent = 'PORT';
+    tp.title = 'Fire starboard (screen left)';
+    ts.title = 'Fire port (screen right)';
   } else if (sc === 1) {
     jz.style.left = 'auto'; jz.style.right = '16px'; jz.style.bottom = '70px'; jz.style.transform = 'none';
     tp.style.left = '16px'; tp.style.right = 'auto'; tp.style.bottom = '155px';
     ts.style.left = '16px'; ts.style.right = 'auto'; ts.style.bottom = '85px';
+    tp.textContent = 'PORT';
+    ts.textContent = 'STAR';
+    tp.title = 'Fire Port';
+    ts.title = 'Fire Starboard';
   } else if (sc === 2) {
     jz.style.left = '16px'; jz.style.right = 'auto'; jz.style.bottom = '70px'; jz.style.transform = 'none';
     tp.style.right = '16px'; tp.style.left = 'auto'; tp.style.bottom = '155px';
     ts.style.right = '16px'; ts.style.left = 'auto'; ts.style.bottom = '85px';
+    tp.textContent = 'PORT';
+    ts.textContent = 'STAR';
+    tp.title = 'Fire Port';
+    ts.title = 'Fire Starboard';
    } else if (sc === 3) {
     jz.style.left = '50%'; jz.style.right = 'auto'; jz.style.bottom = '70px'; jz.style.transform = 'translateX(-50%)';
     tp.style.display = 'none';
@@ -8940,7 +8962,7 @@ function update(dt) {
     sw.rotation.y = baseRotY + age * 0.5;
     u.life = (u.life0 != null ? u.life0 : 60) - age;
     const distToPlayer = Math.hypot(sw.position.x - G.player.x, sw.position.z - G.player.z);
-    if (distToPlayer < 6) {
+    if (distToPlayer < 6 && !G.playerSinking) {
       let collected = false;
       if (sw.userData.crewRestore) {
         const c = sw.userData.crewRestore;
@@ -9049,7 +9071,7 @@ function update(dt) {
   for (let fi = G.floatingItems.length - 1; fi >= 0; fi--) {
     const item = G.floatingItems[fi];
     if (item.collected) continue;
-    if (Math.hypot(G.player.x - item.x, G.player.z - item.z) < 8) {
+    if (!G.playerSinking && Math.hypot(G.player.x - item.x, G.player.z - item.z) < 8) {
       item.collected = true;
       const amt = item.count != null && !Number.isNaN(Number(item.count))
         ? Number(item.count)
@@ -9694,10 +9716,13 @@ function buildTutorialSteps() {
         body: 'Tap the left and right strips of open sea (between the compass and the bottom helm)—not on buttons or the chart. With the camera astern, left edge is starboard and right edge is port. In battle those strips pulse for about three seconds as a reminder; you can still fire when they are hidden.'
       });
     } else {
+      const bb = G.mobileControlScheme === 0
+        ? 'With the centered stick, STAR (left) and PORT (right) match broadsides toward those sides of the screen. You can steer and tap fire with two fingers at once. Short reload per battery.'
+        : 'PORT and STAR fire each battery on a short reload. Use them to rake enemy hulls. You can steer and tap fire with two fingers at once.';
       steps.push({
         sel: '#touch-port',
         title: 'Broadsides',
-        body: 'PORT and STAR fire each battery on a short reload. Use them to rake enemy hulls.'
+        body: bb
       });
     }
     steps.push({
