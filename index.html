@@ -1512,14 +1512,6 @@ function getInvCount(id) {
   }
   return t;
 }
-function ensureSpecialAmmoRowsInInventory() {
-  const add = (id, name, icon, count) => {
-    if (G.player.inventory.some(i => i.id === id)) return;
-    G.player.inventory.push({ id, name, icon, count });
-  };
-  add('grapeshot', 'Grapeshot', 'G', 12);
-  add('chainshot', 'Chain shot', 'C', 10);
-}
 function countSailorCrew() { return G.player.crew.filter(c => c.role !== 'prisoner').length; }
 function countPrisonerCrew() { return G.player.crew.filter(c => c.role === 'prisoner').length; }
 /** 0.1 provisions per sailor per minute (fractional). */
@@ -7094,6 +7086,9 @@ function doFireSide(fireSide) {
   const ammoName = getItemMeta(invId).name;
   if (ammo < perSide) { notify(`Need ${perSide} ${ammoName} to fire (${ammo} in hold)`); return; }
   ammoRow.count -= perSide;
+  if (ammoRow.count <= 0) {
+    G.player.inventory = G.player.inventory.filter(i => i.id !== invId);
+  }
   reconcileSlotsWithInventory();
 
   G.lastBroadsideSide = fireSide;
@@ -8007,8 +8002,10 @@ function reconcileSlotsWithInventory() {
   (G.player.cargoSlots || []).forEach(s => {
     if (s && s.id && s.id !== 'gold' && s.count > 0) slotBackedIds.add(s.id);
   });
+  // Slots must follow the ledger: if an item was fully sold/consumed (no row in `want`), clear
+  // those stacks instead of re-adding the slot total (which undid the last sale / cannon shot).
   for (const id of slotBackedIds) {
-    if (!want.has(id)) want.set(id, slotSumById(id));
+    if (!want.has(id)) want.set(id, 0);
   }
   for (const [id, target] of [...want.entries()]) {
     let cur = slotSumById(id);
@@ -11731,7 +11728,6 @@ function beginVoyageAfterCharacter() {
   spawnNPCs();
   rebuildPlayerShip();
   applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
-  ensureSpecialAmmoRowsInInventory();
   reconcileSlotsWithInventory();
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
   document.getElementById('create-screen').style.display = 'none';
