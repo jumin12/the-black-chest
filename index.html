@@ -1969,10 +1969,29 @@ function dryLandSampleForMeta(wx, wz, meta) {
   const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
   const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
   const combined = n1 * 0.6 + n2 + ridges;
-  const warpedDist = dist;
+  const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.16 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.055;
+  const warpedDist = dist + edgeWarp;
   const falloff = Math.max(0, 1 - warpedDist * warpedDist);
   const ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
   return ht > 0.15 && warpedDist < 0.93;
+}
+/** Stricter than rendered mesh so ships/NPCs/fish stay in water while waves animate the shore visually. */
+function dryLandCollisionSampleForMeta(wx, wz, meta) {
+  const worldX = meta.worldX, worldZ = meta.worldZ;
+  const islandRadius = meta.radius, islandHeight = meta.maxH;
+  const px = wx - worldX, pz = wz - worldZ;
+  if (px * px + pz * pz > islandRadius * islandRadius * 1.45 * 1.45) return false;
+  const islandNoise = getCachedIslandNoise(meta.cx, meta.cz);
+  const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+  const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
+  const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
+  const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
+  const combined = n1 * 0.6 + n2 + ridges;
+  const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.16 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.055;
+  const warpedDist = dist + edgeWarp;
+  const falloff = Math.max(0, 1 - warpedDist * warpedDist);
+  const ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
+  return ht > 0.22 && warpedDist < 0.865;
 }
 function dryLandAtWorldPosition(wx, wz) {
   if (G.customMap && G.customMap.heights && G.customMap.gridN) {
@@ -1983,7 +2002,7 @@ function dryLandAtWorldPosition(wx, wz) {
     for (let dr = -1; dr <= 1; dr++) {
       const meta = getProceduralIslandMeta(cxi + dc, czi + dr);
       if (!meta) continue;
-      if (dryLandSampleForMeta(wx, wz, meta)) return true;
+      if (dryLandCollisionSampleForMeta(wx, wz, meta)) return true;
     }
   }
   return false;
@@ -2071,7 +2090,11 @@ function customMapShoreLandRgb(heights, gridN, wThr, ix, iz, h) {
   }
   if (coastal || h <= wThr + 0.055) return [0.92, 0.82, 0.58];
   if (h < 0.36) return [0.32, 0.58, 0.26];
-  const t = Math.min(1, (h - 0.36) / 0.64);
+  if (h > 0.88) {
+    const tm = Math.min(1, (h - 0.88) / 0.52);
+    return [0.42 + tm * 0.12, 0.42 + tm * 0.11, 0.44 + tm * 0.1];
+  }
+  const t = Math.min(1, (h - 0.36) / 0.52);
   return [0.28 - t * 0.07, 0.48 - t * 0.06, 0.22 - t * 0.05];
 }
 function customMapPayloadFromObject(data) {
@@ -2087,6 +2110,7 @@ function customMapPayloadFromObject(data) {
     playerSpawn = {
       x: Number(data.playerSpawn.x),
       z: Number(data.playerSpawn.z),
+      y: data.playerSpawn.y != null ? Number(data.playerSpawn.y) : 0,
       rotation: data.playerSpawn.rotation != null ? Number(data.playerSpawn.rotation) : 0
     };
   }
@@ -2176,7 +2200,10 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
   if (!isChunkInWorld(cx, cz)) return null;
   const h = hashChunk(cx, cz, worldSeedOpt);
   if (h > ISLAND_CHANCE) return null;
-  const worldX = cx * CHUNK_SIZE, worldZ = cz * CHUNK_SIZE;
+  const jitter = CHUNK_SIZE * 0.17;
+  const jx = (hashChunk(cx + 31, cz + 17, worldSeedOpt) * 2 - 1) * jitter;
+  const jz = (hashChunk(cx - 19, cz + 83, worldSeedOpt) * 2 - 1) * jitter;
+  const worldX = cx * CHUNK_SIZE + jx, worldZ = cz * CHUNK_SIZE + jz;
   const wsU = worldSeedOpt !== undefined ? (Number(worldSeedOpt) >>> 0) : (G.worldSeed >>> 0);
   // Hash-based size (do not allocate SimplexNoise here — this runs millions of times during trade-ship port search).
   const sizeFactor = (hashChunk(cx + 11, cz + 29, worldSeedOpt) * 0.55 + hashChunk(cx - 17, cz + 41, worldSeedOpt) * 0.45);
@@ -2442,13 +2469,12 @@ function applyFactionOverrideFromMapData(fac) {
 }
 function parseFactionsFromMapJson(data) {
   if (!data || !data.factions || typeof data.factions !== 'object') return null;
-  let names = Array.isArray(data.factions.names) ? data.factions.names.map(x => String(x)) : [];
-  const colors = Array.isArray(data.factions.colors) ? data.factions.colors.map(x => String(x)) : [];
-  if (!names.length) return null;
-  while (names.length < 4) names.push('');
+  const names = Array.isArray(data.factions.names) ? data.factions.names.map(x => String(x)) : null;
+  const colors = Array.isArray(data.factions.colors) ? data.factions.colors.map(x => String(x)) : null;
+  if (!names || names.length < 4) return null;
   return {
     names: names.slice(0, 4),
-    colors: colors.length >= 4 ? colors.slice(0, 4) : null
+    colors: colors && colors.length >= 4 ? colors.slice(0, 4) : null
   };
 }
 function townFaction(meta) {
@@ -2866,11 +2892,16 @@ function sampleIslandLandHeight(px, pz, worldX, worldZ, islandRadius, islandHeig
   const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
   const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
   const combined = n1 * 0.6 + n2 + ridges;
-  const warpedDist = dist;
+  const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.16 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.055;
+  const warpedDist = dist + edgeWarp;
   const falloff = Math.max(0, 1 - warpedDist * warpedDist);
   let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
   const isLand = ht > 0.15 && warpedDist < 0.93;
-  if (!isLand) return -1;
+  if (!isLand) {
+    const edgeFade = Math.max(0, 1 - warpedDist) * 2;
+    if (edgeFade > 0.1 && ht > 0) return ht * edgeFade * 0.3;
+    return -1;
+  }
   return Math.max(0.4, ht);
 }
 
@@ -3024,12 +3055,18 @@ function generateIsland(cx, cz) {
     const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
     const combined = n1 * 0.6 + n2 + ridges;
 
-    const warpedDist = dist;
+    const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.16 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.055;
+    const warpedDist = dist + edgeWarp;
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
     const isLand = ht > 0.15 && warpedDist < 0.93;
     if (!isLand) {
-      positions.setX(i, 0); positions.setZ(i, 0); positions.setY(i, -2);
+      const edgeFade = Math.max(0, 1 - warpedDist) * 2;
+      if (edgeFade > 0.1 && ht > 0) {
+        positions.setY(i, ht * edgeFade * 0.3);
+      } else {
+        positions.setX(i, 0); positions.setZ(i, 0); positions.setY(i, -2);
+      }
     } else {
       ht = Math.max(0.4, ht);
       positions.setY(i, ht);
@@ -3056,9 +3093,13 @@ function generateIsland(cx, cz) {
     } else if (nh < 0.75) {
       const t = (nh - 0.5) / 0.25;
       r = 0.22 + t * 0.25; g = 0.52 - t * 0.15; b = 0.25 + t * 0.15;
-    } else {
+    } else if (nh < 0.88) {
       r = 0.55; g = 0.53; b = 0.48;
       if (slope > 0.5) { r += 0.1; g += 0.08; b += 0.08; }
+    } else {
+      const tm = Math.min(1, (nh - 0.88) / 0.12);
+      r = 0.48 + tm * 0.14; g = 0.46 + tm * 0.13; b = 0.5 + tm * 0.12;
+      if (slope > 0.55) { r += 0.06; g += 0.06; b += 0.06; }
     }
     r = Math.max(0, Math.min(1, r)); g = Math.max(0, Math.min(1, g)); b = Math.max(0, Math.min(1, b));
     colors[i * 3] = r; colors[i * 3 + 1] = g; colors[i * 3 + 2] = b;
@@ -3157,7 +3198,8 @@ function generateIsland(cx, cz) {
     const terrainYWorld = (wx, wz) => {
       const px = wx - worldX, pz = wz - worldZ;
       const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
-      const warpedDist = dist;
+      const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.16 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.055;
+      const warpedDist = dist + edgeWarp;
       const falloff = Math.max(0, 1 - warpedDist * warpedDist);
       const n1 = noise.fbm(wx * 0.015, wz * 0.015, 4);
       const n2 = islandNoise.noise2D(wx * 0.025, wz * 0.025) * 0.25;
@@ -3165,6 +3207,7 @@ function generateIsland(cx, cz) {
       const combined = n1 * 0.6 + n2 + ridges;
       let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
       const isLand = ht > 0.15 && warpedDist < 0.93;
+      if (!isLand && falloff > 0 && ht > 0) return Math.max(0.1, ht * Math.max(0, 1 - warpedDist) * 2 * 0.35);
       if (!isLand) return 0.1;
       return Math.max(0.35, ht);
     };
@@ -3399,9 +3442,9 @@ function updateFish(dt) {
       l.dir += Math.PI + (Math.random() - 0.5) * 1.2;
       l.x -= Math.sin(l.dir) * l.speed * dt * 2.2;
       l.z -= Math.cos(l.dir) * l.speed * dt * 2.2;
-      for (let g = 0; g < 12 && isSeaObstructed(l.x, l.z); g++) {
-        l.x += Math.sin(l.dir) * 5;
-        l.z += Math.cos(l.dir) * 5;
+      for (let g = 0; g < 8 && isSeaObstructed(l.x, l.z); g++) {
+        l.x += Math.sin(l.dir) * 1.8;
+        l.z += Math.cos(l.dir) * 1.8;
       }
     }
   });
