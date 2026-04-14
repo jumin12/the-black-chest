@@ -846,7 +846,7 @@ const G = {
     shipName: 'The Black Wave',
     flagColor: '#1a1a1a',
     shipType: 'sloop',
-    shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' },
+    shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flagPosition: 'quarter' },
     inventory: [
       { id: 'food', name: 'Provisions', icon: 'F', count: 24 },
       { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 36 },
@@ -1113,6 +1113,11 @@ const SHIP_PARTS = {
     { id: 'dragon', name: 'Dragon', cost: 5 },
     { id: 'mermaid', name: 'Mermaid', cost: 4 },
     { id: 'skull', name: 'Skull', cost: 3 }
+  ],
+  flagPosition: [
+    { id: 'masthead', name: 'Mainmast peak', cost: 0, note: 'Flag at masthead' },
+    { id: 'quarter', name: 'Quarter (side)', cost: 0, note: 'Side of quarterdeck' },
+    { id: 'stern', name: 'Stern rail', cost: 0, note: 'Very aft' }
   ]
 };
 
@@ -1547,19 +1552,31 @@ function buildFactionFlagTexture(factionId) {
   return tex;
 }
 
-/** Wooden pole + subdivided flag (top attached); registers for wind animation. */
+/** Flag pole at ground + hinge group (cloth pivots from halyard); registers for wind animation. */
 function addDockFactionFlag(group, tf, fxx, fzz, fyy, dockAngle, dockWidX, dockWidZ) {
   if (!G.townFlagMeshes) G.townFlagMeshes = [];
   const poleH = 8.2;
   const woodMat = new THREE.MeshLambertMaterial({ color: 0x4a3520 });
+  const flagRoot = new THREE.Group();
+  flagRoot.position.set(fxx, fyy, fzz);
+  group.add(flagRoot);
+
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, poleH, 8), woodMat);
-  pole.position.set(fxx, fyy + poleH * 0.5, fzz);
+  pole.position.y = poleH * 0.5;
   pole.castShadow = true;
-  group.add(pole);
+  flagRoot.add(pole);
+
   const band = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.022, 6, 12), new THREE.MeshLambertMaterial({ color: 0x2a1a0c }));
   band.rotation.x = Math.PI / 2;
-  band.position.set(fxx, fyy + poleH - 0.06, fzz);
-  group.add(band);
+  band.position.set(0, poleH - 0.06, 0);
+  flagRoot.add(band);
+
+  const side = 0.22;
+  const hinge = new THREE.Group();
+  hinge.position.set(dockWidX * side, poleH - 0.14, dockWidZ * side);
+  hinge.rotation.order = 'YXZ';
+  const baseYaw = dockAngle + Math.PI * 0.5;
+  hinge.rotation.y = baseYaw;
 
   const flagW = 2.6, flagH = 1.65;
   const segsX = 14, segsY = 8;
@@ -1568,20 +1585,21 @@ function addDockFactionFlag(group, tf, fxx, fzz, fyy, dockAngle, dockWidX, dockW
   const tex = buildFactionFlagTexture(tf);
   const flagMat = new THREE.MeshLambertMaterial({ map: tex, side: THREE.DoubleSide });
   const flag = new THREE.Mesh(geo, flagMat);
-  const side = 0.22;
+  flag.position.set(flagW * 0.5, -flagH * 0.35, 0);
+  flag.castShadow = true;
+  hinge.add(flag);
+  flagRoot.add(hinge);
+
   const ox = fxx + dockWidX * side;
   const oz = fzz + dockWidZ * side;
-  flag.position.set(ox, fyy + poleH - flagH * 0.5, oz);
-  flag.rotation.order = 'YXZ';
-  flag.rotation.y = dockAngle + Math.PI * 0.5;
-  flag.castShadow = true;
-  group.add(flag);
   G.townFlagMeshes.push({
+    hinge,
     mesh: flag,
     basePos,
     wx: ox,
     wz: oz,
     dockAngle,
+    baseYaw,
     phase: (fxx * 0.01 + fzz * 0.013) % (Math.PI * 2),
     flagW,
     flagH
@@ -1599,6 +1617,11 @@ function updateTownFlagWindAnimation() {
     const t = G.time * (1.55 + w.speed * 0.06) + rec.phase;
     const windYaw = w.angle - rec.dockAngle;
     const windLean = Math.sin(windYaw) * 0.11 + Math.cos(windYaw) * 0.05;
+    if (rec.hinge && rec.baseYaw != null) {
+      const rw = w.angle - rec.dockAngle;
+      rec.hinge.rotation.y = rec.baseYaw + Math.sin(t * 2.05) * 0.34 + Math.sin(rw) * 0.2;
+      rec.hinge.rotation.z = Math.sin(t * 1.15 + rec.phase) * 0.07;
+    }
     for (let i = 0; i < pos.count; i++) {
       const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
       const ax = (bx + rec.flagW * 0.5) / rec.flagW;
@@ -2055,24 +2078,30 @@ function generateIsland(cx, cz) {
     };
 
     const dockGround = terrainYWorld(dockX, dockZ);
-    const dockGeo = new THREE.BoxGeometry(5, 0.4, 14);
+    const dockThick = 0.4;
+    const dockGeo = new THREE.BoxGeometry(5, dockThick, 14);
     const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
     const dock = new THREE.Mesh(dockGeo, dockMat);
-    dock.position.set(dockX, SEA_LEVEL + dockGround + 0.45, dockZ);
+    const dockCenterY = SEA_LEVEL + dockGround + dockThick * 0.5;
+    dock.position.set(dockX, dockCenterY, dockZ);
     dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
     group.add(dock);
     group.userData.dockAngle = dockAngle;
 
     const dockLongX = Math.sin(dockAngle), dockLongZ = Math.cos(dockAngle);
     const dockWidX = Math.cos(dockAngle), dockWidZ = -Math.sin(dockAngle);
+    const dockUndersideY = dockCenterY - dockThick * 0.5;
     for (let pi = 0; pi < 8; pi++) {
       const side = pi % 2 === 0 ? 1 : -1;
       const along = (Math.floor(pi / 2) - 1.5) * 4;
       const ppx = dockX + dockLongX * along + dockWidX * 2.3 * side;
       const ppz = dockZ + dockLongZ * along + dockWidZ * 2.3 * side;
       const gPost = terrainYWorld(ppx, ppz);
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.15, 3, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
-      post.position.set(ppx, SEA_LEVEL + gPost + 1.45, ppz);
+      const seabedY = SEA_LEVEL + Math.min(gPost, dockGround) * 0.35 - 0.85;
+      const pileLen = Math.max(1.5, dockUndersideY - seabedY);
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, pileLen, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
+      post.position.set(ppx, seabedY + pileLen * 0.5, ppz);
+      post.castShadow = true;
       group.add(post);
     }
 
@@ -2411,13 +2440,16 @@ arcRight.visible = false;
 scene.add(arcRight);
 
 function normalizeShipParts(parts) {
-  const d = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
+  const d = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flagPosition: 'quarter' };
   if (!parts || typeof parts !== 'object') return { ...d };
+  const fpRaw = parts.flagPosition;
+  const flagPosition = fpRaw === 'masthead' || fpRaw === 'quarter' || fpRaw === 'stern' ? fpRaw : d.flagPosition;
   return {
     hull: parts.hull || d.hull,
     sail: parts.sail || d.sail,
     cannon: parts.cannon === undefined || parts.cannon === null || parts.cannon === '' ? d.cannon : parts.cannon,
-    figurehead: parts.figurehead === undefined || parts.figurehead === null || parts.figurehead === '' ? d.figurehead : parts.figurehead
+    figurehead: parts.figurehead === undefined || parts.figurehead === null || parts.figurehead === '' ? d.figurehead : parts.figurehead,
+    flagPosition
   };
 }
 
@@ -2453,12 +2485,33 @@ function otherPlayerShipCacheKey(p) {
         return `${c.name || ''}|${c.role || ''}|${c.color || ''}|${c.hat || ''}|${c.outfit || ''}|${c.task || ''}|${c.parrot ? 1 : 0}|h${hb}`;
       }).join(',')}`
     : '_';
-  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${fc}|${crewSeg}`;
+  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${sp.flagPosition || 'quarter'}|${fc}|${crewSeg}`;
 }
 
 function refreshOtherPlayerShipCacheKey(p) {
   if (!p) return;
   p._netShipCacheKey = otherPlayerShipCacheKey(p);
+}
+
+function buildPirateFlagCanvasTexture(flagColor) {
+  const fc = document.createElement('canvas'); fc.width = 64; fc.height = 48;
+  const ctx = fc.getContext('2d');
+  ctx.fillStyle = flagColor || '#1a1a1a'; ctx.fillRect(0, 0, 64, 48);
+  ctx.fillStyle = flagColor ? '#1a1008' : '#ddd'; ctx.font = 'bold 28px Georgia, serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('\u2620', 32, 26);
+  const tex = new THREE.CanvasTexture(fc);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function addShipRopeCylinder(parent, ax, ay, az, bx, by, bz, mat, rad) {
+  const r = rad != null ? rad : 0.017;
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
+  const seg = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 5), mat);
+  seg.position.set((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5);
+  seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx / len, dy / len, dz / len));
+  parent.add(seg);
 }
 
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
@@ -2526,6 +2579,10 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   if (parts.sail === 'silk') sc = 0xfff8e8;
   else if (parts.sail === 'war') sc = 0x2a2a2a;
 
+  const fpId = parts.flagPosition || 'quarter';
+  const mainMastIdx = Math.max(0, Math.floor(spec.masts / 2));
+  const ropeMat = new THREE.MeshLambertMaterial({ color: 0x2a1810 });
+
   for (let m = 0; m < spec.masts; m++) {
     const mH = spec.hullLen * 0.7, mZ = (m - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
     const mastRig = new THREE.Group();
@@ -2547,11 +2604,40 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     sail.castShadow = true;
     mastRig.add(sail);
 
-       const yg = new THREE.CylinderGeometry(0.04, 0.04, sW + 0.4, 4); yg.rotateZ(Math.PI / 2);
+    const yg = new THREE.CylinderGeometry(0.04, 0.04, sW + 0.4, 4); yg.rotateZ(Math.PI / 2);
     const yard = new THREE.Mesh(yg, rm);
     yard.position.set(0, mH * 0.25, -0.3);
     yard.userData.isYard = true;
     sail.add(yard);
+
+    const yardHalf = (sW + 0.4) * 0.5;
+    const yYard = mH * 0.85;
+    const zYard = 0;
+    addShipRopeCylinder(mastRig, 0, mH * 0.9, 0, -yardHalf, yYard, zYard, ropeMat, 0.016);
+    addShipRopeCylinder(mastRig, 0, mH * 0.9, 0, yardHalf, yYard, zYard, ropeMat, 0.016);
+    addShipRopeCylinder(mastRig, -yardHalf * 0.92, yYard, zYard, -sW * 0.38, mH * 0.6 - sH * 0.46, 0.32, ropeMat, 0.014);
+    addShipRopeCylinder(mastRig, yardHalf * 0.92, yYard, zYard, sW * 0.38, mH * 0.6 - sH * 0.46, 0.32, ropeMat, 0.014);
+
+    if (fpId === 'masthead' && m === mainMastIdx) {
+      const miniP = mH * 0.11;
+      const fr = new THREE.Group();
+      fr.position.set(0, mH - miniP * 0.12, 0);
+      const poleMini = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
+      const pmini = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.042, miniP, 6), poleMini);
+      pmini.position.y = miniP * 0.5;
+      fr.add(pmini);
+      const fHinge = new THREE.Group();
+      fHinge.position.set(0, miniP * 0.96, 0);
+      fHinge.userData.isFlagHinge = true;
+      const pw = 0.92, ph = 0.66;
+      const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph),
+        new THREE.MeshBasicMaterial({ map: buildPirateFlagCanvasTexture(flagColor), side: THREE.DoubleSide }));
+      fmesh.position.set(pw * 0.5, 0, 0);
+      fHinge.add(fmesh);
+      fr.add(fHinge);
+      mastRig.add(fr);
+    }
+
     g.add(mastRig);
   }
 
@@ -2611,6 +2697,10 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   jib.rotation.y = 0.3;
   jib.userData.isSail = true; jib.userData.isJib = true; jib.userData.basePositions = jibGeo.attributes.position.array.slice();
   foreRig.add(jib);
+  const jibZ = spec.hullLen * 0.09;
+  const jibY = fmH * 0.5;
+  addShipRopeCylinder(foreRig, 0, fmH * 0.9, 0, -spec.hullW * 0.22, jibY - fmH * 0.08, jibZ + 0.04, ropeMat, 0.014);
+  addShipRopeCylinder(foreRig, 0, fmH * 0.9, 0, spec.hullW * 0.22, jibY - fmH * 0.08, jibZ + 0.04, ropeMat, 0.014);
   g.add(foreRig);
   const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, spec.hullLen * 0.35, 4), rm);
   bowsprit.position.set(0, spec.hullH * 0.35, spec.hullLen * 0.55);
@@ -2622,10 +2712,15 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     fh.position.set(0, spec.hullH * 0.3, spec.hullLen * 0.55); fh.castShadow = true; g.add(fh);
   }
 
-  {
-    const poleH = spec.hullLen * 0.4;
+  if (fpId === 'quarter' || fpId === 'stern') {
+    const qdh = spec.hullH * 0.55;
+    const poleH = spec.hullLen * (fpId === 'stern' ? 0.32 : 0.4);
     const flagRig = new THREE.Group();
-    flagRig.position.set(spec.hullW * 0.42, spec.hullH * 0.58, -spec.hullLen * 0.4);
+    if (fpId === 'stern') {
+      flagRig.position.set(spec.hullW * 0.08, spec.hullH * 0.62 + qdh + 0.72, -spec.hullLen * 0.52);
+    } else {
+      flagRig.position.set(spec.hullW * 0.42, spec.hullH * 0.58, -spec.hullLen * 0.4);
+    }
     const poleMat = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.052, poleH, 6), poleMat);
     pole.position.y = poleH * 0.5;
@@ -2633,15 +2728,10 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     const flagHinge = new THREE.Group();
     flagHinge.position.set(0, poleH * 0.94, 0.02);
     flagHinge.userData.isFlagHinge = true;
-    const fc = document.createElement('canvas'); fc.width = 64; fc.height = 48;
-    const ctx = fc.getContext('2d');
-    ctx.fillStyle = flagColor || '#1a1a1a'; ctx.fillRect(0, 0, 64, 48);
-    ctx.fillStyle = flagColor ? '#1a1008' : '#ddd'; ctx.font = 'bold 28px Georgia, serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('\u2620', 32, 26);
-    const ftex = new THREE.CanvasTexture(fc);
-    const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78),
-      new THREE.MeshBasicMaterial({ map: ftex, side: THREE.DoubleSide }));
-    fmesh.position.set(0.56, 0, 0);
+    const fw = 1.12, fh = 0.78;
+    const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(fw, fh),
+      new THREE.MeshBasicMaterial({ map: buildPirateFlagCanvasTexture(flagColor), side: THREE.DoubleSide }));
+    fmesh.position.set(fw * 0.5, 0, 0);
     flagHinge.add(fmesh);
     flagRig.add(flagHinge);
     g.add(flagRig);
@@ -2946,13 +3036,33 @@ function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
   const windPushZ = Math.cos(relWind);
   const windStr = wHere.speed / 6;
   const seaSpd = Math.min(1, Math.abs(speed || 0) / 10);
-  const sailTgt = Math.max(-0.8, Math.min(0.8, relWind * 0.35 * (0.85 + seaSpd * 0.2)));
-  if (shipGroup.userData._remoteSailAngle == null) shipGroup.userData._remoteSailAngle = sailTgt;
-  shipGroup.userData._remoteSailAngle += (sailTgt - shipGroup.userData._remoteSailAngle) * Math.min(1, 2.8 * dt);
+  const sailFullTgt = Math.max(-0.88, Math.min(0.88, relWind * (0.82 + seaSpd * 0.18)));
+  if (shipGroup.userData._remoteSailAngle == null) shipGroup.userData._remoteSailAngle = sailFullTgt;
+  shipGroup.userData._remoteSailAngle += (sailFullTgt - shipGroup.userData._remoteSailAngle) * Math.min(1, 1.85 * dt);
+
+  const MAST_LIM = 0.72;
+  shipGroup.traverse(child => {
+    if (child.userData && child.userData.isMastRig) {
+      const mastTgt = Math.max(-MAST_LIM, Math.min(MAST_LIM, relWind));
+      if (child.userData._remoteMastYawSm == null) child.userData._remoteMastYawSm = mastTgt;
+      child.userData._remoteMastYawSm += (mastTgt - child.userData._remoteMastYawSm) * Math.min(1, 2.5 * dt);
+      child.rotation.y = child.userData._remoteMastYawSm;
+    }
+  });
 
   shipGroup.traverse(child => {
     if (child.userData && child.userData.isSail && child.userData.basePositions) {
-      child.rotation.y = shipGroup.userData._remoteSailAngle;
+      let mastY = 0;
+      let pr = child.parent;
+      while (pr) {
+        if (pr.userData && pr.userData.isMastRig) {
+          mastY = pr.rotation.y;
+          break;
+        }
+        pr = pr.parent;
+      }
+      const local = Math.max(-0.55, Math.min(0.55, shipGroup.userData._remoteSailAngle - mastY));
+      child.rotation.y = local;
       const p = child.geometry.attributes.position;
       const base = child.userData.basePositions;
       const billow = Math.abs(windPushZ) * windStr * (0.35 + seaSpd * 0.55);
@@ -6141,8 +6251,9 @@ function updateShipPanel() {
       <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;margin-bottom:6px;letter-spacing:1px;">Equipment Slots</div>
       ${Object.entries(SHIP_PARTS).map(([slot, opts]) => {
         const current = opts.find(o => o.id === G.player.shipParts[slot]);
+        const slotLab = slot === 'flagPosition' ? 'Flag position' : slot;
         return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.15);border-radius:5px;margin-bottom:4px;">
-          <div><div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">${slot}</div><div style="color:#e0d6c2;font-size:12px;">${current?.name || 'None'}</div></div>
+          <div><div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">${slotLab}</div><div style="color:#e0d6c2;font-size:12px;">${current?.name || 'None'}</div></div>
           <div style="color:#4a8a4a;font-size:9px;">${current?.id === 'none' || current?.id === 'basic' ? '' : 'EQUIPPED'}</div>
         </div>`;
       }).join('')}
@@ -6517,7 +6628,7 @@ function updateDebugBuilder() {
   pd.innerHTML = '';
   Object.entries(SHIP_PARTS).forEach(([slot, opts]) => {
     const sd = document.createElement('div');
-    sd.innerHTML = `<div style="color:#cc4444;font-size:10px;margin:8px 0 4px;">${slot.toUpperCase()}</div>`;
+    sd.innerHTML = `<div style="color:#cc4444;font-size:10px;margin:8px 0 4px;">${slot === 'flagPosition' ? 'FLAG POSITION' : slot.toUpperCase()}</div>`;
     opts.forEach(opt => {
       const b = document.createElement('div'); b.className = 'part-slot' + (G.player.shipParts[slot] === opt.id ? ' active' : '');
       b.innerHTML = `<div class="value">${opt.name}</div>`;
@@ -7605,13 +7716,17 @@ function showPortTab(tab) {
     Object.entries(SHIP_PARTS).forEach(([slot, opts]) => {
       const current = G.player.shipParts[slot];
       const sd = document.createElement('div');
-      sd.innerHTML = `<div style="color:#d4a848;font-size:11px;text-transform:uppercase;margin:10px 0 6px;letter-spacing:1px;">${slot}</div>`;
+      sd.innerHTML = `<div style="color:#d4a848;font-size:11px;text-transform:uppercase;margin:10px 0 6px;letter-spacing:1px;">${slot === 'flagPosition' ? 'Flag position' : slot}</div>`;
       opts.forEach(opt => {
         if (opt.id === current) return;
         const upgCost = opt.cost * 3 + 10;
         const d = document.createElement('div');
         d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:4px;';
-        d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${opt.name}</div><div style="color:#8a7a60;font-size:10px;">${opt.armor ? 'Armor +' + opt.armor : opt.speedBonus ? 'Speed +' + opt.speedBonus : opt.damage ? 'Damage ' + opt.damage : ''}</div></div>
+        const statLine = opt.armor ? 'Armor +' + opt.armor
+          : (typeof opt.speedBonus === 'number' && opt.speedBonus) ? 'Speed +' + opt.speedBonus
+          : opt.damage ? 'Damage ' + opt.damage
+          : (opt.note || '');
+        d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${opt.name}</div><div style="color:#8a7a60;font-size:10px;">${statLine}</div></div>
           <button onclick="portUpgrade('${slot}','${opt.id}',${upgCost})" style="background:rgba(50,40,20,0.5);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">${upgCost}g</button>`;
         sd.appendChild(d);
       });
@@ -8643,42 +8758,59 @@ function update(dt) {
     arcRight.material.color.set(G.starboardCooldown > 0 ? 0x666666 : 0xff4444);
   }
 
-  const relWind = G.wind.angle - G.player.rotation;
+  const wAtPlayer = getWindAt(G.player.x, G.player.z);
+  const relWind = wAtPlayer.angle - G.player.rotation;
   const windPushZ = Math.cos(relWind);
-  const windPushX = Math.sin(relWind);
-  const windStr = G.wind.speed / 6;
+  const windStr = wAtPlayer.speed / 6;
 
-  let targetSailAngle = relWind * 0.35;
-  targetSailAngle = Math.max(-0.8, Math.min(0.8, targetSailAngle));
-  let angleDiff = targetSailAngle - G.currentSailAngle;
-  while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-  while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-  G.currentSailAngle += angleDiff * 1.5 * dt;
+  const targetSailFull = Math.max(-0.88, Math.min(0.88, relWind));
+  G.currentSailAngle += (targetSailFull - G.currentSailAngle) * Math.min(1, 1.65 * dt);
 
-  playerShipGroup.traverse(child => {
-    if (child.userData.isSail && child.userData.basePositions) {
-      if (!child.userData._furlAmt) child.userData._furlAmt = 0;
-      const furlTarget = G.sailsFurled ? 1 : 0;
-      child.userData._furlAmt += (furlTarget - child.userData._furlAmt) * 0.8 * dt;
-      const furl = child.userData._furlAmt;
-      child.rotation.y = G.currentSailAngle * (1 - furl);
-      const p = child.geometry.attributes.position, base = child.userData.basePositions;
-      const billow = Math.abs(windPushZ) * windStr * (1 - furl);
-      for (let i = 0; i < p.count; i++) {
-        const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
-        const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
-        const flutter = Math.sin(G.time * 2.0 + by * 3 + bx * 1.5) * 0.025 * (1 - furl);
-        p.setY(i, by * (1 - furl * 0.85));
-        p.setZ(i, bz * (1 - furl * 0.9) + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
+  const shipMeshAnim = playerShipGroup.children[0];
+  const MAST_LIM = 0.72;
+  if (shipMeshAnim) {
+    shipMeshAnim.traverse(child => {
+      if (child.userData && child.userData.isMastRig) {
+        const mastTgt = Math.max(-MAST_LIM, Math.min(MAST_LIM, relWind));
+        if (child.userData._mastWindYawSm == null) child.userData._mastWindYawSm = mastTgt;
+        child.userData._mastWindYawSm += (mastTgt - child.userData._mastWindYawSm) * Math.min(1, 2.4 * dt);
+        child.rotation.y = child.userData._mastWindYawSm;
       }
-      p.needsUpdate = true; child.geometry.computeVertexNormals();
-    }
-    if (child.userData && child.userData.isFlagHinge) {
-      const rw = G.wind.angle - G.player.rotation;
-      child.rotation.y = Math.sin(G.time * 2.7 + rw * 1.1) * 0.42 + Math.sin(rw) * 0.14;
-      child.rotation.z = Math.sin(G.time * 3.05) * 0.07;
-    }
-  });
+    });
+    shipMeshAnim.traverse(child => {
+      if (child.userData.isSail && child.userData.basePositions) {
+        let mastY = 0;
+        let pr = child.parent;
+        while (pr) {
+          if (pr.userData && pr.userData.isMastRig) {
+            mastY = pr.rotation.y;
+            break;
+          }
+          pr = pr.parent;
+        }
+        if (!child.userData._furlAmt) child.userData._furlAmt = 0;
+        const furlTarget = G.sailsFurled ? 1 : 0;
+        child.userData._furlAmt += (furlTarget - child.userData._furlAmt) * 0.8 * dt;
+        const furl = child.userData._furlAmt;
+        const local = Math.max(-0.55, Math.min(0.55, G.currentSailAngle - mastY));
+        child.rotation.y = local * (1 - furl);
+        const p = child.geometry.attributes.position, base = child.userData.basePositions;
+        const billow = Math.abs(windPushZ) * windStr * (1 - furl);
+        for (let i = 0; i < p.count; i++) {
+          const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
+          const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
+          const flutter = Math.sin(G.time * 2.0 + by * 3 + bx * 1.5) * 0.025 * (1 - furl);
+          p.setY(i, by * (1 - furl * 0.85));
+          p.setZ(i, bz * (1 - furl * 0.9) + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
+        }
+        p.needsUpdate = true; child.geometry.computeVertexNormals();
+      }
+      if (child.userData && child.userData.isFlagHinge) {
+        child.rotation.y = Math.sin(G.time * 2.7 + relWind * 1.1) * 0.42 + Math.sin(relWind) * 0.14;
+        child.rotation.z = Math.sin(G.time * 3.05) * 0.07;
+      }
+    });
+  }
 
    G.otherPlayers.forEach((p, id) => {
     const cacheKey = p._netShipCacheKey != null ? p._netShipCacheKey : otherPlayerShipCacheKey(p);
@@ -10058,7 +10190,7 @@ function applyDefaultStartingLoadout(opts) {
     savedFlag = G.player.flagColor || null;
   }
   G.player.shipType = 'sloop';
-  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
+  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flagPosition: 'quarter' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
   G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
@@ -10132,7 +10264,7 @@ function loadProgress() {
     if (data.health !== undefined) G.player.health = data.health;
     if (data.shipName) G.player.shipName = data.shipName;
     if (data.shipType) G.player.shipType = data.shipType;
-    if (data.shipParts) G.player.shipParts = data.shipParts;
+    if (data.shipParts) G.player.shipParts = normalizeShipParts(data.shipParts);
     if (data.inventory) G.player.inventory = data.inventory;
     if (data.cargoSlots && Array.isArray(data.cargoSlots)) G.player.cargoSlots = data.cargoSlots;
     if (data.cargoSlots && data.cargoSlots.some(Boolean)) syncInventoryFromCargoSlots();
@@ -10346,7 +10478,7 @@ document.getElementById('new-game-btn').onclick = () => {
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
   G.player.health = 100; G.player.shipName = 'The Black Wave'; G.player.shipType = 'sloop';
-  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none' };
+  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flagPosition: 'quarter' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
   G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null };
