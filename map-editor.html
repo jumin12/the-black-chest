@@ -317,7 +317,8 @@
     if (lum > 0.93) return WATER_THR * 0.35;
     if (lum > 0.84) return WATER_THR * 0.55;
     const t = Math.max(0, 1 - lum);
-    let h = Math.max(0.2, Math.min(1, Math.pow(t, 0.58) * 1.92));
+    /* Gentler gamma so slightly lighter island interiors don’t sink below the rim (solid plateaus). */
+    let h = Math.max(0.22, Math.min(1, Math.pow(t, 0.42) * 1.75));
     return boostLandHeight01(h);
   }
   /** One-step dilate: shallow water cells touching land inherit a bit of height (fills noisy PNG gaps). */
@@ -342,6 +343,34 @@
         if (peak > WATER_THR + 0.04) {
           const merged = peak * 0.9;
           if (merged > copy[i]) heights[i] = Math.min(1, Math.max(copy[i], merged));
+        }
+      }
+    }
+  }
+  /**
+   * Pull land up toward local neighborhood max to remove bowl-shaped “hollow” pits from PNG curves / feathering.
+   */
+  function plateauLandDepressions(circular) {
+    const seg = GRID_N - 1;
+    for (let pass = 0; pass < 3; pass++) {
+      const copy = new Float32Array(heights);
+      for (let gz = 1; gz < GRID_N - 1; gz++) {
+        for (let gx = 1; gx < GRID_N - 1; gx++) {
+          const nx = (gx / seg) * 2 - 1;
+          const nz = (gz / seg) * 2 - 1;
+          if (circular && Math.hypot(nx, nz) > 1.0005) continue;
+          const i = gz * GRID_N + gx;
+          const hi = copy[i];
+          if (hi <= WATER_THR + 0.02) continue;
+          let mx = hi;
+          for (let dz = -1; dz <= 1; dz++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const h = copy[(gz + dz) * GRID_N + gx + dx];
+              if (h > WATER_THR) mx = Math.max(mx, h);
+            }
+          }
+          const lift = mx * 0.992;
+          if (lift > hi + 0.004) heights[i] = Math.min(1, lift);
         }
       }
     }
@@ -1203,8 +1232,9 @@
         const r = Math.hypot(nx, nz);
         if (circular) {
           if (r > 1.0001) h = DEEP_WATER_H;
-          else if (r > 0.88) {
-            const edge = 1 - smoothstep(0.88, 1.02, r);
+          /* Only blend a thin outer annulus; old 0.88–1 band crushed the whole rim (hollow tops / edges). */
+          else if (r > 0.982) {
+            const edge = 1 - smoothstep(0.982, 1.02, r);
             if (h > WATER_THR) h = DEEP_WATER_H + (h - DEEP_WATER_H) * edge;
             else h = DEEP_WATER_H;
           }
@@ -1213,6 +1243,7 @@
       }
     }
     if (resolvedMode === 'mask') dilateLandIntoShallowWater(circular);
+    plateauLandDepressions(circular);
     buildTerrainMesh();
     syncEntityMeshes();
     frameEntireMap();
