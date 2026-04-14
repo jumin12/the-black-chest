@@ -78,6 +78,10 @@
       <p class="hint" style="margin-top:6px;">Changing this rescales town docks and placed entities so they stay on the same relative chart. Saved JSON includes this value.</p>
       <label class="row">Seed (32-bit)</label>
       <input type="text" id="inp-seed" inputmode="numeric" value="42" />
+      <div class="actions" style="margin-top:6px;">
+        <button type="button" id="btn-gen-procedural" class="gold">Generate procedural map from seed</button>
+      </div>
+      <p class="hint" style="margin-top:6px;">Fills the heightmap with the same archipelago logic as the voyage (chunk islands). Load JSON with only <code>seed</code> / <code>worldSeed</code> (optional <code>wind</code>, <code>towns</code>, <code>entities</code>, <code>worldEdgeClamp</code>) to import a world without <code>heightsB64</code>.</p>
       <label class="row">Wind angle (turns)</label>
       <input type="range" id="wind-a" min="0" max="1" step="0.002" value="0.125" />
       <label class="row">Wind speed</label>
@@ -221,6 +225,136 @@
 
   const heights = new Float32Array(GRID_N * GRID_N);
   for (let i = 0; i < heights.length; i++) heights[i] = 0;
+
+  /** Procedural archipelago (matches index.html island sampling for the same seed). */
+  const ISLAND_CHANCE_PROC = 0.25;
+  class SimplexNoiseEd {
+    constructor(seed = 0) {
+      this.p = new Uint8Array(512);
+      const p = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) p[i] = i;
+      let s = seed >>> 0;
+      for (let i = 255; i > 0; i--) {
+        s = (s * 16807 + 0) % 2147483647;
+        const j = s % (i + 1);
+        const a = p[i]; p[i] = p[j]; p[j] = a;
+      }
+      for (let i = 0; i < 512; i++) this.p[i] = p[i & 255];
+    }
+    noise2D(x, y) {
+      const F2 = 0.5 * (Math.sqrt(3) - 1), G2 = (3 - Math.sqrt(3)) / 6;
+      const s = (x + y) * F2;
+      const i = Math.floor(x + s), j = Math.floor(y + s);
+      const t = (i + j) * G2;
+      const x0 = x - (i - t), y0 = y - (j - t);
+      const i1 = x0 > y0 ? 1 : 0, j1 = x0 > y0 ? 0 : 1;
+      const x1 = x0 - i1 + G2, y1 = y0 - j1 + G2;
+      const x2 = x0 - 1 + 2 * G2, y2 = y0 - 1 + 2 * G2;
+      const ii = i & 255, jj = j & 255;
+      const grad = (hash, gx, gy) => {
+        const h = hash & 7, u = h < 4 ? gx : gy, v = h < 4 ? gy : gx;
+        return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+      };
+      let n0 = 0, n1 = 0, n2 = 0;
+      let t0 = 0.5 - x0 * x0 - y0 * y0;
+      if (t0 >= 0) { t0 *= t0; n0 = t0 * t0 * grad(this.p[ii + this.p[jj]], x0, y0); }
+      let t1 = 0.5 - x1 * x1 - y1 * y1;
+      if (t1 >= 0) { t1 *= t1; n1 = t1 * t1 * grad(this.p[ii + i1 + this.p[jj + j1]], x1, y1); }
+      let t2 = 0.5 - x2 * x2 - y2 * y2;
+      if (t2 >= 0) { t2 *= t2; n2 = t2 * t2 * grad(this.p[ii + 1 + this.p[jj + 1]], x2, y2); }
+      return 70 * (n0 + n1 + n2);
+    }
+    fbm(x, y, octaves = 4, lacunarity = 2, gain = 0.5) {
+      let sum = 0, amp = 1, freq = 1, max = 0;
+      for (let i = 0; i < octaves; i++) {
+        sum += this.noise2D(x * freq, y * freq) * amp;
+        max += amp; amp *= gain; freq *= lacunarity;
+      }
+      return sum / max;
+    }
+  }
+  let proceduralNoiseInst = null;
+  let chunkIslandNoiseCacheEd = null;
+  function hashChunkEd(cx, cz, worldSeed) {
+    const ws = Number(worldSeed) >>> 0;
+    let h = ws | 0;
+    h = ((h << 5) - h + cx * 374761393) | 0;
+    h = ((h << 5) - h + cz * 668265263) | 0;
+    h = ((h ^ (h >> 13)) * 1274126177) | 0;
+    return (h >>> 0) / 4294967296;
+  }
+  function isChunkInWorldEd(cx, cz) {
+    return cx >= -WORLD_CHUNK_HALF && cx <= WORLD_CHUNK_HALF && cz >= -WORLD_CHUNK_HALF && cz <= WORLD_CHUNK_HALF;
+  }
+  function resetProceduralNoise(seed) {
+    proceduralNoiseInst = new SimplexNoiseEd(Number(seed) >>> 0);
+    chunkIslandNoiseCacheEd = Object.create(null);
+  }
+  function getCachedIslandNoiseEd(cx, cz) {
+    const key = cx + ',' + cz;
+    if (!chunkIslandNoiseCacheEd[key]) chunkIslandNoiseCacheEd[key] = new SimplexNoiseEd(cx * 777 + cz * 333);
+    return chunkIslandNoiseCacheEd[key];
+  }
+  function getProceduralIslandMetaEd(cx, cz, worldSeed) {
+    if (!isChunkInWorldEd(cx, cz)) return null;
+    const h = hashChunkEd(cx, cz, worldSeed);
+    if (h > ISLAND_CHANCE_PROC) return null;
+    const worldX = cx * CHUNK_SIZE, worldZ = cz * CHUNK_SIZE;
+    const sizeFactor = (hashChunkEd(cx + 11, cz + 29, worldSeed) * 0.55 + hashChunkEd(cx - 17, cz + 41, worldSeed) * 0.45);
+    const islandRadius = 15 + sizeFactor * 100 + h * 30;
+    const islandHeight = 3 + sizeFactor * 18 + h * 8;
+    return { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
+  }
+  function sampleIslandLandHeightEd(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise) {
+    const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+    const n1 = proceduralNoiseInst.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
+    const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
+    const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
+    const combined = n1 * 0.6 + n2 + ridges;
+    const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.12 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.04;
+    const warpedDist = dist + edgeWarp;
+    const falloff = Math.max(0, 1 - warpedDist * warpedDist);
+    let ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
+    const isLand = ht > 0.15 && warpedDist < 0.93;
+    if (!isLand) {
+      const edgeFade = Math.max(0, 1 - warpedDist) * 2;
+      if (edgeFade > 0.1 && ht > 0) return ht * edgeFade * 0.3;
+      return -1;
+    }
+    return Math.max(0.4, ht);
+  }
+  /** Requires resetProceduralNoise(worldSeed) before a batch of calls. */
+  function proceduralHeight01AtWorld(wx, wz, worldSeed) {
+    const cxi = Math.floor(wx / CHUNK_SIZE), czi = Math.floor(wz / CHUNK_SIZE);
+    let best = -999;
+    for (let dc = -1; dc <= 1; dc++) {
+      for (let dr = -1; dr <= 1; dr++) {
+        const meta = getProceduralIslandMetaEd(cxi + dc, czi + dr, worldSeed);
+        if (!meta) continue;
+        const px = wx - meta.worldX, pz = wz - meta.worldZ;
+        if (px * px + pz * pz > meta.radius * meta.radius * 1.45 * 1.45) continue;
+        const islandNoise = getCachedIslandNoiseEd(meta.cx, meta.cz);
+        const ht = sampleIslandLandHeightEd(px, pz, meta.worldX, meta.worldZ, meta.radius, meta.maxH, islandNoise);
+        if (ht > best) best = ht;
+      }
+    }
+    if (best < 0 || !Number.isFinite(best)) return DEEP_WATER_H;
+    const h01 = Math.min(1, best / 24);
+    return Math.max(WATER_THR + 0.02, h01);
+  }
+  function fillHeightsFromProceduralSeed(worldSeed) {
+    const seed = Number(worldSeed) >>> 0;
+    resetProceduralNoise(seed);
+    const lim = worldEdgeClamp;
+    const seg = GRID_N - 1;
+    for (let gz = 0; gz < GRID_N; gz++) {
+      for (let gx = 0; gx < GRID_N; gx++) {
+        const wx = (gx / seg) * 2 * lim - lim;
+        const wz = (gz / seg) * 2 * lim - lim;
+        heights[gz * GRID_N + gx] = proceduralHeight01AtWorld(wx, wz, seed);
+      }
+    }
+  }
 
   function worldToGrid(wx, wz) {
     const lim = worldEdgeClamp;
@@ -582,21 +716,126 @@
     return h <= WATER_THR ? SEA_LEVEL - 1.2 : SEA_LEVEL + h * MAX_H;
   }
 
+  /** Cutter + default player parts — mirrors index.html G.player starting ship. */
+  function buildEditorPlayerCutterMesh() {
+    const spec = { hullLen: 5, hullW: 1.6, hullH: 1.0, masts: 1, cannonSlots: 1, bowStyle: 'pointed' };
+    const flagColor = '#1a1a1a';
+    const sc = 0xf5f0e0;
+    const g = new THREE.Group();
+    const hc = 0x6b3a1f;
+    const hw = spec.hullW / 2, hl = spec.hullLen / 2;
+    const shape = new THREE.Shape();
+    shape.moveTo(-hw, -hl); shape.lineTo(-hw * 1.1, -hl * 0.3); shape.lineTo(-hw, hl * 0.5);
+    shape.lineTo(-hw * 0.6, hl * 0.9); shape.lineTo(0, hl); shape.lineTo(hw * 0.6, hl * 0.9);
+    shape.lineTo(hw, hl * 0.5); shape.lineTo(hw * 1.1, -hl * 0.3); shape.lineTo(hw, -hl);
+    shape.lineTo(0, -hl * 1.05); shape.closePath();
+    const hull = new THREE.Mesh(
+      new THREE.ExtrudeGeometry(shape, { depth: spec.hullH, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.1, bevelSegments: 2 }),
+      new THREE.MeshPhongMaterial({ color: hc, shininess: 20 })
+    );
+    hull.geometry.rotateX(-Math.PI / 2); hull.castShadow = true; hull.receiveShadow = true;
+    hull.position.y = -spec.hullH * 0.3; g.add(hull);
+    const dg = new THREE.PlaneGeometry(spec.hullW * 0.85, spec.hullLen * 0.9); dg.rotateX(-Math.PI / 2);
+    const deck = new THREE.Mesh(dg, new THREE.MeshLambertMaterial({ color: 0xa0825a }));
+    deck.position.y = spec.hullH * 0.65; deck.receiveShadow = true; g.add(deck);
+    const rm = new THREE.MeshLambertMaterial({ color: 0x5a3a1a });
+    const rg = new THREE.BoxGeometry(0.08, 0.4, spec.hullLen * 0.8);
+    const rl = new THREE.Mesh(rg, rm); rl.position.set(-spec.hullW * 0.42, spec.hullH * 0.85, 0); g.add(rl);
+    const rr = new THREE.Mesh(rg.clone(), rm); rr.position.set(spec.hullW * 0.42, spec.hullH * 0.85, 0); g.add(rr);
+    const qdH = spec.hullH * 0.55, qdLen = spec.hullLen * 0.25;
+    const qdMat = new THREE.MeshPhongMaterial({ color: 0x5a3010, shininess: 12 });
+    const qDeck = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.88, qdH, qdLen), qdMat);
+    qDeck.position.set(0, spec.hullH * 0.65 + qdH / 2, -spec.hullLen * 0.38); qDeck.castShadow = true; g.add(qDeck);
+    const qdFloor = new THREE.Mesh(new THREE.PlaneGeometry(spec.hullW * 0.8, qdLen * 0.9), new THREE.MeshLambertMaterial({ color: 0x8a6a40 }));
+    qdFloor.rotation.x = -Math.PI / 2; qdFloor.position.set(0, spec.hullH * 0.65 + qdH + 0.02, -spec.hullLen * 0.38); g.add(qdFloor);
+    for (let si = 0; si < 3; si++) {
+      const step = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.4, 0.08, 0.2), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+      step.position.set(0, spec.hullH * 0.65 + si * (qdH / 3), -spec.hullLen * 0.24 - si * 0.15); g.add(step);
+    }
+    const wheelPost = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.8, 6), rm);
+    wheelPost.position.set(0, spec.hullH * 0.65 + qdH + 0.4, -spec.hullLen * 0.42); g.add(wheelPost);
+    const sternWall = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.88, spec.hullH * 0.5 + qdH, spec.hullLen * 0.06),
+      new THREE.MeshPhongMaterial({ color: 0x4a2810, shininess: 10 }));
+    sternWall.position.set(0, spec.hullH * 0.4 + qdH * 0.3, -spec.hullLen * 0.49); sternWall.castShadow = true; g.add(sternWall);
+    for (let m = 0; m < spec.masts; m++) {
+      const mH = spec.hullLen * 0.7, mZ = (m - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
+      const mastRig = new THREE.Group();
+      mastRig.position.set(0, spec.hullH * 0.6, mZ);
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.11, mH, 5), rm);
+      mast.position.set(0, mH / 2, 0); mast.castShadow = true;
+      mastRig.add(mast);
+      const sW = spec.hullW * 1.2, sH = mH * 0.55;
+      const sailPivot = new THREE.Group();
+      sailPivot.position.set(0, mH, 0);
+      const yg = new THREE.CylinderGeometry(0.04, 0.04, sW + 0.4, 4); yg.rotateZ(Math.PI / 2);
+      sailPivot.add(new THREE.Mesh(yg, rm));
+      const sg = new THREE.PlaneGeometry(sW, sH, 6, 6);
+      const sail = new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide }));
+      sail.position.set(0, -sH / 2, 0.08); sail.userData.isSail = true; sail.castShadow = true;
+      sailPivot.add(sail);
+      mastRig.add(sailPivot);
+      g.add(mastRig);
+    }
+    const fmH = spec.hullLen * 0.45;
+    const foreRig = new THREE.Group();
+    foreRig.position.set(0, spec.hullH * 0.5, spec.hullLen * 0.35);
+    const foremast = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, fmH, 4), rm);
+    foremast.position.set(0, fmH / 2, 0); foremast.castShadow = true;
+    foreRig.add(foremast);
+    const jibW = spec.hullW * 0.5, jibH = fmH * 0.5;
+    const jibGeo = new THREE.PlaneGeometry(jibW, jibH, 3, 3);
+    const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
+    jib.position.set(0, -jibH / 2, 0.08); jib.rotation.y = 0.22; jib.userData.isSail = true; jib.castShadow = true;
+    const jibPivot = new THREE.Group(); jibPivot.position.set(0, fmH, 0); jibPivot.add(jib); foreRig.add(jibPivot);
+    g.add(foreRig);
+    const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, spec.hullLen * 0.35, 4), rm);
+    bowsprit.position.set(0, spec.hullH * 0.35, spec.hullLen * 0.55); bowsprit.rotation.x = 0.45; g.add(bowsprit);
+    const cc = spec.cannonSlots || 1;
+    const visualCount = cc === 1 ? 2 : cc;
+    const cg = new THREE.CylinderGeometry(0.088, 0.132, 1.012, 6); cg.rotateZ(Math.PI / 2);
+    const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
+    for (let c = 0; c < visualCount; c++) {
+      const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
+      const cn = new THREE.Mesh(c === 0 ? cg : cg.clone(), cm);
+      cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * 1.8);
+      cn.castShadow = true; g.add(cn);
+    }
+    const poleMat = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
+    const mH = spec.hullLen * 0.7, mastIdx = Math.max(0, spec.masts - 1);
+    const mZ = (mastIdx - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
+    const mastBaseY = spec.hullH * 0.6;
+    const fc = document.createElement('canvas'); fc.width = 64; fc.height = 48;
+    const ctx = fc.getContext('2d');
+    ctx.fillStyle = flagColor; ctx.fillRect(0, 0, 64, 48);
+    ctx.fillStyle = '#1a1008'; ctx.font = 'bold 28px Georgia, serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('\u2620', 32, 26);
+    const ftex = new THREE.CanvasTexture(fc);
+    const flagRig = new THREE.Group();
+    const poleH = Math.max(0.48, spec.hullLen * 0.1);
+    flagRig.position.set(0, mastBaseY + mH, mZ);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.054, poleH, 6), poleMat);
+    pole.position.y = poleH * 0.5; flagRig.add(pole);
+    const flagHinge = new THREE.Group();
+    flagHinge.position.set(0, poleH * 0.94, 0.02);
+    const fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78),
+      new THREE.MeshBasicMaterial({ map: ftex, side: THREE.DoubleSide }));
+    fmesh.position.set(0.56, 0, 0); flagHinge.add(fmesh); flagRig.add(flagHinge); g.add(flagRig);
+    const fcc = new THREE.Color(flagColor);
+    g.traverse(ch => {
+      if (ch.userData && ch.userData.isSail && ch.material && ch.material.color) {
+        const b = ch.material.color.clone();
+        b.lerp(fcc, 0.2);
+        ch.material.color.copy(b);
+      }
+    });
+    return g;
+  }
+
   const entRoot = new THREE.Group();
   scene.add(entRoot);
 
   const previewBoat = new THREE.Group();
-  const hullPm = new THREE.Mesh(
-    new THREE.BoxGeometry(5, 2.2, 14),
-    new THREE.MeshLambertMaterial({ color: 0x6a4830 })
-  );
-  hullPm.position.y = 1.1;
-  const mastPm = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.2, 0.28, 12, 8),
-    new THREE.MeshLambertMaterial({ color: 0x5a4a38 })
-  );
-  mastPm.position.y = 8;
-  previewBoat.add(hullPm, mastPm);
+  previewBoat.add(buildEditorPlayerCutterMesh());
   previewBoat.visible = false;
   scene.add(previewBoat);
 
@@ -818,25 +1057,30 @@
     refreshEntityList();
   }
 
-  canvas.addEventListener('pointerdown', e => {
+  function sculptPointerDown(e) {
     if (sailPreviewOn) return;
     if (e.button !== 0) return;
+    if (!terrainMesh) return;
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObject(terrainMesh, false);
     if (!hits.length) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
     const pt = hits[0].point;
     painting = true;
     if (['raise', 'lower', 'smooth', 'water'].includes(tool)) paintAt(pt.x, pt.z);
     else placeEntity(pt.x, pt.z);
-  });
+  }
+  canvas.addEventListener('pointerdown', sculptPointerDown, { capture: true });
   window.addEventListener('pointerup', () => { painting = false; });
   canvas.addEventListener('pointermove', e => {
     if (sailPreviewOn) return;
     if (!painting) return;
     if (!['raise', 'lower', 'smooth', 'water'].includes(tool)) return;
+    if (!terrainMesh) return;
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -995,6 +1239,7 @@
       heightsB64,
       wind: { angle: windAngle, speed: windSpeed },
       seed,
+      worldSeed: seed,
       pngImport: {
         mode: document.getElementById('png-mode').value,
         crop: { ...pngCropUv }
@@ -1022,8 +1267,71 @@
     return o;
   }
 
+  function applyProceduralWorldPayload(data, seedForced) {
+    const seed = seedForced !== undefined ? (Number(seedForced) >>> 0) : (Number(data.seed != null ? data.seed : data.worldSeed) >>> 0);
+    if (!Number.isFinite(seed)) return;
+    towns = Array.isArray(data.towns) ? data.towns.map(t => ({
+      ...t,
+      hasTown: true
+    })) : [];
+    entities = Array.isArray(data.entities) ? data.entities.slice() : [];
+    if (data.worldEdgeClamp != null) {
+      const w = Number(data.worldEdgeClamp);
+      if (w >= MAP_HALF_MIN && w <= MAP_HALF_MAX) worldEdgeClamp = w;
+    }
+    document.getElementById('inp-map-half').value = String(Math.round(worldEdgeClamp));
+    controls.maxDistance = worldEdgeClamp * 12;
+    resizeSkyDome();
+    rebuildWaterPlane();
+    document.getElementById('inp-seed').value = String(seed);
+    if (data.wind) {
+      const turns = Number(data.wind.angle) / (Math.PI * 2);
+      document.getElementById('wind-a').value = String(turns - Math.floor(turns));
+      document.getElementById('wind-sp').value = String(Number(data.wind.speed) || 5);
+    }
+    if (data.pngImport && typeof data.pngImport === 'object') {
+      const pi = data.pngImport;
+      const modeEl = document.getElementById('png-mode');
+      if (pi.mode && modeEl) modeEl.value = pi.mode;
+      if (pi.crop && typeof pi.crop === 'object') {
+        pngCropUv = {
+          u0: Number(pi.crop.u0) || 0,
+          v0: Number(pi.crop.v0) || 0,
+          u1: pi.crop.u1 != null ? Number(pi.crop.u1) : 1,
+          v1: pi.crop.v1 != null ? Number(pi.crop.v1) : 1
+        };
+      }
+    }
+    if (data.playerSpawn && typeof data.playerSpawn === 'object'
+      && data.playerSpawn.x != null && data.playerSpawn.z != null
+      && Number.isFinite(Number(data.playerSpawn.x)) && Number.isFinite(Number(data.playerSpawn.z))) {
+      playerSpawn = {
+        x: Number(data.playerSpawn.x),
+        z: Number(data.playerSpawn.z),
+        rotation: data.playerSpawn.rotation != null ? Number(data.playerSpawn.rotation) : 0
+      };
+    } else playerSpawn = null;
+    refreshSpawnHud();
+    townSeq = Math.max(1, towns.length + 1);
+    entSeq = Math.max(1, entities.length + 1);
+    fillHeightsFromProceduralSeed(seed);
+    buildTerrainMesh();
+    syncEntityMeshes();
+    refreshEntityList();
+    frameEntireMap();
+  }
+
   function applySerialized(data) {
-    if (!data || !data.heightsB64) return;
+    if (!data || typeof data !== 'object') return;
+    if (!data.heightsB64) {
+      const rs = data.seed != null ? data.seed : data.worldSeed;
+      if (rs === undefined || rs === null) return;
+      applyProceduralWorldPayload(data, Number(rs) >>> 0);
+      const nT = Array.isArray(data.towns) ? data.towns.length : 0;
+      document.getElementById('status-bar').textContent =
+        nT ? `Procedural map (seed ${Number(rs) >>> 0}) with ${nT} towns from file.` : `Procedural map from seed ${Number(rs) >>> 0} — same generator as the main game.`;
+      return;
+    }
     const raw = atob(data.heightsB64);
     const buf = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
@@ -1043,6 +1351,7 @@
     resizeSkyDome();
     rebuildWaterPlane();
     if (data.seed != null) document.getElementById('inp-seed').value = String(Number(data.seed) >>> 0);
+    else if (data.worldSeed != null) document.getElementById('inp-seed').value = String(Number(data.worldSeed) >>> 0);
     if (data.wind) {
       const turns = Number(data.wind.angle) / (Math.PI * 2);
       document.getElementById('wind-a').value = String(turns - Math.floor(turns));
@@ -1076,7 +1385,25 @@
     buildTerrainMesh();
     syncEntityMeshes();
     refreshEntityList();
+    frameEntireMap();
   }
+
+  document.getElementById('btn-gen-procedural').addEventListener('click', () => {
+    const s = Number(document.getElementById('inp-seed').value) >>> 0;
+    towns = [];
+    entities = [];
+    playerSpawn = null;
+    townSeq = 1;
+    entSeq = 1;
+    refreshSpawnHud();
+    fillHeightsFromProceduralSeed(s);
+    buildTerrainMesh();
+    syncEntityMeshes();
+    refreshEntityList();
+    frameEntireMap();
+    document.getElementById('status-bar').textContent =
+      `Procedural archipelago (seed ${s}) — paint, add towns, or export JSON.`;
+  });
 
   document.getElementById('btn-save-json').addEventListener('click', () => {
     const json = JSON.stringify(serializeMap(), null, 2);
