@@ -1206,6 +1206,57 @@ function applyLocalNpcKillLootFromNet(msg) {
   reconcileSlotsWithInventory();
 }
 
+/**
+ * When an NPC’s hull hits zero (cannon, ram on host/solo, or ram report applied on host).
+ * Awards credit via `npc_kill_credit` when hosting multiplayer; otherwise local gold / story.
+ */
+function runNpcSinkOutcome(npc, killerPlayerId) {
+  if (!npc || npc.sinking) return;
+  const kid = killerPlayerId != null ? killerPlayerId : G.myId;
+  const storySink = npc.isStoryBounty && npc.storyStep === G.storyQuest.step && G.storyQuest.phase === 'active';
+  const goldLoot = storySink ? 0 : 30;
+  if (ws?.readyState === 1 && isMultiplayerHost()) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'npc_kill_credit',
+        killerId: kid != null ? kid : G.myId,
+        sinksAi: 1,
+        gold: goldLoot,
+        storyBounty: !!storySink,
+        huntNpcName: npc.name || '',
+        victimName: npc.name || 'ship'
+      }));
+    } catch (e) {}
+  } else {
+    if (storySink) {
+      onStoryBountySunkByPlayer(npc);
+      bumpNotoriety({ sinksAi: 1 });
+    } else {
+      notify(`Sinking ${npc.name}! +30 gold`);
+      const gi = G.player.inventory.find(x => x.id === 'gold');
+      if (gi) gi.count += 30;
+      bumpNotoriety({ sinksAi: 1, gold: 30 });
+    }
+    checkHuntQuestOnNpcSink(npc);
+  }
+  npc.sinking = true;
+  npc.sinkTimer = 0;
+  npc.speed = 0;
+  const swN = 2 + Math.floor(Math.random() * 3);
+  broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(npc.x, npc.z, swN, null, false));
+  const lootTypes = goldLoot > 0
+    ? ['wood', 'iron', 'gunpowder', 'food', 'cannonballs']
+    : ['wood', 'iron', 'gold', 'gunpowder', 'food', 'cannonballs'];
+  for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
+    const t = lootTypes[Math.floor(Math.random() * lootTypes.length)];
+    const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
+    const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
+    if (ws?.readyState === 1) spawnWorldLootAt(lx, lz, t, c, 0.5);
+    else addFloatingLootMesh(lx, lz, t, c);
+  }
+  reconcileSlotsWithInventory();
+}
+
 function updateAmmoTypeBarLabels() {
   const bar = document.getElementById('ammo-type-bar');
   if (!bar) return;
@@ -4785,15 +4836,25 @@ function pushPlayerOutOfShipOverlaps() {
           const nv = npcShipVelocityXZ(npc);
           const stN = computeRamStrike(npc, pPos, npc.type, G.player.shipType, npc.rotation, nv.vx, nv.vz, pv.vx, pv.vz);
           const stP = computeRamStrike(pPos, npc, G.player.shipType, npc.type, G.player.rotation, pv.vx, pv.vz, nv.vx, nv.vz);
+          const rgN = stN.dmg > 0 ? ramRiggingLossFromBowDot(stN.bowDot, stN.closing) : 0;
           if (applyNpcRam && stN.dmg > 0) {
             npc.health -= stN.dmg;
-            const rg = ramRiggingLossFromBowDot(stN.bowDot, stN.closing);
-            if (rg > 0) {
+            if (rgN > 0) {
               const rh = npc.riggingHealth != null ? npc.riggingHealth : getNpcRiggingHealth(npc);
-              npc.riggingHealth = Math.max(0, rh - rg);
+              npc.riggingHealth = Math.max(0, rh - rgN);
               if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
             }
             showCombatPopupWorld(npc.x, npc.z, `Ram · −${Math.round(stN.dmg)} hull`, { life: 1.35 });
+            if (npc.health <= 0 && !npc.sinking) runNpcSinkOutcome(npc, G.myId);
+          } else if (!applyNpcRam && stN.dmg > 0 && ws?.readyState === 1) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'npc_ram_report',
+                npcId: npc.syncId,
+                hull: Math.round(stN.dmg),
+                rigging: rgN > 0 ? Math.round(rgN) : 0
+              }));
+            } catch (e) {}
           }
           if (stP.dmg > 0) {
             G.player.health = Math.max(0, G.player.health - stP.dmg);
@@ -6028,6 +6089,56 @@ function rememberCaptainToken(displayName, token) {
     localStorage.setItem(CAPTAIN_ACCOUNTS_STORAGE_KEY, JSON.stringify(o));
   } catch (e) {}
 }
+/** Remove one captain’s token from local storage (e.g. abandoned voyage / new career). */
+function forgetCaptainTokenForDisplayName(displayName) {
+  const k = captainNameStorageKey(displayName);
+  if (!k) return;
+  try {
+    const raw = localStorage.getItem(CAPTAIN_ACCOUNTS_STORAGE_KEY);
+    if (!raw) return;
+    const o = JSON.parse(raw);
+    if (o && typeof o === 'object') delete o[k];
+    localStorage.setItem(CAPTAIN_ACCOUNTS_STORAGE_KEY, JSON.stringify(o));
+  } catch (e) {}
+}
+const PENDING_CAPTAIN_CAREER_DELETE_KEY = 'pirates_pending_captain_career_delete_v1';
+function queueCaptainCareerDeleteOnServer(captainKey, captainToken) {
+  if (!captainKey || !captainToken) return;
+  try {
+    localStorage.setItem(PENDING_CAPTAIN_CAREER_DELETE_KEY, JSON.stringify({
+      captainKey: String(captainKey),
+      captainToken: String(captainToken)
+    }));
+  } catch (e) {}
+}
+function flushPendingCaptainCareerDelete() {
+  if (!ws || ws.readyState !== 1) return;
+  let raw;
+  try {
+    raw = localStorage.getItem(PENDING_CAPTAIN_CAREER_DELETE_KEY);
+  } catch (e) {
+    return;
+  }
+  if (!raw) return;
+  let o;
+  try {
+    o = JSON.parse(raw);
+  } catch (e) {
+    try { localStorage.removeItem(PENDING_CAPTAIN_CAREER_DELETE_KEY); } catch (e2) {}
+    return;
+  }
+  if (!o || !o.captainKey || !o.captainToken) {
+    try { localStorage.removeItem(PENDING_CAPTAIN_CAREER_DELETE_KEY); } catch (e) {}
+    return;
+  }
+  try {
+    ws.send(JSON.stringify({
+      type: 'delete_captain_career',
+      captainKey: String(o.captainKey),
+      captainToken: String(o.captainToken)
+    }));
+  } catch (e) {}
+}
 function readCaptainAccountsMap() {
   try {
     const raw = localStorage.getItem(CAPTAIN_ACCOUNTS_STORAGE_KEY);
@@ -6239,6 +6350,7 @@ function connectToServer() {
   ws.onopen = () => {
     wsUserBanned = false;
     notify('Connected to server');
+    flushPendingCaptainCareerDelete();
     const capName = G.player.crew[0]?.name || 'Pirate';
     const captainToken = getCaptainTokenForName(capName);
     ws.send(JSON.stringify({
@@ -6398,6 +6510,33 @@ function connectToServer() {
       }
       case 'npc_kill_award':
         applyLocalNpcKillLootFromNet(msg);
+        break;
+      case 'npc_ram_report': {
+        if (!isMultiplayerHost()) break;
+        const fromId = msg.fromId != null ? Number(msg.fromId) : null;
+        if (fromId != null && Number.isFinite(fromId) && fromId === G.myId) break;
+        const nid = msg.npcId;
+        if (nid == null) break;
+        const npc = G.npcs.find(n => n.syncId === nid || String(n.syncId) === String(nid));
+        if (!npc || npc.sinking) break;
+        const hull = Math.max(0, Math.floor(Number(msg.hull) || 0));
+        const rig = Math.max(0, Math.floor(Number(msg.rigging) || 0));
+        if (hull <= 0 && rig <= 0) break;
+        if (hull) npc.health -= hull;
+        if (rig) {
+          const rh = npc.riggingHealth != null ? npc.riggingHealth : getNpcRiggingHealth(npc);
+          npc.riggingHealth = Math.max(0, rh - rig);
+          if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
+        }
+        if (hull > 0) showCombatPopupWorld(npc.x, npc.z, `Ram · −${hull} hull`, { life: 1.35 });
+        if (npc.health <= 0 && !npc.sinking) {
+          const rid = fromId != null && Number.isFinite(fromId) ? fromId : G.myId;
+          runNpcSinkOutcome(npc, rid);
+        }
+        break;
+      }
+      case 'captain_career_deleted':
+        try { localStorage.removeItem(PENDING_CAPTAIN_CAREER_DELETE_KEY); } catch (e) {}
         break;
       case 'leaderboard': {
         let entries = Array.isArray(msg.entries) ? msg.entries : [];
@@ -11162,47 +11301,7 @@ function update(dt) {
             if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
           }
           if (npc.health <= 0) {
-            const storySink = npc.isStoryBounty && npc.storyStep === G.storyQuest.step && G.storyQuest.phase === 'active';
-            const goldLoot = storySink ? 0 : 30;
-            const killerId = getCannonballKillerPlayerId(b);
-            if (ws?.readyState === 1 && isMultiplayerHost()) {
-              try {
-                ws.send(JSON.stringify({
-                  type: 'npc_kill_credit',
-                  killerId: killerId != null ? killerId : G.myId,
-                  sinksAi: 1,
-                  gold: goldLoot,
-                  storyBounty: !!storySink,
-                  huntNpcName: npc.name || '',
-                  victimName: npc.name || 'ship'
-                }));
-              } catch (e) {}
-            } else {
-              if (storySink) {
-                onStoryBountySunkByPlayer(npc);
-                bumpNotoriety({ sinksAi: 1 });
-              } else {
-                notify(`Sinking ${npc.name}! +30 gold`);
-                const gi = G.player.inventory.find(x => x.id === 'gold');
-                if (gi) gi.count += 30;
-                bumpNotoriety({ sinksAi: 1, gold: 30 });
-              }
-              checkHuntQuestOnNpcSink(npc);
-            }
-            npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
-            const swN = 2 + Math.floor(Math.random() * 3);
-            broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(npc.x, npc.z, swN, null, false));
-            const lootTypes = goldLoot > 0
-              ? ['wood', 'iron', 'gunpowder', 'food', 'cannonballs']
-              : ['wood', 'iron', 'gold', 'gunpowder', 'food', 'cannonballs'];
-            for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
-              const t = lootTypes[Math.floor(Math.random() * lootTypes.length)];
-              const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
-              const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
-              if (ws?.readyState === 1) spawnWorldLootAt(lx, lz, t, c, 0.5);
-              else addFloatingLootMesh(lx, lz, t, c);
-            }
-            reconcileSlotsWithInventory();
+            runNpcSinkOutcome(npc, getCannonballKillerPlayerId(b));
           }
           b.life = 0;
         }
@@ -12826,6 +12925,13 @@ function executeStartNewVoyageAfterConfirm() {
   wsUserBanned = false;
   const capNameEl = document.getElementById('cap-name');
   if (capNameEl) delete capNameEl.dataset.seededUnique;
+  const oldCapName = (G.player.crew && G.player.crew[0] && G.player.crew[0].name)
+    ? String(G.player.crew[0].name).trim() : '';
+  const oldCk = captainNameStorageKey(oldCapName);
+  const oldTok = oldCk ? getCaptainTokenForName(oldCapName) : null;
+  if (oldCk && oldTok) queueCaptainCareerDeleteOnServer(oldCk, oldTok);
+  if (oldCapName) forgetCaptainTokenForDisplayName(oldCapName);
+  if (ws && ws.readyState === 1) flushPendingCaptainCareerDelete();
   retireCurrentCaptainIntoAllTime();
   localStorage.removeItem(SAVE_KEY);
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
