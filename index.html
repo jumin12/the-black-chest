@@ -731,6 +731,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
         <div class="port-tab" data-ptab="recruit" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Recruit</div>
         <div class="port-tab" data-ptab="quests" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Quests</div>
         <div class="port-tab" data-ptab="upgrades" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Upgrades</div>
+        <div class="port-tab" data-ptab="ships" style="flex:1;text-align:center;padding:8px;cursor:pointer;font-size:11px;color:#8a7a60;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;">Ships</div>
       </div>
       <div id="port-content" style="flex:1;overflow-y:auto;padding:10px 0;"></div>
     </div>
@@ -821,6 +822,13 @@ function clampPlayerIntoWorldBounds() {
   const lim = WORLD_EDGE_CLAMP;
   G.player.x = Math.max(-lim, Math.min(lim, G.player.x));
   G.player.z = Math.max(-lim, Math.min(lim, G.player.z));
+}
+/** Keep AI merchants & pirates inside the playable archipelago (world edge is empty ocean). */
+function clampNpcIntoWorldBounds(npc) {
+  if (!npc) return;
+  const lim = WORLD_EDGE_CLAMP - 24;
+  npc.x = Math.max(-lim, Math.min(lim, npc.x));
+  npc.z = Math.max(-lim, Math.min(lim, npc.z));
 }
 const RENDER_DIST = 3;
 function mainCanvasPixelRatio() {
@@ -931,7 +939,7 @@ const G = {
   nearDock: null, docked: false, quests: [],
   /** Recent finished contracts & story beats for Captains Log (newest first). */
   completedMissionLog: [],
-  storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null },
+  storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
   camera: { offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
@@ -1080,8 +1088,10 @@ function applyLocalNpcKillLootFromNet(msg) {
   saveProgressDebounced();
   if (storyBounty) {
     G.storyQuest.phase = 'report';
+    G.storyQuest.bountyX = G.storyQuest.bountyZ = G.storyQuest.bountyRot = null;
     notify('Pirate defeated! Dock at any port — Quests — to report and collect the bounty.');
     updateStoryBriefHud();
+    broadcastWorldStoryToServer();
   } else if (gold > 0) {
     notify(`Sinking ${victimName}! +${gold} gold`);
     const gi = G.player.inventory.find(x => x.id === 'gold');
@@ -1118,6 +1128,79 @@ const STORY_REWARDS = [55, 75, 100, 140, 200];
 /** NPC sync ids: pirates 0–7, story bounties ~90+, merchants from 200 (one per charted port). */
 const TRADE_NPC_SYNC_START = 200;
 
+function storyProgressRankClient(st) {
+  if (!st || typeof st !== 'object') return -1;
+  const ph = String(st.phase || 'intro');
+  const step = Math.max(0, Math.min(99, Math.floor(Number(st.step) || 0)));
+  const tier = ph === 'complete' ? 4 : ph === 'report' ? 3 : ph === 'active' ? 2 : ph === 'intro' ? 1 : 0;
+  return tier * 100 + step;
+}
+function sanitizeClientWorldStory(st) {
+  const def = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
+  if (!st || typeof st !== 'object') return { ...def };
+  const phase = ['intro', 'active', 'report', 'complete'].includes(String(st.phase)) ? String(st.phase) : 'intro';
+  const step = Math.max(0, Math.min(10, Math.floor(Number(st.step) || 0)));
+  return {
+    phase,
+    step,
+    turnInCx: st.turnInCx != null && Number.isFinite(Number(st.turnInCx)) ? Math.floor(Number(st.turnInCx)) : null,
+    turnInCz: st.turnInCz != null && Number.isFinite(Number(st.turnInCz)) ? Math.floor(Number(st.turnInCz)) : null,
+    turnInTown: st.turnInTown != null ? String(st.turnInTown).slice(0, 48) : null,
+    bountyX: st.bountyX != null && Number.isFinite(Number(st.bountyX)) ? Number(st.bountyX) : null,
+    bountyZ: st.bountyZ != null && Number.isFinite(Number(st.bountyZ)) ? Number(st.bountyZ) : null,
+    bountyRot: st.bountyRot != null && Number.isFinite(Number(st.bountyRot)) ? Number(st.bountyRot) : null
+  };
+}
+function broadcastWorldStoryToServer() {
+  if (!ws || ws.readyState !== 1) return;
+  try {
+    ws.send(JSON.stringify({ type: 'world_story_push', story: sanitizeClientWorldStory(G.storyQuest) }));
+  } catch (e) {}
+}
+function broadcastWorldQuestsToServer() {
+  if (!ws || ws.readyState !== 1) return;
+  try {
+    ws.send(JSON.stringify({ type: 'world_quests_push', quests: G.quests || [] }));
+  } catch (e) {}
+}
+function syncWorldProgressToServerIfNeeded() {
+  const sq = G.storyQuest;
+  if (sq && (sq.phase !== 'intro' || (sq.step | 0) > 0 || sq.bountyX != null || sq.turnInCx != null)) {
+    broadcastWorldStoryToServer();
+  }
+  if (G.quests && G.quests.length) broadcastWorldQuestsToServer();
+}
+function applyIncomingWorldStory(remoteRaw) {
+  const remote = sanitizeClientWorldStory(remoteRaw);
+  const local = sanitizeClientWorldStory(G.storyQuest);
+  const rr = storyProgressRankClient(remote);
+  const lr = storyProgressRankClient(local);
+  if (lr > rr) {
+    broadcastWorldStoryToServer();
+    return;
+  }
+  if (rr > lr) {
+    G.storyQuest = { ...remote };
+  } else {
+    if (remote.bountyX != null && remote.bountyZ != null && (G.storyQuest.bountyX == null || G.storyQuest.bountyZ == null)) {
+      G.storyQuest.bountyX = remote.bountyX;
+      G.storyQuest.bountyZ = remote.bountyZ;
+      G.storyQuest.bountyRot = remote.bountyRot;
+    }
+  }
+  saveProgressDebounced();
+  if (G.storyQuest.phase === 'active' && isMultiplayerHost()) spawnStoryBountyNpc();
+  updateStoryBriefHud();
+  updateMissionsPanel();
+}
+function applyIncomingWorldQuests(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return;
+  G.quests = arr.map(q => ({ ...q }));
+  saveProgressDebounced();
+  updateMissionsPanel();
+  updateStoryBriefHud();
+}
+
 function nearestPortIslandHint() {
   const best = findNearestPortDock(G.player.x, G.player.z);
   if (!best) return 'Sail toward a charted port (gold square on an island).';
@@ -1146,6 +1229,57 @@ function sampleOpenOceanNearPlayer(minD, maxD) {
   return { x: Math.max(-lim, Math.min(lim, G.player.x + 400)), z: Math.max(-lim, Math.min(lim, G.player.z + 200)) };
 }
 
+function computeDeterministicStoryBountySpawn(sq) {
+  let h = (G.worldSeed >>> 0) + (sq.step | 0) * 978689 + 1337;
+  if (sq.turnInCx != null) h = (h + Math.imul(sq.turnInCx | 0, 1103515245)) >>> 0;
+  if (sq.turnInCz != null) h = (h + Math.imul(sq.turnInCz | 0, 1225012097)) >>> 0;
+  const rnd = () => { h = (Math.imul(h, 1664525) + 1013904223) >>> 0; return h / 4294967296; };
+  const meta = (sq.turnInCx != null && sq.turnInCz != null)
+    ? getProceduralIslandMeta(sq.turnInCx | 0, sq.turnInCz | 0) : null;
+  const ax = meta?.dockX != null ? meta.dockX : 0;
+  const az = meta?.dockZ != null ? meta.dockZ : 0;
+  const lim = WORLD_EDGE_CLAMP - 55;
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const ang = rnd() * Math.PI * 2;
+    const dist = 220 + rnd() * 520;
+    let x = ax + Math.sin(ang) * dist;
+    let z = az + Math.cos(ang) * dist;
+    x = Math.max(-lim, Math.min(lim, x));
+    z = Math.max(-lim, Math.min(lim, z));
+    if (!isSeaObstructed(x, z) && hasMinClearanceFromLand(x, z, 46)) {
+      return { x, z, rot: rnd() * Math.PI * 2 };
+    }
+  }
+  const pt = sampleOpenOceanPointInWorld(rnd);
+  return { x: pt.nx, z: pt.nz, rot: rnd() * Math.PI * 2 };
+}
+function getStoryBountySpawn(sq) {
+  const lim = WORLD_EDGE_CLAMP - 50;
+  if (Number.isFinite(sq.bountyX) && Number.isFinite(sq.bountyZ)) {
+    const bx = Math.max(-lim, Math.min(lim, sq.bountyX));
+    const bz = Math.max(-lim, Math.min(lim, sq.bountyZ));
+    if (!isSeaObstructed(bx, bz) && hasMinClearanceFromLand(bx, bz, 28)) {
+      return { x: bx, z: bz, rot: Number.isFinite(sq.bountyRot) ? sq.bountyRot : 0 };
+    }
+  }
+  const det = computeDeterministicStoryBountySpawn(sq);
+  sq.bountyX = det.x;
+  sq.bountyZ = det.z;
+  sq.bountyRot = det.rot;
+  saveProgressDebounced();
+  broadcastWorldStoryToServer();
+  return det;
+}
+function ensureStoryBountyNpcPresent() {
+  if (!isMultiplayerHost()) return;
+  const sq = G.storyQuest;
+  if (sq.phase !== 'active' || sq.step >= STORY_SHIP_ORDER.length) return;
+  const wantId = STORY_NPC_SYNC_BASE + sq.step;
+  const existing = G.npcs.find(n => n.syncId === wantId && n.isStoryBounty && !n.sinking && n.health > 0);
+  if (existing) return;
+  spawnStoryBountyNpc();
+}
+
 function spawnStoryBountyNpc() {
   if (!isMultiplayerHost()) return;
   const sq = G.storyQuest;
@@ -1153,14 +1287,14 @@ function spawnStoryBountyNpc() {
   removeStoryBountyFromWorld();
   const shipType = STORY_SHIP_ORDER[sq.step];
   const name = STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
-  const pt = sampleOpenOceanNearPlayer(240, 620);
+  const pt = getStoryBountySpawn(sq);
   let nx = pt.x, nz = pt.z;
   const sr = () => Math.random();
   const hp = shipType === 'warship' ? 125 : shipType === 'galleon' ? 105 : shipType === 'brigantine' ? 90 : 72;
   const npc = {
     syncId: STORY_NPC_SYNC_BASE + sq.step,
     x: nx, z: nz,
-    rotation: sr() * Math.PI * 2,
+    rotation: Number.isFinite(pt.rot) ? pt.rot : sr() * Math.PI * 2,
     speed: 0,
     health: hp,
     type: shipType,
@@ -1193,8 +1327,10 @@ function spawnStoryBountyNpc() {
 function onStoryBountySunkByPlayer(npc) {
   if (!npc.isStoryBounty || npc.storyStep !== G.storyQuest.step || G.storyQuest.phase !== 'active') return;
   G.storyQuest.phase = 'report';
+  G.storyQuest.bountyX = G.storyQuest.bountyZ = G.storyQuest.bountyRot = null;
   notify('Pirate defeated! Dock at any port — Quests — to report and collect the bounty.');
   updateStoryBriefHud();
+  broadcastWorldStoryToServer();
 }
 
 function tryRestoreStoryBountyAfterNpcReset() {
@@ -1212,6 +1348,42 @@ const SHIP_TYPES = {
 function shipHullRadius(shipType) {
   const s = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
   return Math.max(s.hullLen, s.hullW * 2.4) * 0.36;
+}
+
+const SHIP_PURCHASE_PRICE = { cutter: 85, sloop: 125, brigantine: 245, galleon: 395, warship: 575 };
+const SHIP_TRADEIN_HULL_BASE = { cutter: 40, sloop: 70, brigantine: 120, galleon: 200, warship: 310 };
+function computePlayerShipTradeInGold() {
+  const st = G.player.shipType;
+  const base = SHIP_TRADEIN_HULL_BASE[st] != null ? SHIP_TRADEIN_HULL_BASE[st] : 60;
+  let parts = 0;
+  const partsObj = G.player.shipParts || {};
+  for (const slot of Object.keys(partsObj)) {
+    const id = partsObj[slot];
+    const opts = SHIP_PARTS[slot];
+    if (!opts) continue;
+    const opt = opts.find(o => o.id === id);
+    if (opt && opt.cost) parts += opt.cost;
+  }
+  return Math.max(0, Math.floor(base + parts * 2));
+}
+function trimCrewAndPrisonersToShipLimits() {
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  for (;;) {
+    if (countPrisonerCrew() <= spec.maxPrisoners) break;
+    const ix = G.player.crew.findIndex(c => c.role === 'prisoner');
+    if (ix < 0) break;
+    G.player.crew.splice(ix, 1);
+  }
+  for (;;) {
+    if (countSailorCrew() <= spec.maxCrew) break;
+    let ix = -1;
+    for (let j = G.player.crew.length - 1; j >= 0; j--) {
+      const c = G.player.crew[j];
+      if (c.role !== 'captain' && c.role !== 'prisoner') { ix = j; break; }
+    }
+    if (ix < 0) break;
+    G.player.crew.splice(ix, 1);
+  }
 }
 
 const ITEM_MAX_STACK = 999;
@@ -3523,6 +3695,7 @@ function checkHuntQuestOnNpcSink(npc) {
     updateMissionsPanel();
     updateStoryBriefHud();
     saveProgress();
+    broadcastWorldQuestsToServer();
     return;
   }
 }
@@ -3544,6 +3717,7 @@ function checkExploreQuestProgress() {
     updateMissionsPanel();
     updateStoryBriefHud();
     saveProgress();
+    broadcastWorldQuestsToServer();
     return;
   }
 }
@@ -3568,6 +3742,7 @@ function checkPortQuestProgress() {
     updateMissionsPanel();
     updateStoryBriefHud();
     saveProgress();
+    broadcastWorldQuestsToServer();
   }
 }
 
@@ -4585,6 +4760,7 @@ function updateNPCs(dt) {
       npc._wakePrevZ = npc.z;
       tickShipWakeSpawner(wakeKey, npc.x, npc.z, npc.rotation, effWakeSpd, dt);
     }
+    clampNpcIntoWorldBounds(npc);
   });
   if (host) G.npcs = G.npcs.filter(n => n.health > -900);
 }
@@ -5340,6 +5516,7 @@ function connectToServer() {
       captainToken
     }));
     sendUpdate();
+    syncWorldProgressToServerIfNeeded();
   };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
@@ -5374,6 +5551,8 @@ function connectToServer() {
         }
         if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
         tryOfferLeaderboardSeedToServer();
+        if (msg.worldStory) applyIncomingWorldStory(msg.worldStory);
+        if (msg.worldQuests && Array.isArray(msg.worldQuests) && msg.worldQuests.length) applyIncomingWorldQuests(msg.worldQuests);
         break;
       case 'player_join':
         G.otherPlayers.set(msg.player.id, msg.player);
@@ -5540,6 +5719,12 @@ function connectToServer() {
         notify('The archipelago has been recharted (new world seed).');
         break;
       }
+      case 'world_story':
+        if (msg.story) applyIncomingWorldStory(msg.story);
+        break;
+      case 'world_quests':
+        if (msg.quests && Array.isArray(msg.quests)) applyIncomingWorldQuests(msg.quests);
+        break;
       case 'npc_sync': {
         if (!msg.npcs) break;
         const seen = new Set();
@@ -8202,6 +8387,45 @@ function showPortTab(tab) {
         </div>`;
       content.appendChild(d);
     });
+  } else if (tab === 'ships') {
+    const gold = G.player.inventory.find(i => i.id === 'gold');
+    const curSpec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+    const tradeIn = computePlayerShipTradeInGold();
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'color:#d4a848;font-size:12px;margin-bottom:10px;line-height:1.45;';
+    hdr.innerHTML = `Gold: <strong>${gold?.count || 0}</strong> · Current: <strong>${curSpec.name}</strong><br>
+      <span style="color:#9a9080;font-size:11px;">Trade-in value for your hull &amp; fittings: <strong style="color:#c9a24a;">${tradeIn}g</strong> (applied when you buy).</span>`;
+    content.appendChild(hdr);
+    const blurb = document.createElement('div');
+    blurb.style.cssText = 'color:#8a7a60;font-size:10px;margin:-4px 0 12px;line-height:1.4;';
+    blurb.textContent = 'New vessels sail with oak hull, canvas sails, light guns, and no figurehead — same baseline fit for every class.';
+    content.appendChild(blurb);
+    Object.keys(SHIP_TYPES).forEach(key => {
+      const spec = SHIP_TYPES[key];
+      const price = SHIP_PURCHASE_PRICE[key] != null ? SHIP_PURCHASE_PRICE[key] : 200;
+      const net = Math.max(0, price - tradeIn);
+      const spd = (spec.speed * 12).toFixed(1);
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:10px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.22);border-radius:6px;margin-bottom:8px;';
+      const isCur = key === G.player.shipType;
+      row.innerHTML = `<div style="color:#e0d6c2;font-size:14px;font-weight:bold;">${spec.name}</div>
+        <div style="color:#9a9080;font-size:11px;margin:6px 0;line-height:1.5;">
+          Speed ~<strong style="color:#c9a24a;">${spd}</strong> kn (calm baseline) · Crew <strong style="color:#c9a24a;">${spec.maxCrew}</strong>
+          · Prisoners <strong style="color:#c9a24a;">${spec.maxPrisoners}</strong> · Cannons <strong style="color:#c9a24a;">${spec.cannonSlots}</strong> slots
+          · Cargo <strong style="color:#c9a24a;">${spec.cargoSlots}</strong> slots
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <span style="color:#d4a848;font-size:11px;">${price}g · <span style="color:#a89878;">${net}g</span> after trade-in</span>
+          ${isCur ? '<span style="color:#88aa88;font-size:11px;">Your current class</span>' : `<button type="button" class="port-buy-ship-btn" data-ship="${key}" style="background:rgba(50,40,20,0.55);border:1px solid rgba(180,140,60,0.45);color:#d4a848;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Purchase</button>`}
+        </div>`;
+      content.appendChild(row);
+    });
+    content.querySelectorAll('.port-buy-ship-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = btn.getAttribute('data-ship');
+        if (t) window.portBuyShip(t);
+      });
+    });
   } else if (tab === 'upgrades') {
     const gold = G.player.inventory.find(i => i.id === 'gold');
     const hullMissing = Math.max(0, Math.ceil(100 - G.player.health));
@@ -8309,6 +8533,36 @@ window.portSell = function(id, price) {
   showPortTab('trade');
 };
 
+window.portBuyShip = function(shipType) {
+  if (!G.docked) { notify('Dock at a port shipyard first.'); return; }
+  if (!SHIP_TYPES[shipType]) { notify('Unknown hull class.'); return; }
+  if (shipType === G.player.shipType) { notify('You already sail that class.'); return; }
+  const specNew = SHIP_TYPES[shipType];
+  const price = SHIP_PURCHASE_PRICE[shipType] != null ? SHIP_PURCHASE_PRICE[shipType] : 200;
+  const tradeIn = computePlayerShipTradeInGold();
+  const gold = G.player.inventory.find(i => i.id === 'gold');
+  if (!gold) { notify('No gold in hold.'); return; }
+  if (gold.count + tradeIn < price) {
+    notify(`Need ${price - tradeIn}g in hand after your trade-in credit (${tradeIn}g for the old hull).`);
+    return;
+  }
+  const netGold = tradeIn - price;
+  gold.count += netGold;
+  bumpNotoriety({ gold: netGold });
+  G.player.shipType = shipType;
+  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
+  const mh = G.player.maxHealth != null ? G.player.maxHealth : 100;
+  G.player.health = Math.min(G.player.health, mh);
+  trimCrewAndPrisonersToShipLimits();
+  reconcileSlotsWithInventory();
+  rebuildPlayerShip();
+  notify(`Sold your previous ship for ${tradeIn}g and bought ${specNew.name} for ${price}g (rigging reset to standard fit-out).`);
+  saveProgress();
+  if (ws?.readyState === 1) sendUpdate();
+  showPortTab('ships');
+  updateShipPanel();
+};
+
 window.portRecruit = function(name, role) {
   const spec = SHIP_TYPES[G.player.shipType];
   if (countSailorCrew() >= spec.maxCrew) { notify('Sailor quarters full!'); return; }
@@ -8322,28 +8576,37 @@ window.portRecruit = function(name, role) {
   showPortTab('recruit');
 };
 
+function createWorldQuestRng() {
+  let s = (G.worldSeed >>> 0) + 48271;
+  return function () {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
 function generateQuests() {
   G.quests = [];
+  const rnd = createWorldQuestRng();
   const npcNames = ['Sea Phantom','Red Tide','Storm Chaser','Bone Rattler','Shadow Wave'];
-  const px = G.player.x, pz = G.player.z;
-  const ports = collectPortsInArea(px, pz, 32000);
-  const curCx = G.nearDock?.cx, curCz = G.nearDock?.cz;
-  const destPool = ports.filter(p => p.cx !== curCx || p.cz !== curCz);
-  const pool = destPool.length ? destPool : ports;
+  let ports = [];
+  try { ports = collectAllTradingPorts(); } catch (e) { ports = []; }
+  ports = ports.slice().sort((a, b) => a.cx - b.cx || a.cz - b.cz || String(a.townName || '').localeCompare(String(b.townName || '')));
+  const pool = ports;
+  const lim = WORLD_EDGE_CLAMP - 80;
   for (let i = 0; i < 3; i++) {
-    const t = Math.floor(Math.random() * 3);
+    const t = Math.floor(rnd() * 3);
     if (t === 0) {
-      const target = npcNames[Math.floor(Math.random() * npcNames.length)];
-      G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(Math.random() * 30), target, accepted: false });
+      const target = npcNames[Math.floor(rnd() * npcNames.length)];
+      G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
     } else if (t === 1) {
       const items = ['wood','cloth','iron','rum'];
-      const item = items[Math.floor(Math.random() * items.length)];
-      const count = 3 + Math.floor(Math.random() * 5);
-      const dest = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+      const item = items[Math.floor(rnd() * items.length)];
+      const count = 3 + Math.floor(rnd() * 5);
+      const dest = pool.length ? pool[Math.floor(rnd() * pool.length)] : null;
       const inm = getItemMeta(item);
       if (!dest) {
-        const x = Math.floor((Math.random() - 0.5) * 800), z = Math.floor((Math.random() - 0.5) * 800);
-        G.quests.push({ type: 'explore', desc: `Explore coordinates (${x}, ${z})`, reward: 20 + Math.floor(Math.random() * 20), x, z, accepted: false });
+        const x = Math.floor((rnd() * 2 - 1) * lim * 0.55);
+        const z = Math.floor((rnd() * 2 - 1) * lim * 0.55);
+        G.quests.push({ type: 'explore', desc: `Explore coordinates (${x}, ${z})`, reward: 20 + Math.floor(rnd() * 20), x, z, accepted: false });
       } else {
         G.quests.push({
           type: 'delivery',
@@ -8357,10 +8620,12 @@ function generateQuests() {
         });
       }
     } else {
-      const x = Math.floor((Math.random() - 0.5) * 800), z = Math.floor((Math.random() - 0.5) * 800);
-      G.quests.push({ type: 'explore', desc: `Explore coordinates (${x}, ${z})`, reward: 20 + Math.floor(Math.random() * 20), x, z, accepted: false });
+      const x = Math.floor((rnd() * 2 - 1) * lim * 0.55);
+      const z = Math.floor((rnd() * 2 - 1) * lim * 0.55);
+      G.quests.push({ type: 'explore', desc: `Explore coordinates (${x}, ${z})`, reward: 20 + Math.floor(rnd() * 20), x, z, accepted: false });
     }
   }
+  if (ws?.readyState === 1 && isMultiplayerHost()) broadcastWorldQuestsToServer();
 }
 
 window.acceptQuest = function(idx) {
@@ -8381,6 +8646,7 @@ window.acceptQuest = function(idx) {
   updateMissionsPanel();
   updateStoryBriefHud();
   saveProgress();
+  broadcastWorldQuestsToServer();
 };
 
 window.acceptMainStory = function() {
@@ -8393,6 +8659,7 @@ window.acceptMainStory = function() {
   G.storyQuest.turnInTown = G.nearDock.townName || 'this port';
   spawnStoryBountyNpc();
   saveProgress();
+  broadcastWorldStoryToServer();
   notify(`Your first mark is sailing nearby. Hunt them down, then return to ${G.storyQuest.turnInTown} to report.`);
   showPortTab('quests');
   updateMissionsPanel();
@@ -8418,6 +8685,7 @@ window.reportStoryBountyTurnIn = function() {
   const stTurn = STORY_SHIP_ORDER[siTurn];
   const capTurn = STORY_PIRATE_NAMES[stTurn] || stTurn;
   appendCompletedMission({ kind: 'main', title: 'Main story — bounty claimed', detail: `${capTurn} (${SHIP_TYPES[stTurn]?.name || stTurn}) · +${reward}g`, reward });
+  sq.bountyX = sq.bountyZ = sq.bountyRot = null;
   sq.step += 1;
   if (sq.step >= STORY_SHIP_ORDER.length) {
     sq.phase = 'complete';
@@ -8439,6 +8707,7 @@ window.reportStoryBountyTurnIn = function() {
   }
   reconcileSlotsWithInventory();
   saveProgress();
+  broadcastWorldStoryToServer();
   showPortTab('quests');
   updateMissionsPanel();
   updateStoryBriefHud();
@@ -9145,7 +9414,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE for smooth remote motion. */
 const NET_SYNC_HZ = 45;
-let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0, wildlifePruneAcc = 0;
+let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 
 function update(dt) {
   if (G.mode !== 'playing') return;
@@ -9242,6 +9511,11 @@ function update(dt) {
 
   updateChunks();
   updateNPCs(dt);
+  storyBountyEnsureAcc += dt;
+  if (storyBountyEnsureAcc >= 1.35) {
+    storyBountyEnsureAcc = 0;
+    ensureStoryBountyNpcPresent();
+  }
   resolvePlayerShipCollisionsAfterNpcs();
   updateTownFlagWindAnimation();
   updateSeagulls(dt);
@@ -10612,7 +10886,7 @@ function beginVoyageAfterCharacter() {
     showDuplicateSessionOverlay();
     return;
   }
-  G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null };
+  G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
   G.quests = [];
   G.completedMissionLog = [];
   G.mode = 'playing';
@@ -10874,10 +11148,13 @@ function loadProgress() {
         step: stepClamped,
         turnInCx: data.storyQuest.turnInCx != null ? data.storyQuest.turnInCx : null,
         turnInCz: data.storyQuest.turnInCz != null ? data.storyQuest.turnInCz : null,
-        turnInTown: data.storyQuest.turnInTown != null ? data.storyQuest.turnInTown : null
+        turnInTown: data.storyQuest.turnInTown != null ? data.storyQuest.turnInTown : null,
+        bountyX: data.storyQuest.bountyX != null && Number.isFinite(Number(data.storyQuest.bountyX)) ? Number(data.storyQuest.bountyX) : null,
+        bountyZ: data.storyQuest.bountyZ != null && Number.isFinite(Number(data.storyQuest.bountyZ)) ? Number(data.storyQuest.bountyZ) : null,
+        bountyRot: data.storyQuest.bountyRot != null && Number.isFinite(Number(data.storyQuest.bountyRot)) ? Number(data.storyQuest.bountyRot) : null
       };
     } else {
-      G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null };
+      G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
     }
     if (data.flagColor) G.player.flagColor = data.flagColor;
     if (data.worldSeed != null && data.worldSeed !== '') G.worldSeed = Number(data.worldSeed) >>> 0;
@@ -11081,7 +11358,7 @@ function executeStartNewVoyageAfterConfirm() {
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
-  G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null };
+  G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
   G.quests = [];
   G.completedMissionLog = [];
   document.getElementById('start-screen').style.display = 'none';
