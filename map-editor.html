@@ -132,6 +132,7 @@
   const GRID_N = 256;
   const WATER_THR = 0.12;
   const MAX_H = 18;
+  const SEA_LEVEL = 0;
   const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
   const STORAGE_KEY = 'pirates_custom_map_v1';
 
@@ -209,52 +210,110 @@
   const controls = new OrbitControls(camera, canvas);
   controls.target.set(0, 0, 0);
   controls.enableDamping = true;
-  const amb = new THREE.AmbientLight(0x8899aa, 0.55);
-  scene.add(amb);
-  const sun = new THREE.DirectionalLight(0xfff0dd, 1.05);
-  sun.position.set(400, 900, 200);
-  scene.add(sun);
+  controls.maxDistance = WORLD_EDGE_CLAMP * 12;
+  controls.maxPolarAngle = Math.PI * 0.48;
+
+  const ambientLight = new THREE.AmbientLight(0x7799bb, 0.7);
+  scene.add(ambientLight);
+  const sunLight = new THREE.DirectionalLight(0xffeedd, 1.6);
+  sunLight.position.set(200, 300, 100);
+  scene.add(sunLight);
+  scene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4));
+
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(700, 24, 24),
+    new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: { uTime: { value: 0 }, uSunPos: { value: new THREE.Vector3(200, 300, 100) } },
+      vertexShader: `varying vec3 vDir; void main(){ vDir = normalize((modelMatrix * vec4(position,1.0)).xyz); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+      fragmentShader: `
+        uniform float uTime; uniform vec3 uSunPos; varying vec3 vDir;
+        void main(){
+          float y = vDir.y*0.5+0.5;
+          vec3 sky = mix(vec3(0.55,0.75,0.92), vec3(0.18,0.38,0.68), pow(y,0.6));
+          vec3 sd = normalize(uSunPos); float sd2 = max(dot(vDir,sd),0.0);
+          sky += vec3(1.0,0.9,0.6)*pow(sd2,200.0)*2.0 + vec3(0.8,0.6,0.3)*pow(sd2,6.0)*0.25;
+          float cn = sin(vDir.x*8.0+uTime*0.02)*cos(vDir.z*6.0+uTime*0.015)*0.5+0.5;
+          cn *= sin(vDir.x*3.0-uTime*0.01)*cos(vDir.z*4.0+uTime*0.008)*0.5+0.5;
+          sky = mix(sky, vec3(0.96,0.96,0.98), smoothstep(0.3,0.7,y)*smoothstep(0.4,0.6,cn)*0.55);
+          gl_FragColor = vec4(sky,1.0);
+        }`
+    })
+  );
+  scene.add(sky);
 
   const waterUniforms = {
     uTime: { value: 0 },
-    uWind: { value: new THREE.Vector2(0.7, 0.7) },
-    uWaveScale: { value: 0.65 }
+    uSunDir: { value: new THREE.Vector3(0.4, 0.6, 0.2).normalize() },
+    uCamPos: { value: new THREE.Vector3() }
   };
+  const waterVS = `
+    uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
+    vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
+      float k=6.2831853/wl; float c=sqrt(9.8/k); float a=s/k; vec2 dn=normalize(d);
+      float f=k*(dot(dn,p.xz)-c*sp*uTime);
+      return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
+    }
+    void main(){
+      vec3 pos=position;
+      pos += gw(pos,0.05,65.0,vec2(1,.2),0.6) + gw(pos,0.03,40.0,vec2(.35,1),.45)
+         + gw(pos,0.02,22.0,vec2(-.55,.75),0.7) + gw(pos,0.015,13.0,vec2(.8,-.35),0.85)
+         + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4);
+      vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
+      float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
+      pX += gw(pX,.05,65.,vec2(1,.2),.6) + gw(pX,.03,40.,vec2(.35,1),.45) + gw(pX,.02,22.,vec2(-.55,.75),.7) + gw(pX,.015,13.,vec2(.8,-.35),.85);
+      pZ += gw(pZ,.05,65.,vec2(1,.2),.6) + gw(pZ,.03,40.,vec2(.35,1),.45) + gw(pZ,.02,22.,vec2(-.55,.75),.7) + gw(pZ,.015,13.,vec2(.8,-.35),.85);
+      vNormal = normalize(cross(pZ-pos, pX-pos));
+      gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
+    }`;
+  const waterFS = `
+    uniform float uTime; uniform vec3 uSunDir; uniform vec3 uCamPos;
+    varying vec3 vWorldPos; varying vec3 vNormal;
+    void main(){
+      vec3 N=normalize(vNormal); vec3 V=normalize(uCamPos-vWorldPos); vec3 L=normalize(uSunDir);
+      float fresnel = pow(1.0-max(dot(N,V),0.0),4.0); fresnel = mix(0.03,0.65,fresnel);
+      vec3 deepBlue = vec3(0.02,0.08,0.18);
+      vec3 midOcean = vec3(0.04,0.18,0.32);
+      vec3 shallow = vec3(0.05,0.38,0.38);
+      vec3 nearSurf = vec3(0.08,0.50,0.45);
+      float depthFactor = smoothstep(-0.3,0.3,vWorldPos.y);
+      vec3 wc = mix(deepBlue, mix(midOcean, mix(shallow, nearSurf, depthFactor), depthFactor*0.7), 0.5+fresnel*0.5);
+      float NdL = max(dot(N,L),0.0);
+      vec3 diff = wc*(0.35+0.65*NdL);
+      vec3 reflDir = reflect(-V, N);
+      float sunRefl = max(dot(reflDir, L), 0.0);
+      float sunGlint = pow(sunRefl, 800.0) * 0.6;
+      float distFromCam = length(vWorldPos.xz - uCamPos.xz);
+      float falloff = exp(-distFromCam * distFromCam * 0.00001);
+      vec3 specC = vec3(1.0,0.97,0.90) * sunGlint * falloff;
+      vec3 Rv=reflect(-V,N); float er=pow(max(Rv.y*0.5+0.5,0.0),0.4);
+      vec3 refl = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er)*fresnel;
+      float sss = pow(max(dot(V,-L+N*0.4),0.0),2.5)*0.3;
+      vec3 sub = vec3(0.0,0.45,0.35)*sss;
+      float wh = vWorldPos.y;
+      float foam = smoothstep(0.12,0.25,wh)*0.25;
+      float fx=vWorldPos.x*0.1+uTime*0.05, fz=vWorldPos.z*0.1+uTime*0.04;
+      float fn1 = sin(fx*4.1+fz*2.3)*sin(fz*3.7-fx*2.1);
+      float fn2 = sin(fx*8.3-fz*6.1+uTime*0.08)*0.4;
+      float fn3 = sin(fx*13.7+fz*11.3-uTime*0.06)*0.2;
+      float foamPattern = (fn1+fn2+fn3)*0.25+0.5;
+      foam += smoothstep(0.55,0.75,foamPattern)*smoothstep(0.05,0.2,wh)*0.2;
+      foam += smoothstep(0.7,0.9,foamPattern)*0.1;
+      vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
+      color = mix(color,vec3(0.92,0.95,0.98),foam*0.5);
+      color = pow(color,vec3(1.0/2.2));
+      gl_FragColor = vec4(color,1.0);
+    }`;
+
   const wSize = WORLD_EDGE_CLAMP * 2.4;
-  const waterGeom = new THREE.PlaneGeometry(wSize, wSize, 120, 120);
+  const waterGeom = new THREE.PlaneGeometry(wSize, wSize, 200, 200);
   waterGeom.rotateX(-Math.PI / 2);
-  const waterMat = new THREE.ShaderMaterial({
-    transparent: true,
-    uniforms: waterUniforms,
-    vertexShader: `
-      uniform float uTime;
-      uniform vec2 uWind;
-      uniform float uWaveScale;
-      varying float vHeight;
-      void main() {
-        vec3 p = position;
-        float wx = p.x * 0.004 + uWind.x * uTime * 0.08;
-        float wz = p.z * 0.004 + uWind.y * uTime * 0.08;
-        float h = sin(wx) * cos(wz) * 0.55 + sin(wx * 2.1 + wz * 0.7) * 0.22;
-        h += sin(length(p.xz) * 0.012 - uTime * 1.4) * uWaveScale * 0.35;
-        p.y += h;
-        vHeight = h;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying float vHeight;
-      void main() {
-        vec3 deep = vec3(0.04, 0.12, 0.22);
-        vec3 foam = vec3(0.55, 0.72, 0.82);
-        float f = smoothstep(0.15, 0.55, vHeight + 0.35);
-        vec3 col = mix(deep, foam, f * 0.35);
-        gl_FragColor = vec4(col, 0.86);
-      }
-    `
-  });
-  const water = new THREE.Mesh(waterGeom, waterMat);
-  water.position.y = 0;
+  const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
+    uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
+    transparent: false, depthWrite: true, side: THREE.FrontSide
+  }));
+  water.position.set(0, SEA_LEVEL - 0.5, 0);
   water.renderOrder = -1;
   scene.add(water);
 
@@ -262,16 +321,20 @@
   function buildTerrainMesh() {
     if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); terrainMesh = null; }
     const lim = WORLD_EDGE_CLAMP;
-    const geo = new THREE.PlaneGeometry(2 * lim, 2 * lim, GRID_N - 1, GRID_N - 1);
+    const seg = GRID_N - 1;
+    const geo = new THREE.PlaneGeometry(2 * lim, 2 * lim, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
     for (let i = 0; i < pos.count; i++) {
-      const lx = pos.getX(i), lz = pos.getZ(i);
-      const wx = lx + lim;
-      const wz = lz + lim;
+      const ix = i % GRID_N;
+      const iy = Math.floor(i / GRID_N);
+      const wx = (ix / seg) * 2 * lim - lim;
+      const wz = -((iy / seg) * 2 * lim - lim);
       const h = sampleHeight(wx, wz);
-      const y = h <= WATER_THR ? -2 - (WATER_THR - h) * 3 : h * MAX_H;
+      const y = h <= WATER_THR ? SEA_LEVEL - 2 - (WATER_THR - h) * 3 : SEA_LEVEL + h * MAX_H;
+      pos.setX(i, wx);
+      pos.setZ(i, wz);
       pos.setY(i, y);
       let r, g, b;
       if (h <= WATER_THR) { r = 0.05; g = 0.12; b = 0.2; }
@@ -289,34 +352,57 @@
   }
   buildTerrainMesh();
 
+  const matTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
+  const matPalm = new THREE.MeshLambertMaterial({ color: 0x4a9e3f });
+  function decoRand(rng) { return typeof rng === 'function' ? rng : Math.random; }
+  function createPalmTree(x, y, z, rng) {
+    const r = decoRand(rng);
+    const g = new THREE.Group();
+    const height = 4 + r() * 3;
+    const pts = [];
+    for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push(new THREE.Vector3(Math.sin(t * 1.5) * 0.7, t * height, Math.cos(t * 0.5) * 0.25)); }
+    const trunk = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 6, 0.13, 5, false), matTrunk);
+    trunk.castShadow = true; g.add(trunk);
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 + r() * 0.5;
+      const lg = new THREE.PlaneGeometry(0.5, 2 + r(), 1, 3);
+      const lp = lg.attributes.position;
+      for (let v = 0; v < lp.count; v++) { const vy = lp.getY(v); lp.setZ(v, lp.getZ(v) - (vy * vy) * 0.4); }
+      lp.needsUpdate = true; lg.computeVertexNormals();
+      const leaf = new THREE.Mesh(lg, matPalm);
+      leaf.position.set(Math.sin(a) * 0.3, height, Math.cos(a) * 0.3);
+      leaf.rotation.set(0, a, Math.cos(a) * 0.8); leaf.castShadow = true; g.add(leaf);
+    }
+    g.position.set(x, y, z); g.rotation.y = r() * Math.PI * 2; return g;
+  }
+  function createBush(x, y, z, s, rng) {
+    const r = decoRand(rng);
+    const g = new THREE.Group();
+    const mat = new THREE.MeshLambertMaterial({ color: [0x2d5016, 0x3a6b28, 0x25603a, 0x3d6b2a][Math.floor(r() * 4)] });
+    for (let i = 0; i < 4; i++) {
+      const b = new THREE.Mesh(new THREE.SphereGeometry(s * (0.45 + r() * 0.55), 4, 4), mat);
+      b.position.set((r() - 0.5) * s * 1.4, s * 0.35 + r() * s * 0.45, (r() - 0.5) * s * 1.4);
+      b.castShadow = true;
+      g.add(b);
+    }
+    g.position.set(x, y, z);
+    return g;
+  }
+  function terrainSurfaceY(wx, wz) {
+    const h = sampleHeight(wx, wz);
+    return h <= WATER_THR ? SEA_LEVEL - 1.2 : SEA_LEVEL + h * MAX_H;
+  }
+
   const entRoot = new THREE.Group();
   scene.add(entRoot);
 
   function makeTree(x, z) {
-    const g = new THREE.Group();
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.25, 0.35, 2.2, 6),
-      new THREE.MeshLambertMaterial({ color: 0x5a3a18 })
-    );
-    trunk.position.y = 1.1;
-    const top = new THREE.Mesh(
-      new THREE.ConeGeometry(1.8, 3.5, 7),
-      new THREE.MeshLambertMaterial({ color: 0x2a7a30 })
-    );
-    top.position.y = 3.2;
-    g.add(trunk, top);
-    const y = Math.max(0.2, sampleHeight(x, z) * MAX_H);
-    g.position.set(x, y, z);
-    return g;
+    const y = terrainSurfaceY(x, z) + 0.06;
+    return createPalmTree(x, y, z, Math.random);
   }
   function makeBush(x, z) {
-    const m = new THREE.Mesh(
-      new THREE.SphereGeometry(0.65, 6, 5),
-      new THREE.MeshLambertMaterial({ color: 0x3a8a40 })
-    );
-    const y = Math.max(0.1, sampleHeight(x, z) * MAX_H);
-    m.position.set(x, y + 0.35, z);
-    return m;
+    const y = terrainSurfaceY(x, z) + 0.02;
+    return createBush(x, y, z, 0.28 + Math.random() * 0.42, Math.random);
   }
   function makeBuilding(x, z, col) {
     const h = 4 + Math.random() * 2;
@@ -324,8 +410,8 @@
       new THREE.BoxGeometry(4, h, 4),
       new THREE.MeshLambertMaterial({ color: col || 0xa08868 })
     );
-    const y = Math.max(0.2, sampleHeight(x, z) * MAX_H);
-    m.position.set(x, y + h / 2, z);
+    const base = terrainSurfaceY(x, z) + 0.08;
+    m.position.set(x, base + h / 2, z);
     return m;
   }
   function makeDock(x, z, ang) {
@@ -337,7 +423,7 @@
     deck.position.y = 0.25;
     g.add(deck);
     g.rotation.y = ang;
-    const y = Math.max(0.3, sampleHeight(x, z) * MAX_H) + 0.35;
+    const y = terrainSurfaceY(x, z) + 0.45;
     g.position.set(x, y, z);
     return g;
   }
@@ -354,7 +440,7 @@
     );
     flag.position.set(1.1, 9.2, 0);
     g.add(pole, flag);
-    const y = Math.max(0.2, sampleHeight(x, z) * MAX_H);
+    const y = terrainSurfaceY(x, z);
     g.position.set(x, y, z);
     return g;
   }
@@ -532,12 +618,23 @@
   /* Physics demo */
   let physOn = false;
   const physBodies = [];
-  function waterHeightAt(wx, wz, time) {
-    const wx2 = wx * 0.004 + waterUniforms.uWind.value.x * time * 0.08;
-    const wz2 = wz * 0.004 + waterUniforms.uWind.value.y * time * 0.08;
-    let h = Math.sin(wx2) * Math.cos(wz2) * 0.55 + Math.sin(wx2 * 2.1 + wz2 * 0.7) * 0.22;
-    h += Math.sin(Math.hypot(wx, wz) * 0.012 - time * 1.4) * waterUniforms.uWaveScale.value * 0.35;
-    return h;
+  function waterGerstnerY(wx, wz, time) {
+    const dirs = [[1, 0.2], [0.35, 1], [-0.55, 0.75], [0.8, -0.35]];
+    const wl = [65, 40, 22, 13];
+    const s = [0.05, 0.03, 0.02, 0.015];
+    const sp = [0.6, 0.45, 0.7, 0.85];
+    let sy = 0;
+    for (let i = 0; i < 4; i++) {
+      const k = 6.2831853 / wl[i];
+      const c = Math.sqrt(9.8 / k);
+      const d = dirs[i];
+      const len = Math.hypot(d[0], d[1]) || 1;
+      const dnx = d[0] / len;
+      const dnz = d[1] / len;
+      const f = k * ((dnx * wx + dnz * wz) - c * sp[i] * time);
+      sy += (s[i] / k) * Math.sin(f);
+    }
+    return sy;
   }
   document.getElementById('btn-phys-toggle').addEventListener('click', () => {
     physOn = !physOn;
@@ -635,6 +732,15 @@
     ev.target.value = '';
   });
 
+  function frameEntireMap() {
+    const lim = WORLD_EDGE_CLAMP;
+    controls.target.set(0, 0, 0);
+    const span = lim * 2.15;
+    const dist = span * 0.72;
+    camera.position.set(dist * 0.92, dist * 0.58, dist * 0.92);
+    controls.update();
+  }
+
   document.getElementById('btn-png').addEventListener('click', () => document.getElementById('file-png').click());
   document.getElementById('file-png').addEventListener('change', ev => {
     const f = ev.target.files && ev.target.files[0];
@@ -644,7 +750,16 @@
       const c = document.createElement('canvas');
       c.width = GRID_N; c.height = GRID_N;
       const ctx = c.getContext('2d');
-      ctx.drawImage(img, 0, 0, GRID_N, GRID_N);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, GRID_N, GRID_N);
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      const scale = Math.min(GRID_N / iw, GRID_N / ih);
+      const dw = Math.max(1, Math.floor(iw * scale));
+      const dh = Math.max(1, Math.floor(ih * scale));
+      const ox = Math.floor((GRID_N - dw) / 2);
+      const oy = Math.floor((GRID_N - dh) / 2);
+      ctx.drawImage(img, 0, 0, iw, ih, ox, oy, dw, dh);
       const d = ctx.getImageData(0, 0, GRID_N, GRID_N).data;
       for (let iz = 0; iz < GRID_N; iz++) {
         for (let ix = 0; ix < GRID_N; ix++) {
@@ -657,7 +772,8 @@
       }
       buildTerrainMesh();
       syncEntityMeshes();
-      document.getElementById('status-bar').textContent = 'Imported PNG (white=water, grey=land).';
+      frameEntireMap();
+      document.getElementById('status-bar').textContent = 'PNG fitted (letterboxed), centered on chart — white=water, grey=land.';
     };
     img.src = URL.createObjectURL(f);
     ev.target.value = '';
@@ -683,16 +799,23 @@
   function tick(now) {
     const dt = Math.min(0.05, (now - lastT) * 0.001);
     lastT = now;
-    waterUniforms.uTime.value = now * 0.001;
+    const t = now * 0.001;
+    waterUniforms.uTime.value = t;
+    waterUniforms.uCamPos.value.copy(camera.position);
     const wa = Number(document.getElementById('wind-a').value) * Math.PI * 2;
     const ws = Number(document.getElementById('wind-sp').value);
-    waterUniforms.uWind.value.set(Math.sin(wa) * (0.3 + ws * 0.04), Math.cos(wa) * (0.3 + ws * 0.04));
+    const sx = Math.sin(wa) * (0.35 + ws * 0.02);
+    const sz = Math.cos(wa) * (0.35 + ws * 0.02);
+    waterUniforms.uSunDir.value.set(sx, 0.62, sz).normalize();
+    if (sky.material && sky.material.uniforms) {
+      sky.material.uniforms.uTime.value = t;
+      sky.material.uniforms.uSunPos.value.set(200 + sx * 80, 300, 100 + sz * 80);
+    }
 
     if (physOn) {
-      const t = waterUniforms.uTime.value;
       for (const b of physBodies) {
         const wx = b.mesh.position.x, wz = b.mesh.position.z;
-        const surface = waterHeightAt(wx, wz, t);
+        const surface = SEA_LEVEL - 0.5 + waterGerstnerY(wx, wz, t);
         const sub = surface - b.mesh.position.y;
         if (b.mesh.position.y < surface + 0.2) {
           b.vy += b.buoy * sub * dt;
