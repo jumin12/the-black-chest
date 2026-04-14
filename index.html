@@ -6102,13 +6102,40 @@ function forgetCaptainTokenForDisplayName(displayName) {
   } catch (e) {}
 }
 const PENDING_CAPTAIN_CAREER_DELETE_KEY = 'pirates_pending_captain_career_delete_v1';
-function queueCaptainCareerDeleteOnServer(captainKey, captainToken) {
+function queueCaptainCareerDeleteOnServer(captainKey, captainToken, stripLeaderboardPlayerId) {
   if (!captainKey || !captainToken) return;
   try {
-    localStorage.setItem(PENDING_CAPTAIN_CAREER_DELETE_KEY, JSON.stringify({
+    const payload = {
       captainKey: String(captainKey),
       captainToken: String(captainToken)
-    }));
+    };
+    if (stripLeaderboardPlayerId != null && Number.isFinite(Number(stripLeaderboardPlayerId))) {
+      payload.stripLeaderboardPlayerId = Number(stripLeaderboardPlayerId);
+    }
+    localStorage.setItem(PENDING_CAPTAIN_CAREER_DELETE_KEY, JSON.stringify(payload));
+  } catch (e) {}
+}
+/** Remove abandoned captain from cached notorious list so UI matches server before the next broadcast. */
+function pruneLocalLeaderboardCacheForAbandonedCareer(oldCk, oldCapName, myPlayerId) {
+  const ck = oldCk ? String(oldCk).trim().toLowerCase() : '';
+  const cap = oldCapName ? captainNameStorageKey(oldCapName) : '';
+  const pid = myPlayerId != null && Number.isFinite(Number(myPlayerId)) ? Number(myPlayerId) : null;
+  if (!ck && !cap && pid == null) return;
+  try {
+    const raw = localStorage.getItem('pirates_lb_cache');
+    const base = Array.isArray(leaderboardData) ? leaderboardData : [];
+    let arr = raw ? JSON.parse(raw) : base;
+    if (!Array.isArray(arr)) arr = base;
+    arr = arr.filter(e => {
+      if (!e) return false;
+      const eck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
+      if (ck && eck === ck) return false;
+      if (cap && e.name && captainNameStorageKey(String(e.name)) === cap) return false;
+      if (pid != null && e.playerId != null && Number(e.playerId) === pid) return false;
+      return true;
+    });
+    leaderboardData = dedupeLeaderboardForDisplay(arr);
+    localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData));
   } catch (e) {}
 }
 function flushPendingCaptainCareerDelete() {
@@ -6132,11 +6159,15 @@ function flushPendingCaptainCareerDelete() {
     return;
   }
   try {
-    ws.send(JSON.stringify({
+    const payload = {
       type: 'delete_captain_career',
       captainKey: String(o.captainKey),
       captainToken: String(o.captainToken)
-    }));
+    };
+    if (G.myId != null && Number(o.stripLeaderboardPlayerId) === Number(G.myId)) {
+      payload.stripLeaderboardPlayerId = Number(G.myId);
+    }
+    ws.send(JSON.stringify(payload));
   } catch (e) {}
 }
 function readCaptainAccountsMap() {
@@ -12930,9 +12961,22 @@ function executeStartNewVoyageAfterConfirm() {
     ? String(G.player.crew[0].name).trim() : '';
   const oldCk = captainNameStorageKey(oldCapName);
   const oldTok = oldCk ? getCaptainTokenForName(oldCapName) : null;
-  if (oldCk && oldTok) queueCaptainCareerDeleteOnServer(oldCk, oldTok);
+  const stripId = G.myId != null && Number.isFinite(Number(G.myId)) ? Number(G.myId) : null;
+  if (oldCk && oldTok) {
+    queueCaptainCareerDeleteOnServer(oldCk, oldTok, stripId);
+  } else if (ws && ws.readyState === 1 && stripId != null) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'delete_captain_career',
+        abandonUnregistered: true,
+        stripLeaderboardPlayerId: stripId
+      }));
+    } catch (e) {}
+  }
   if (oldCapName) forgetCaptainTokenForDisplayName(oldCapName);
   if (ws && ws.readyState === 1) flushPendingCaptainCareerDelete();
+  pruneLocalLeaderboardCacheForAbandonedCareer(oldCk, oldCapName, stripId);
+  updatePiratesPanel();
   retireCurrentCaptainIntoAllTime();
   localStorage.removeItem(SAVE_KEY);
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
