@@ -10502,8 +10502,8 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
         const hh = a * (1 - tz) + b * tz;
         if (hh > wThr) {
           const sx = wx2sx(wx), sy = wz2sy(wz);
-          const beach = hh < 0.35;
-          ctx.fillStyle = beach ? '#c2a060' : '#2e7a32';
+          /* One land color — shoreline follows height threshold only (no extra “beach ring” overlay). */
+          ctx.fillStyle = '#2e7a32';
           ctx.fillRect(sx - stepPx * 0.5, sy - stepPx * 0.5, stepPx + 1, stepPx + 1);
         }
       }
@@ -10821,35 +10821,76 @@ function drawMinimap() {
   const mmPad = CHUNK_SIZE * 1.5;
   const mmMinX = G.player.x - w / (2 * s) - mmPad, mmMaxX = G.player.x + w / (2 * s) + mmPad;
   const mmMinZ = G.player.z - h / (2 * s) - mmPad, mmMaxZ = G.player.z + h / (2 * s) + mmPad;
-  forEachProceduralIslandInWorldBounds(mmMinX, mmMaxX, mmMinZ, mmMaxZ, d => {
-    const sx = wx2sx(d.worldX), sy = wz2sy(d.worldZ);
-    if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) return;
-    const ir = Math.max(2, d.radius * s);
-    const pts = 12;
-    ctx.fillStyle = '#c0a868'; ctx.beginPath();
-    for (let p = 0; p < pts; p++) {
-      const a = (p / pts) * Math.PI * 2;
-      const warp = 0.7 + Math.sin(d.cx * 3 + p * 1.7) * 0.15 + Math.cos(d.cz * 5 + p * 2.3) * 0.15;
-      const px = sx + Math.cos(a) * ir * warp, py = sy + Math.sin(a) * ir * warp;
-      p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+  if (G.customMap && G.customMap.heights) {
+    const cm = G.customMap;
+    const lim = cm.worldEdgeClamp != null ? cm.worldEdgeClamp : WORLD_EDGE_CLAMP;
+    const gn = cm.gridN | 0;
+    const arr = cm.heights;
+    const wThr = cm.waterThreshold != null ? cm.waterThreshold : 0.12;
+    const stepPx = Math.max(1, Math.min(6, Math.floor(2 / Math.max(s, 0.04))));
+    for (let iy = 0; iy < h; iy += stepPx) {
+      for (let ix = 0; ix < w; ix += stepPx) {
+        const wx = G.player.x - (ix + stepPx * 0.5 - cx) / s;
+        const wz = G.player.z - (iy + stepPx * 0.5 - cy) / s;
+        const u = (wx + lim) / (2 * lim);
+        const v = (wz + lim) / (2 * lim);
+        if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+        const gx = u * (gn - 1);
+        const gz = v * (gn - 1);
+        const x0 = Math.floor(gx), z0 = Math.floor(gz);
+        const x1 = Math.min(gn - 1, x0 + 1), z1 = Math.min(gn - 1, z0 + 1);
+        const tx = gx - x0, tz = gz - z0;
+        const h00 = arr[z0 * gn + x0], h10 = arr[z0 * gn + x1];
+        const h01 = arr[z1 * gn + x0], h11 = arr[z1 * gn + x1];
+        const a = h00 * (1 - tx) + h10 * tx;
+        const b = h01 * (1 - tx) + h11 * tx;
+        const hh = a * (1 - tz) + b * tz;
+        if (hh > wThr) {
+          const sx = wx2sx(wx), sy = wz2sy(wz);
+          ctx.fillStyle = '#2e7a32';
+          ctx.fillRect(sx - stepPx * 0.5, sy - stepPx * 0.5, stepPx + 1, stepPx + 1);
+        }
+      }
     }
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#2a5a20'; ctx.beginPath();
-    for (let p = 0; p < pts; p++) {
-      const a = (p / pts) * Math.PI * 2;
-      const warp = 0.5 + Math.sin(d.cx * 3 + p * 1.7) * 0.1 + Math.cos(d.cz * 5 + p * 2.3) * 0.1;
-      const px = sx + Math.cos(a) * ir * warp, py = sy + Math.sin(a) * ir * warp;
-      p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-    }
-    ctx.closePath(); ctx.fill();
-    if (d.hasTown && mapChartTownVisible(d)) {
+    for (const d of cm.towns || []) {
+      if (!d.hasTown || d.dockX == null || !mapChartTownVisible(d)) continue;
       const tx = wx2sx(d.dockX), ty = wz2sy(d.dockZ);
       if (tx > 0 && tx < w && ty > 0 && ty < h) {
         ctx.fillStyle = FACTION_TRADE_COLORS[townFaction(d) % 4]; ctx.fillRect(tx - 2, ty - 2, 4, 4);
         if (s > 0.05) { ctx.fillStyle = '#e8d090'; ctx.font = (w >= 220 ? '9px' : '7px') + ' Georgia'; ctx.textAlign = 'center'; ctx.fillText(d.townName, tx, ty - 5); }
       }
     }
-  }, G.player.x, G.player.z);
+  } else {
+    forEachProceduralIslandInWorldBounds(mmMinX, mmMaxX, mmMinZ, mmMaxZ, d => {
+      const sx = wx2sx(d.worldX), sy = wz2sy(d.worldZ);
+      if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) return;
+      const ir = Math.max(2, d.radius * s);
+      const pts = 12;
+      ctx.fillStyle = '#c0a868'; ctx.beginPath();
+      for (let p = 0; p < pts; p++) {
+        const a = (p / pts) * Math.PI * 2;
+        const warp = 0.7 + Math.sin(d.cx * 3 + p * 1.7) * 0.15 + Math.cos(d.cz * 5 + p * 2.3) * 0.15;
+        const px = sx + Math.cos(a) * ir * warp, py = sy + Math.sin(a) * ir * warp;
+        p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#2a5a20'; ctx.beginPath();
+      for (let p = 0; p < pts; p++) {
+        const a = (p / pts) * Math.PI * 2;
+        const warp = 0.5 + Math.sin(d.cx * 3 + p * 1.7) * 0.1 + Math.cos(d.cz * 5 + p * 2.3) * 0.1;
+        const px = sx + Math.cos(a) * ir * warp, py = sy + Math.sin(a) * ir * warp;
+        p === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      if (d.hasTown && mapChartTownVisible(d)) {
+        const tx = wx2sx(d.dockX), ty = wz2sy(d.dockZ);
+        if (tx > 0 && tx < w && ty > 0 && ty < h) {
+          ctx.fillStyle = FACTION_TRADE_COLORS[townFaction(d) % 4]; ctx.fillRect(tx - 2, ty - 2, 4, 4);
+          if (s > 0.05) { ctx.fillStyle = '#e8d090'; ctx.font = (w >= 220 ? '9px' : '7px') + ' Georgia'; ctx.textAlign = 'center'; ctx.fillText(d.townName, tx, ty - 5); }
+        }
+      }
+    }, G.player.x, G.player.z);
+  }
   G.npcs.forEach(n => {
     if (n.sinking) return;
     if (!mapChartNpcVisible(n)) return;

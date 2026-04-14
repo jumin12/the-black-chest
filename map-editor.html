@@ -75,6 +75,12 @@
       <h2>Map editor</h2>
       <p class="hint">Drag on terrain to sculpt. PNG import supports <strong>coast masks</strong> (dark land, bright water) and <strong>heightmaps</strong> (dark low, bright high). Crop on the preview, then apply. The full square is used as the chart.</p>
 
+      <h3>Selection</h3>
+      <p class="hint" style="margin-top:0;">Use <strong>Select &amp; move</strong> or <strong>Rotate</strong>, then click an entity. Drag to move or spin. <strong>WASD / arrows</strong> pan the chart when not in sail preview.</p>
+      <div class="actions" style="flex-direction:row;flex-wrap:wrap;margin-bottom:10px;">
+        <button type="button" id="btn-clear-sel">Clear selection</button>
+      </div>
+
       <h3>Tool</h3>
       <div class="tool-grid" id="tools"></div>
       <label class="row">Brush radius (world units)</label>
@@ -218,6 +224,8 @@
     ['lower', 'Lower land'],
     ['smooth', 'Smooth'],
     ['water', 'Carve water'],
+    ['select', 'Select & move'],
+    ['rotate', 'Rotate entity'],
     ['tree', 'Tree'],
     ['bush', 'Bush'],
     ['building', 'Building'],
@@ -370,6 +378,7 @@
         heights[gz * GRID_N + gx] = proceduralHeight01AtWorld(wx, wz, seed);
       }
     }
+    applyBeachShelfAndInlandGrassLift();
   }
 
   function worldToGrid(wx, wz) {
@@ -404,7 +413,14 @@
   let playerSpawn = null;
   let sailPreviewOn = false;
   const previewKeys = new Set();
+  const editorKeyPan = new Set();
+  let entPointerDrag = null;
   const previewBoatState = { x: 0, z: 0, rot: 0, speed: 0 };
+
+  function isTypingInFormField() {
+    const t = document.activeElement;
+    return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
+  }
 
   const DEEP_WATER_H = 0.02;
   let pendingPngImage = null;
@@ -513,6 +529,60 @@
         }
       }
     }
+  }
+
+  /** Sand shelf along water; lift interior land slightly for grass plateaus (matches game height sampling). */
+  function applyBeachShelfAndInlandGrassLift() {
+    const copy = Float32Array.from(heights);
+    const coastal = new Uint8Array(GRID_N * GRID_N);
+    for (let gz = 0; gz < GRID_N; gz++) {
+      for (let gx = 0; gx < GRID_N; gx++) {
+        const i = gz * GRID_N + gx;
+        if (copy[i] <= WATER_THR) continue;
+        let nearW = false;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = gx + dx, nz = gz + dz;
+          if (nx < 0 || nx >= GRID_N || nz < 0 || nz >= GRID_N) {
+            nearW = true;
+            break;
+          }
+          if (copy[nz * GRID_N + nx] <= WATER_THR) {
+            nearW = true;
+            break;
+          }
+        }
+        coastal[i] = nearW ? 1 : 0;
+      }
+    }
+    for (let gz = 0; gz < GRID_N; gz++) {
+      for (let gx = 0; gx < GRID_N; gx++) {
+        const i = gz * GRID_N + gx;
+        const h = copy[i];
+        if (h <= WATER_THR) continue;
+        if (coastal[i]) {
+          heights[i] = Math.min(h, WATER_THR + 0.1);
+        } else {
+          heights[i] = Math.min(1, Math.max(h, WATER_THR + 0.13) + 0.04);
+        }
+      }
+    }
+  }
+
+  function mulberry32(a) {
+    return function () {
+      let t = (a += 0x6d2b79f5);
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function entityRng(e) {
+    const id = String(e && e.id != null ? e.id : 'e0');
+    let s = 2166136261;
+    for (let i = 0; i < id.length; i++) s = Math.imul(s ^ id.charCodeAt(i), 16777619);
+    const typ = String(e && e.type ? e.type : '');
+    for (let i = 0; i < typ.length; i++) s = Math.imul(s ^ typ.charCodeAt(i), 16777619);
+    return mulberry32(s >>> 0);
   }
 
   const canvas = document.getElementById('viewport');
@@ -676,11 +746,28 @@
       pos.setX(i, wx);
       pos.setZ(i, wz);
       pos.setY(i, y);
-      let r, g, b;
-      if (h <= WATER_THR) { r = 0.05; g = 0.12; b = 0.2; }
-      else if (h < 0.35) { r = 0.85; g = 0.78; b = 0.55; }
-      else { const t = Math.min(1, (h - 0.35) / 0.65); r = 0.35 - t * 0.1; g = 0.55 - t * 0.05; b = 0.28; }
-      colors[i * 3] = r; colors[i * 3 + 1] = g; colors[i * 3 + 2] = b;
+      const gx = ix;
+      const gz = GRID_N - 1 - iy;
+      const hG = heights[gz * GRID_N + gx];
+      let r, gcol, b;
+      if (hG <= WATER_THR) { r = 0.05; gcol = 0.12; b = 0.2; }
+      else {
+        let coastal = false;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = gx + dx, nz = gz + dz;
+          if (nx < 0 || nx >= GRID_N || nz < 0 || nz >= GRID_N) { coastal = true; break; }
+          if (heights[nz * GRID_N + nx] <= WATER_THR) { coastal = true; break; }
+        }
+        if (coastal || hG <= WATER_THR + 0.058) {
+          r = 0.9; gcol = 0.8; b = 0.55;
+        } else if (hG < 0.36) {
+          r = 0.32; gcol = 0.58; b = 0.26;
+        } else {
+          const t = Math.min(1, (hG - 0.36) / 0.64);
+          r = 0.28 - t * 0.07; gcol = 0.48 - t * 0.06; b = 0.22 - t * 0.05;
+        }
+      }
+      colors[i * 3] = r; colors[i * 3 + 1] = gcol; colors[i * 3 + 2] = b;
     }
     pos.needsUpdate = true;
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -919,7 +1006,7 @@
       previewBoat.visible = false;
       previewKeys.clear();
       document.getElementById('status-bar').textContent =
-        'Ready · Left drag / one finger: sculpt · Right drag / two fingers: orbit & zoom · Scroll: zoom';
+        'Ready · Sculpt: left drag · Pan chart: WASD / arrows · Orbit: right drag · Zoom: scroll';
     }
   }
 
@@ -935,23 +1022,70 @@
     spawnMarker.rotation.y = timeSec * 0.2;
   }
 
-  function makeTree(x, z) {
+  function makeTree(x, z, rng) {
     const y = terrainSurfaceY(x, z) + 0.06;
-    return createPalmTree(x, y, z, Math.random);
+    return createPalmTree(x, y, z, rng);
   }
-  function makeBush(x, z) {
+  function makeBush(x, z, rng) {
+    const r = decoRand(rng);
     const y = terrainSurfaceY(x, z) + 0.02;
-    return createBush(x, y, z, 0.28 + Math.random() * 0.42, Math.random);
+    return createBush(x, y, z, 0.28 + r() * 0.42, rng);
   }
-  function makeBuilding(x, z, col) {
-    const h = 4 + Math.random() * 2;
+  function makeBuilding(x, z, col, rng) {
+    const r = decoRand(rng);
+    const h = 5 + r() * 3.5;
+    const foot = 0.08;
+    const base = terrainSurfaceY(x, z) + foot;
     const m = new THREE.Mesh(
-      new THREE.BoxGeometry(4, h, 4),
+      new THREE.BoxGeometry(4.2, h, 4.2),
       new THREE.MeshLambertMaterial({ color: col || 0xa08868 })
     );
-    const base = terrainSurfaceY(x, z) + 0.08;
     m.position.set(x, base + h / 2, z);
+    m.userData._halfH = h / 2;
+    m.userData._foot = foot;
+    const rim = new THREE.Mesh(
+      new THREE.BoxGeometry(4.35, 0.22, 4.35),
+      new THREE.MeshLambertMaterial({ color: 0x6a5a48 })
+    );
+    rim.position.set(0, -h / 2 + 0.11, 0);
+    m.add(rim);
     return m;
+  }
+  /** Cottage with peaked roof — distinct from flat-roof `building`. */
+  function makeHouse(x, z, rng) {
+    const r = decoRand(rng);
+    const g = new THREE.Group();
+    const w = 2.7 + r() * 0.35;
+    const d = 2.5 + r() * 0.3;
+    const wallH = 2.05 + r() * 0.35;
+    const walls = new THREE.Mesh(
+      new THREE.BoxGeometry(w, wallH, d),
+      new THREE.MeshLambertMaterial({ color: 0xe2d2b8 })
+    );
+    walls.position.y = wallH / 2;
+    g.add(walls);
+    const roof = new THREE.Mesh(
+      new THREE.ConeGeometry(Math.hypot(w, d) * 0.36, 1.35 + r() * 0.25, 4),
+      new THREE.MeshLambertMaterial({ color: 0x6b3d22 })
+    );
+    roof.rotation.y = Math.PI / 4;
+    roof.position.y = wallH + 0.55;
+    g.add(roof);
+    const door = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.48, 1.02),
+      new THREE.MeshLambertMaterial({ color: 0x4a3020 })
+    );
+    door.position.set(0, 0.5, d / 2 + 0.02);
+    g.add(door);
+    const win = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.55, 0.45),
+      new THREE.MeshLambertMaterial({ color: 0x6a8aaa })
+    );
+    win.position.set(-w * 0.28, wallH * 0.62, d / 2 + 0.02);
+    g.add(win);
+    const base = terrainSurfaceY(x, z) + 0.06;
+    g.position.set(x, base, z);
+    return g;
   }
   function makeDock(x, z, ang) {
     const g = new THREE.Group();
@@ -987,15 +1121,66 @@
   function syncEntityMeshes() {
     while (entRoot.children.length) entRoot.remove(entRoot.children[0]);
     for (const e of entities) {
+      const rng = entityRng(e);
       let m = null;
-      if (e.type === 'tree') m = makeTree(e.x, e.z);
-      else if (e.type === 'bush') m = makeBush(e.x, e.z);
-      else if (e.type === 'building') m = makeBuilding(e.x, e.z, 0xb0a078);
-      else if (e.type === 'house') m = makeBuilding(e.x, e.z, 0x9a8868);
+      if (e.type === 'tree') m = makeTree(e.x, e.z, rng);
+      else if (e.type === 'bush') m = makeBush(e.x, e.z, rng);
+      else if (e.type === 'building') m = makeBuilding(e.x, e.z, 0xb0a078, rng);
+      else if (e.type === 'house') m = makeHouse(e.x, e.z, rng);
       else if (e.type === 'dock') m = makeDock(e.x, e.z, e.rot || 0);
       else if (e.type === 'flagpole') m = makeFlagpole(e.x, e.z);
-      if (m) { m.userData.editorEntityId = e.id; entRoot.add(m); }
+      if (m) {
+        m.userData.editorEntityId = e.id;
+        if (e.type === 'tree') {
+          m.userData._treeBaseYaw = m.rotation.y;
+          m.rotation.y = m.userData._treeBaseYaw + (e.rot != null ? e.rot : 0);
+        } else if (e.type === 'bush') {
+          m.rotation.y = e.rot != null ? e.rot : 0;
+        } else {
+          m.rotation.y = e.rot != null ? e.rot : 0;
+        }
+        entRoot.add(m);
+      }
     }
+  }
+
+  function refreshEntityPlacementInScene(ent) {
+    if (!ent) return;
+    const base = terrainSurfaceY(ent.x, ent.z);
+    for (const ch of entRoot.children) {
+      if (ch.userData.editorEntityId !== ent.id) continue;
+      if (ent.type === 'tree') {
+        ch.position.set(ent.x, base + 0.06, ent.z);
+        const by = ch.userData._treeBaseYaw != null ? ch.userData._treeBaseYaw : 0;
+        ch.rotation.y = by + (ent.rot != null ? ent.rot : 0);
+      } else if (ent.type === 'bush') {
+        ch.position.set(ent.x, base + 0.02, ent.z);
+        ch.rotation.y = ent.rot != null ? ent.rot : 0;
+      } else if (ent.type === 'building') {
+        const foot = ch.userData._foot != null ? ch.userData._foot : 0.08;
+        const hh = ch.userData._halfH != null ? ch.userData._halfH : 2.5;
+        ch.position.set(ent.x, base + foot + hh, ent.z);
+      } else if (ent.type === 'house') {
+        ch.position.set(ent.x, base + 0.06, ent.z);
+      } else if (ent.type === 'dock') {
+        ch.position.set(ent.x, base + 0.45, ent.z);
+      } else if (ent.type === 'flagpole') {
+        ch.position.set(ent.x, base, ent.z);
+      }
+      if (ent.type !== 'tree' && ent.type !== 'bush') {
+        ch.rotation.y = ent.rot != null ? ent.rot : 0;
+      }
+      return;
+    }
+  }
+
+  function findEntityIdFromIntersect(hit) {
+    let o = hit.object;
+    while (o) {
+      if (o.userData && o.userData.editorEntityId) return o.userData.editorEntityId;
+      o = o.parent;
+    }
+    return null;
   }
 
   let selectedEntId = null;
@@ -1025,6 +1210,7 @@
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   let painting = false;
+  let pendingSculptBeachRefresh = false;
 
   function paintAt(wx, wz) {
     const r = Number(document.getElementById('brush-r').value);
@@ -1055,19 +1241,22 @@
       }
     }
     buildTerrainMesh();
-    syncEntityMeshes();
+    pendingSculptBeachRefresh = true;
   }
 
   function placeEntity(wx, wz) {
+    if (tool === 'select' || tool === 'rotate') return;
     const lastTown = towns[towns.length - 1];
     const tid = (lastTown && ['dock', 'house', 'flagpole', 'building'].includes(tool)) ? lastTown.id : null;
     const e = {
       id: 'e' + (entSeq++),
       type: tool,
       x: wx, z: wz,
-      rot: controls.getAzimuthalAngle(),
       townId: tid
     };
+    if (['dock', 'building', 'house', 'flagpole'].includes(tool)) {
+      e.rot = controls.getAzimuthalAngle();
+    }
     if (tool === 'dock' || tool === 'house') e.townId = lastTown ? lastTown.id : null;
     entities.push(e);
     selectedEntId = e.id;
@@ -1079,6 +1268,35 @@
     if (sailPreviewOn) return;
     const left = e.button === 0 || (e.pointerType === 'pen' && (e.buttons & 1));
     if (!left) return;
+    if (tool === 'select' || tool === 'rotate') {
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const entHits = raycaster.intersectObjects(entRoot.children, true);
+      if (entHits.length) {
+        const eid = findEntityIdFromIntersect(entHits[0]);
+        if (eid) {
+          selectedEntId = eid;
+          refreshEntityList();
+          entPointerDrag = {
+            kind: tool === 'rotate' ? 'rotate' : 'move',
+            eid,
+            lastClientX: e.clientX,
+            pointerId: e.pointerId
+          };
+          try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
+      }
+      if (tool === 'select') {
+        selectedEntId = null;
+        refreshEntityList();
+      }
+      return;
+    }
     if (!terrainMesh) return;
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1093,10 +1311,46 @@
     if (['raise', 'lower', 'smooth', 'water'].includes(tool)) paintAt(pt.x, pt.z);
     else placeEntity(pt.x, pt.z);
   }
+  function endPaintOrEntityPointer(ev) {
+    if (entPointerDrag && ev.pointerId === entPointerDrag.pointerId) {
+      entPointerDrag = null;
+      try { canvas.releasePointerCapture(ev.pointerId); } catch (err) { /* noop */ }
+      syncEntityMeshes();
+      refreshEntityList();
+    }
+    painting = false;
+    if (pendingSculptBeachRefresh && (ev.pointerType !== 'mouse' || ev.button === 0)) {
+      pendingSculptBeachRefresh = false;
+      applyBeachShelfAndInlandGrassLift();
+      buildTerrainMesh();
+    }
+  }
   canvas.addEventListener('pointerdown', sculptPointerDown, { capture: true });
-  window.addEventListener('pointerup', () => { painting = false; });
+  window.addEventListener('pointerup', endPaintOrEntityPointer, true);
+  window.addEventListener('pointercancel', endPaintOrEntityPointer, true);
   canvas.addEventListener('pointermove', e => {
     if (sailPreviewOn) return;
+    if (entPointerDrag) {
+      const ent = entities.find(x => x.id === entPointerDrag.eid);
+      if (!ent) { entPointerDrag = null; return; }
+      if (entPointerDrag.kind === 'rotate') {
+        ent.rot = (ent.rot || 0) + (e.clientX - entPointerDrag.lastClientX) * 0.014;
+        entPointerDrag.lastClientX = e.clientX;
+      } else if (terrainMesh) {
+        const rect = canvas.getBoundingClientRect();
+        pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        const th = raycaster.intersectObject(terrainMesh, false);
+        if (th.length) {
+          ent.x = th[0].point.x;
+          ent.z = th[0].point.z;
+        }
+      }
+      refreshEntityPlacementInScene(ent);
+      refreshEntityList();
+      return;
+    }
     if (!painting) return;
     if (!['raise', 'lower', 'smooth', 'water'].includes(tool)) return;
     if (!terrainMesh) return;
@@ -1161,6 +1415,11 @@
     syncEntityMeshes();
     refreshEntityList();
   });
+  document.getElementById('btn-clear-sel').addEventListener('click', () => {
+    selectedEntId = null;
+    entPointerDrag = null;
+    refreshEntityList();
+  });
 
   /* Physics demo */
   let physOn = false;
@@ -1219,11 +1478,19 @@
       setSailPreview(false);
       return;
     }
-    if (!sailPreviewOn) return;
-    previewKeys.add(e.key);
+    if (sailPreviewOn) {
+      previewKeys.add(e.key);
+      return;
+    }
+    if (isTypingInFormField()) return;
+    const panCodes = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+    if (!panCodes.has(e.code)) return;
+    editorKeyPan.add(e.code);
+    e.preventDefault();
   }, true);
   window.addEventListener('keyup', e => {
     previewKeys.delete(e.key);
+    editorKeyPan.delete(e.code);
   }, true);
 
   document.getElementById('btn-phys-toggle').addEventListener('click', () => {
@@ -1619,12 +1886,14 @@
     }
     if (resolvedMode === 'mask' || resolvedMode === 'mask_inv') dilateLandIntoShallowWater();
     plateauLandDepressions();
+    /* Coast shelf + inland grass lift; same height grid as game: v = (wz+lim)/(2*lim) → gz, image top → +Z. */
+    applyBeachShelfAndInlandGrassLift();
     buildTerrainMesh();
     syncEntityMeshes();
     frameEntireMap();
     const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
     document.getElementById('status-bar').textContent =
-      `PNG applied (${modeNote}, uniform fit — no stretch; bars are water). Heightmap rows match voyage mesh.`;
+      `PNG applied (${modeNote}). Top of image → +Z world; columns L→R = −X → +X (matches voyage sampling).`;
   }
 
   pngPreview.addEventListener('pointerdown', e => {
@@ -1778,6 +2047,36 @@
       );
       camera.lookAt(bx, SEA_LEVEL + 3.5 + waveB * 0.25, bz);
     } else {
+      let panDx = 0, panDz = 0;
+      if (editorKeyPan.has('KeyW') || editorKeyPan.has('ArrowUp')) panDz -= 1;
+      if (editorKeyPan.has('KeyS') || editorKeyPan.has('ArrowDown')) panDz += 1;
+      if (editorKeyPan.has('KeyA') || editorKeyPan.has('ArrowLeft')) panDx -= 1;
+      if (editorKeyPan.has('KeyD') || editorKeyPan.has('ArrowRight')) panDx += 1;
+      if (panDx || panDz) {
+        const k = 420 * dt;
+        const lim = worldEdgeClamp;
+        const fwd = new THREE.Vector3();
+        camera.getWorldDirection(fwd);
+        fwd.y = 0;
+        if (fwd.lengthSq() > 1e-6) fwd.normalize();
+        else fwd.set(0, 0, -1);
+        const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+        const move = new THREE.Vector3()
+          .addScaledVector(right, panDx * k)
+          .addScaledVector(fwd, -panDz * k);
+        controls.target.add(move);
+        camera.position.add(move);
+        const cx = controls.target.x, cz = controls.target.z;
+        const mx = Math.max(-lim, Math.min(lim, cx));
+        const mz = Math.max(-lim, Math.min(lim, cz));
+        const dx = mx - cx, dz = mz - cz;
+        if (dx || dz) {
+          controls.target.x += dx;
+          controls.target.z += dz;
+          camera.position.x += dx;
+          camera.position.z += dz;
+        }
+      }
       controls.update();
     }
 
