@@ -687,6 +687,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
           <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
             <button type="button" id="debug-admin-refresh-bans">Refresh ban list</button>
             <button type="button" id="debug-admin-reset-alltime" style="background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Reset all-time data (everyone)</button>
+            <button type="button" id="debug-admin-wipe-all-saves" style="background:rgba(90,30,70,0.4);border:1px solid rgba(180,80,120,0.55);color:#e8b0d8;">Wipe all clients' saves &amp; server captain registry</button>
           </div>
           <div class="debug-roster-scroll" id="debug-admin-bans" style="max-height:160px;margin-bottom:8px;"></div>
         </section>
@@ -700,8 +701,8 @@ input,textarea{-webkit-user-select:text;user-select:text;}
           <div class="debug-roster-scroll" id="debug-admin-chat-log" style="max-height:260px;"></div>
         </section>
         <section class="debug-section" aria-label="Local accounts and repair">
-          <h4 class="debug-section-head">This browser — accounts &amp; save</h4>
-          <p class="debug-map-hint" style="margin-bottom:10px;">Captain name tokens used for the server leaderboard. Deleting a row only removes that mapping here. Erasing the voyage save clears <code style="font-size:10px;">pirates_save_v1</code> (current career on this device).</p>
+          <h4 class="debug-section-head">Captain accounts &amp; saves</h4>
+          <p class="debug-map-hint" style="margin-bottom:10px;"><strong>Server registry</strong> (names from the host). <strong>This browser</strong> shows local tokens keyed by captain name. Use <em>Wipe all clients' saves</em> (above) to clear every connected browser's voyage save plus the server's captain registry in one step.</p>
           <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
             <button type="button" id="debug-local-accounts-refresh">Refresh list</button>
             <button type="button" id="debug-full-repair-btn" style="background:rgba(40,90,50,0.35);border:1px solid rgba(80,160,90,0.45);color:#b8e8c0;">Full repair (hull, sails, crew)</button>
@@ -5620,27 +5621,67 @@ function readCaptainAccountsMap() {
     return o && typeof o === 'object' ? o : {};
   } catch (e) { return {}; }
 }
+let navigatorRegisteredCaptainsList = [];
+function prettyCaptainKeyDisplay(k) {
+  const s = String(k || '').trim();
+  if (!s) return '(unknown)';
+  const t = s.split(/\s+/).map(w => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : '')).filter(Boolean).join(' ').trim();
+  return t || s;
+}
+function requestRegisteredCaptainsList() {
+  sendAdminNav({ action: 'list_registered_captains' });
+}
+function navigatorWipeLocalVoyageFromBroadcast() {
+  try {
+    localStorage.removeItem('pirates_save_v1');
+    localStorage.removeItem(CAPTAIN_ACCOUNTS_STORAGE_KEY);
+    localStorage.removeItem('pirates_alltime_v1');
+    localStorage.setItem('pirates_lb_cache', '[]');
+  } catch (e) {}
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+  leaderboardData = [];
+  navigatorRegisteredCaptainsList = [];
+  updatePiratesPanel();
+  renderDebugLocalAccountsPanel();
+  notify('Navigator wiped local voyage save, captain tokens, and cached stats on this browser. Reload recommended.');
+}
 function renderDebugLocalAccountsPanel() {
   const mount = document.getElementById('debug-local-accounts');
   if (!mount) return;
   const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const nameByKey = new Map((navigatorRegisteredCaptainsList || []).map(a => [a.key, a.displayName || a.key]));
+  let srv = '';
+  if (!navigatorRegisteredCaptainsList || !navigatorRegisteredCaptainsList.length) {
+    srv = '<div style="color:#8a7a60;font-size:11px;margin-bottom:10px;">Server registry: <em>none listed</em> (unlock navigator, connect, tap Refresh).</div>';
+  } else {
+    srv = `<div style="color:#c8b8a8;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:6px;">Server — registered captains</div>` +
+      navigatorRegisteredCaptainsList.map(a => {
+        const nm = esc(a.displayName || prettyCaptainKeyDisplay(a.key));
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;margin-bottom:4px;background:rgba(28,32,48,0.55);border-radius:4px;font-size:11px;color:#e0d6c2;border:1px solid rgba(100,120,180,0.2);">
+          <span><strong>${nm}</strong><br/><span style="color:#7a8098;font-size:9px;">key <code>${esc(a.key)}</code></span></span>
+          <button type="button" class="debug-del-reg-captain" data-captain-key="${esc(a.key)}" style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;">Delete on server</button>
+        </div>`;
+      }).join('');
+  }
   const accts = readCaptainAccountsMap();
   const keys = Object.keys(accts).sort();
-  let body;
+  let loc;
   if (!keys.length) {
-    body = '<div style="color:#8a7a60;font-size:11px;">No stored captain account tokens.</div>';
+    loc = '<div style="color:#8a7a60;font-size:11px;">This browser: no stored tokens.</div>';
   } else {
-    body = keys.map(k => {
-      const tok = String(accts[k] || '');
-      const tokShort = tok.length > 14 ? `${esc(tok.slice(0, 14))}…` : esc(tok);
-      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;margin-bottom:4px;background:rgba(30,20,12,0.5);border-radius:4px;font-size:11px;color:#e0d6c2;">
-        <span><strong>${esc(k)}</strong> <code style="font-size:9px;opacity:0.85;">${tokShort}</code></span>
-        <button type="button" class="debug-del-acct" data-acct-key="${esc(k)}" style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;">Delete</button>
-      </div>`;
-    }).join('');
+    loc = `<div style="color:#c8b8a8;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;margin:12px 0 6px;">This browser — tokens</div>` +
+      keys.map(k => {
+        const disp = esc(nameByKey.get(k) || prettyCaptainKeyDisplay(k));
+        const tok = String(accts[k] || '');
+        const tokShort = tok.length > 10 ? `${esc(tok.slice(0, 10))}…` : esc(tok);
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;margin-bottom:4px;background:rgba(30,20,12,0.5);border-radius:4px;font-size:11px;color:#e0d6c2;">
+          <span><strong>${disp}</strong><br/><span style="color:#8a7a68;font-size:9px;">session ${tokShort}</span></span>
+          <button type="button" class="debug-del-acct" data-acct-key="${esc(k)}" style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;">Delete local</button>
+        </div>`;
+      }).join('');
   }
   const hasSave = !!localStorage.getItem('pirates_save_v1');
-  mount.innerHTML = body + `<div style="margin-top:10px;font-size:11px;color:#a09080;">Voyage save: <strong>${hasSave ? 'yes' : 'no'}</strong> · <code style="font-size:9px;">pirates_save_v1</code></div>`;
+  mount.innerHTML = srv + loc + `<div style="margin-top:10px;font-size:11px;color:#a09080;">Voyage save: <strong>${hasSave ? 'yes' : 'no'}</strong> · <code style="font-size:9px;">pirates_save_v1</code></div>`;
 }
 function debugNavigatorFullRepair() {
   const mh = G.player.maxHealth != null ? G.player.maxHealth : 100;
@@ -5903,6 +5944,13 @@ function connectToServer() {
         clearLocalCareerDataFromServerReset();
         notify('All-time career data on this device was cleared by the navigator.');
         break;
+      case 'navigator_wipe_local_voyage_data':
+        navigatorWipeLocalVoyageFromBroadcast();
+        break;
+      case 'admin_registered_captains':
+        navigatorRegisteredCaptainsList = Array.isArray(msg.accounts) ? msg.accounts : [];
+        renderDebugLocalAccountsPanel();
+        break;
       case 'admin_bans':
         renderAdminBanList(msg.ips || []);
         break;
@@ -5973,6 +6021,13 @@ function connectToServer() {
         if (msg.action === 'clear_chat') {
           notify('Global chat cleared for everyone.');
           requestAdminChatLog();
+        }
+        if (msg.action === 'wipe_all_client_voyage_data') {
+          notify('Server captain registry cleared; all connected browsers were told to wipe local voyage saves.');
+        }
+        if (msg.action === 'delete_registered_captain') {
+          notify('Captain removed from server registry.');
+          requestRegisteredCaptainsList();
         }
         break;
       case 'kicked':
@@ -6355,11 +6410,19 @@ window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
     }
    });
   document.getElementById('debug-local-accounts')?.addEventListener('click', e => {
+    const regBtn = e.target.closest('.debug-del-reg-captain');
+    if (regBtn) {
+      const ck = regBtn.getAttribute('data-captain-key');
+      if (!ck) return;
+      if (!confirm(`Remove "${ck}" from the server captain registry? Connected players keep running until reload.`)) return;
+      sendAdminNav({ action: 'delete_registered_captain', captainKey: ck });
+      return;
+    }
     const btn = e.target.closest('.debug-del-acct');
     if (!btn) return;
     const k = btn.getAttribute('data-acct-key');
     if (!k) return;
-    if (!confirm(`Remove stored server token for captain key "${k}" on this browser?`)) return;
+    if (!confirm(`Remove stored token for captain key "${k}" on this browser?`)) return;
     try {
       const o = readCaptainAccountsMap();
       delete o[k];
@@ -6368,7 +6431,10 @@ window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
     renderDebugLocalAccountsPanel();
     notify('Captain account token deleted locally.');
   });
-  document.getElementById('debug-local-accounts-refresh')?.addEventListener('click', () => renderDebugLocalAccountsPanel());
+  document.getElementById('debug-local-accounts-refresh')?.addEventListener('click', () => {
+    requestRegisteredCaptainsList();
+    renderDebugLocalAccountsPanel();
+  });
   document.getElementById('debug-full-repair-btn')?.addEventListener('click', () => debugNavigatorFullRepair());
   document.getElementById('debug-erase-voyage-save-btn')?.addEventListener('click', () => {
     if (!confirm('Erase this browser\'s voyage save? Progress for the current career on this device will be lost.')) return;
@@ -6466,6 +6532,7 @@ function openDebugConsolePanel() {
   requestAdminPlayerRoster();
   requestAdminBanList();
   requestAdminChatLog();
+  requestRegisteredCaptainsList();
   renderDebugLocalAccountsPanel();
   startDebugAdminPolling();
 }
@@ -6585,7 +6652,7 @@ function renderDebugAdminPlayers(players) {
     const self = G.myId === p.id;
     return `<div style="padding:8px;margin-bottom:6px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;font-size:11px;color:#e0d6c2;">
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:space-between;">
-        <div style="min-width:0;"><strong>${esc(p.name || 'Unknown')}</strong>${muted}<span style="color:#7a7068;"> · id ${p.id}</span><br>
+        <div style="min-width:0;"><strong>${esc(p.name || 'Unknown')}</strong>${muted}<span style="color:#5a5048;font-size:9px;"> · conn. #${p.id}</span><br>
         <span style="color:#8a7a60;font-size:10px;">${Math.round(p.x)}, ${Math.round(p.z)}${p.ip ? ` · ${esc(p.ip)}` : ''}</span></div>
         <div style="display:flex;flex-wrap:wrap;gap:4px;">
           <button type="button" class="debug-admin-act" data-act="teleport" data-pid="${p.id}" ${self ? 'disabled' : ''} style="font-size:10px;padding:4px 8px;cursor:pointer;font-family:inherit;">Go to</button>
@@ -6605,6 +6672,10 @@ function renderDebugAdminPlayers(players) {
   document.getElementById('debug-admin-reset-alltime')?.addEventListener('click', () => {
     if (!confirm('Reset ALL notorious ranks AND wipe local career stats (all-time) on every connected browser? This cannot be undone.')) return;
     sendAdminNav({ action: 'reset_all_time_data' });
+  });
+  document.getElementById('debug-admin-wipe-all-saves')?.addEventListener('click', () => {
+    if (!confirm('Wipe voyage saves and captain tokens on EVERY connected browser, and clear the server captain registry? Leaderboard ranks are NOT cleared (use Reset notorious ranks for that). Cannot be undone.')) return;
+    sendAdminNav({ action: 'wipe_all_client_voyage_data' });
   });
   document.getElementById('debug-admin-refresh-bans')?.addEventListener('click', () => requestAdminBanList());
   document.getElementById('debug-admin-refresh-chat')?.addEventListener('click', () => requestAdminChatLog());
@@ -7836,6 +7907,7 @@ function reconcileSlotsAfterPickup(itemId) {
     need -= drop;
   }
   syncInventoryFromCargoSlots();
+  normalizeInventoryMergeStacks();
 }
 
 function consolidateGoldPurse() {
@@ -7873,6 +7945,14 @@ function reconcileSlotsWithInventory() {
     want.set(row.id, (want.get(row.id) || 0) + c);
   });
   want.delete('gold');
+  const slotBackedIds = new Set();
+  (G.player.cargoSlots || []).forEach(s => {
+    if (s && s.id && s.id !== 'gold' && s.count > 0) slotBackedIds.add(s.id);
+  });
+  for (const id of slotBackedIds) {
+    const sm = slotSumById(id);
+    want.set(id, Math.max(want.get(id) || 0, sm));
+  }
   for (const [id, target] of [...want.entries()]) {
     let cur = slotSumById(id);
     while (cur > target) {
@@ -7926,6 +8006,7 @@ function reconcileSlotsWithInventory() {
     }
   }
   syncInventoryFromCargoSlots();
+  normalizeInventoryMergeStacks();
 }
 function swapCargoSlots(a, b) {
   ensureCargoSlots();
@@ -8822,6 +8903,12 @@ function dockAtPort() {
   }, 2000);
 }
 
+function prepareTradeInventoryView() {
+  if (G.mode !== 'playing') return;
+  ensureCargoSlots();
+  consolidateGoldPurse();
+  syncInventoryFromCargoSlots();
+}
 function leavePort() {
   G.docked = false; G.player.anchored = false;
   G.player.dockBerthIndex = null;
@@ -8845,14 +8932,15 @@ function showPortTab(tab) {
   content.innerHTML = '';
 
   if (tab === 'trade') {
+    prepareTradeInventoryView();
     const gHave = getInvCount('gold');
     content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gHave}</div>`;
     const tradeIdSet = new Set(TRADE_GOODS.map(t => t.id));
     TRADE_GOODS.forEach(g => {
-      const inv = G.player.inventory.find(i => i.id === g.id);
+      const haveCt = getInvCount(g.id);
       const d = document.createElement('div');
       d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
-      d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${g.name}</div><div style="color:#8a7a60;font-size:10px;">Have: ${inv?.count || 0}</div></div>
+      d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${g.name}</div><div style="color:#8a7a60;font-size:10px;">Have: ${haveCt}</div></div>
         <div style="display:flex;gap:6px;">
           <button onclick="portBuy('${g.id}',${g.buy})" style="background:rgba(40,80,40,0.4);border:1px solid rgba(80,160,80,0.4);color:#88cc88;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Buy ${g.buy}g</button>
           <button onclick="portSell('${g.id}',${g.sell})" style="background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Sell ${g.sell}g</button>
@@ -9140,11 +9228,28 @@ window.portBuy = function(id, cost) {
 };
 
 window.portSell = function(id, price) {
-  const item = G.player.inventory.find(i => i.id === id);
-  if (!item || item.count < 1) { notify('None to sell!'); return; }
-  item.count -= 1;
-  const gold = G.player.inventory.find(i => i.id === 'gold');
-  if (gold) gold.count += price;
+  if (id === 'gold') { notify('You cannot sell gold here.'); return; }
+  prepareTradeInventoryView();
+  if (getInvCount(id) < 1) { notify('None to sell!'); return; }
+  let rem = 1;
+  const inv = G.player.inventory;
+  for (let i = inv.length - 1; i >= 0 && rem > 0; i--) {
+    const row = inv[i];
+    if (!row || row.id !== id) continue;
+    const rc = Math.max(0, Math.floor(Number(row.count) || 0));
+    if (rc <= 0) continue;
+    const take = Math.min(rc, rem);
+    row.count = rc - take;
+    rem -= take;
+    if (row.count <= 0) inv.splice(i, 1);
+  }
+  if (rem > 0) { notify('None to sell!'); return; }
+  let gold = G.player.inventory.find(i => i.id === 'gold');
+  if (!gold) {
+    gold = { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 0 };
+    G.player.inventory.push(gold);
+  }
+  gold.count += price;
   reconcileSlotsWithInventory();
   bumpNotoriety({ gold: price });
   const im = getItemMeta(id);
