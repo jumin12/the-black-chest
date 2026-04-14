@@ -2457,6 +2457,25 @@ function subtractTownStockpile(key, goodId, amt) {
   if (!t) return;
   t[goodId] = Math.max(0, (t[goodId] || 0) - amt);
 }
+/** Ensures this port has a warehouse row (procedural or custom) even if stockpiles were initialized earlier without it. */
+function ensureStockpileForPort(p) {
+  if (!p) return null;
+  if (!G.townStockpiles) G.townStockpiles = {};
+  const k = portStockKey(p);
+  if (G.townStockpiles[k]) return k;
+  if (p.stockpile && typeof p.stockpile === 'object') {
+    G.townStockpiles[k] = { ...p.stockpile };
+    return k;
+  }
+  const o = {};
+  const cx = p.cx | 0, cz = p.cz | 0;
+  PORT_EXPORT_POOL.forEach(gid => {
+    const h = ((G.worldSeed ^ cx * 1315423911 ^ cz * 19349663 ^ gid.length * 409) >>> 0) % 97;
+    o[gid] = 48 + h;
+  });
+  G.townStockpiles[k] = o;
+  return k;
+}
 function tickTownEconomy(dt) {
   if (!G.townStockpiles || G.mode !== 'playing') return;
   G.townEconomyAcc += dt;
@@ -9350,16 +9369,30 @@ function showPortTab(tab) {
     const gHave = getInvCount('gold');
     content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gHave}</div>`;
     const tradeIdSet = new Set(TRADE_GOODS.map(t => t.id));
+    const dock = G.nearDock;
+    const stockKey = dock ? ensureStockpileForPort(dock) : null;
+    const townStock = stockKey && G.townStockpiles ? G.townStockpiles[stockKey] : null;
     TRADE_GOODS.forEach(g => {
       const haveCt = getInvCount(g.id);
+      const wh = townStock ? Math.max(0, (townStock[g.id] || 0) | 0) : null;
+      const stockLine = wh != null ? `Town stock: ${wh}` : 'Town stock: —';
+      const canBuy = wh != null && wh >= 1 && gHave >= g.buy;
       const d = document.createElement('div');
       d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
-      d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${g.name}</div><div style="color:#8a7a60;font-size:10px;">Have: ${haveCt}</div></div>
+      d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${g.name}</div><div style="color:#8a7a60;font-size:10px;">Have: ${haveCt} · ${stockLine}</div></div>
         <div style="display:flex;gap:6px;">
-          <button onclick="portBuy('${g.id}',${g.buy})" style="background:rgba(40,80,40,0.4);border:1px solid rgba(80,160,80,0.4);color:#88cc88;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Buy ${g.buy}g</button>
+          <button type="button" class="port-buy-good-btn" data-good="${g.id}" data-price="${g.buy}" ${canBuy ? '' : 'disabled'} style="background:${canBuy ? 'rgba(40,80,40,0.4)' : 'rgba(40,50,40,0.25)'};border:1px solid ${canBuy ? 'rgba(80,160,80,0.4)' : 'rgba(80,100,80,0.2)'};color:${canBuy ? '#88cc88' : '#666'};padding:4px 10px;border-radius:4px;cursor:${canBuy ? 'pointer' : 'not-allowed'};font-size:11px;font-family:Georgia,serif;">Buy ${g.buy}g</button>
           <button onclick="portSell('${g.id}',${g.sell})" style="background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Sell ${g.sell}g</button>
         </div>`;
       content.appendChild(d);
+    });
+    content.querySelectorAll('.port-buy-good-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.disabled) return;
+        const gid = btn.getAttribute('data-good');
+        const pr = Number(btn.getAttribute('data-price'));
+        window.portBuy(gid, pr);
+      });
     });
     const extraSell = (G.player.inventory || []).filter(it => it && it.count > 0 && it.id !== 'gold' && !tradeIdSet.has(it.id));
     if (extraSell.length) {
@@ -9629,13 +9662,19 @@ window.portRepairSails = function() {
 };
 
 window.portBuy = function(id, cost) {
+  if (!G.docked || !G.nearDock) { notify('Dock at a port to trade.'); return; }
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (!gold || gold.count < cost) { notify('Not enough gold!'); return; }
   if (id !== 'gold' && !canFitStackInCargoSlots(id, 1)) {
     notify('Cargo hold is full — sell or jettison goods before buying more.');
     return;
   }
+  const sk = ensureStockpileForPort(G.nearDock);
+  const st = sk ? G.townStockpiles[sk] : null;
+  const wh = st ? (st[id] || 0) : 0;
+  if (!st || wh < 1) { notify('The town warehouses are out of that good.'); return; }
   gold.count -= cost;
+  subtractTownStockpile(sk, id, 1);
   const m = getItemMeta(id);
   let item = G.player.inventory.find(i => i.id === id);
   if (!item) { item = { id, name: m.name, icon: m.icon, count: 0 }; G.player.inventory.push(item); }
@@ -9670,6 +9709,10 @@ window.portSell = function(id, price) {
   gold.count += price;
   reconcileSlotsWithInventory();
   bumpNotoriety({ gold: price });
+  if (G.docked && G.nearDock && PORT_EXPORT_POOL.includes(id)) {
+    const sk = ensureStockpileForPort(G.nearDock);
+    if (sk) addTownStockpile(sk, id, 1);
+  }
   const im = getItemMeta(id);
   notify(`Sold 1 ${im.name || id} for ${price}g`);
   showPortTab('trade');
