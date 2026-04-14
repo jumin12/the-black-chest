@@ -133,7 +133,7 @@
       <details class="me-section" open>
         <summary>2 · Objects &amp; spawn</summary>
         <div class="inner">
-          <p class="hint" style="margin-top:0;"><strong>Select &amp; move</strong> / <strong>Rotate</strong>: click a prop. <strong>Arrow ↑↓</strong> height, <strong>←→</strong> yaw. <strong>Player spawn</strong> tool places the green marker; click it to select. <strong>WASD</strong> pans the chart (not arrows).</p>
+          <p class="hint" style="margin-top:0;"><strong>Select &amp; move</strong> / <strong>Rotate</strong>: click a prop or port marker. <strong>Arrow ↑↓</strong> adjust lift, <strong>←→</strong> yaw whenever an object is selected (any tool). <strong>Player spawn</strong> marker uses arrows for its height/yaw. <strong>WASD</strong> pans the chart.</p>
           <div class="actions" style="flex-direction:row;flex-wrap:wrap;">
             <button type="button" id="btn-clear-sel">Clear selection</button>
             <button type="button" id="btn-del-ent" class="danger">Delete selected</button>
@@ -145,6 +145,10 @@
           </div>
           <label class="row">Placed objects</label>
           <div id="entity-list"></div>
+          <div id="town-inspector" style="display:none;margin-top:8px;padding:8px;border-radius:8px;background:rgba(14,22,38,0.85);border:1px solid rgba(100,160,200,0.35);font-size:10px;line-height:1.45;">
+            <div style="font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#8ab8d8;margin-bottom:4px;">Town selection</div>
+            <div id="town-inspector-body"></div>
+          </div>
         </div>
       </details>
 
@@ -313,7 +317,8 @@
   const MAP_HALF_MIN = 400;
   const MAP_HALF_MAX = 12000;
   let worldEdgeClamp = DEFAULT_WORLD_EDGE_CLAMP;
-  const GRID_N = 384;
+  /** Higher grid = finer PNG islands & coast detail (keep ≤ server cap, typically 512). */
+  const GRID_N = 512;
   /** Extra mesh vertices per height cell — smoother silhouettes (height still sampled from GRID_N). */
   const TERRAIN_MESH_SUB = 2;
   const WATER_THR = 0.12;
@@ -843,6 +848,21 @@
   let pngCropDrag = null;
 
   function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+  /** Bilinear RGB luminance sample in pixel coordinates (0..iw-1, 0..ih-1). */
+  function sampleImageLumBilinear(imgD, iw, ih, fx, fy) {
+    const x = Math.max(0, Math.min(iw - 1, fx));
+    const y = Math.max(0, Math.min(ih - 1, fy));
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const x1 = Math.min(iw - 1, x0 + 1), y1 = Math.min(ih - 1, y0 + 1);
+    const tx = x - x0, ty = y - y0;
+    const lumAt = (xi, yi) => {
+      const ii = (yi * iw + xi) * 4;
+      return (imgD[ii] + imgD[ii + 1] + imgD[ii + 2]) / (3 * 255);
+    };
+    const a = lumAt(x0, y0) * (1 - tx) + lumAt(x1, y0) * tx;
+    const b = lumAt(x0, y1) * (1 - tx) + lumAt(x1, y1) * tx;
+    return a * (1 - ty) + b * ty;
+  }
   function smoothstep(edge0, edge1, x) {
     const t = clamp01((x - edge0) / (edge1 - edge0));
     return t * t * (3 - 2 * t);
@@ -876,9 +896,9 @@
     return 'mask';
   }
   /** Mild lift — keep imported heightmap closer to in-game island relief. */
-  const PNG_LAND_GAIN = 1.05;
+  const PNG_LAND_GAIN = 0.92;
   /** After PNG decode, compress land range toward sea (editor preview vs chunky mesas). */
-  const EDITOR_PNG_LAND_REL_SCALE = 0.74;
+  const EDITOR_PNG_LAND_REL_SCALE = 0.56;
   function boostLandHeight01(h) {
     if (h <= WATER_THR) return h;
     return Math.min(1, WATER_THR + 0.045 + (h - WATER_THR) * PNG_LAND_GAIN);
@@ -889,8 +909,8 @@
     if (mode === 'height') {
       if (lum < 0.11) return DEEP_WATER_H;
       const t = clamp01((lum - 0.11) / 0.89);
-      const shaped = Math.pow(t, 1.05);
-      let h = Math.max(WATER_THR + 0.06, Math.min(0.92, shaped * 0.82 + 0.04));
+      const shaped = Math.pow(t, 0.92);
+      let h = Math.max(WATER_THR + 0.045, Math.min(0.56, shaped * 0.48 + 0.035));
       return boostLandHeight01(h);
     }
     if (lum > 0.93) return WATER_THR * 0.35;
@@ -939,16 +959,18 @@
           }
         }
         const delta = mx - hi;
-        if (delta < 0.028) continue;
-        const lift = hi + Math.min(delta * 0.42, 0.09);
+        if (delta < 0.035) continue;
+        const lift = hi + Math.min(delta * 0.28, 0.055);
         if (lift > hi + 0.01) heights[i] = Math.min(1, lift);
       }
     }
   }
 
-  /** Blend inland cells toward local mean so PNG imports read as filled plateaus like procedural islands. */
-  function flattenImportedLandInteriorPasses(passes) {
+  /** Blend inland cells toward local mean — light touch for heightmaps so small features survive. */
+  function flattenImportedLandInteriorPasses(passes, strength) {
     const p = Math.max(1, passes | 0);
+    const s = strength != null ? clamp01(strength) : 0.42;
+    const keep = 1 - s;
     for (let pass = 0; pass < p; pass++) {
       const copy = Float32Array.from(heights);
       for (let gz = 1; gz < GRID_N - 1; gz++) {
@@ -969,7 +991,7 @@
           }
           if (!c) continue;
           const mean = sum / c;
-          heights[i] = Math.min(1, copy[i] * 0.52 + mean * 0.48);
+          heights[i] = Math.min(1, copy[i] * keep + mean * s);
         }
       }
     }
@@ -1004,11 +1026,53 @@
         const h = copy[i];
         if (h <= WATER_THR) continue;
         if (coastal[i]) {
-          const cap = WATER_THR + 0.102;
+          const cap = WATER_THR + 0.11;
           const t = Math.min(h, cap);
-          heights[i] = h * 0.42 + t * 0.58;
+          heights[i] = h * 0.38 + t * 0.62;
         } else {
-          heights[i] = Math.min(1, h + 0.008);
+          const nearCoast = (() => {
+            for (const [dx, dz] of [[2, 0], [-2, 0], [0, 2], [0, -2], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+              const nx = gx + dx, nz = gz + dz;
+              if (nx < 0 || nx >= GRID_N || nz < 0 || nz >= GRID_N) continue;
+              if (copy[nz * GRID_N + nx] <= WATER_THR) return true;
+            }
+            return false;
+          })();
+          if (nearCoast && h < WATER_THR + 0.14) {
+            const cap2 = WATER_THR + 0.125;
+            heights[i] = Math.min(cap2, h * 0.55 + cap2 * 0.45);
+          } else {
+            heights[i] = Math.min(1, h + 0.008);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Underwater shelf + smooth transition toward land (procedural-style shoreline read).
+   */
+  function applyImportedShallowWaterShelfPasses(passes) {
+    const p = Math.max(1, passes | 0);
+    for (let pass = 0; pass < p; pass++) {
+      const copy = Float32Array.from(heights);
+      for (let gz = 0; gz < GRID_N; gz++) {
+        for (let gx = 0; gx < GRID_N; gx++) {
+          const i = gz * GRID_N + gx;
+          if (copy[i] > WATER_THR * 0.995) continue;
+          let best = copy[i];
+          let landNear = false;
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = gx + dx, nz = gz + dz;
+            if (nx < 0 || nx >= GRID_N || nz < 0 || nz >= GRID_N) continue;
+            const nh = copy[nz * GRID_N + nx];
+            if (nh > WATER_THR) {
+              landNear = true;
+              const shelf = WATER_THR * 0.42 + (nh - WATER_THR) * 0.38;
+              best = Math.max(best, Math.min(WATER_THR - 0.018, shelf));
+            }
+          }
+          if (landNear) heights[i] = Math.max(heights[i], best);
         }
       }
     }
@@ -1455,6 +1519,7 @@
       ring.position.set(0, 0.2, 0);
       g.add(pole, ring);
       g.position.set(wx, y, wz);
+      g.userData.editorTownId = t.id;
       townMarkersRoot.add(g);
     }
   }
@@ -1682,20 +1747,21 @@
   scene.add(spawnMarker);
 
   const selGizmo = new THREE.Group();
+  selGizmo.renderOrder = 999;
   scene.add(selGizmo);
   const selGizmoRing = new THREE.Mesh(
     new THREE.TorusGeometry(3.4, 0.14, 6, 40),
-    new THREE.MeshBasicMaterial({ color: 0xffcc66, transparent: true, opacity: 0.9 })
+    new THREE.MeshBasicMaterial({ color: 0xffcc66, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false })
   );
   selGizmoRing.rotation.x = Math.PI / 2;
   const selGizmoUp = new THREE.Mesh(
     new THREE.ConeGeometry(0.38, 1, 8),
-    new THREE.MeshBasicMaterial({ color: 0x55ee99 })
+    new THREE.MeshBasicMaterial({ color: 0x55ee99, depthTest: false, depthWrite: false })
   );
   selGizmoUp.position.set(0, 2.4, 0);
   const selGizmoYaw = new THREE.Mesh(
     new THREE.TorusGeometry(2, 0.07, 6, 32),
-    new THREE.MeshBasicMaterial({ color: 0x88b0ff, transparent: true, opacity: 0.85 })
+    new THREE.MeshBasicMaterial({ color: 0x88b0ff, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false })
   );
   selGizmoYaw.rotation.x = Math.PI / 2;
   selGizmoYaw.position.y = 0.2;
@@ -1753,7 +1819,7 @@
     if (!ent) return;
     const lift = ent.yLift != null ? Number(ent.yLift) : 0;
     let y = terrainSurfaceY(ent.x, ent.z) + 1.35 + lift;
-    if (ent.type === 'building') y = terrainSurfaceY(ent.x, ent.z) + 3.8 + lift;
+    if (ent.type === 'building') y = terrainSurfaceY(ent.x, ent.z) + 2.85 + lift;
     if (ent.type === 'dock') y = terrainSurfaceY(ent.x, ent.z) + 1.1 + lift;
     selGizmo.position.set(ent.x, y, ent.z);
     selGizmo.rotation.y = ent.rot != null ? ent.rot : 0;
@@ -1836,25 +1902,42 @@
     const y = terrainSurfaceY(x, z) + 0.02 + (lift || 0);
     return createBush(x, y, z, 0.28 + r() * 0.42, rng);
   }
+  /** Port warehouse / town building — matches index.html procedural port meshes (box + foundation + hipped cone). */
   function makeBuilding(x, z, col, rng, lift) {
     const r = decoRand(rng);
-    const h = 5 + r() * 3.5;
-    const foot = 0.08;
-    const base = terrainSurfaceY(x, z) + foot + (lift || 0);
-    const m = new THREE.Mesh(
-      new THREE.BoxGeometry(4.2, h, 4.2),
-      new THREE.MeshLambertMaterial({ color: col || 0xa08868 })
+    const bH = 2.5 + r() * 1.5;
+    const bW = 2.5 + r() * 2;
+    const pal = [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868];
+    const wallCol = col != null ? col : pal[Math.floor(r() * pal.length)];
+    const g = new THREE.Group();
+    const baseOff = 0.08;
+    const bldg = new THREE.Mesh(
+      new THREE.BoxGeometry(bW, bH, bW),
+      new THREE.MeshLambertMaterial({ color: wallCol })
     );
-    m.position.set(x, base + h / 2, z);
-    m.userData._halfH = h / 2;
-    m.userData._foot = foot;
-    const rim = new THREE.Mesh(
-      new THREE.BoxGeometry(4.35, 0.22, 4.35),
-      new THREE.MeshLambertMaterial({ color: 0x6a5a48 })
+    bldg.position.set(0, baseOff + bH / 2, 0);
+    bldg.castShadow = true;
+    bldg.receiveShadow = true;
+    const foundation = new THREE.Mesh(
+      new THREE.BoxGeometry(bW + 0.5, 0.3, bW + 0.5),
+      new THREE.MeshLambertMaterial({ color: 0x5a4a38 })
     );
-    rim.position.set(0, -h / 2 + 0.11, 0);
-    m.add(rim);
-    return m;
+    foundation.position.set(0, baseOff - 0.12, 0);
+    foundation.castShadow = true;
+    foundation.receiveShadow = true;
+    const roof = new THREE.Mesh(
+      new THREE.ConeGeometry(bW * 0.8, 1.5, 4),
+      new THREE.MeshLambertMaterial({ color: 0x8b3a1a })
+    );
+    roof.position.set(0, baseOff + bH + 0.7, 0);
+    roof.rotation.y = Math.PI / 4;
+    roof.castShadow = true;
+    g.add(foundation, bldg, roof);
+    const ty = terrainSurfaceY(x, z) + (lift || 0);
+    g.position.set(x, ty, z);
+    g.userData._foot = baseOff;
+    g.userData._halfH = baseOff + bH / 2;
+    return g;
   }
   /** Cottage with peaked roof — distinct from flat-roof `building`. */
   function makeHouse(x, z, rng, lift) {
@@ -2039,6 +2122,47 @@
     }
     return null;
   }
+  function findTownIdFromIntersect(hit) {
+    let o = hit.object;
+    while (o) {
+      if (o.userData && o.userData.editorTownId) return o.userData.editorTownId;
+      o = o.parent;
+    }
+    return null;
+  }
+  function escapeHtmlStr(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function hideTownInspector() {
+    const el = document.getElementById('town-inspector');
+    if (el) el.style.display = 'none';
+  }
+  function showTownInspectorForTown(townId) {
+    const t = towns.find(x => x.id === townId);
+    const wrap = document.getElementById('town-inspector');
+    const body = document.getElementById('town-inspector-body');
+    if (!t || !wrap || !body) return;
+    const linked = entities.filter(e => e.townId === townId);
+    const fac = t.faction != null ? t.faction : '—';
+    const exp = t.exportGood != null ? t.exportGood : '—';
+    const dockX = t.dockX != null ? t.dockX : t.worldX;
+    const dockZ = t.dockZ != null ? t.dockZ : t.worldZ;
+    const lines = linked.map(e =>
+      `• ${escapeHtmlStr(e.type)} @ ${e.x.toFixed(0)}, ${e.z.toFixed(0)}${e.yLift != null ? ` (y+${e.yLift.toFixed(1)})` : ''}`
+    );
+    body.innerHTML =
+      `<div><strong>${escapeHtmlStr(t.townName || t.id)}</strong> <span style="opacity:.7">(${escapeHtmlStr(t.id)})</span></div>` +
+      `<div style="margin-top:4px;opacity:.85;">Dock ~ ${dockX.toFixed(0)}, ${dockZ.toFixed(0)} · Faction ${escapeHtmlStr(String(fac))} · Export ${escapeHtmlStr(String(exp))}</div>` +
+      `<div style="margin-top:6px;font-weight:600;">Linked objects (${linked.length})</div>` +
+      `<div style="max-height:140px;overflow-y:auto;margin-top:2px;">${
+        lines.length ? lines.join('<br/>') : '<span style="opacity:.6;">No objects linked — pick a town in “Assign building” when placing docks or buildings.</span>'
+      }</div>`;
+    wrap.style.display = 'block';
+  }
 
   let selectedEntId = null;
   function refreshEntityList() {
@@ -2071,6 +2195,7 @@
       row.addEventListener('click', () => {
         selectedSpawnOnly = true;
         selectedEntId = null;
+        hideTownInspector();
         refreshEntityList();
       });
     });
@@ -2078,6 +2203,9 @@
       row.addEventListener('click', () => {
         selectedSpawnOnly = false;
         selectedEntId = row.getAttribute('data-eid');
+        const sel = entities.find(x => x.id === selectedEntId);
+        if (sel && sel.townId) showTownInspectorForTown(sel.townId);
+        else hideTownInspector();
         refreshEntityList();
       });
     });
@@ -2162,8 +2290,13 @@
     }
     entities.push(e);
     selectedEntId = e.id;
+    selectedSpawnOnly = false;
+    tool = 'select';
+    toolsEl.querySelectorAll('.tool').forEach(x => x.classList.toggle('sel', x.dataset.tool === tool));
     syncEntityMeshes();
     refreshEntityList();
+    if (e.townId) showTownInspectorForTown(e.townId);
+    else hideTownInspector();
   }
 
   function sculptPointerDown(e) {
@@ -2180,18 +2313,44 @@
         if (spHits.length) {
           selectedSpawnOnly = true;
           selectedEntId = null;
+          hideTownInspector();
           refreshEntityList();
           e.preventDefault();
           e.stopImmediatePropagation();
           return;
         }
       }
+      const townHits = raycaster.intersectObjects(townMarkersRoot.children, true);
       const entHits = raycaster.intersectObjects(entRoot.children, true);
-      if (entHits.length) {
-        const eid = findEntityIdFromIntersect(entHits[0]);
+      const tHit = townHits[0];
+      const eHit = entHits[0];
+      let pickTown = null;
+      let pickEnt = null;
+      if (tHit && eHit) {
+        if (tHit.distance <= eHit.distance) pickTown = tHit;
+        else pickEnt = eHit;
+      } else if (tHit) pickTown = tHit;
+      else if (eHit) pickEnt = eHit;
+      if (pickTown) {
+        const tid = findTownIdFromIntersect(pickTown);
+        if (tid) {
+          selectedSpawnOnly = false;
+          selectedEntId = null;
+          showTownInspectorForTown(tid);
+          refreshEntityList();
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
+      }
+      if (pickEnt) {
+        const eid = findEntityIdFromIntersect(pickEnt);
         if (eid) {
           selectedSpawnOnly = false;
           selectedEntId = eid;
+          const entPick = entities.find(x => x.id === eid);
+          if (entPick && entPick.townId) showTownInspectorForTown(entPick.townId);
+          else hideTownInspector();
           refreshEntityList();
           entPointerDrag = {
             kind: tool === 'rotate' ? 'rotate' : 'move',
@@ -2208,6 +2367,7 @@
       if (tool === 'select') {
         selectedEntId = null;
         selectedSpawnOnly = false;
+        hideTownInspector();
         refreshEntityList();
       }
       return;
@@ -2353,6 +2513,7 @@
     }
     entities = entities.filter(x => x.id !== selectedEntId);
     selectedEntId = null;
+    hideTownInspector();
     syncEntityMeshes();
     refreshEntityList();
   });
@@ -2360,6 +2521,7 @@
     selectedEntId = null;
     selectedSpawnOnly = false;
     entPointerDrag = null;
+    hideTownInspector();
     refreshEntityList();
   });
 
@@ -2449,7 +2611,7 @@
       refreshSpawnHud();
       return;
     }
-    if (selectedEntId && (tool === 'select' || tool === 'rotate')
+    if (selectedEntId && !selectedSpawnOnly
       && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
       const ent = entities.find(x => x.id === selectedEntId);
       if (ent) {
@@ -3059,31 +3221,22 @@
         'Could not read PNG pixels (try another export or reload the image).';
       return;
     }
-    const sx0 = Math.max(0, Math.min(iw - 1, Math.floor(sx)));
-    const sy0 = Math.max(0, Math.min(ih - 1, Math.floor(sy)));
-    const swI = Math.max(1, Math.min(iw - sx0, Math.ceil(sw)));
-    const shI = Math.max(1, Math.min(ih - sy0, Math.ceil(sh)));
-    const scale = Math.min(GRID_N / swI, GRID_N / shI);
-    const destW = swI * scale;
-    const destH = shI * scale;
-    const ox = Math.floor((GRID_N - destW) * 0.5);
-    const oy = Math.floor((GRID_N - destH) * 0.5);
-    const letterLum = resolvedMode === 'height' ? 0.04 : 0.96;
+    const cropFrac = Math.max(1e-8, (u1 - u0) * (v1 - v0));
+    const inpHalf = document.getElementById('inp-map-half');
+    const baseHalf = inpHalf && Number(inpHalf.value) > 0 ? Number(inpHalf.value) : DEFAULT_WORLD_EDGE_CLAMP;
+    worldEdgeClamp = Math.max(MAP_HALF_MIN, Math.min(MAP_HALF_MAX, Math.round(baseHalf * Math.sqrt(cropFrac))));
+    if (inpHalf) inpHalf.value = String(worldEdgeClamp);
+    controls.maxDistance = worldEdgeClamp * 12;
     for (let iz = 0; iz < GRID_N; iz++) {
       for (let ix = 0; ix < GRID_N; ix++) {
-        const lx = ix - ox;
-        const lz = iz - oy;
-        let lum;
-        if (lx < 0 || lz < 0 || lx >= destW || lz >= destH) {
-          lum = letterLum;
-        } else {
-          const srcX = sx0 + Math.min(swI - 1, Math.floor((lx + 0.5) * swI / destW));
-          const srcY = sy0 + Math.min(shI - 1, Math.floor((lz + 0.5) * shI / destH));
-          const ii = (srcY * iw + srcX) * 4;
-          lum = (imgD[ii] + imgD[ii + 1] + imgD[ii + 2]) / (3 * 255);
-        }
-        const h = lumToHeight01(lum, resolvedMode);
-        heights[iz * GRID_N + ix] = h;
+        const tu = (ix + 0.5) / GRID_N;
+        const tv = (iz + 0.5) / GRID_N;
+        const pu = u0 + tu * (u1 - u0);
+        const pv = v0 + tv * (v1 - v0);
+        const fx = pu * iw - 0.5;
+        const fy = pv * ih - 0.5;
+        const lum = sampleImageLumBilinear(imgD, iw, ih, fx, fy);
+        heights[iz * GRID_N + ix] = lumToHeight01(lum, resolvedMode);
       }
     }
     if (resolvedMode === 'height') {
@@ -3092,12 +3245,13 @@
       dilateLandIntoShallowWater();
       dilateLandIntoShallowWater();
     }
-    flattenImportedLandInteriorPasses(resolvedMode === 'height' ? 2 : 1);
+    flattenImportedLandInteriorPasses(1, resolvedMode === 'height' ? 0.22 : 0.38);
     for (let i = 0; i < heights.length; i++) {
       if (heights[i] > WATER_THR) {
         heights[i] = WATER_THR + (heights[i] - WATER_THR) * EDITOR_PNG_LAND_REL_SCALE;
       }
     }
+    applyImportedShallowWaterShelfPasses(3);
     applyBeachShelfAndInlandGrassLift();
     buildTerrainMesh();
     syncEntityMeshes();
@@ -3106,7 +3260,7 @@
     refreshEditorWildlife();
     const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
     document.getElementById('status-bar').textContent =
-      `PNG applied (${modeNote}), nearest-pixel crop → grid. Top → world −Z, left → −X.`;
+      `PNG applied (${modeNote}) · ${GRID_N}² bilinear · map half ${worldEdgeClamp} · coast shelf on. Top → −Z, left → −X.`;
   }
 
   pngPreview.addEventListener('pointerdown', e => {
