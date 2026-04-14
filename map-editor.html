@@ -106,16 +106,31 @@
       <label class="row">Wind speed</label>
       <input type="range" id="wind-sp" min="0" max="18" step="0.1" value="5" />
 
+      <h3>Factions (chart &amp; export)</h3>
+      <p class="hint" style="margin-top:0;">Names and colors are saved in JSON and applied in the voyage. Click Apply after edits.</p>
+      <div style="display:grid;grid-template-columns:1fr 72px;gap:6px 8px;align-items:center;margin-bottom:8px;">
+        <label class="row" style="grid-column:1/-1;margin:0;">Faction 1</label>
+        <input type="text" id="fac-edit-name-0" maxlength="48" style="width:100%;box-sizing:border-box;" />
+        <input type="color" id="fac-edit-color-0" style="width:72px;height:28px;border:none;cursor:pointer;" />
+        <label class="row" style="grid-column:1/-1;margin:0;">Faction 2</label>
+        <input type="text" id="fac-edit-name-1" maxlength="48" style="width:100%;box-sizing:border-box;" />
+        <input type="color" id="fac-edit-color-1" style="width:72px;height:28px;border:none;cursor:pointer;" />
+        <label class="row" style="grid-column:1/-1;margin:0;">Faction 3</label>
+        <input type="text" id="fac-edit-name-2" maxlength="48" style="width:100%;box-sizing:border-box;" />
+        <input type="color" id="fac-edit-color-2" style="width:72px;height:28px;border:none;cursor:pointer;" />
+        <label class="row" style="grid-column:1/-1;margin:0;">Faction 4</label>
+        <input type="text" id="fac-edit-name-3" maxlength="48" style="width:100%;box-sizing:border-box;" />
+        <input type="color" id="fac-edit-color-3" style="width:72px;height:28px;border:none;cursor:pointer;" />
+      </div>
+      <div class="actions" style="margin-bottom:10px;">
+        <button type="button" id="btn-faction-apply">Apply faction labels</button>
+      </div>
+
       <h3>Towns</h3>
-      <label class="row">Town name</label>
+      <label class="row">New port name (required)</label>
       <input type="text" id="town-name" placeholder="e.g. Salt Haven" />
       <label class="row">Faction</label>
-      <select id="town-fac">
-        <option value="0">Crimson Compact</option>
-        <option value="1">Azure Covenant</option>
-        <option value="2">Verdant League</option>
-        <option value="3">Amber Syndicate</option>
-      </select>
+      <select id="town-fac"></select>
       <label class="row">Production export</label>
       <select id="town-export"></select>
       <label class="row">Stockpile (base amount)</label>
@@ -126,7 +141,8 @@
       </div>
 
       <h3>Assign building</h3>
-      <p class="hint">Select an entity in the list, choose a town, then Assign.</p>
+      <p class="hint">Choose <strong>Active town</strong> for new docks, houses, buildings, and flagpoles. Or select an entity and Assign to change its town.</p>
+      <label class="row">Active town (placements)</label>
       <select id="assign-town"></select>
       <div class="actions" style="flex-direction: row; flex-wrap: wrap;">
         <button type="button" id="btn-assign">Assign</button>
@@ -209,6 +225,41 @@
   const EDITOR_WAVE_SCALE = 0.42;
   const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
   const STORAGE_KEY = 'pirates_custom_map_v1';
+  const DEFAULT_EDIT_FACTION_NAMES = ['Crimson Compact', 'Azure Covenant', 'Verdant League', 'Amber Syndicate'];
+  const DEFAULT_EDIT_FACTION_COLORS = ['#c94a4a', '#4a7ac9', '#4ac97a', '#c9a24a'];
+  let editorFactionNames = DEFAULT_EDIT_FACTION_NAMES.slice();
+  let editorFactionColors = DEFAULT_EDIT_FACTION_COLORS.slice();
+  function rebuildTownFactionSelects() {
+    const tf = document.getElementById('town-fac');
+    if (!tf) return;
+    const cur = tf.value;
+    tf.innerHTML = '';
+    for (let i = 0; i < 4; i++) {
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = editorFactionNames[i] || DEFAULT_EDIT_FACTION_NAMES[i];
+      tf.appendChild(o);
+    }
+    if (cur != null && cur !== '') tf.value = cur;
+  }
+  function syncFactionEditorFieldsFromState() {
+    for (let i = 0; i < 4; i++) {
+      const n = document.getElementById('fac-edit-name-' + i);
+      const c = document.getElementById('fac-edit-color-' + i);
+      if (n) n.value = editorFactionNames[i] || '';
+      if (c) c.value = editorFactionColors[i] || '#888888';
+    }
+  }
+  function readFactionEditorFromDom() {
+    for (let i = 0; i < 4; i++) {
+      const n = document.getElementById('fac-edit-name-' + i);
+      const c = document.getElementById('fac-edit-color-' + i);
+      const nm = n && n.value.trim();
+      editorFactionNames[i] = nm || DEFAULT_EDIT_FACTION_NAMES[i];
+      if (c && c.value) editorFactionColors[i] = c.value;
+    }
+    rebuildTownFactionSelects();
+  }
 
   const qs = new URLSearchParams(location.search);
   const initialSeed = Number(qs.get('seed')) >>> 0;
@@ -252,6 +303,21 @@
   const ISLAND_CHANCE_PROC = 0.25;
   /** Gentler than falloff² — less “bucket” mesas (matches index.html). */
   const ISLAND_HEIGHT_FALLOFF_POW = 1.48;
+  /** Same deterministic port names as index.html `getProceduralIslandMeta`. */
+  const TOWN_NAME_LEXICON_ED = (() => {
+    const p = ['Port','Cape','New','Fort','East','West','North','South','Great','Little','Lost','Fair','Grim','High','Low',"Sailor's","Pirate's","Crow's",'Keel','Black','Red','White','Gold','Silver','Grey','Storm','Salt','Brine','Tide','Wave','Moon','Drift','Wreck','Anchor',"Smuggler's",'Barnacle',"King's","Queen's",'Rum','Dead','Lone','Free','Noble','Wild','Drowned','Hidden','Morrow','Sable','Ashen','Velvet','Iron','Coral','Pearl','Cursed','Blessed','Jolly','Misty','Crimson','Azure','Bitter','Sweet','Broken','Hollow','Proud','Humble','Fallow','Green','Blue','Northern','Southern','Eastern','Western'];
+    const b = ['haven','bay','ford','mouth','wick','burg','ton','by','mere','stead','harbor','cove','reef','point','reach','gate','watch','rest','cross','helm','ship','hold','water','rock','sand','cliff','springs','marsh','isle','banks','deep','shoals','landing','quay','jetty','yard','moor','lagoon','atoll','sound','gulf','strait','cut','channel','pass','roads','bayou','delta','head','bluff','knoll','ridge','strand','stairs','steps','den','nest','roost','perch'];
+    const out = [];
+    const seen = new Set();
+    for (const x of p) {
+      for (const y of b) {
+        const n = x + ' ' + y.charAt(0).toUpperCase() + y.slice(1);
+        if (!seen.has(n)) { seen.add(n); out.push(n); }
+      }
+    }
+    return out;
+  })();
+  const TOWN_NAME_TAGS_ED = ['', ' Reach', ' Roads', ' Moor', ' Cross', ' End', ' Vale', ' March', ' Gate', ' Stairs', ' Steps', ' Downs'];
   class SimplexNoiseEd {
     constructor(seed = 0) {
       this.p = new Uint8Array(512);
@@ -329,6 +395,97 @@
     const islandRadius = 15 + sizeFactor * 100 + h * 30;
     const islandHeight = 2.2 + sizeFactor * 12 + h * 5.5;
     return { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
+  }
+  function dryLandSampleForMetaEd(wx, wz, meta) {
+    if (!proceduralNoiseInst) return false;
+    const worldX = meta.worldX, worldZ = meta.worldZ;
+    const islandRadius = meta.radius, islandHeight = meta.maxH;
+    const px = wx - worldX, pz = wz - worldZ;
+    if (px * px + pz * pz > islandRadius * islandRadius * 1.45 * 1.45) return false;
+    const islandNoise = getCachedIslandNoiseEd(meta.cx, meta.cz);
+    const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+    const n1 = proceduralNoiseInst.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
+    const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
+    const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
+    const combined = n1 * 0.6 + n2 + ridges;
+    const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.12 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.04;
+    const warpedDist = dist + edgeWarp;
+    const falloff = Math.max(0, 1 - warpedDist * warpedDist);
+    const ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
+    return ht > 0.15 && warpedDist < 0.93;
+  }
+  function placeTownDockSeawardEd(meta) {
+    if (!meta || !meta.hasTown) return;
+    const wx0 = meta.worldX, wz0 = meta.worldZ;
+    const R = meta.radius;
+    const da = meta.dockAngle || 0;
+    const dirX = Math.cos(da), dirZ = Math.sin(da);
+    let lo = R * 0.22;
+    if (!dryLandSampleForMetaEd(wx0 + dirX * lo, wz0 + dirZ * lo, meta)) lo = Math.max(4, R * 0.06);
+    let hi = R * 1.05;
+    let guard = 0;
+    while (dryLandSampleForMetaEd(wx0 + dirX * hi, wz0 + dirZ * hi, meta) && hi < R * 1.78 && guard++ < 28) hi += R * 0.055;
+    if (dryLandSampleForMetaEd(wx0 + dirX * hi, wz0 + dirZ * hi, meta)) {
+      meta.dockX = wx0 + dirX * (R * 1.02);
+      meta.dockZ = wz0 + dirZ * (R * 1.02);
+      return;
+    }
+    for (let i = 0; i < 26; i++) {
+      const mid = (lo + hi) * 0.5;
+      if (dryLandSampleForMetaEd(wx0 + dirX * mid, wz0 + dirZ * mid, meta)) lo = mid;
+      else hi = mid;
+    }
+    const seaDist = hi + Math.min(11, R * 0.085);
+    meta.dockX = wx0 + dirX * seaDist;
+    meta.dockZ = wz0 + dirZ * seaDist;
+  }
+  function getProceduralIslandMetaWithTownEd(cx, cz, worldSeed) {
+    const base = getProceduralIslandMetaEd(cx, cz, worldSeed);
+    if (!base) return null;
+    const wsU = Number(worldSeed) >>> 0;
+    const meta = { ...base, hasTown: false };
+    const h = base.h;
+    if (meta.radius > 50 && h < 0.12) {
+      meta.hasTown = true;
+      meta.faction = ((cx * 7919 ^ cz * 9341 ^ wsU) >>> 0) % 4;
+      let th = (cx * 73856093 ^ cz * 19349663 ^ wsU ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
+      const baseIdx = th % TOWN_NAME_LEXICON_ED.length;
+      th = Math.imul(th, 1103515245) + 12345 >>> 0;
+      const tagIdx = th % TOWN_NAME_TAGS_ED.length;
+      meta.townName = TOWN_NAME_LEXICON_ED[baseIdx] + TOWN_NAME_TAGS_ED[tagIdx];
+      meta.dockAngle = (hashChunkEd(cx + 99, cz + 99, worldSeed) * 2 - 1) * Math.PI;
+      placeTownDockSeawardEd(meta);
+    }
+    return meta;
+  }
+  function syncTownsFromProceduralSeed(worldSeed) {
+    const seed = Number(worldSeed) >>> 0;
+    resetProceduralNoise(seed);
+    const out = [];
+    let nextNum = 1;
+    for (let cz = -WORLD_CHUNK_HALF; cz <= WORLD_CHUNK_HALF; cz++) {
+      for (let cx = -WORLD_CHUNK_HALF; cx <= WORLD_CHUNK_HALF; cx++) {
+        const m = getProceduralIslandMetaWithTownEd(cx, cz, seed);
+        if (!m || !m.hasTown) continue;
+        out.push({
+          id: 't' + (nextNum++),
+          townName: m.townName,
+          hasTown: true,
+          faction: m.faction,
+          exportGood: PORT_EXPORT_POOL[Math.abs((cx * 7919 ^ cz * 9341)) % PORT_EXPORT_POOL.length],
+          stockpileBase: 100 + Math.abs((cx + 100) * (cz + 100)) % 80,
+          cx: m.cx,
+          cz: m.cz,
+          worldX: m.worldX,
+          worldZ: m.worldZ,
+          dockX: m.dockX,
+          dockZ: m.dockZ,
+          dockAngle: m.dockAngle
+        });
+      }
+    }
+    towns = out;
+    townSeq = nextNum;
   }
   function sampleIslandLandHeightEd(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise) {
     if (!proceduralNoiseInst) return -1;
@@ -463,8 +620,10 @@
     if (variance > 0.032 && fracBright < 0.035 && mean > 0.18 && mean < 0.75) return 'height';
     return 'mask';
   }
-  /** Extra lift for imported land (stored0..1) so islands read tall and coasts aren’t starved. */
-  const PNG_LAND_GAIN = 1.22;
+  /** Mild lift — keep imported heightmap closer to in-game island relief. */
+  const PNG_LAND_GAIN = 1.05;
+  /** After PNG decode, compress land range toward sea (editor preview vs chunky mesas). */
+  const EDITOR_PNG_LAND_REL_SCALE = 0.66;
   function boostLandHeight01(h) {
     if (h <= WATER_THR) return h;
     return Math.min(1, WATER_THR + 0.045 + (h - WATER_THR) * PNG_LAND_GAIN);
@@ -475,8 +634,8 @@
     if (mode === 'height') {
       if (lum < 0.11) return DEEP_WATER_H;
       const t = clamp01((lum - 0.11) / 0.89);
-      const shaped = Math.pow(t, 0.92);
-      let h = Math.max(WATER_THR + 0.08, Math.min(1, shaped * 0.98 + 0.02));
+      const shaped = Math.pow(t, 1.05);
+      let h = Math.max(WATER_THR + 0.06, Math.min(0.92, shaped * 0.82 + 0.04));
       return boostLandHeight01(h);
     }
     if (lum > 0.93) return WATER_THR * 0.35;
@@ -1189,12 +1348,19 @@
   function refreshEntityList() {
     const el = document.getElementById('entity-list');
     const at = document.getElementById('assign-town');
+    const prevSel = at.value;
     at.innerHTML = '<option value="">— town —</option>';
     towns.forEach(t => {
       const o = document.createElement('option');
       o.value = t.id; o.textContent = t.townName || t.id;
       at.appendChild(o);
     });
+    if (towns.length) {
+      const keep = towns.some(t => t.id === prevSel);
+      at.value = keep ? prevSel : towns[0].id;
+    } else {
+      at.value = '';
+    }
     el.innerHTML = entities.map(e => {
       const tn = e.townId ? towns.find(t => t.id === e.townId) : null;
       const tag = tn ? ` [${tn.townName}]` : '';
@@ -1246,10 +1412,18 @@
     pendingSculptBeachRefresh = true;
   }
 
+  function activePlacementTownId() {
+    const v = document.getElementById('assign-town').value;
+    return v || null;
+  }
   function placeEntity(wx, wz) {
     if (tool === 'select' || tool === 'rotate') return;
-    const lastTown = towns[towns.length - 1];
-    const tid = (lastTown && ['dock', 'house', 'flagpole', 'building'].includes(tool)) ? lastTown.id : null;
+    const needsTown = ['dock', 'house', 'flagpole', 'building'].includes(tool);
+    const tid = needsTown ? activePlacementTownId() : null;
+    if (needsTown && !tid) {
+      alert('Choose an active town in “Assign building” first, or add a town.');
+      return;
+    }
     const e = {
       id: 'e' + (entSeq++),
       type: tool,
@@ -1259,7 +1433,6 @@
     if (['dock', 'building', 'house', 'flagpole'].includes(tool)) {
       e.rot = controls.getAzimuthalAngle();
     }
-    if (tool === 'dock' || tool === 'house') e.townId = lastTown ? lastTown.id : null;
     entities.push(e);
     selectedEntId = e.id;
     syncEntityMeshes();
@@ -1367,7 +1540,11 @@
   });
 
   document.getElementById('btn-add-town').addEventListener('click', () => {
-    const townName = document.getElementById('town-name').value.trim() || `Town ${townSeq}`;
+    const townName = document.getElementById('town-name').value.trim();
+    if (!townName) {
+      alert('Enter a port name before adding a town.');
+      return;
+    }
     const faction = Number(document.getElementById('town-fac').value) | 0;
     const exportGood = document.getElementById('town-export').value;
     const stockBase = Math.max(0, Number(document.getElementById('town-stock').value) | 0);
@@ -1391,15 +1568,15 @@
       dockZ: wz,
       dockAngle
     });
-    document.getElementById('status-bar').textContent = `Added ${townName} — place dock & buildings, then use Assign for each.`;
+    document.getElementById('status-bar').textContent = `Added ${townName} — active town is set; paint docks & buildings (or Assign to re-link).`;
     refreshEntityList();
   });
 
   document.getElementById('btn-flag-here').addEventListener('click', () => {
-    const t = towns[towns.length - 1];
-    if (!t) { alert('Add a town first.'); return; }
+    const tid = activePlacementTownId();
+    if (!tid) { alert('Choose an active town in “Assign building” first.'); return; }
     const p = controls.target;
-    entities.push({ id: 'e' + (entSeq++), type: 'flagpole', x: p.x, z: p.z, townId: t.id });
+    entities.push({ id: 'e' + (entSeq++), type: 'flagpole', x: p.x, z: p.z, townId: tid, rot: controls.getAzimuthalAngle() });
     syncEntityMeshes();
     refreshEntityList();
   });
@@ -1543,7 +1720,11 @@
         ...t,
         stockpile: t.stockpile && typeof t.stockpile === 'object' ? t.stockpile : buildStockpileObject(t)
       })),
-      entities
+      entities,
+      factions: {
+        names: editorFactionNames.slice(0, 4),
+        colors: editorFactionColors.slice(0, 4)
+      }
     };
   }
   function buildStockpileObject(t) {
@@ -1553,6 +1734,23 @@
     PORT_EXPORT_POOL.forEach(g => { o[g] = base + ((g.length * 7 + sid) % 40); });
     if (t.exportGood) o[t.exportGood] = (o[t.exportGood] || 0) + 50;
     return o;
+  }
+
+  function applyEditorFactionsFromSerializedData(data) {
+    if (!data || !data.factions || typeof data.factions !== 'object') {
+      editorFactionNames = DEFAULT_EDIT_FACTION_NAMES.slice();
+      editorFactionColors = DEFAULT_EDIT_FACTION_COLORS.slice();
+    } else {
+      const fn = Array.isArray(data.factions.names) ? data.factions.names : null;
+      const fc = Array.isArray(data.factions.colors) ? data.factions.colors : null;
+      for (let i = 0; i < 4; i++) {
+        const rawN = fn && fn[i] != null ? String(fn[i]).trim() : '';
+        editorFactionNames[i] = rawN || DEFAULT_EDIT_FACTION_NAMES[i];
+        editorFactionColors[i] = (fc && fc[i]) ? String(fc[i]) : DEFAULT_EDIT_FACTION_COLORS[i];
+      }
+    }
+    rebuildTownFactionSelects();
+    syncFactionEditorFieldsFromState();
   }
 
   function applyProceduralWorldPayload(data, seedForced) {
@@ -1603,6 +1801,7 @@
     townSeq = Math.max(1, towns.length + 1);
     entSeq = Math.max(1, entities.length + 1);
     fillHeightsFromProceduralSeed(seed);
+    if (!towns.length) syncTownsFromProceduralSeed(seed);
     buildTerrainMesh();
     syncEntityMeshes();
     refreshEntityList();
@@ -1625,6 +1824,7 @@
 
   function applySerialized(data) {
     if (!data || typeof data !== 'object') return;
+    applyEditorFactionsFromSerializedData(data);
     const sb = document.getElementById('status-bar');
     const seedSrc = data.seed != null ? data.seed : data.worldSeed;
     const hasSeed = seedSrc !== undefined && seedSrc !== null && String(seedSrc).trim() !== '';
@@ -1636,10 +1836,10 @@
       }
       const s = Number(seedSrc) >>> 0;
       applyProceduralWorldPayload(data, s);
-      const nT = Array.isArray(data.towns) ? data.towns.length : 0;
+      const nT = towns.length;
       if (sb) {
         sb.textContent = nT
-          ? `Procedural map (seed ${s}) with ${nT} towns from file.`
+          ? `Procedural map (seed ${s}) — ${nT} port(s) (from file or generated).`
           : `Procedural map from seed ${s} — same generator as the main game.`;
       }
       return;
@@ -1714,12 +1914,13 @@
     entSeq = 1;
     refreshSpawnHud();
     fillHeightsFromProceduralSeed(s);
+    syncTownsFromProceduralSeed(s);
     buildTerrainMesh();
     syncEntityMeshes();
     refreshEntityList();
     frameEntireMap();
     document.getElementById('status-bar').textContent =
-      `Procedural archipelago (seed ${s}) — paint, add towns, or export JSON.`;
+      `Procedural archipelago (seed ${s}) — ${towns.length} port(s) from generator; paint or export JSON.`;
   });
 
   document.getElementById('btn-save-json').addEventListener('click', () => {
@@ -1888,6 +2089,11 @@
     }
     if (resolvedMode === 'mask' || resolvedMode === 'mask_inv') dilateLandIntoShallowWater();
     plateauLandDepressions();
+    for (let i = 0; i < heights.length; i++) {
+      if (heights[i] > WATER_THR) {
+        heights[i] = WATER_THR + (heights[i] - WATER_THR) * EDITOR_PNG_LAND_REL_SCALE;
+      }
+    }
     applyBeachShelfAndInlandGrassLift();
     buildTerrainMesh();
     syncEntityMeshes();
@@ -2087,6 +2293,12 @@
   }
   requestAnimationFrame(tick);
 
+  rebuildTownFactionSelects();
+  syncFactionEditorFieldsFromState();
+  document.getElementById('btn-faction-apply').addEventListener('click', () => {
+    readFactionEditorFromDom();
+    document.getElementById('status-bar').textContent = 'Faction labels saved for this session — export JSON to persist.';
+  });
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) applySerialized(JSON.parse(raw));
