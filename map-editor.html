@@ -250,6 +250,8 @@
 
   /** Procedural archipelago (matches index.html island sampling for the same seed). */
   const ISLAND_CHANCE_PROC = 0.25;
+  /** Gentler than falloff² — less “bucket” mesas (matches index.html). */
+  const ISLAND_HEIGHT_FALLOFF_POW = 1.48;
   class SimplexNoiseEd {
     constructor(seed = 0) {
       this.p = new Uint8Array(512);
@@ -325,7 +327,7 @@
     const worldX = cx * CHUNK_SIZE, worldZ = cz * CHUNK_SIZE;
     const sizeFactor = (hashChunkEd(cx + 11, cz + 29, worldSeed) * 0.55 + hashChunkEd(cx - 17, cz + 41, worldSeed) * 0.45);
     const islandRadius = 15 + sizeFactor * 100 + h * 30;
-    const islandHeight = 3 + sizeFactor * 18 + h * 8;
+    const islandHeight = 2.2 + sizeFactor * 12 + h * 5.5;
     return { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
   }
   function sampleIslandLandHeightEd(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise) {
@@ -338,7 +340,7 @@
     const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.12 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.04;
     const warpedDist = dist + edgeWarp;
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
-    let ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
+    let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
     const isLand = ht > 0.15 && warpedDist < 0.93;
     if (!isLand) {
       const edgeFade = Math.max(0, 1 - warpedDist) * 2;
@@ -363,7 +365,7 @@
       }
     }
     if (best < 0 || !Number.isFinite(best)) return DEEP_WATER_H;
-    const h01 = Math.min(1, best / 24);
+    const h01 = Math.min(1, best / 30);
     return Math.max(WATER_THR + 0.02, h01);
   }
   function fillHeightsFromProceduralSeed(worldSeed) {
@@ -510,23 +512,21 @@
    * Pull land up toward local neighborhood max to remove bowl-shaped “hollow” pits from PNG curves / feathering.
    */
   function plateauLandDepressions() {
-    for (let pass = 0; pass < 3; pass++) {
-      const copy = new Float32Array(heights);
-      for (let gz = 1; gz < GRID_N - 1; gz++) {
-        for (let gx = 1; gx < GRID_N - 1; gx++) {
-          const i = gz * GRID_N + gx;
-          const hi = copy[i];
-          if (hi <= WATER_THR + 0.02) continue;
-          let mx = hi;
-          for (let dz = -1; dz <= 1; dz++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              const h = copy[(gz + dz) * GRID_N + gx + dx];
-              if (h > WATER_THR) mx = Math.max(mx, h);
-            }
+    const copy = new Float32Array(heights);
+    for (let gz = 1; gz < GRID_N - 1; gz++) {
+      for (let gx = 1; gx < GRID_N - 1; gx++) {
+        const i = gz * GRID_N + gx;
+        const hi = copy[i];
+        if (hi <= WATER_THR + 0.02) continue;
+        let mx = hi;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const h = copy[(gz + dz) * GRID_N + gx + dx];
+            if (h > WATER_THR) mx = Math.max(mx, h);
           }
-          const lift = mx * 0.992;
-          if (lift > hi + 0.004) heights[i] = Math.min(1, lift);
         }
+        const lift = mx * 0.982;
+        if (lift > hi + 0.014) heights[i] = Math.min(1, lift);
       }
     }
   }
@@ -560,9 +560,11 @@
         const h = copy[i];
         if (h <= WATER_THR) continue;
         if (coastal[i]) {
-          heights[i] = Math.min(h, WATER_THR + 0.1);
+          const cap = WATER_THR + 0.102;
+          const t = Math.min(h, cap);
+          heights[i] = h * 0.42 + t * 0.58;
         } else {
-          heights[i] = Math.min(1, Math.max(h, WATER_THR + 0.13) + 0.04);
+          heights[i] = Math.min(1, h + 0.008);
         }
       }
     }
@@ -1880,20 +1882,19 @@
         const p = (iz * GRID_N + ix) * 4;
         const lum = (d[p] + d[p + 1] + d[p + 2]) / (3 * 255);
         const h = lumToHeight01(lum, resolvedMode);
-        const gz = GRID_N - 1 - iz;
-        heights[gz * GRID_N + ix] = h;
+        /* Canvas row 0 = image top → gz = 0 (world −Z); matches worldToGrid / voyage sampling. */
+        heights[iz * GRID_N + ix] = h;
       }
     }
     if (resolvedMode === 'mask' || resolvedMode === 'mask_inv') dilateLandIntoShallowWater();
     plateauLandDepressions();
-    /* Coast shelf + inland grass lift; same height grid as game: v = (wz+lim)/(2*lim) → gz, image top → +Z. */
     applyBeachShelfAndInlandGrassLift();
     buildTerrainMesh();
     syncEntityMeshes();
     frameEntireMap();
     const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
     document.getElementById('status-bar').textContent =
-      `PNG applied (${modeNote}). Top of image → +Z world; columns L→R = −X → +X (matches voyage sampling).`;
+      `PNG applied (${modeNote}). Image top → world −Z, left → −X (upright vs canvas).`;
   }
 
   pngPreview.addEventListener('pointerdown', e => {
