@@ -878,7 +878,7 @@ const G = {
   combatPopups3D: [],
   swimmers: [],
   selectedAmmoType: 'ball',
-  playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
+  playerSinking: false, playerSinkTimer: 0, respawnAnchorX: 0, respawnAnchorZ: 0, lastAttacker: '', lastAttackerId: null,
   nearDock: null, docked: false, quests: [],
   /** Recent finished contracts & story beats for Captains Log (newest first). */
   completedMissionLog: [],
@@ -1453,6 +1453,29 @@ function ensurePlayerInOpenOcean() {
     }
   }
   clampPlayerIntoWorldBounds();
+}
+
+function pickOpenRespawnNear(deathX, deathZ) {
+  let s = ((G.worldSeed | 0) ^ 0x4d2e6b9a ^ (Math.floor(deathX * 0.01) * 2654435761 >>> 0) ^ (Math.floor(deathZ * 0.01) * 1597334677 >>> 0)) >>> 0;
+  const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  const tryRing = (minD, maxD, trials) => {
+    for (let attempt = 0; attempt < trials; attempt++) {
+      const ang = rnd() * Math.PI * 2;
+      const dist = minD + rnd() * (maxD - minD);
+      const nx = deathX + Math.cos(ang) * dist;
+      const nz = deathZ + Math.sin(ang) * dist;
+      if (!isSeaObstructed(nx, nz)) {
+        G.player.x = nx;
+        G.player.z = nz;
+        clampPlayerIntoWorldBounds();
+        if (!isSeaObstructed(G.player.x, G.player.z)) return true;
+      }
+    }
+    return false;
+  };
+  if (tryRing(RESPAWN_RING_MIN, RESPAWN_RING_MAX, 56)) return;
+  if (tryRing(380, 980, 44)) return;
+  ensurePlayerInOpenOcean();
 }
 
 function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, centerWx, centerWz, worldSeedOpt) {
@@ -2645,7 +2668,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
 
   if (shipName) {
     const swatch = flagColor ? String(flagColor) : '';
-    const label = makeTextSprite(shipName, flagColor ? '#ff8888' : '#d4a848', '', swatch);
+    const label = makeTextSprite(shipName, '#d4a848', '', swatch);
     label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     g.add(label);
   }
@@ -3172,6 +3195,31 @@ function processProvisionsDrain(dt) {
 
 let shipNameSprite = null;
 
+/** 2D pirate flag (field + skull) for nametag swatch — matches ship flag style. */
+function drawPirateFlagSwatch2d(ctx, x, y, fw, fh, flagColorHex) {
+  const fc = String(flagColorHex || '#1a1a1a').trim();
+  ctx.save();
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, fw, fh, 6);
+  else ctx.rect(x, y, fw, fh);
+  ctx.clip();
+  ctx.fillStyle = fc;
+  ctx.fillRect(x, y, fw, fh);
+  ctx.fillStyle = fc ? '#000' : '#ddd';
+  const skullPx = Math.max(11, Math.min(fw, fh) * 0.52);
+  ctx.font = `${skullPx}px serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\u2620', x + fw * 0.5, y + fh * 0.52);
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, fw, fh, 6);
+  else ctx.rect(x, y, fw, fh);
+  ctx.stroke();
+}
+
 function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex = '') {
   const canvas = document.createElement('canvas');
   canvas.width = 512; canvas.height = 80;
@@ -3183,10 +3231,7 @@ function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex 
   ctx.roundRect(8, 4, 496, 72, 10); ctx.stroke();
   const hasFac = !!factionColorHex;
   if (hasFac) {
-    ctx.fillStyle = factionColorHex;
-    ctx.roundRect(18, 20, 44, 36, 6); ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1;
-    ctx.roundRect(18, 20, 44, 36, 6); ctx.stroke();
+    drawPirateFlagSwatch2d(ctx, 18, 20, 44, 36, factionColorHex);
   }
   ctx.font = 'bold 28px Georgia, serif';
   ctx.fillStyle = color;
@@ -3704,7 +3749,10 @@ const PLAYER_BROADSIDE_COOLDOWN = 2.5;
 /** Death: ship fully sinks for this long before respawn countdown begins. */
 const PLAYER_DEATH_SINK_SEC = 5.2;
 /** After the sink animation, wait this many seconds before respawning. */
-const PLAYER_RESPAWN_DELAY_SEC = 2;
+const PLAYER_RESPAWN_DELAY_SEC = 5;
+/** Respawn point is chosen in open water between these radii from the death position. */
+const RESPAWN_RING_MIN = 220;
+const RESPAWN_RING_MAX = 420;
 function getPlayerVelocityForLead() {
   const spec = SHIP_TYPES[G.player.shipType];
   const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
@@ -4759,10 +4807,23 @@ function connectToServer() {
           G.player.color = msg.player.color;
         }
         if (msg.players) {
+          const incoming = new Set();
           msg.players.forEach(p => {
+            incoming.add(p.id);
             G.otherPlayers.set(p.id, p);
             refreshOtherPlayerShipCacheKey(G.otherPlayers.get(p.id));
           });
+          for (const oid of Array.from(G.otherPlayers.keys())) {
+            if (incoming.has(oid)) continue;
+            disposeRemoteDockRopes(oid);
+            const lid = Number(oid);
+            if (Number.isFinite(lid)) G.pendingRemoteShipSink.delete(lid);
+            G.otherPlayers.delete(oid);
+            if (otherShipGroups.has(oid)) {
+              scene.remove(otherShipGroups.get(oid));
+              otherShipGroups.delete(oid);
+            }
+          }
         }
         if (G.mode === 'playing' && !hasSave) ensurePlayerInOpenOcean();
         if (G.mode === 'playing' && msg.player && !hasSave) flushGameViewRender();
@@ -4795,16 +4856,31 @@ function connectToServer() {
         if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); }
         break;
       }
-      case 'state':
+      case 'state': {
+        if (!msg.players || !Array.isArray(msg.players)) break;
+        const incoming = new Set();
         msg.players.forEach(p => {
           if (p.id === G.myId) return;
+          incoming.add(p.id);
           const ex = G.otherPlayers.get(p.id);
           if (ex) Object.assign(ex, p);
           else G.otherPlayers.set(p.id, p);
           const row = G.otherPlayers.get(p.id);
           if (row) refreshOtherPlayerShipCacheKey(row);
         });
+        for (const oid of Array.from(G.otherPlayers.keys())) {
+          if (incoming.has(oid)) continue;
+          disposeRemoteDockRopes(oid);
+          const lid = Number(oid);
+          if (Number.isFinite(lid)) G.pendingRemoteShipSink.delete(lid);
+          G.otherPlayers.delete(oid);
+          if (otherShipGroups.has(oid)) {
+            scene.remove(otherShipGroups.get(oid));
+            otherShipGroups.delete(oid);
+          }
+        }
         break;
+      }
       case 'ship_update': {
         const p = G.otherPlayers.get(msg.id);
         if (p) {
@@ -5085,7 +5161,8 @@ function sendUpdate() {
     shipName: G.player.shipName,
     shipParts: { ...G.player.shipParts },
     flagColor: G.player.flagColor || '#1a1a1a',
-    crewData: buildCrewSyncPayload()
+    crewData: buildCrewSyncPayload(),
+    worldHidden: !!(G.playerSinking || (G.player.health <= 0 && G.mode === 'playing'))
   };
   ws.send(JSON.stringify(payload));
 }
@@ -8063,14 +8140,16 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     ctx.fillText(p.shipName || p.name || 'Player', sx, sy - 10);
   });
 
-  const px = wx2sx(G.player.x), py = wz2sy(G.player.z);
-  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
-  const pr = G.player.rotation;
-  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2.5; ctx.beginPath();
-  ctx.moveTo(px, py); ctx.lineTo(px - Math.sin(pr) * 14, py - Math.cos(pr) * 14); ctx.stroke();
-  ctx.fillStyle = '#d4a848'; ctx.font = 'bold 12px Georgia,serif'; ctx.textAlign = 'center';
-  ctx.fillText(G.player.shipName || 'You', px, py + 18);
+  if (!G.playerSinking && G.player.health > 0) {
+    const px = wx2sx(G.player.x), py = wz2sy(G.player.z);
+    ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
+    const pr = G.player.rotation;
+    ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2.5; ctx.beginPath();
+    ctx.moveTo(px, py); ctx.lineTo(px - Math.sin(pr) * 14, py - Math.cos(pr) * 14); ctx.stroke();
+    ctx.fillStyle = '#d4a848'; ctx.font = 'bold 12px Georgia,serif'; ctx.textAlign = 'center';
+    ctx.fillText(G.player.shipName || 'You', px, py + 18);
+  }
 
   G.quests.filter(q => q.accepted).forEach(q => {
     if (q.type === 'explore') {
@@ -8376,9 +8455,11 @@ function drawMinimap() {
       }
     }
   }
-  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
-  ctx.lineTo(cx - Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
+  if (!G.playerSinking && G.player.health > 0) {
+    ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx - Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
+  }
   ctx.strokeStyle = 'rgba(180,140,60,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(1, 1, w - 2, h - 2);
 }
 document.getElementById('minimap').addEventListener('wheel', e => {
@@ -8576,9 +8657,10 @@ function update(dt) {
   }
 
   const hasGuns = G.player.shipParts.cannon && G.player.shipParts.cannon !== 'none';
-  arcLeft.visible = hasGuns;
-  arcRight.visible = hasGuns;
-  if (hasGuns) {
+  const showCombatArcs = hasGuns && !G.playerSinking && G.player.health > 0;
+  arcLeft.visible = showCombatArcs;
+  arcRight.visible = showCombatArcs;
+  if (showCombatArcs) {
     arcLeft.position.set(G.player.x, SEA_LEVEL + 2, G.player.z);
     arcLeft.rotation.y = G.player.rotation + Math.PI / 2;
     arcRight.position.set(G.player.x, SEA_LEVEL + 2, G.player.z);
@@ -9011,6 +9093,9 @@ function update(dt) {
       ws.send(JSON.stringify({ type: 'pvp_kill_credit', killerId: G.lastAttackerId, kills: 1, loot: lootEst }));
     }
     G.playerSinking = true; G.playerSinkTimer = 0;
+    G.respawnAnchorX = G.player.x;
+    G.respawnAnchorZ = G.player.z;
+    playerShipGroup.visible = true;
     G.playerSinkY = playerShipGroup.position.y;
     G.dockingAnim = null;
     G.player.speed = 0; G.player.anchored = true;
@@ -9030,10 +9115,13 @@ function update(dt) {
     }
     document.getElementById('death-overlay').style.display = 'flex';
     document.getElementById('death-killer').textContent = G.lastAttacker ? `Sunk by: ${G.lastAttacker}` : 'Lost at sea';
+    if (ws?.readyState === 1) sendUpdate();
   }
   if (G.playerSinking) {
     G.playerSinkTimer += dt;
     const sinkDone = G.playerSinkTimer >= PLAYER_DEATH_SINK_SEC;
+    if (sinkDone) playerShipGroup.visible = false;
+    else playerShipGroup.visible = true;
     const elTimer = document.getElementById('death-timer');
     if (elTimer) {
       if (!sinkDone) elTimer.textContent = 'Ship going under…';
@@ -9050,15 +9138,15 @@ function update(dt) {
       G.playerSinkTimer = 0;
       G.player.health = 100; G.player.anchored = false;
       syncAnchorToolbarButton();
-      G.player.x += (Math.random() - 0.5) * 100;
-      G.player.z += (Math.random() - 0.5) * 100;
-      ensurePlayerInOpenOcean();
+      pickOpenRespawnNear(G.respawnAnchorX, G.respawnAnchorZ);
       G.player.speed = 1;
       G.lastAttackerId = null;
       G.lastAttacker = '';
+      playerShipGroup.visible = true;
       applyDefaultStartingLoadout({ preserveCaptainIdentity: true });
       document.getElementById('death-overlay').style.display = 'none';
       notify('Respawned with a fresh crew and hold — your captain name and ship are unchanged.');
+      if (ws?.readyState === 1) sendUpdate();
     }
   }
 
