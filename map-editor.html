@@ -120,6 +120,7 @@
         </div>
         <label class="row">Placed entities</label>
         <div id="entity-list"></div>
+        <div id="town-inspect-panel" style="display:none;margin-top:10px;padding:10px;border-radius:8px;border:1px solid rgba(120,200,160,0.35);background:rgba(8,22,18,0.75);font-size:10px;line-height:1.45;color:#c8e8dc;"></div>
         <label class="row">Active town (docks, houses, flags)</label>
         <select id="assign-town"></select>
         <div class="actions">
@@ -1759,6 +1760,73 @@
         entRoot.add(m);
       }
     }
+    applyTownEntityEmissiveHighlight();
+  }
+
+  function applyTownEntityEmissiveHighlight() {
+    const sel = entities.find(x => x.id === selectedEntId);
+    const highlightTownId = sel && sel.type === 'flagpole' && sel.townId ? sel.townId : null;
+    const hiTypes = new Set(['building', 'house', 'dock', 'flagpole']);
+    for (const ch of entRoot.children) {
+      const eid = ch.userData.editorEntityId;
+      const ent = entities.find(e => e.id === eid);
+      const match = !!(highlightTownId && ent && ent.townId === highlightTownId && hiTypes.has(ent.type));
+      ch.traverse(obj => {
+        if (!obj.isMesh || !obj.material) return;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const mat of mats) {
+          if (!mat.emissive) continue;
+          const key = mat.uuid || 'm';
+          if (obj.userData._edBaseEmissiveByMat == null) obj.userData._edBaseEmissiveByMat = {};
+          if (obj.userData._edBaseEmissiveByMat[key] == null) {
+            obj.userData._edBaseEmissiveByMat[key] = mat.emissive.clone();
+          }
+          const base = obj.userData._edBaseEmissiveByMat[key];
+          if (match) {
+            mat.emissive.copy(base).lerp(new THREE.Color(0x44c878), 0.5);
+          } else {
+            mat.emissive.copy(base);
+          }
+        }
+      });
+    }
+  }
+
+  function updateTownInspectPanel() {
+    const panel = document.getElementById('town-inspect-panel');
+    if (!panel) return;
+    const sel = entities.find(x => x.id === selectedEntId);
+    if (!sel || sel.type !== 'flagpole' || !sel.townId) {
+      panel.style.display = 'none';
+      panel.innerHTML = '';
+      return;
+    }
+    const town = towns.find(t => t.id === sel.townId);
+    if (!town) {
+      panel.style.display = 'none';
+      return;
+    }
+    const fi = (town.faction != null ? Number(town.faction) : 0) % 4;
+    const facName = editorFactionNames[fi] || DEFAULT_EDIT_FACTION_NAMES[fi];
+    const facCol = editorFactionColors[fi] || DEFAULT_EDIT_FACTION_COLORS[fi];
+    const exp = town.exportGood != null ? String(town.exportGood) : '—';
+    const stockBase = town.stockpileBase != null
+      ? town.stockpileBase
+      : (town.stockpile && typeof town.stockpile === 'object'
+        ? `${Object.keys(town.stockpile).length} goods (in JSON)`
+        : '—');
+    const nBuild = entities.filter(e => e.townId === town.id && ['building', 'house', 'dock'].includes(e.type)).length;
+    panel.style.display = 'block';
+    panel.innerHTML = [
+      '<div style="font-weight:bold;color:#9ee8c0;margin-bottom:6px;">Port: ',
+      String(town.townName || town.id).replace(/</g, '\u003c'),
+      '</div>',
+      `<div><span style="opacity:0.75">Faction</span> · ${facName} <span style="display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:middle;margin-left:4px;background:${facCol};border:1px solid rgba(255,255,255,0.2);"></span></div>`,
+      `<div><span style="opacity:0.75">Export</span> · ${exp}</div>`,
+      `<div><span style="opacity:0.75">Stockpile base</span> · ${stockBase}</div>`,
+      `<div><span style="opacity:0.75">Chunk</span> · ${town.cx}, ${town.cz}</div>`,
+      `<div><span style="opacity:0.75">Town structures</span> · ${nBuild} (dock/buildings/houses) — highlighted in green</div>`
+    ].join('');
   }
 
   function refreshEntityPlacementInScene(ent) {
@@ -1840,6 +1908,8 @@
       });
     });
     refreshTownOverlays();
+    updateTownInspectPanel();
+    applyTownEntityEmissiveHighlight();
   }
 
   const raycaster = new THREE.Raycaster();
@@ -2188,6 +2258,7 @@
   });
 
   function serializeMap() {
+    readFactionEditorFromDom();
     const buf = new Uint8Array(heights.buffer.slice(0));
     let bin = '';
     for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
@@ -2195,6 +2266,15 @@
     const seed = parseWorldSeed32(document.getElementById('inp-seed').value);
     const windAngle = Number(document.getElementById('wind-a').value) * Math.PI * 2;
     const windSpeed = Number(document.getElementById('wind-sp').value);
+    const entitiesOut = JSON.parse(JSON.stringify(entities));
+    const townsOut = towns.map(t => {
+      const copy = JSON.parse(JSON.stringify(t));
+      copy.hasTown = true;
+      copy.stockpile = t.stockpile && typeof t.stockpile === 'object'
+        ? JSON.parse(JSON.stringify(t.stockpile))
+        : buildStockpileObject(t);
+      return copy;
+    });
     return {
       version: 1,
       gridN: GRID_N,
@@ -2216,11 +2296,8 @@
             rotation: playerSpawn.rotation != null ? playerSpawn.rotation : 0
           }
         : null,
-      towns: towns.map(t => ({
-        ...t,
-        stockpile: t.stockpile && typeof t.stockpile === 'object' ? t.stockpile : buildStockpileObject(t)
-      })),
-      entities,
+      towns: townsOut,
+      entities: entitiesOut,
       factions: {
         names: editorFactionNames.slice(0, 4),
         colors: editorFactionColors.slice(0, 4)
@@ -2452,8 +2529,18 @@
       };
     } else playerSpawn = null;
     refreshSpawnHud();
-    townSeq = towns.length + 1;
-    entSeq = entities.length + 1;
+    let maxT = 0;
+    for (const t of towns) {
+      const mt = /^t(\d+)$/.exec(String(t.id || ''));
+      if (mt) maxT = Math.max(maxT, parseInt(mt[1], 10));
+    }
+    townSeq = Math.max(1, maxT + 1);
+    let maxE = 0;
+    for (const e of entities) {
+      const me = /^e(\d+)$/.exec(String(e.id || ''));
+      if (me) maxE = Math.max(maxE, parseInt(me[1], 10));
+    }
+    entSeq = Math.max(1, maxE + 1);
     buildTerrainMesh();
     syncEntityMeshes();
     refreshEntityList();
