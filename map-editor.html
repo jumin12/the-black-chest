@@ -60,7 +60,7 @@
   <div id="app">
     <aside id="sidebar">
       <h2>Map editor</h2>
-      <p class="hint">Drag on terrain to sculpt. PNG import supports <strong>coast masks</strong> (dark land, bright water) and <strong>heightmaps</strong> (dark low, bright high). Crop on the preview, then apply. Optional circular chart.</p>
+      <p class="hint">Drag on terrain to sculpt. PNG import supports <strong>coast masks</strong> (dark land, bright water) and <strong>heightmaps</strong> (dark low, bright high). Crop on the preview, then apply. The full square is used as the chart.</p>
 
       <h3>Tool</h3>
       <div class="tool-grid" id="tools"></div>
@@ -147,10 +147,6 @@
           <option value="auto">Auto (detect mask vs heightmap)</option>
           <option value="height">Heightmap — dark low / shallow, bright high</option>
         </select>
-        <label class="row" style="margin-top:8px;display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;">
-          <input type="checkbox" id="png-circular" checked style="width:auto;" />
-          Circular chart (outside disc = deep water)
-        </label>
         <p class="hint" style="margin-top:8px;">Drag a rectangle on the preview to crop (like a photo crop). Reset for full image.</p>
         <canvas id="png-preview" width="260" height="260"></canvas>
         <div class="actions" style="flex-direction:row;flex-wrap:wrap;margin-top:8px;">
@@ -322,14 +318,10 @@
     return boostLandHeight01(h);
   }
   /** One-step dilate: shallow water cells touching land inherit a bit of height (fills noisy PNG gaps). */
-  function dilateLandIntoShallowWater(circular) {
+  function dilateLandIntoShallowWater() {
     const copy = new Float32Array(heights);
-    const seg = GRID_N - 1;
     for (let gz = 1; gz < GRID_N - 1; gz++) {
       for (let gx = 1; gx < GRID_N - 1; gx++) {
-        const nx = (gx / seg) * 2 - 1;
-        const nz = (gz / seg) * 2 - 1;
-        if (circular && Math.hypot(nx, nz) > 0.995) continue;
         const i = gz * GRID_N + gx;
         if (copy[i] > WATER_THR * 1.1) continue;
         let peak = 0;
@@ -350,15 +342,11 @@
   /**
    * Pull land up toward local neighborhood max to remove bowl-shaped “hollow” pits from PNG curves / feathering.
    */
-  function plateauLandDepressions(circular) {
-    const seg = GRID_N - 1;
+  function plateauLandDepressions() {
     for (let pass = 0; pass < 3; pass++) {
       const copy = new Float32Array(heights);
       for (let gz = 1; gz < GRID_N - 1; gz++) {
         for (let gx = 1; gx < GRID_N - 1; gx++) {
-          const nx = (gx / seg) * 2 - 1;
-          const nz = (gz / seg) * 2 - 1;
-          if (circular && Math.hypot(nx, nz) > 1.0005) continue;
           const i = gz * GRID_N + gx;
           const hi = copy[i];
           if (hi <= WATER_THR + 0.02) continue;
@@ -1005,7 +993,6 @@
       seed,
       pngImport: {
         mode: document.getElementById('png-mode').value,
-        circular: document.getElementById('png-circular').checked,
         crop: { ...pngCropUv }
       },
       playerSpawn: playerSpawn
@@ -1061,8 +1048,6 @@
       const pi = data.pngImport;
       const modeEl = document.getElementById('png-mode');
       if (pi.mode && modeEl) modeEl.value = pi.mode;
-      const circEl = document.getElementById('png-circular');
-      if (pi.circular != null && circEl) circEl.checked = !!pi.circular;
       if (pi.crop && typeof pi.crop === 'object') {
         pngCropUv = {
           u0: Number(pi.crop.u0) || 0,
@@ -1220,36 +1205,23 @@
     let modeSel = document.getElementById('png-mode').value;
     let resolvedMode = modeSel;
     if (modeSel === 'auto') resolvedMode = detectPngModeFromImageData(d);
-    const circular = document.getElementById('png-circular').checked;
     for (let iz = 0; iz < GRID_N; iz++) {
       for (let ix = 0; ix < GRID_N; ix++) {
         const p = (iz * GRID_N + ix) * 4;
         const lum = (d[p] + d[p + 1] + d[p + 2]) / (3 * 255);
-        let h = lumToHeight01(lum, resolvedMode);
+        const h = lumToHeight01(lum, resolvedMode);
         const gz = GRID_N - 1 - iz;
-        const nx = (ix / (GRID_N - 1)) * 2 - 1;
-        const nz = (gz / (GRID_N - 1)) * 2 - 1;
-        const r = Math.hypot(nx, nz);
-        if (circular) {
-          if (r > 1.0001) h = DEEP_WATER_H;
-          /* Only blend a thin outer annulus; old 0.88–1 band crushed the whole rim (hollow tops / edges). */
-          else if (r > 0.982) {
-            const edge = 1 - smoothstep(0.982, 1.02, r);
-            if (h > WATER_THR) h = DEEP_WATER_H + (h - DEEP_WATER_H) * edge;
-            else h = DEEP_WATER_H;
-          }
-        }
         heights[gz * GRID_N + ix] = h;
       }
     }
-    if (resolvedMode === 'mask') dilateLandIntoShallowWater(circular);
-    plateauLandDepressions(circular);
+    if (resolvedMode === 'mask') dilateLandIntoShallowWater();
+    plateauLandDepressions();
     buildTerrainMesh();
     syncEntityMeshes();
     frameEntireMap();
     const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
     document.getElementById('status-bar').textContent =
-      `PNG applied (${modeNote}${circular ? ', circular disc' : ''}). Heightmap row order matches voyage mesh.`;
+      `PNG applied (${modeNote}). Heightmap row order matches voyage mesh.`;
   }
 
   pngPreview.addEventListener('pointerdown', e => {
