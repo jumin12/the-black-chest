@@ -159,7 +159,7 @@
     </aside>
     <div id="viewport-wrap">
       <canvas id="viewport"></canvas>
-      <div id="status-bar">Ready · Left drag: sculpt / place · Right drag: orbit · Scroll: zoom</div>
+      <div id="status-bar">Ready · Left drag / one finger: sculpt · Right drag / two fingers: orbit &amp; zoom · Scroll: zoom</div>
     </div>
   </div>
 
@@ -376,6 +376,10 @@
   controls.enableDamping = true;
   controls.maxDistance = worldEdgeClamp * 12;
   controls.maxPolarAngle = Math.PI * 0.48;
+  /* Leave left mouse / one-finger touch to sculpt; orbit with right mouse or two-finger gesture */
+  controls.mouseButtons = { LEFT: -1, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+  controls.touches = { ONE: -1, TWO: THREE.TOUCH.DOLLY_ROTATE };
+  canvas.addEventListener('contextmenu', e => { e.preventDefault(); });
 
   const ambientLight = new THREE.AmbientLight(0x7799bb, 0.7);
   scene.add(ambientLight);
@@ -658,7 +662,7 @@
       previewBoat.visible = false;
       previewKeys.clear();
       document.getElementById('status-bar').textContent =
-        'Ready · Left drag: sculpt / place · Right drag: orbit · Scroll: zoom';
+        'Ready · Left drag / one finger: sculpt · Right drag / two fingers: orbit & zoom · Scroll: zoom';
     }
   }
 
@@ -1195,16 +1199,31 @@
     const sx = u0 * iw, sy = v0 * ih;
     const sw = Math.max(1, (u1 - u0) * iw);
     const sh = Math.max(1, (v1 - v0) * ih);
+    const probe = document.createElement('canvas');
+    const PN = 64;
+    probe.width = PN;
+    probe.height = PN;
+    const pctx = probe.getContext('2d');
+    if (!pctx) return;
+    pctx.drawImage(img, sx, sy, sw, sh, 0, 0, PN, PN);
+    const probeD = pctx.getImageData(0, 0, PN, PN).data;
+    let modeSel = document.getElementById('png-mode').value;
+    let resolvedMode = modeSel === 'auto' ? detectPngModeFromImageData(probeD) : modeSel;
     const tmp = document.createElement('canvas');
     tmp.width = GRID_N;
     tmp.height = GRID_N;
     const tctx = tmp.getContext('2d');
     if (!tctx) return;
-    tctx.drawImage(img, sx, sy, sw, sh, 0, 0, GRID_N, GRID_N);
+    /* Uniform scale (contain): no stretch; letterbox is water (mask) or deep sea (height) */
+    tctx.fillStyle = resolvedMode === 'height' ? 'rgb(8,12,22)' : 'rgb(255,255,255)';
+    tctx.fillRect(0, 0, GRID_N, GRID_N);
+    const scale = Math.min(GRID_N / sw, GRID_N / sh);
+    const dw = sw * scale;
+    const dh = sh * scale;
+    const dx = (GRID_N - dw) * 0.5;
+    const dy = (GRID_N - dh) * 0.5;
+    tctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
     const d = tctx.getImageData(0, 0, GRID_N, GRID_N).data;
-    let modeSel = document.getElementById('png-mode').value;
-    let resolvedMode = modeSel;
-    if (modeSel === 'auto') resolvedMode = detectPngModeFromImageData(d);
     for (let iz = 0; iz < GRID_N; iz++) {
       for (let ix = 0; ix < GRID_N; ix++) {
         const p = (iz * GRID_N + ix) * 4;
@@ -1221,7 +1240,7 @@
     frameEntireMap();
     const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
     document.getElementById('status-bar').textContent =
-      `PNG applied (${modeNote}). Heightmap row order matches voyage mesh.`;
+      `PNG applied (${modeNote}, uniform fit — no stretch; bars are water). Heightmap rows match voyage mesh.`;
   }
 
   pngPreview.addEventListener('pointerdown', e => {
