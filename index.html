@@ -3807,6 +3807,22 @@ function removeInventoryAmount(id, amt) {
   reconcileSlotsWithInventory();
   return true;
 }
+/** Remove up to `amt` from ledger rows for id (no reconcile). Used when jettisoning overflow into the world. */
+function subtractFromInventoryLedger(id, amt) {
+  let left = Math.max(0, Math.floor(Number(amt) || 0));
+  if (left <= 0 || id === 'gold') return;
+  const inv = G.player.inventory;
+  if (!Array.isArray(inv)) return;
+  for (let i = inv.length - 1; i >= 0 && left > 0; i--) {
+    const row = inv[i];
+    if (!row || row.id !== id) continue;
+    const take = Math.min(Math.max(0, Math.floor(Number(row.count) || 0)), left);
+    if (take <= 0) continue;
+    row.count -= take;
+    left -= take;
+    if (row.count <= 0) inv.splice(i, 1);
+  }
+}
 
 function appendCompletedMission(entry) {
   if (!G.completedMissionLog) G.completedMissionLog = [];
@@ -7823,7 +7839,11 @@ function ensureCargoSlots() {
     if (old.length > n) {
       for (let i = n; i < old.length; i++) {
         const s = old[i];
-        if (s && s.count > 0) spawnHoldOverflowLootAstern(s.id, s.count);
+        if (s && s.count > 0) {
+          const c = s.count;
+          spawnHoldOverflowLootAstern(s.id, c);
+          subtractFromInventoryLedger(s.id, c);
+        }
       }
       notify('Hold shrank — excess cargo floated free!');
     }
@@ -7847,6 +7867,7 @@ function ensureCargoSlots() {
       while (left > 0) {
         const drop = Math.min(ITEM_MAX_STACK, left);
         spawnHoldOverflowLootAstern(id, drop);
+        subtractFromInventoryLedger(id, drop);
         left -= drop;
       }
     }
@@ -7904,6 +7925,7 @@ function reconcileSlotsAfterPickup(itemId) {
   while (need > 0) {
     const drop = Math.min(ITEM_MAX_STACK, need);
     spawnHoldOverflowLootAstern(itemId, drop);
+    subtractFromInventoryLedger(itemId, drop);
     need -= drop;
   }
   syncInventoryFromCargoSlots();
@@ -7950,8 +7972,7 @@ function reconcileSlotsWithInventory() {
     if (s && s.id && s.id !== 'gold' && s.count > 0) slotBackedIds.add(s.id);
   });
   for (const id of slotBackedIds) {
-    const sm = slotSumById(id);
-    want.set(id, Math.max(want.get(id) || 0, sm));
+    if (!want.has(id)) want.set(id, slotSumById(id));
   }
   for (const [id, target] of [...want.entries()]) {
     let cur = slotSumById(id);
@@ -8002,6 +8023,7 @@ function reconcileSlotsWithInventory() {
     while (need > 0) {
       const drop = Math.min(ITEM_MAX_STACK, need);
       spawnHoldOverflowLootAstern(id, drop);
+      subtractFromInventoryLedger(id, drop);
       need -= drop;
     }
   }
@@ -11841,10 +11863,11 @@ function saveProgressDebounced() {
   }, 420);
 }
 function flushPendingSaveProgress() {
-  if (!_saveProgressDebounceTimer) return;
-  clearTimeout(_saveProgressDebounceTimer);
-  _saveProgressDebounceTimer = null;
-  saveProgress();
+  if (_saveProgressDebounceTimer) {
+    clearTimeout(_saveProgressDebounceTimer);
+    _saveProgressDebounceTimer = null;
+  }
+  if (G.mode === 'playing') saveProgress();
 }
 
 function saveProgress() {
@@ -11874,6 +11897,9 @@ function saveProgress() {
 }
 window.addEventListener('beforeunload', flushPendingSaveProgress);
 window.addEventListener('pagehide', flushPendingSaveProgress);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushPendingSaveProgress();
+});
 
 function loadProgress() {
   try {
