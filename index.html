@@ -2625,7 +2625,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
 
     const sW = spec.hullW * 1.2, sH = mH * 0.55;
     const sailPivot = new THREE.Group();
-    sailPivot.position.set(0, mH * 0.88, 0);
+    sailPivot.position.set(0, mH, 0);
     sailPivot.userData.isSailWindPivot = true;
     sailPivot.userData.windAngleScale = 1;
 
@@ -2637,10 +2637,13 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
 
     const sg = new THREE.PlaneGeometry(sW, sH, 6, 6);
     const sail = new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide }));
-    sail.position.set(0, -sH * 0.52, 0.22);
+    sail.position.set(0, -sH / 2, 0.08);
     sail.userData.isSail = true;
     sail.userData.windYawOnParent = true;
     sail.userData.basePositions = sg.attributes.position.array.slice();
+    sail.userData.sailYardY = sH / 2;
+    sail.userData.sailFootY = -sH / 2;
+    sail.userData.sailHalfWidth = sW / 2;
     sail.castShadow = true;
     sailPivot.add(sail);
     mastRig.add(sailPivot);
@@ -2698,17 +2701,21 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   foremast.castShadow = true;
   foreRig.add(foremast);
   const jibPivot = new THREE.Group();
-  jibPivot.position.set(0, fmH * 0.88, 0);
+  jibPivot.position.set(0, fmH, 0);
   jibPivot.userData.isSailWindPivot = true;
   jibPivot.userData.windAngleScale = 0.88;
-  const jibGeo = new THREE.PlaneGeometry(spec.hullW * 0.5, fmH * 0.5, 3, 3);
+  const jibW = spec.hullW * 0.5, jibH = fmH * 0.5;
+  const jibGeo = new THREE.PlaneGeometry(jibW, jibH, 3, 3);
   const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
-  jib.position.set(0, -fmH * 0.2, 0.22);
+  jib.position.set(0, -jibH / 2, 0.08);
   jib.rotation.y = 0.22;
   jib.userData.isSail = true;
   jib.userData.isJib = true;
   jib.userData.windYawOnParent = true;
   jib.userData.basePositions = jibGeo.attributes.position.array.slice();
+  jib.userData.sailYardY = jibH / 2;
+  jib.userData.sailFootY = -jibH / 2;
+  jib.userData.sailHalfWidth = jibW / 2;
   jibPivot.add(jib);
   foreRig.add(jibPivot);
   g.add(foreRig);
@@ -3021,6 +3028,42 @@ function updateCrewDeckAnimations(dt) {
   });
 }
 
+/**
+ * Deform sail cloth: furl gathers the foot up toward the yard (local +Y = masthead).
+ * Billow pushes along local Z; into-mast motion (negative Z toward mast) is damped; near centerline (mast) is shielded.
+ */
+function applySailCanvasWindMesh(mesh, baseArr, furl, windPushZ, windBillowScale, time, applyFurlXZ) {
+  const ud = mesh.userData;
+  const yTop = ud.sailYardY != null ? ud.sailYardY : 1.2;
+  const yBot = ud.sailFootY != null ? ud.sailFootY : -1.2;
+  const hW = ud.sailHalfWidth != null ? ud.sailHalfWidth : 1;
+  const span = Math.max(1e-4, yTop - yBot);
+  const p = mesh.geometry.attributes.position;
+  const f = Math.max(0, Math.min(1, furl));
+  for (let i = 0; i < p.count; i++) {
+    const bx = baseArr[i * 3], by = baseArr[i * 3 + 1], bz = baseArr[i * 3 + 2];
+    const anchor = (by - yBot) / span;
+    const gather = f * 0.97;
+    let ny = by + (yTop - by) * gather * (1 - anchor);
+    let nx = bx;
+    let nz = bz;
+    if (applyFurlXZ) {
+      nx *= (1 - f * 0.09);
+      nz *= (1 - f * 0.3);
+    }
+    const billowAmt = 0.14 + 0.36 * Math.max(0, 1 - Math.abs(by - (yTop + yBot) * 0.5) / (span * 0.52));
+    const mastClear = Math.min(1, Math.abs(bx) / Math.max(0.11, hW * 0.26));
+    let zBillow = windPushZ * billowAmt * windBillowScale;
+    if (zBillow < 0) zBillow *= 0.3;
+    zBillow *= (0.32 + 0.68 * mastClear);
+    const flutter = Math.sin(time * 2.0 + by * 3 + bx * 1.5) * 0.019 * (1 - f) * (0.38 + 0.62 * mastClear);
+    nz += zBillow + flutter;
+    p.setX(i, nx); p.setY(i, ny); p.setZ(i, nz);
+  }
+  p.needsUpdate = true;
+  mesh.geometry.computeVertexNormals();
+}
+
 function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
   const wHere = getWindAt(wx, wz);
   const relWind = wHere.angle - rotation;
@@ -3035,21 +3078,9 @@ function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
   shipGroup.traverse(child => {
     if (child.userData && child.userData.isSail && child.userData.basePositions) {
       if (!child.userData.windYawOnParent) child.rotation.y = ra;
-      const p = child.geometry.attributes.position;
       const base = child.userData.basePositions;
-      const billow = Math.abs(windPushZ) * windStr * (0.35 + seaSpd * 0.55);
-      const tt = G.time;
-      for (let i = 0; i < p.count; i++) {
-        const bx = base[i * 3];
-        const by = base[i * 3 + 1];
-        const bz = base[i * 3 + 2];
-        const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
-        const flutter = Math.sin(tt * 2.0 + by * 3 + bx * 1.5) * 0.025;
-        p.setY(i, by);
-        p.setZ(i, bz + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
-      }
-      p.needsUpdate = true;
-      child.geometry.computeVertexNormals();
+      const windBillowScale = windStr * (0.35 + seaSpd * 0.55);
+      applySailCanvasWindMesh(child, base, 0, windPushZ, windBillowScale, G.time, false);
     }
     if (child.userData && child.userData.isFlagHinge) {
       const rw = wHere.angle - rotation;
@@ -8781,16 +8812,9 @@ function update(dt) {
       child.userData._furlAmt += (furlTarget - child.userData._furlAmt) * 0.8 * dt;
       const furl = child.userData._furlAmt;
       if (!child.userData.windYawOnParent) child.rotation.y = G.currentSailAngle * (1 - furl);
-      const p = child.geometry.attributes.position, base = child.userData.basePositions;
-      const billow = Math.abs(windPushZ) * windStr * (1 - furl);
-      for (let i = 0; i < p.count; i++) {
-        const bx = base[i * 3], by = base[i * 3 + 1], bz = base[i * 3 + 2];
-        const billowAmt = (1 - Math.abs(by) / 3) * 0.4 + 0.1;
-        const flutter = Math.sin(G.time * 2.0 + by * 3 + bx * 1.5) * 0.025 * (1 - furl);
-        p.setY(i, by * (1 - furl * 0.85));
-        p.setZ(i, bz * (1 - furl * 0.9) + (windPushZ > 0 ? 1 : -1) * billowAmt * billow + flutter);
-      }
-      p.needsUpdate = true; child.geometry.computeVertexNormals();
+      const base = child.userData.basePositions;
+      const windBillowScale = windStr * (1 - furl);
+      applySailCanvasWindMesh(child, base, furl, windPushZ, windBillowScale, G.time, true);
     }
     if (child.userData && child.userData.isFlagHinge) {
       const rw = G.wind.angle - G.player.rotation;
