@@ -688,7 +688,7 @@ wss.on('connection', (ws, req) => {
     speed: 0,
     shipType: 'sloop',
     shipName: '',
-    shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flagPosition: 'quarter' },
+    shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
     color: `hsl(${Math.random() * 360}, 70%, 50%)`,
     name: `Pirate_${id}`,
@@ -755,7 +755,7 @@ wss.on('connection', (ws, req) => {
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
             p.shipParts = {
-              hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flagPosition: 'quarter',
+              hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none',
               ...p.shipParts,
               ...msg.shipParts
             };
@@ -851,7 +851,7 @@ wss.on('connection', (ws, req) => {
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
             p.shipParts = {
-              hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flagPosition: 'quarter',
+              hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none',
               ...p.shipParts,
               ...msg.shipParts
             };
@@ -1177,7 +1177,7 @@ setInterval(() => {
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
     name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
-    shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flagPosition: 'quarter' },
+    shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     crewData: p.crewData,
     docked: !!p.docked,
     dockX: p.dockX != null ? p.dockX : null,
