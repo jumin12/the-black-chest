@@ -1058,6 +1058,52 @@ function bumpNotoriety(d) {
   }
 }
 
+/** Session id of the captain who fired this shot (for host-side kill credit). */
+function getCannonballKillerPlayerId(b) {
+  if (!b) return G.myId != null ? G.myId : null;
+  if (b.owner === 'player') return G.myId != null ? G.myId : null;
+  if (b.owner === 'other_player' && b.sourcePlayerId != null) return b.sourcePlayerId;
+  return G.myId != null ? G.myId : null;
+}
+
+/** Loot + side quests from an NPC sink; leaderboard row is updated by the server (see npc_kill_award). */
+function applyLocalNpcKillLootFromNet(msg) {
+  if (msg.killerId == null || Number(msg.killerId) !== Number(G.myId)) return;
+  const gold = Math.max(0, Math.floor(Number(msg.gold) || 0));
+  const sinksAi = Math.max(0, Math.floor(Number(msg.sinksAi) || 0));
+  const storyBounty = !!msg.storyBounty;
+  const huntNpcName = msg.huntNpcName ? String(msg.huntNpcName).trim() : '';
+  const victimName = msg.victimName ? String(msg.victimName).trim() : 'ship';
+  ensurePlayerStats();
+  if (gold) G.playerStats.goldEarned += gold;
+  if (sinksAi) G.playerStats.sinksAi += sinksAi;
+  saveProgressDebounced();
+  if (storyBounty) {
+    G.storyQuest.phase = 'report';
+    notify('Pirate defeated! Dock at any port — Quests — to report and collect the bounty.');
+    updateStoryBriefHud();
+  } else if (gold > 0) {
+    notify(`Sinking ${victimName}! +${gold} gold`);
+    const gi = G.player.inventory.find(x => x.id === 'gold');
+    if (gi) gi.count += gold;
+  }
+  if (huntNpcName) checkHuntQuestOnNpcSink({ name: huntNpcName });
+  reconcileSlotsWithInventory();
+}
+
+function updateAmmoTypeBarLabels() {
+  const bar = document.getElementById('ammo-type-bar');
+  if (!bar) return;
+  const labels = { ball: 'Round shot', grape: 'Grape', chain: 'Chain' };
+  bar.querySelectorAll('.ammo-type-btn').forEach(btn => {
+    const k = btn.getAttribute('data-ammo');
+    const base = labels[k];
+    if (!base) return;
+    const invId = k === 'grape' ? 'grapeshot' : k === 'chain' ? 'chainshot' : 'cannonballs';
+    btn.textContent = `${base} (${getInvCount(invId)})`;
+  });
+}
+
 /** Main story: defeat five notorious pirates, one per ship class, in order (any port for briefing / turn-in). */
 const STORY_SHIP_ORDER = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
 const STORY_NPC_SYNC_BASE = 90;
@@ -5162,6 +5208,9 @@ function connectToServer() {
         }
         break;
       }
+      case 'npc_kill_award':
+        applyLocalNpcKillLootFromNet(msg);
+        break;
       case 'leaderboard': {
         let entries = msg.entries;
         const serverHad = Array.isArray(entries) && entries.length > 0;
@@ -5887,7 +5936,15 @@ let joyCenter = { x: 0, y: 0 };
 
 joyZone?.addEventListener('touchstart', e => {
   e.preventDefault();
-  const t = e.changedTouches[0]; joyTouchId = t.identifier;
+  if (joyTouchId != null) {
+    let still = false;
+    for (let ti = 0; ti < e.touches.length; ti++) {
+      if (e.touches[ti].identifier === joyTouchId) { still = true; break; }
+    }
+    if (still) return;
+  }
+  const t = e.changedTouches[0];
+  joyTouchId = t.identifier;
   const rect = joyZone.getBoundingClientRect();
   joyCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   G.touch.active = true;
@@ -9121,16 +9178,32 @@ function update(dt) {
           }
           if (npc.health <= 0) {
             const storySink = npc.isStoryBounty && npc.storyStep === G.storyQuest.step && G.storyQuest.phase === 'active';
-            if (storySink) {
-              onStoryBountySunkByPlayer(npc);
-              bumpNotoriety({ sinksAi: 1 });
+            const goldLoot = storySink ? 0 : 30;
+            const killerId = getCannonballKillerPlayerId(b);
+            if (ws?.readyState === 1 && isMultiplayerHost()) {
+              try {
+                ws.send(JSON.stringify({
+                  type: 'npc_kill_credit',
+                  killerId: killerId != null ? killerId : G.myId,
+                  sinksAi: 1,
+                  gold: goldLoot,
+                  storyBounty: !!storySink,
+                  huntNpcName: npc.name || '',
+                  victimName: npc.name || 'ship'
+                }));
+              } catch (e) {}
             } else {
-              notify(`Sinking ${npc.name}! +30 gold`);
-              const gi = G.player.inventory.find(x => x.id === 'gold');
-              if (gi) gi.count += 30;
-              bumpNotoriety({ sinksAi: 1, gold: 30 });
+              if (storySink) {
+                onStoryBountySunkByPlayer(npc);
+                bumpNotoriety({ sinksAi: 1 });
+              } else {
+                notify(`Sinking ${npc.name}! +30 gold`);
+                const gi = G.player.inventory.find(x => x.id === 'gold');
+                if (gi) gi.count += 30;
+                bumpNotoriety({ sinksAi: 1, gold: 30 });
+              }
+              checkHuntQuestOnNpcSink(npc);
             }
-            checkHuntQuestOnNpcSink(npc);
             npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
             const swN = 2 + Math.floor(Math.random() * 3);
             broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(npc.x, npc.z, swN, null, false));
@@ -9699,6 +9772,7 @@ function updateHUD() {
   const _sp = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
   document.getElementById('hud-crew').textContent = `Crew ${countSailorCrew()}/${_sp.maxCrew} · Brig ${countPrisonerCrew()}/${_sp.maxPrisoners}`;
   drawCompass();
+  updateAmmoTypeBarLabels();
   updateStoryBriefHud();
 }
 

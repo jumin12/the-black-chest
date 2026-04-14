@@ -1030,6 +1030,43 @@ wss.on('connection', (ws, req) => {
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
         }
+        case 'npc_kill_credit': {
+          let hostId = null;
+          for (const pid of players.keys()) {
+            if (hostId === null || pid < hostId) hostId = pid;
+          }
+          if (hostId === null || id !== hostId) break;
+          const killerId = Math.floor(Number(msg.killerId));
+          if (!Number.isFinite(killerId) || !players.has(killerId)) break;
+          const dg = Math.max(0, Math.floor(Number(msg.gold) || 0));
+          const dAi = Math.max(0, Math.floor(Number(msg.sinksAi) || 0));
+          if (dg === 0 && dAi === 0) break;
+          const kp = players.get(killerId);
+          kp.kills = (kp.kills || 0) + dAi;
+          kp.loot = (kp.loot || 0) + dg;
+          const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
+          const killerWs = findWsByPlayerId(killerId);
+          const killerCk = killerWs && killerWs.captainAccountKey ? killerWs.captainAccountKey : (kp.captainKey || null);
+          const idx = getLeaderboardRowIndex(killerId, capName, killerCk, kp.shipName);
+          const row = normalizeLbEntry(leaderboardHistory[idx]);
+          row.gold += dg;
+          row.sinksAi += dAi;
+          leaderboardHistory[idx] = row;
+          sortLeaderboardHistory();
+          leaderboardHistory = leaderboardHistory.slice(0, 50);
+          saveLeaderboard();
+          broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          broadcastAll({
+            type: 'npc_kill_award',
+            killerId,
+            gold: dg,
+            sinksAi: dAi,
+            storyBounty: !!msg.storyBounty,
+            huntNpcName: msg.huntNpcName != null ? String(msg.huntNpcName).slice(0, 48) : '',
+            victimName: msg.victimName != null ? String(msg.victimName).slice(0, 48) : 'ship'
+          });
+          break;
+        }
         case 'admin_nav': {
           const token = msg.token;
           if (!isNavigatorAdminTokenOk(token)) {
