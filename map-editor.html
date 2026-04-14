@@ -175,8 +175,10 @@
 
       <h3>IO</h3>
       <div class="actions">
+        <button type="button" id="btn-load-map" class="gold">Load map (JSON)…</button>
         <button type="button" id="btn-save-json">Download map JSON</button>
-        <button type="button" id="btn-load-json">Load JSON file</button>
+        <button type="button" id="btn-clear-map">Clear map (keep terrain)</button>
+        <button type="button" id="btn-fresh-map" class="danger">New blank chart</button>
         <button type="button" id="btn-png">Choose PNG…</button>
         <button type="button" id="btn-send-game" class="gold">Store for game (localStorage)</button>
       </div>
@@ -993,17 +995,7 @@
       vec3 refl = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er)*fresnel;
       float sss = pow(max(dot(V,-L+N*0.4),0.0),2.5)*0.3;
       vec3 sub = vec3(0.0,0.45,0.35)*sss;
-      float wh = vWorldPos.y;
-      float foam = smoothstep(0.12,0.25,wh)*0.25;
-      float fx=vWorldPos.x*0.1+uTime*0.05, fz=vWorldPos.z*0.1+uTime*0.04;
-      float fn1 = sin(fx*4.1+fz*2.3)*sin(fz*3.7-fx*2.1);
-      float fn2 = sin(fx*8.3-fz*6.1+uTime*0.08)*0.4;
-      float fn3 = sin(fx*13.7+fz*11.3-uTime*0.06)*0.2;
-      float foamPattern = (fn1+fn2+fn3)*0.25+0.5;
-      foam += smoothstep(0.55,0.75,foamPattern)*smoothstep(0.05,0.2,wh)*0.2;
-      foam += smoothstep(0.7,0.9,foamPattern)*0.1;
       vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
-      color = mix(color,vec3(0.92,0.95,0.98),foam*0.5);
       color = pow(color,vec3(1.0/2.2));
       gl_FragColor = vec4(color,1.0);
     }`;
@@ -2141,9 +2133,48 @@
     syncFactionEditorFieldsFromState();
   }
 
+  function resetEditorPlacedEntitiesOnly() {
+    entities = [];
+    entSeq = 1;
+    selectedEntId = null;
+    syncEntityMeshes();
+  }
+
+  /** Remove ports, props, and spawn; keep heightmap and chart size. */
+  function clearEditorMapKeepTerrain() {
+    towns = [];
+    townSeq = 1;
+    resetEditorPlacedEntitiesOnly();
+    playerSpawn = null;
+    refreshSpawnHud();
+    refreshEntityList();
+    document.getElementById('status-bar').textContent =
+      'Map cleared — terrain unchanged; add ports and props or load a JSON.';
+  }
+
+  /** Flat ocean chart: no land, no towns, no props. */
+  function startFreshBlankChart() {
+    heights.fill(DEEP_WATER_H);
+    towns = [];
+    townSeq = 1;
+    resetEditorPlacedEntitiesOnly();
+    playerSpawn = null;
+    editorUseProceduralTerrainChunks = false;
+    lastProceduralTerrainSeed = null;
+    disposeProceduralTerrainChunks();
+    refreshSpawnHud();
+    document.getElementById('inp-seed').value = String((Math.floor(Math.random() * 0xffffffff) >>> 0));
+    buildTerrainMesh();
+    refreshEntityList();
+    frameEntireMap();
+    document.getElementById('status-bar').textContent =
+      'New blank chart — open ocean only; sculpt land, generate from seed, or load JSON.';
+  }
+
   function applyProceduralWorldPayload(data, seedForced) {
     const seed = seedForced !== undefined ? (Number(seedForced) >>> 0) : (Number(data.seed != null ? data.seed : data.worldSeed) >>> 0);
     if (!Number.isFinite(seed)) return;
+    resetEditorPlacedEntitiesOnly();
     towns = Array.isArray(data.towns) ? data.towns.map(t => ({
       ...t,
       hasTown: true
@@ -2352,7 +2383,12 @@
     a.click();
     URL.revokeObjectURL(a.href);
   });
-  document.getElementById('btn-load-json').addEventListener('click', () => document.getElementById('file-json').click());
+  document.getElementById('btn-load-map').addEventListener('click', () => document.getElementById('file-json').click());
+  document.getElementById('btn-clear-map').addEventListener('click', () => clearEditorMapKeepTerrain());
+  document.getElementById('btn-fresh-map').addEventListener('click', () => {
+    if (!confirm('Replace the chart with empty ocean? Unsaved work will be lost.')) return;
+    startFreshBlankChart();
+  });
   document.getElementById('file-json').addEventListener('change', ev => {
     const f = ev.target.files && ev.target.files[0];
     if (!f) return;
@@ -2461,6 +2497,11 @@
     editorUseProceduralTerrainChunks = false;
     lastProceduralTerrainSeed = null;
     disposeProceduralTerrainChunks();
+    resetEditorPlacedEntitiesOnly();
+    towns = [];
+    townSeq = 1;
+    playerSpawn = null;
+    refreshSpawnHud();
     const iw = img.naturalWidth || img.width;
     const ih = img.naturalHeight || img.height;
     const u0 = Math.min(pngCropUv.u0, pngCropUv.u1);
