@@ -7823,7 +7823,7 @@ function ensureCargoSlots() {
     if (old.length > n) {
       for (let i = n; i < old.length; i++) {
         const s = old[i];
-        if (s && s.count > 0) spawnWorldLootAt(G.player.x, G.player.z, s.id, s.count);
+        if (s && s.count > 0) spawnHoldOverflowLootAstern(s.id, s.count);
       }
       notify('Hold shrank — excess cargo floated free!');
     }
@@ -7846,7 +7846,7 @@ function ensureCargoSlots() {
       }
       while (left > 0) {
         const drop = Math.min(ITEM_MAX_STACK, left);
-        spawnWorldLootAt(G.player.x, G.player.z, id, drop);
+        spawnHoldOverflowLootAstern(id, drop);
         left -= drop;
       }
     }
@@ -7903,7 +7903,7 @@ function reconcileSlotsAfterPickup(itemId) {
   }
   while (need > 0) {
     const drop = Math.min(ITEM_MAX_STACK, need);
-    spawnWorldLootAt(G.player.x, G.player.z, itemId, drop);
+    spawnHoldOverflowLootAstern(itemId, drop);
     need -= drop;
   }
   syncInventoryFromCargoSlots();
@@ -8001,7 +8001,7 @@ function reconcileSlotsWithInventory() {
     }
     while (need > 0) {
       const drop = Math.min(ITEM_MAX_STACK, need);
-      spawnWorldLootAt(G.player.x, G.player.z, id, drop);
+      spawnHoldOverflowLootAstern(id, drop);
       need -= drop;
     }
   }
@@ -8028,6 +8028,13 @@ function spawnWorldLootAt(wx, wz, type, count, spread) {
   } else {
     addFloatingLootMesh(lx, lz, type, cnt);
   }
+}
+/** Drops that cannot fit in the hold — astern so the auto-pickup ring (8u) does not re-grab them the same frame. */
+function spawnHoldOverflowLootAstern(type, count) {
+  const ast = 15 + Math.random() * 8;
+  const jx = G.player.x - Math.sin(G.player.rotation) * ast;
+  const jz = G.player.z - Math.cos(G.player.rotation) * ast;
+  spawnWorldLootAt(jx, jz, type, count, 5);
 }
 function jettisonCargoSlot(slotIdx) {
   ensureCargoSlots();
@@ -10565,8 +10572,11 @@ function update(dt) {
             npc.sinking = true; npc.sinkTimer = 0; npc.speed = 0;
             const swN = 2 + Math.floor(Math.random() * 3);
             broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(npc.x, npc.z, swN, null, false));
+            const lootTypes = goldLoot > 0
+              ? ['wood', 'iron', 'gunpowder', 'food', 'cannonballs']
+              : ['wood', 'iron', 'gold', 'gunpowder', 'food', 'cannonballs'];
             for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
-              const t = ['wood','iron','gold','gunpowder','food','cannonballs'][Math.floor(Math.random() * 6)];
+              const t = lootTypes[Math.floor(Math.random() * lootTypes.length)];
               const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
               const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
               if (ws?.readyState === 1) spawnWorldLootAt(lx, lz, t, c, 0.5);
@@ -11877,12 +11887,11 @@ function loadProgress() {
     if (data.shipName) G.player.shipName = data.shipName;
     if (data.shipType) G.player.shipType = data.shipType;
     if (data.shipParts) G.player.shipParts = normalizeShipParts(data.shipParts);
-    if (data.inventory) {
+    if (Array.isArray(data.inventory)) {
       G.player.inventory = data.inventory;
       normalizeInventoryMergeStacks();
     }
-    if (data.cargoSlots && Array.isArray(data.cargoSlots)) G.player.cargoSlots = data.cargoSlots;
-    if (data.cargoSlots && data.cargoSlots.some(Boolean)) syncInventoryFromCargoSlots();
+    G.player.cargoSlots = Array.isArray(data.cargoSlots) ? data.cargoSlots : [];
     if (data.crew) G.player.crew = data.crew;
     if (data.quests) G.quests = data.quests;
     if (data.completedMissionLog && Array.isArray(data.completedMissionLog)) G.completedMissionLog = data.completedMissionLog.slice(0, 40);
@@ -11924,8 +11933,13 @@ function loadProgress() {
     else G.player.morale = 100;
     if (data.riggingHealth != null) G.player.riggingHealth = Math.max(0, Math.min(100, Number(data.riggingHealth)));
     else G.player.riggingHealth = 100;
+    ensureCargoSlots();
+    consolidateGoldPurse();
+    syncInventoryFromCargoSlots();
+    reconcileSlotsWithInventory();
     ensureSpecialAmmoRowsInInventory();
     ensurePlayerInOpenOcean();
+    saveProgressDebounced();
     return true;
   } catch (e) { return false; }
 }
