@@ -620,16 +620,24 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.url === '/' || req.url === '/index.html') {
+  if (req.url === '/' || req.url === '/index.html' || req.url.startsWith('/index.html?')) {
     fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
       res.end(data);
     });
-  } else {
-    res.writeHead(404, CORS_HEADERS);
-    res.end('Not found');
+    return;
   }
+  if (req.url === '/map-editor.html' || req.url.startsWith('/map-editor.html?')) {
+    fs.readFile(path.join(__dirname, 'map-editor.html'), (err, data) => {
+      if (err) { res.writeHead(500); res.end('Error'); return; }
+      res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
+      res.end(data);
+    });
+    return;
+  }
+  res.writeHead(404, CORS_HEADERS);
+  res.end('Not found');
 });
 
 const wss = new WebSocketServer({ server });
