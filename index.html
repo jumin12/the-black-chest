@@ -3852,8 +3852,27 @@ function ensurePlayerCrewTasks() {
   });
 }
 
+/** Fully dispose GPU resources under a Three.js object (geometries, materials, textures). */
+function disposeObject3DSubtree(root) {
+  if (!root) return;
+  root.traverse(obj => {
+    try {
+      if (obj.geometry) obj.geometry.dispose();
+      const mat = obj.material;
+      if (mat) {
+        const arr = Array.isArray(mat) ? mat : [mat];
+        for (const m of arr) {
+          if (m && m.map) m.map.dispose();
+          if (m && m.dispose) m.dispose();
+        }
+      }
+    } catch (e) {}
+  });
+}
+
 function rebuildPlayerShip() {
-  playerShipGroup.clear();
+  disposeObject3DSubtree(playerShipGroup);
+  while (playerShipGroup.children.length) playerShipGroup.remove(playerShipGroup.children[0]);
   ensurePlayerCrewTasks();
   const ship = buildShipMesh(G.player.shipType, G.player.shipParts, G.player.flagColor || '#1a1a1a', '', { honorPlayerLoadout: true });
   playerShipGroup.add(ship);
@@ -5578,7 +5597,12 @@ function connectToServer() {
         disposeRemoteDockRopes(msg.id);
         if (Number.isFinite(lid)) G.pendingRemoteShipSink.delete(lid);
         G.otherPlayers.delete(msg.id);
-        if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); }
+        if (otherShipGroups.has(msg.id)) {
+          const og = otherShipGroups.get(msg.id);
+          disposeObject3DSubtree(og);
+          scene.remove(og);
+          otherShipGroups.delete(msg.id);
+        }
         break;
       }
       case 'state':
@@ -5597,7 +5621,12 @@ function connectToServer() {
           p.shipType = msg.shipType;
           p.shipParts = msg.shipParts;
           refreshOtherPlayerShipCacheKey(p);
-          if (otherShipGroups.has(msg.id)) { scene.remove(otherShipGroups.get(msg.id)); otherShipGroups.delete(msg.id); }
+          if (otherShipGroups.has(msg.id)) {
+            const og = otherShipGroups.get(msg.id);
+            disposeObject3DSubtree(og);
+            scene.remove(og);
+            otherShipGroups.delete(msg.id);
+          }
         }
         break;
       }
@@ -7359,14 +7388,32 @@ function slotSumById(id) {
   return t;
 }
 function syncInventoryFromCargoSlots() {
-  const map = new Map();
+  const fromSlots = new Map();
   (Array.isArray(G.player.cargoSlots) ? G.player.cargoSlots : []).forEach(s => {
-    if (s && s.count > 0) map.set(s.id, (map.get(s.id) || 0) + s.count);
+    if (s && s.count > 0) fromSlots.set(s.id, (fromSlots.get(s.id) || 0) + s.count);
   });
-  G.player.inventory = Array.from(map.entries()).map(([id, count]) => {
+  const next = [];
+  const usedSlotIds = new Set();
+  for (const row of G.player.inventory || []) {
+    if (!row || row.count <= 0) continue;
+    if (row.id === 'gold') {
+      next.push({ id: 'gold', name: row.name || 'Gold Coins', icon: row.icon || 'Au', count: row.count });
+      continue;
+    }
+    if (fromSlots.has(row.id)) {
+      usedSlotIds.add(row.id);
+      const m = getItemMeta(row.id);
+      next.push({ id: row.id, name: m.name, icon: m.icon, count: fromSlots.get(row.id) });
+    } else {
+      next.push({ ...row });
+    }
+  }
+  for (const [id, count] of fromSlots) {
+    if (count <= 0 || usedSlotIds.has(id)) continue;
     const m = getItemMeta(id);
-    return { id, name: m.name, icon: m.icon, count };
-  });
+    next.push({ id, name: m.name, icon: m.icon, count });
+  }
+  G.player.inventory = next;
 }
 function ensureCargoSlots() {
   const n = (SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop).cargoSlots;
@@ -8196,6 +8243,11 @@ const TRADE_GOODS = [
   { id: 'rum', name: 'Rum Barrels', buy: 15, sell: 10 },
   { id: 'gunpowder', name: 'Gunpowder', buy: 10, sell: 7 }
 ];
+function portSellPriceForId(itemId) {
+  const g = TRADE_GOODS.find(t => t.id === itemId);
+  if (g) return g.sell;
+  return 1;
+}
 
 const QUEST_TEMPLATES = [
   { type: 'hunt', desc: 'Sink {target}', reward: 40, target: '' },
@@ -8298,6 +8350,7 @@ function showPortTab(tab) {
   if (tab === 'trade') {
     const gold = G.player.inventory.find(i => i.id === 'gold');
     content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gold?.count || 0}</div>`;
+    const tradeIdSet = new Set(TRADE_GOODS.map(t => t.id));
     TRADE_GOODS.forEach(g => {
       const inv = G.player.inventory.find(i => i.id === g.id);
       const d = document.createElement('div');
@@ -8309,6 +8362,29 @@ function showPortTab(tab) {
         </div>`;
       content.appendChild(d);
     });
+    const extraSell = (G.player.inventory || []).filter(it => it && it.count > 0 && it.id !== 'gold' && !tradeIdSet.has(it.id));
+    if (extraSell.length) {
+      const xh = document.createElement('div');
+      xh.style.cssText = 'color:#d4a848;font-size:11px;margin:12px 0 6px;letter-spacing:0.06em;text-transform:uppercase;';
+      xh.textContent = 'Also in your ledger';
+      content.appendChild(xh);
+      extraSell.forEach(it => {
+        const sellP = portSellPriceForId(it.id);
+        const im = getItemMeta(it.id);
+        const d = document.createElement('div');
+        d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.45);border:1px solid rgba(140,100,40,0.18);border-radius:6px;margin-bottom:6px;';
+        const left = document.createElement('div');
+        left.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${im.name || it.id}</div><div style="color:#8a7a60;font-size:10px;">Have: ${it.count}</div>`;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.style.cssText = 'background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+        b.textContent = `Sell ${sellP}g`;
+        b.addEventListener('click', () => window.portSell(it.id, sellP));
+        d.appendChild(left);
+        d.appendChild(b);
+        content.appendChild(d);
+      });
+    }
     const prisoners = G.player.crew.filter(c => c.role === 'prisoner');
     if (prisoners.length > 0) {
       const hdr = document.createElement('div');
@@ -8433,14 +8509,18 @@ function showPortTab(tab) {
     const sailMissing = Math.max(0, Math.ceil(100 - sailPct));
     const hullCost = hullMissing <= 0 ? 0 : Math.max(10, hullMissing * 2);
     const sailCost = sailMissing <= 0 ? 0 : Math.max(8, Math.floor(sailMissing * 1.5));
-    content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gold?.count || 0} | Shipwright Services</div>
+    const gHave = gold?.count || 0;
+    const hullPart = hullMissing > 0 && gHave > 0 && gHave < hullCost ? Math.min(hullMissing, Math.floor(gHave / 2)) : 0;
+    const sailPart = sailMissing > 0 && gHave > 0 && gHave < sailCost ? Math.min(sailMissing, Math.floor(gHave / 2)) : 0;
+    content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gHave} | Shipwright Services</div>
+      <div style="color:#7a9088;font-size:10px;margin:-6px 0 10px;line-height:1.35;">Short on coin? The yard will patch hull for <strong>2g per HP</strong> and sails for <strong>2g per %</strong> with whatever you can pay.</div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.25);border-radius:6px;">
-          <div><div style="color:#e0d6c2;font-size:13px;">Repair hull</div><div style="color:#8a7a60;font-size:10px;">${hullMissing <= 0 ? 'Hull is sound' : `${hullMissing} HP to restore`}</div></div>
+          <div><div style="color:#e0d6c2;font-size:13px;">Repair hull</div><div style="color:#8a7a60;font-size:10px;">${hullMissing <= 0 ? 'Hull is sound' : `${hullMissing} HP to restore · full job ${hullCost}g${hullPart > 0 ? ` · you can afford ~${hullPart} HP now` : ''}`}</div></div>
           <button type="button" onclick="portRepairHull()" style="background:rgba(50,80,50,0.45);border:1px solid rgba(120,180,120,0.45);color:#a8d8a8;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;" ${hullMissing <= 0 ? 'disabled' : ''}>${hullCost}g</button>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.25);border-radius:6px;">
-          <div><div style="color:#e0d6c2;font-size:13px;">Repair sails</div><div style="color:#8a7a60;font-size:10px;">${sailMissing <= 0 ? 'Sails are sound' : `${sailMissing}% canvas & rigging`}</div></div>
+          <div><div style="color:#e0d6c2;font-size:13px;">Repair sails</div><div style="color:#8a7a60;font-size:10px;">${sailMissing <= 0 ? 'Sails are sound' : `${sailMissing}% canvas & rigging · full job ${sailCost}g${sailPart > 0 ? ` · you can afford ~${sailPart}% now` : ''}`}</div></div>
           <button type="button" onclick="portRepairSails()" style="background:rgba(50,70,90,0.45);border:1px solid rgba(120,160,200,0.45);color:#a8c8e8;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;" ${sailMissing <= 0 ? 'disabled' : ''}>${sailCost}g</button>
         </div>
       </div>
@@ -8480,12 +8560,21 @@ window.portRepairHull = function() {
   if (!G.docked) { notify('Dock at a port first.'); return; }
   const missing = Math.max(0, Math.ceil(100 - G.player.health));
   if (missing <= 0) { notify('Hull is already sound.'); return; }
-  const cost = Math.max(10, missing * 2);
+  const costFull = Math.max(10, missing * 2);
   const gold = G.player.inventory.find(i => i.id === 'gold');
-  if (!gold || gold.count < cost) { notify(`Need ${cost} gold for repairs.`); return; }
-  gold.count -= cost;
-  G.player.health = 100;
-  notify('Shipwright patched the hull.');
+  if (!gold || gold.count < 1) { notify('No gold for repairs.'); return; }
+  let hpGain, spend;
+  if (gold.count >= costFull) {
+    hpGain = missing;
+    spend = costFull;
+  } else {
+    hpGain = Math.min(missing, Math.floor(gold.count / 2));
+    if (hpGain < 1) { notify('Not enough gold — hull patches cost 2g per point of damage.'); return; }
+    spend = hpGain * 2;
+  }
+  gold.count -= spend;
+  G.player.health = Math.min(100, G.player.health + hpGain);
+  notify(hpGain >= missing ? 'Shipwright patched the hull.' : `Shipwright patched ${hpGain} hull damage for ${spend}g (partial repair).`);
   showPortTab('upgrades');
   updateShipPanel();
   if (ws?.readyState === 1) sendUpdate();
@@ -8496,13 +8585,22 @@ window.portRepairSails = function() {
   const rh = G.player.riggingHealth != null ? G.player.riggingHealth : 100;
   const missing = Math.max(0, Math.ceil(100 - rh));
   if (missing <= 0) { notify('Sails are already sound.'); return; }
-  const cost = Math.max(8, Math.floor(missing * 1.5));
+  const costFull = Math.max(8, Math.floor(missing * 1.5));
   const gold = G.player.inventory.find(i => i.id === 'gold');
-  if (!gold || gold.count < cost) { notify(`Need ${cost} gold for sail repairs.`); return; }
-  gold.count -= cost;
-  G.player.riggingHealth = 100;
-  applyRiggingVisualToGroup(playerShipGroup, 100);
-  notify('Rigger bent the sails back true.');
+  if (!gold || gold.count < 1) { notify('No gold for sail repairs.'); return; }
+  let pctGain, spend;
+  if (gold.count >= costFull) {
+    pctGain = missing;
+    spend = costFull;
+  } else {
+    pctGain = Math.min(missing, Math.floor(gold.count / 2));
+    if (pctGain < 1) { notify('Not enough gold — about 2g per point of sail condition.'); return; }
+    spend = pctGain * 2;
+  }
+  gold.count -= spend;
+  G.player.riggingHealth = Math.min(100, rh + pctGain);
+  applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
+  notify(pctGain >= missing ? 'Rigger bent the sails back true.' : `Rigger restored ${pctGain}% rigging for ${spend}g (partial repair).`);
   showPortTab('upgrades');
   updateShipPanel();
   if (ws?.readyState === 1) sendUpdate();
@@ -8529,7 +8627,8 @@ window.portSell = function(id, price) {
   if (gold) gold.count += price;
   reconcileSlotsWithInventory();
   bumpNotoriety({ gold: price });
-  notify(`Sold 1 ${id} for ${price}g`);
+  const im = getItemMeta(id);
+  notify(`Sold 1 ${im.name || id} for ${price}g`);
   showPortTab('trade');
 };
 
@@ -8540,15 +8639,14 @@ window.portBuyShip = function(shipType) {
   const specNew = SHIP_TYPES[shipType];
   const price = SHIP_PURCHASE_PRICE[shipType] != null ? SHIP_PURCHASE_PRICE[shipType] : 200;
   const tradeIn = computePlayerShipTradeInGold();
+  const payFromHold = Math.max(0, price - tradeIn);
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (!gold) { notify('No gold in hold.'); return; }
-  if (gold.count + tradeIn < price) {
-    notify(`Need ${price - tradeIn}g in hand after your trade-in credit (${tradeIn}g for the old hull).`);
+  if (gold.count < payFromHold) {
+    notify(`You need ${payFromHold}g in your purse (list ${price}g minus ${tradeIn}g trade-in on your old hull).`);
     return;
   }
-  const netGold = tradeIn - price;
-  gold.count += netGold;
-  bumpNotoriety({ gold: netGold });
+  gold.count -= payFromHold;
   G.player.shipType = shipType;
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   const mh = G.player.maxHealth != null ? G.player.maxHealth : 100;
@@ -8556,9 +8654,18 @@ window.portBuyShip = function(shipType) {
   trimCrewAndPrisonersToShipLimits();
   reconcileSlotsWithInventory();
   rebuildPlayerShip();
-  notify(`Sold your previous ship for ${tradeIn}g and bought ${specNew.name} for ${price}g (rigging reset to standard fit-out).`);
+  notify(`Trade-in: ${tradeIn}g · Price: ${price}g · Paid from purse: ${payFromHold}g. Welcome aboard the ${specNew.name}.`);
   saveProgress();
-  if (ws?.readyState === 1) sendUpdate();
+  if (ws?.readyState === 1) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'ship_update',
+        shipType: G.player.shipType,
+        shipParts: { ...G.player.shipParts }
+      }));
+    } catch (e) {}
+    sendUpdate();
+  }
   showPortTab('ships');
   updateShipPanel();
 };
@@ -9645,6 +9752,7 @@ function update(dt) {
       if (otherShipGroups.has(id)) {
         const oldSg = otherShipGroups.get(id);
         if (oldSg.userData.sinking) preservedSinking = { sinkY: oldSg.userData.sinkY };
+        disposeObject3DSubtree(oldSg);
         scene.remove(oldSg);
         otherShipGroups.delete(id);
       }
@@ -9704,6 +9812,7 @@ function update(dt) {
       if (sg.userData.sinkY < SEA_LEVEL - 8) {
         disposeRemoteDockRopes(id);
         G.pendingRemoteShipSink.delete(id);
+        disposeObject3DSubtree(sg);
         scene.remove(sg);
         otherShipGroups.delete(id);
       }
