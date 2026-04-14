@@ -2102,6 +2102,7 @@ function customMapPayloadFromObject(data) {
       rotation: data.playerSpawn.rotation != null ? Number(data.playerSpawn.rotation) : 0
     };
   }
+  const factions = parseFactionsFromMapJson(data);
   return {
     gridN,
     heights,
@@ -2112,7 +2113,8 @@ function customMapPayloadFromObject(data) {
     towns,
     wind: data.wind,
     seed: data.seed != null ? (Number(data.seed) >>> 0) : null,
-    playerSpawn
+    playerSpawn,
+    factions
   };
 }
 function applyCustomMapPayload(data, statusEl) {
@@ -2121,6 +2123,8 @@ function applyCustomMapPayload(data, statusEl) {
     if (statusEl) statusEl.textContent = 'Invalid map JSON (need version + heightsB64 + matching gridN).';
     return false;
   }
+  resetFactionVisualsToDefault();
+  if (cm.factions) applyFactionOverrideFromMapData(cm.factions);
   G.customMap = cm;
   if (cm.wind && typeof cm.wind === 'object') {
     if (cm.wind.angle != null) G.wind.angle = Number(cm.wind.angle);
@@ -2145,6 +2149,7 @@ function applyCustomMapPayload(data, statusEl) {
 function clearCustomMapAndReloadWorld(statusEl) {
   G.customMap = null;
   try { localStorage.removeItem(CUSTOM_MAP_STORAGE_KEY); } catch (e) {}
+  resetFactionVisualsToDefault();
   G.townStockpiles = {};
   initTownStockpiles();
   applySharedWorldFromServerSeed(G.worldSeed >>> 0);
@@ -2414,6 +2419,49 @@ const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood
 const FACTION_NAMES = ['Crimson Compact', 'Azure Covenant', 'Verdant League', 'Amber Syndicate'];
 const FACTION_TRADE_COLORS = ['#c94a4a', '#4a7ac9', '#4ac97a', '#c9a24a'];
 const FACTION_MAP_COLORS = ['rgba(200,75,75,0.9)', 'rgba(75,120,200,0.9)', 'rgba(75,180,120,0.9)', 'rgba(200,160,75,0.9)'];
+const FACTION_VISUAL_DEFAULTS = {
+  names: ['Crimson Compact', 'Azure Covenant', 'Verdant League', 'Amber Syndicate'],
+  trade: ['#c94a4a', '#4a7ac9', '#4ac97a', '#c9a24a'],
+  map: ['rgba(200,75,75,0.9)', 'rgba(75,120,200,0.9)', 'rgba(75,180,120,0.9)', 'rgba(200,160,75,0.9)']
+};
+function resetFactionVisualsToDefault() {
+  for (let i = 0; i < 4; i++) {
+    FACTION_NAMES[i] = FACTION_VISUAL_DEFAULTS.names[i];
+    FACTION_TRADE_COLORS[i] = FACTION_VISUAL_DEFAULTS.trade[i];
+    FACTION_MAP_COLORS[i] = FACTION_VISUAL_DEFAULTS.map[i];
+  }
+}
+function hexToMapRgba(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex == null ? '' : hex).trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return `rgba(${r},${g},${b},0.9)`;
+}
+/** Overlay labels & colors from map-editor JSON `factions` block. */
+function applyFactionOverrideFromMapData(fac) {
+  if (!fac || typeof fac !== 'object' || !Array.isArray(fac.names)) return;
+  for (let i = 0; i < 4; i++) {
+    const nm = fac.names[i] != null ? String(fac.names[i]).trim() : '';
+    if (nm) FACTION_NAMES[i] = nm;
+    if (fac.colors && fac.colors[i]) {
+      const c = String(fac.colors[i]);
+      FACTION_TRADE_COLORS[i] = c;
+      const mr = hexToMapRgba(c);
+      if (mr) FACTION_MAP_COLORS[i] = mr;
+    }
+  }
+}
+function parseFactionsFromMapJson(data) {
+  if (!data || !data.factions || typeof data.factions !== 'object') return null;
+  const names = Array.isArray(data.factions.names) ? data.factions.names.map(x => String(x)) : null;
+  const colors = Array.isArray(data.factions.colors) ? data.factions.colors.map(x => String(x)) : null;
+  if (!names || names.length < 4) return null;
+  return {
+    names: names.slice(0, 4),
+    colors: colors && colors.length >= 4 ? colors.slice(0, 4) : null
+  };
+}
 function townFaction(meta) {
   if (!meta || !meta.hasTown) return 0;
   return meta.faction != null ? meta.faction : (((meta.cx * 7919 ^ meta.cz * 9341 ^ (G.worldSeed >>> 0)) >>> 0) % 4);
@@ -3016,8 +3064,11 @@ function generateIsland(cx, cz) {
       const sh = positions.getY(i);
       r = 0.85 + sh * 0.1; g = 0.78 + sh * 0.05; b = 0.50 + sh * 0.1;
     } else if (!isLand) { r = 0; g = 0; b = 0; }
-    else if (ht < 0.5) {
-      r = 0.93; g = 0.87; b = 0.60;
+    else if (isLand && warpedDist > 0.72) {
+      const t = Math.min(1, (warpedDist - 0.72) / Math.max(0.04, 0.93 - 0.72));
+      r = 0.90 + t * 0.05;
+      g = 0.80 + t * 0.09;
+      b = 0.52 + t * 0.12;
     } else if (nh < 0.08) {
       r = 0.90; g = 0.82; b = 0.52;
     } else if (nh < 0.15) {
