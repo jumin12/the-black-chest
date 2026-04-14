@@ -127,6 +127,8 @@
       </div>
 
       <h3>Towns</h3>
+      <label class="row">Ports in this chart (<span id="town-count">0</span>)</label>
+      <div id="town-list" style="max-height:140px;overflow-y:auto;font-size:10px;background:rgba(6,10,18,0.6);border-radius:8px;padding:6px;margin-bottom:8px;line-height:1.35;"></div>
       <label class="row">New port name (required)</label>
       <input type="text" id="town-name" placeholder="e.g. Salt Haven" />
       <label class="row">Faction</label>
@@ -537,7 +539,14 @@
         heights[gz * GRID_N + gx] = proceduralHeight01AtWorld(wx, wz, seed);
       }
     }
-    applyBeachShelfAndInlandGrassLift();
+    /* No shelf lift here — the voyage meshes raw procedural heights; shelf would blur coast vs in-game. */
+  }
+  function parseWorldSeed32(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return 0;
+    if (/^0x[0-9a-f]+$/i.test(s)) return parseInt(s, 16) >>> 0;
+    const n = Number(s);
+    return Number.isFinite(n) ? (n >>> 0) : 0;
   }
 
   function worldToGrid(wx, wz) {
@@ -645,24 +654,23 @@
     let h = Math.max(0.22, Math.min(1, Math.pow(t, 0.42) * 1.75));
     return boostLandHeight01(h);
   }
-  /** One-step dilate: shallow water cells touching land inherit a bit of height (fills noisy PNG gaps). */
+  /**
+   * Mild cardinal-only touch-up: avoids merging separate islets (8-neighbor dilate bridges channels).
+   */
   function dilateLandIntoShallowWater() {
     const copy = new Float32Array(heights);
     for (let gz = 1; gz < GRID_N - 1; gz++) {
       for (let gx = 1; gx < GRID_N - 1; gx++) {
         const i = gz * GRID_N + gx;
-        if (copy[i] > WATER_THR * 1.1) continue;
+        if (copy[i] > WATER_THR * 1.05) continue;
         let peak = 0;
-        for (let dz = -1; dz <= 1; dz++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            if (!dz && !dx) continue;
-            const h = copy[(gz + dz) * GRID_N + gx + dx];
-            if (h > WATER_THR) peak = Math.max(peak, h);
-          }
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const h = copy[(gz + dz) * GRID_N + gx + dx];
+          if (h > WATER_THR) peak = Math.max(peak, h);
         }
-        if (peak > WATER_THR + 0.04) {
-          const merged = peak * 0.9;
-          if (merged > copy[i]) heights[i] = Math.min(1, Math.max(copy[i], merged));
+        if (peak > WATER_THR + 0.06) {
+          const merged = WATER_THR + (peak - WATER_THR) * 0.28;
+          if (merged > copy[i] + 0.012) heights[i] = Math.min(peak * 0.92, Math.max(copy[i], merged));
         }
       }
     }
@@ -684,8 +692,10 @@
             if (h > WATER_THR) mx = Math.max(mx, h);
           }
         }
-        const lift = mx * 0.982;
-        if (lift > hi + 0.014) heights[i] = Math.min(1, lift);
+        const delta = mx - hi;
+        if (delta < 0.028) continue;
+        const lift = hi + Math.min(delta * 0.42, 0.09);
+        if (lift > hi + 0.01) heights[i] = Math.min(1, lift);
       }
     }
   }
@@ -939,7 +949,6 @@
     terrainMesh.renderOrder = 1;
     scene.add(terrainMesh);
   }
-  buildTerrainMesh();
 
   const matTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
   const matPalm = new THREE.MeshLambertMaterial({ color: 0x4a9e3f });
@@ -981,6 +990,49 @@
     const h = sampleHeight(wx, wz);
     return h <= WATER_THR ? SEA_LEVEL - 1.2 : SEA_LEVEL + h * MAX_H;
   }
+
+  const townMarkersRoot = new THREE.Group();
+  townMarkersRoot.renderOrder = 2;
+  scene.add(townMarkersRoot);
+  const townMarkerPoleMat = new THREE.MeshLambertMaterial({ color: 0xd4a85c });
+  const townMarkerRingMat = new THREE.MeshLambertMaterial({ color: 0x4a8cc8, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+  function refreshTownOverlays() {
+    const listEl = document.getElementById('town-list');
+    const cntEl = document.getElementById('town-count');
+    if (cntEl) cntEl.textContent = String(towns.length);
+    if (listEl) {
+      listEl.innerHTML = towns.length
+        ? towns.map(t => {
+            const nm = String(t.townName || t.id || '').replace(/</g, '\u003c');
+            return `<div>${nm} <span style="opacity:0.6">(chunk ${t.cx}, ${t.cz})</span></div>`;
+          }).join('')
+        : '<div style="opacity:0.55;">No ports — generate from seed or add manually.</div>';
+    }
+    while (townMarkersRoot.children.length) {
+      const ch = townMarkersRoot.children[0];
+      ch.traverse(obj => {
+        if (obj.geometry) obj.geometry.dispose();
+      });
+      townMarkersRoot.remove(ch);
+    }
+    for (const t of towns) {
+      const wx = t.dockX != null ? t.dockX : t.worldX;
+      const wz = t.dockZ != null ? t.dockZ : t.worldZ;
+      const y = terrainSurfaceY(wx, wz);
+      const g = new THREE.Group();
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.38, 11, 6), townMarkerPoleMat);
+      pole.position.set(0, 5.5, 0);
+      pole.castShadow = true;
+      const ring = new THREE.Mesh(new THREE.RingGeometry(5, 8.5, 28), townMarkerRingMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(0, 0.2, 0);
+      g.add(pole, ring);
+      g.position.set(wx, y, wz);
+      townMarkersRoot.add(g);
+    }
+  }
+  buildTerrainMesh();
+  refreshTownOverlays();
 
   /** Cutter + default player parts — mirrors index.html G.player starting ship. */
   function buildEditorPlayerCutterMesh() {
@@ -1373,6 +1425,7 @@
         refreshEntityList();
       });
     });
+    refreshTownOverlays();
   }
 
   const raycaster = new THREE.Raycaster();
@@ -1692,7 +1745,7 @@
     let bin = '';
     for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
     const heightsB64 = btoa(bin);
-    const seed = Number(document.getElementById('inp-seed').value) >>> 0;
+    const seed = parseWorldSeed32(document.getElementById('inp-seed').value);
     const windAngle = Number(document.getElementById('wind-a').value) * Math.PI * 2;
     const windSpeed = Number(document.getElementById('wind-sp').value);
     return {
@@ -1906,7 +1959,8 @@
   }
 
   document.getElementById('btn-gen-procedural').addEventListener('click', () => {
-    const s = Number(document.getElementById('inp-seed').value) >>> 0;
+    const s = parseWorldSeed32(document.getElementById('inp-seed').value);
+    document.getElementById('inp-seed').value = String(s >>> 0);
     towns = [];
     entities = [];
     playerSpawn = null;
@@ -1920,7 +1974,7 @@
     refreshEntityList();
     frameEntireMap();
     document.getElementById('status-bar').textContent =
-      `Procedural archipelago (seed ${s}) — ${towns.length} port(s) from generator; paint or export JSON.`;
+      `Procedural archipelago (seed ${s >>> 0}) — ${towns.length} port(s) listed at left with dock markers; paint or export JSON.`;
   });
 
   document.getElementById('btn-save-json').addEventListener('click', () => {
@@ -2061,6 +2115,8 @@
     tmp.height = GRID_N;
     const tctx = tmp.getContext('2d');
     if (!tctx) return;
+    /* Nearest sampling for masks keeps narrow channels / small islets; heightmaps stay smooth. */
+    tctx.imageSmoothingEnabled = resolvedMode === 'height';
     /* Uniform scale (contain): no stretch; letterbox is water (mask) or deep sea (height) */
     tctx.fillStyle = resolvedMode === 'height' ? 'rgb(8,12,22)' : 'rgb(255,255,255)';
     tctx.fillRect(0, 0, GRID_N, GRID_N);
