@@ -1880,6 +1880,26 @@ function createDriftwood(x, y, z, rng) {
   return log;
 }
 
+/** Land surface height (m above flat sea bed) at local island coords — must match terrain mesh vertex logic. */
+function sampleIslandLandHeight(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise) {
+  const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+  const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
+  const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
+  const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
+  const combined = n1 * 0.6 + n2 + ridges;
+  const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * 0.12 + islandNoise.noise2D(px * 0.05, pz * 0.05) * 0.04;
+  const warpedDist = dist + edgeWarp;
+  const falloff = Math.max(0, 1 - warpedDist * warpedDist);
+  let ht = (combined * 0.5 + 0.5) * islandHeight * falloff * falloff;
+  const isLand = ht > 0.15 && warpedDist < 0.93;
+  if (!isLand) {
+    const edgeFade = Math.max(0, 1 - warpedDist) * 2;
+    if (edgeFade > 0.1 && ht > 0) return ht * edgeFade * 0.3;
+    return -1;
+  }
+  return Math.max(0.4, ht);
+}
+
 function generateIsland(cx, cz) {
   const key = `${cx},${cz}`;
   if (G.chunks.has(key)) return;
@@ -1980,10 +2000,8 @@ function generateIsland(cx, cz) {
     const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
     const d = Math.sqrt(tx * tx + tz * tz) / islandRadius;
     if (d > 0.93) continue;
-    const ff = Math.max(0, 1 - d * d);
-    const nv = noise.fbm((worldX + tx) * 0.02, (worldZ + tz) * 0.02, 4);
-    const ty = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
-    if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.15, worldZ + tz, rng));
+    const ty = sampleIslandLandHeight(tx, tz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.06, worldZ + tz, rng));
   }
 
   const bushCount = Math.floor(14 + h * 38);
@@ -1993,11 +2011,9 @@ function generateIsland(cx, cz) {
     const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
     const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
     if (d > 0.94 || d < 0.12) continue;
-    const ff = Math.max(0, 1 - d * d);
-    const nv = noise.fbm((worldX + bx) * 0.022, (worldZ + bz) * 0.022, 4);
-    const by = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
+    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
     if (by < 0.2 || by > islandHeight * 0.78) continue;
-    group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.04, worldZ + bz, 0.28 + rng() * 0.42, rng));
+    group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, 0.28 + rng() * 0.42, rng));
   }
 
   const rockCount = Math.floor(7 + h * 22);
@@ -2006,10 +2022,10 @@ function generateIsland(cx, cz) {
     const rad = (0.3 + Math.abs(ln.noise2D(r * 0.4, 11)) * 0.65) * islandRadius;
     const rx = Math.cos(a) * rad, rz = Math.sin(a) * rad;
     const d = Math.sqrt(rx * rx + rz * rz) / islandRadius;
-    const ff = Math.max(0, 1 - d * d);
-    const nv = noise.fbm((worldX + rx) * 0.02, (worldZ + rz) * 0.02, 4);
-    const ry = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
-    group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.15, worldZ + rz, 0.4 + rng() * 1.2, rng));
+    if (d > 0.96) continue;
+    const ry = sampleIslandLandHeight(rx, rz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    if (ry < 0.12) continue;
+    group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.08, worldZ + rz, 0.4 + rng() * 1.2, rng));
   }
 
   const driftN = Math.floor(3 + h * 10 + islandRadius * 0.06);
@@ -2019,10 +2035,9 @@ function generateIsland(cx, cz) {
     const dx = Math.cos(a) * rad, dz = Math.sin(a) * rad;
     const d = Math.sqrt(dx * dx + dz * dz) / islandRadius;
     if (d < 0.62 || d > 0.98) continue;
-    const ff = Math.max(0, 1 - d * d);
-    const nv = noise.fbm((worldX + dx) * 0.025, (worldZ + dz) * 0.025, 3);
-    const dy = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff * 0.45);
-    group.add(createDriftwood(worldX + dx, SEA_LEVEL + Math.max(0.15, dy) + 0.08, worldZ + dz, rng));
+    const dy = sampleIslandLandHeight(dx, dz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    if (dy < 0.08) continue;
+    group.add(createDriftwood(worldX + dx, SEA_LEVEL + Math.max(0.12, dy * 0.45) + 0.06, worldZ + dz, rng));
   }
 
   const barrelN = Math.floor(2 + h * 5 + (meta0.hasTown ? 5 : 0));
@@ -2032,10 +2047,8 @@ function generateIsland(cx, cz) {
     const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
     const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
     if (d > 0.88) continue;
-    const ff = Math.max(0, 1 - d * d);
-    const nv = noise.fbm((worldX + bx) * 0.02, (worldZ + bz) * 0.02, 4);
-    const by = Math.max(0, (nv * 0.5 + 0.5) * islandHeight * ff * ff);
-    if (by > islandHeight * 0.42) continue;
+    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    if (by < 0.08 || by > islandHeight * 0.42) continue;
     group.add(createBarrel(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, rng));
   }
 
@@ -2624,7 +2637,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
 
     const sg = new THREE.PlaneGeometry(sW, sH, 6, 6);
     const sail = new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide }));
-    sail.position.set(0, -sH * 0.52, 0.14);
+    sail.position.set(0, -sH * 0.52, 0.22);
     sail.userData.isSail = true;
     sail.userData.windYawOnParent = true;
     sail.userData.basePositions = sg.attributes.position.array.slice();
@@ -2927,6 +2940,7 @@ function updateCrewDeckAnimations(dt) {
   const gunTgt = (G.crewDeckCombatT > 0.04 || G.crewReloading) ? 1 : 0;
   G._crewGunBlendSm += (gunTgt - G._crewGunBlendSm) * Math.min(1, 6 * dt);
   const gunRun = G._crewGunBlendSm * G._crewGunBlendSm * (3 - 2 * G._crewGunBlendSm);
+  const reefWork = G._reefAgainstWindSm || 0;
 
   ship.children.forEach(ch => {
     if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx == null) return;
@@ -2962,10 +2976,13 @@ function updateCrewDeckAnimations(dt) {
       const steer = Math.max(-1, Math.min(1, (G._playerYawRateSm || 0) * 0.35));
       const pull = Math.sin(t * 0.42 + k);
       const haul = Math.cos(t * 0.33 + k * 1.1);
-      tx = b.x + haul * spec.hullW * 0.11 * ampBase * (0.92 + seaLean * 0.35) + steer * spec.hullW * 0.06;
-      tz = b.z + pull * spec.hullLen * 0.1 * ampBase;
-      ty = b.y + Math.sin(t * 0.88 + k) * 0.025 * ampBase;
-      tryRot = Math.sin(t * 0.44 + k) * 0.26 + pull * 0.06 + steer * 0.22;
+      const reefAmp = 1 + reefWork * 1.45;
+      const lineH = Math.sin(t * 1.88 + k * 1.7);
+      tx = b.x + haul * spec.hullW * 0.11 * ampBase * reefAmp * (0.92 + seaLean * 0.35) + steer * spec.hullW * 0.06
+        + reefWork * lineH * spec.hullW * 0.1;
+      tz = b.z + pull * spec.hullLen * 0.1 * ampBase * (1 + reefWork * 0.75);
+      ty = b.y + Math.sin(t * 0.88 + k) * 0.025 * ampBase + reefWork * Math.abs(Math.sin(t * 2.15 + k)) * 0.065;
+      tryRot = Math.sin(t * 0.44 + k) * 0.26 + pull * 0.06 + steer * 0.22 + reefWork * lineH * 0.22;
     } else if (member.task === 'helm') {
       const steer = Math.max(-1, Math.min(1, (G._playerYawRateSm || 0) * 0.42));
       tx = b.x + Math.sin(t * 0.32 + k) * 0.05 * ampBase + steer * 0.14;
@@ -3013,7 +3030,7 @@ function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
   const sailTgt = Math.max(-SAIL_MAX_YAW, Math.min(SAIL_MAX_YAW, relWind * SAIL_WIND_TRACK * (0.88 + seaSpd * 0.18)));
   if (shipGroup.userData._remoteSailAngle == null) shipGroup.userData._remoteSailAngle = sailTgt;
   shipGroup.userData._remoteSailAngle += (sailTgt - shipGroup.userData._remoteSailAngle) * Math.min(1, 2.8 * dt);
-  const ra = shipGroup.userData._remoteSailAngle;
+  const ra = Math.max(-SAIL_MAX_YAW, Math.min(SAIL_MAX_YAW, shipGroup.userData._remoteSailAngle));
 
   shipGroup.traverse(child => {
     if (child.userData && child.userData.isSail && child.userData.basePositions) {
@@ -3043,7 +3060,8 @@ function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
   shipGroup.traverse(child => {
     if (!child.userData || !child.userData.isSailWindPivot) return;
     const scl = child.userData.windAngleScale != null ? child.userData.windAngleScale : 1;
-    child.rotation.y = ra * scl;
+    const yaw = ra * scl;
+    child.rotation.y = Math.max(-SAIL_MAX_YAW, Math.min(SAIL_MAX_YAW, yaw));
   });
 }
 
@@ -3827,7 +3845,8 @@ const CANNONBALL_XY_SPEED = 35;
 const PLAYER_BROADSIDE_COOLDOWN = 2.5;
 /** Main & fore sail pivots track wind direction (radians), clamped for rigging limits. */
 const SAIL_WIND_TRACK = 0.62;
-const SAIL_MAX_YAW = 1.12;
+/** Max boom/yard yaw (rad) — keeps canvas clear of mast column. */
+const SAIL_MAX_YAW = 0.78;
 /** Death: ship fully sinks for this long before respawn countdown begins. */
 const PLAYER_DEATH_SINK_SEC = 5.2;
 /** After the sink animation, wait this many seconds before respawning. */
@@ -7949,7 +7968,7 @@ function drawCompassOnCtx(ctx, outSize) {
   });
 
   const wr = r * 0.58;
-  ctx.save(); ctx.rotate(G.wind.angle);
+  ctx.save(); ctx.rotate(-G.wind.angle);
   ctx.beginPath(); ctx.moveTo(0, -wr); ctx.lineTo(-9, wr * 0.22); ctx.lineTo(-4, wr * 0.08); ctx.lineTo(4, wr * 0.08); ctx.lineTo(9, wr * 0.22); ctx.closePath();
   ctx.fillStyle = 'rgba(50,130,200,0.88)'; ctx.fill();
   ctx.strokeStyle = 'rgba(80,160,230,0.95)'; ctx.lineWidth = 1; ctx.stroke();
@@ -8108,18 +8127,28 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
         ctx.fillRect(ix, iy, cell + 0.5, cell + 0.5);
       }
     }
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 0.75; ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = 'rgba(255,255,255,0.26)'; ctx.lineWidth = 0.85; ctx.globalAlpha = 0.62;
     const ar = cell * 2;
+    const ah = 3.2;
     for (let iy = 0; iy < h; iy += ar) {
       for (let ix = 0; ix < w; ix += ar) {
         const wx = centerX - (ix + ar * 0.5 - cx) / s;
         const wz = centerZ - (iy + ar * 0.5 - cy) / s;
         const wd = getWindAt(wx, wz);
         const px = wx2sx(wx), py = wz2sy(wz);
-        const len = Math.min(14, 4 + wd.speed * 0.28) * Math.max(0.6, s / 0.14);
+        const len = Math.min(16, 4.5 + wd.speed * 0.3) * Math.max(0.6, s / 0.14);
+        const ang = wd.angle;
+        const tx = px - Math.sin(ang) * len;
+        const ty = py - Math.cos(ang) * len;
         ctx.beginPath();
         ctx.moveTo(px, py);
-        ctx.lineTo(px - Math.sin(wd.angle) * len, py - Math.cos(wd.angle) * len);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(tx - Math.sin(ang - 2.5) * ah, ty - Math.cos(ang - 2.5) * ah);
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(tx - Math.sin(ang + 2.5) * ah, ty - Math.cos(ang + 2.5) * ah);
         ctx.stroke();
       }
     }
@@ -8574,6 +8603,14 @@ function update(dt) {
   G.wind.angle = wHere.angle;
   G.wind.speed = wHere.speed;
 
+  let reefTgt = 0;
+  if (G.mode === 'playing' && !G.player.anchored && !G.spectate && !G.playerSinking && G.player.health > 0) {
+    const wd = Math.cos(G.wind.angle - G.player.rotation);
+    if (wd < -0.1 && Math.abs(G.player.speed) > 0.28) reefTgt = 1;
+  }
+  if (G._reefAgainstWindSm == null) G._reefAgainstWindSm = 0;
+  G._reefAgainstWindSm += (reefTgt - G._reefAgainstWindSm) * Math.min(1, 2.1 * dt);
+
   if (!G.playerSinking && G.player.health > 0) {
     const morRegen = G.docked ? 0.11 : 0.02;
     G.player.morale = Math.min(100, (G.player.morale != null ? G.player.morale : 100) + morRegen * dt);
@@ -8734,11 +8771,13 @@ function update(dt) {
   while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
   while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
   G.currentSailAngle += angleDiff * 1.5 * dt;
+  G.currentSailAngle = Math.max(-SAIL_MAX_YAW, Math.min(SAIL_MAX_YAW, G.currentSailAngle));
 
   playerShipGroup.traverse(child => {
     if (child.userData.isSail && child.userData.basePositions) {
       if (!child.userData._furlAmt) child.userData._furlAmt = 0;
-      const furlTarget = G.sailsFurled ? 1 : 0;
+      const reef = G._reefAgainstWindSm || 0;
+      const furlTarget = G.sailsFurled ? 1 : Math.min(1, reef * 0.55);
       child.userData._furlAmt += (furlTarget - child.userData._furlAmt) * 0.8 * dt;
       const furl = child.userData._furlAmt;
       if (!child.userData.windYawOnParent) child.rotation.y = G.currentSailAngle * (1 - furl);
@@ -8764,7 +8803,8 @@ function update(dt) {
     const sailCh = child.children.find(c => c.userData && c.userData.isSail);
     const furl = sailCh && sailCh.userData._furlAmt != null ? sailCh.userData._furlAmt : 0;
     const scl = child.userData.windAngleScale != null ? child.userData.windAngleScale : 1;
-    child.rotation.y = G.currentSailAngle * (1 - furl) * scl;
+    const yaw = G.currentSailAngle * (1 - furl) * scl;
+    child.rotation.y = Math.max(-SAIL_MAX_YAW, Math.min(SAIL_MAX_YAW, yaw));
   });
 
    G.otherPlayers.forEach((p, id) => {
