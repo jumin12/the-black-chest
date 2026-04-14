@@ -44,13 +44,23 @@
       background: rgba(4,8,14,0.88); border-top: 1px solid rgba(100,140,180,0.2); font-size: 10px; color: #8aa0b8;
     }
     #file-png, #file-json { display: none; }
+    #png-import-panel {
+      margin-top: 8px; padding: 10px; border-radius: 10px;
+      border: 1px solid rgba(100, 160, 200, 0.35); background: rgba(6, 14, 24, 0.75);
+    }
+    #png-import-panel h3 { margin-top: 0; }
+    #png-preview {
+      display: block; width: 100%; max-width: 260px; height: auto; border-radius: 8px;
+      cursor: crosshair; touch-action: none; background: #0a1018;
+      border: 1px solid rgba(80, 120, 160, 0.4);
+    }
   </style>
 </head>
 <body>
   <div id="app">
     <aside id="sidebar">
       <h2>Map editor</h2>
-      <p class="hint">Drag on terrain to sculpt. Greyscale PNG: <strong>grey = land</strong>, <strong>white = water</strong>. Uses the same world bounds as the voyage.</p>
+      <p class="hint">Drag on terrain to sculpt. PNG import supports <strong>coast masks</strong> (dark land, bright water) and <strong>heightmaps</strong> (dark low, bright high). Crop on the preview, then apply. Optional circular chart.</p>
 
       <h3>Tool</h3>
       <div class="tool-grid" id="tools"></div>
@@ -102,6 +112,19 @@
       <label class="row">Entities</label>
       <div id="entity-list"></div>
 
+      <h3>Voyage preview</h3>
+      <p class="hint">Sail the chart with <strong>WASD</strong> or <strong>arrow keys</strong>. <strong>Esc</strong> exits preview. Orbit camera is disabled while sailing.</p>
+      <div class="actions" style="flex-direction:row;flex-wrap:wrap;">
+        <button type="button" id="btn-sail-toggle">Enter sail preview</button>
+      </div>
+      <label class="row">Player spawn (main game)</label>
+      <div class="actions" style="flex-direction:row;flex-wrap:wrap;">
+        <button type="button" id="btn-spawn-boat" class="gold">Set spawn at boat</button>
+        <button type="button" id="btn-spawn-target">Set spawn at orbit target</button>
+        <button type="button" id="btn-spawn-clear" class="danger">Clear</button>
+      </div>
+      <div id="spawn-hud" style="font-size:10px;color:#8aa8c0;margin-top:6px;line-height:1.4;">Spawn: not set — voyage will pick open water.</div>
+
       <h3>Water physics demo</h3>
       <p class="hint">Buoyancy + drag against the animated water surface (same idea as the voyage shader).</p>
       <div class="actions" style="flex-direction: row;">
@@ -113,11 +136,30 @@
       <div class="actions">
         <button type="button" id="btn-save-json">Download map JSON</button>
         <button type="button" id="btn-load-json">Load JSON file</button>
-        <button type="button" id="btn-png">Import height PNG</button>
+        <button type="button" id="btn-png">Choose PNG…</button>
         <button type="button" id="btn-send-game" class="gold">Store for game (localStorage)</button>
       </div>
+      <div id="png-import-panel" style="display:none;">
+        <h3>PNG → heightmap</h3>
+        <label class="row">Interpretation</label>
+        <select id="png-mode">
+          <option value="auto">Auto (detect mask vs heightmap)</option>
+          <option value="mask">Coast mask — dark land, bright water</option>
+          <option value="height">Heightmap — dark low / shallow, bright high</option>
+        </select>
+        <label class="row" style="margin-top:8px;display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;">
+          <input type="checkbox" id="png-circular" checked style="width:auto;" />
+          Circular chart (outside disc = deep water)
+        </label>
+        <p class="hint" style="margin-top:8px;">Drag a rectangle on the preview to crop (like a photo crop). Reset for full image.</p>
+        <canvas id="png-preview" width="260" height="260"></canvas>
+        <div class="actions" style="flex-direction:row;flex-wrap:wrap;margin-top:8px;">
+          <button type="button" id="btn-png-crop-reset">Reset crop</button>
+          <button type="button" id="btn-png-apply" class="gold">Apply to terrain</button>
+        </div>
+      </div>
       <input type="file" id="file-json" accept=".json,application/json" />
-      <input type="file" id="file-png" accept="image/png" />
+      <input type="file" id="file-png" accept="image/png,image/jpeg,image/webp" />
     </aside>
     <div id="viewport-wrap">
       <canvas id="viewport"></canvas>
@@ -208,6 +250,48 @@
   let entities = [];
   let townSeq = 1;
   let entSeq = 1;
+
+  /** Editor-only: starting pose for the main game when this map is loaded. */
+  let playerSpawn = null;
+  let sailPreviewOn = false;
+  const previewKeys = new Set();
+  const previewBoatState = { x: 0, z: 0, rot: 0, speed: 0 };
+
+  const DEEP_WATER_H = 0.02;
+  let pendingPngImage = null;
+  /** Image-space UV crop (u = across, v = top → bottom). */
+  let pngCropUv = { u0: 0, v0: 0, u1: 1, v1: 1 };
+  let pngCropDrag = null;
+
+  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+  function smoothstep(edge0, edge1, x) {
+    const t = clamp01((x - edge0) / (edge1 - edge0));
+    return t * t * (3 - 2 * t);
+  }
+  function imageContainRect(iw, ih, cw, ch) {
+    const s = Math.min(cw / iw, ch / ih);
+    const dw = iw * s, dh = ih * s;
+    const dx = (cw - dw) * 0.5, dy = (ch - dh) * 0.5;
+    return { dx, dy, dw, dh };
+  }
+  function detectPngModeFromLum(samples) {
+    let sum = 0;
+    for (let k = 0; k < samples.length; k++) sum += samples[k];
+    const mean = samples.length ? sum / samples.length : 0.5;
+    return mean > 0.56 ? 'height' : 'mask';
+  }
+  /** Returns stored height 0..1 (deep water uses ~DEEP_WATER_H). */
+  function lumToHeight01(lum, mode) {
+    if (mode === 'height') {
+      if (lum < 0.14) return DEEP_WATER_H;
+      const t = clamp01((lum - 0.14) / 0.86);
+      const shaped = Math.pow(t, 1.05);
+      return Math.max(WATER_THR + 0.07, Math.min(1, shaped * 0.96 + 0.04));
+    }
+    if (lum > 0.82) return DEEP_WATER_H;
+    const t = Math.max(0, 1 - lum);
+    return Math.max(WATER_THR + 0.08, Math.min(1, Math.pow(t, 0.78) * 1.35));
+  }
 
   const canvas = document.getElementById('viewport');
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
@@ -420,6 +504,99 @@
   const entRoot = new THREE.Group();
   scene.add(entRoot);
 
+  const previewBoat = new THREE.Group();
+  const hullPm = new THREE.Mesh(
+    new THREE.BoxGeometry(5, 2.2, 14),
+    new THREE.MeshLambertMaterial({ color: 0x6a4830 })
+  );
+  hullPm.position.y = 1.1;
+  const mastPm = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.28, 12, 8),
+    new THREE.MeshLambertMaterial({ color: 0x5a4a38 })
+  );
+  mastPm.position.y = 8;
+  previewBoat.add(hullPm, mastPm);
+  previewBoat.visible = false;
+  scene.add(previewBoat);
+
+  const spawnMarker = new THREE.Group();
+  const spawnRing = new THREE.Mesh(
+    new THREE.TorusGeometry(4.2, 0.38, 10, 40),
+    new THREE.MeshBasicMaterial({ color: 0x55ee99, transparent: true, opacity: 0.9 })
+  );
+  spawnRing.rotation.x = Math.PI / 2;
+  const spawnPole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.16, 5.5, 8),
+    new THREE.MeshBasicMaterial({ color: 0x88ddaa })
+  );
+  spawnPole.position.y = 2.75;
+  spawnMarker.add(spawnRing, spawnPole);
+  spawnMarker.visible = false;
+  scene.add(spawnMarker);
+
+  function refreshSpawnHud() {
+    const el = document.getElementById('spawn-hud');
+    if (!el) return;
+    if (!playerSpawn) {
+      el.textContent = 'Spawn: not set — voyage will pick open water.';
+      return;
+    }
+    const r = playerSpawn.rotation != null ? playerSpawn.rotation.toFixed(2) : '—';
+    el.textContent = `Spawn: x ${playerSpawn.x.toFixed(1)}, z ${playerSpawn.z.toFixed(1)}, yaw ${r} rad (saved in JSON).`;
+  }
+
+  function findOpenWaterNear(wx, wz) {
+    if (!isLand(wx, wz)) return { x: wx, z: wz };
+    for (let ring = 1; ring < 90; ring++) {
+      const step = ring * 7;
+      for (let a = 0; a < 20; a++) {
+        const ang = (a / 20) * Math.PI * 2;
+        const tx = wx + Math.cos(ang) * step, tz = wz + Math.sin(ang) * step;
+        if (!isLand(tx, tz)) return { x: tx, z: tz };
+      }
+    }
+    return { x: 0, z: 0 };
+  }
+
+  function setSailPreview(on) {
+    sailPreviewOn = !!on;
+    const btn = document.getElementById('btn-sail-toggle');
+    if (btn) btn.textContent = sailPreviewOn ? 'Exit sail preview (Esc)' : 'Enter sail preview';
+    controls.enableRotate = !sailPreviewOn;
+    controls.enablePan = !sailPreviewOn;
+    controls.enableZoom = !sailPreviewOn;
+    if (sailPreviewOn) {
+      let wx = controls.target.x, wz = controls.target.z;
+      const sea = findOpenWaterNear(wx, wz);
+      wx = sea.x;
+      wz = sea.z;
+      previewBoatState.x = wx;
+      previewBoatState.z = wz;
+      previewBoatState.rot = controls.getAzimuthalAngle();
+      previewBoatState.speed = 0;
+      previewBoat.visible = true;
+      document.getElementById('status-bar').textContent =
+        'Sail preview — WASD / arrows, Esc to exit. Set spawn from boat or orbit target.';
+    } else {
+      previewBoat.visible = false;
+      previewKeys.clear();
+      document.getElementById('status-bar').textContent =
+        'Ready · Left drag: sculpt / place · Right drag: orbit · Scroll: zoom';
+    }
+  }
+
+  function updateSpawnMarker3D(timeSec) {
+    if (!playerSpawn) {
+      spawnMarker.visible = false;
+      return;
+    }
+    spawnMarker.visible = true;
+    const wx = playerSpawn.x, wz = playerSpawn.z;
+    const wave = waterGerstnerY(wx, wz, timeSec);
+    spawnMarker.position.set(wx, SEA_LEVEL - 0.15 + wave + 0.15, wz);
+    spawnMarker.rotation.y = timeSec * 0.2;
+  }
+
   function makeTree(x, z) {
     const y = terrainSurfaceY(x, z) + 0.06;
     return createPalmTree(x, y, z, Math.random);
@@ -561,6 +738,7 @@
   }
 
   canvas.addEventListener('pointerdown', e => {
+    if (sailPreviewOn) return;
     if (e.button !== 0) return;
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -575,6 +753,7 @@
   });
   window.addEventListener('pointerup', () => { painting = false; });
   canvas.addEventListener('pointermove', e => {
+    if (sailPreviewOn) return;
     if (!painting) return;
     if (!['raise', 'lower', 'smooth', 'water'].includes(tool)) return;
     const rect = canvas.getBoundingClientRect();
@@ -660,6 +839,49 @@
     }
     return sy;
   }
+  document.getElementById('btn-sail-toggle').addEventListener('click', () => setSailPreview(!sailPreviewOn));
+  document.getElementById('btn-spawn-boat').addEventListener('click', () => {
+    if (!sailPreviewOn) {
+      document.getElementById('status-bar').textContent = 'Enter sail preview first, sail to the spot, then set spawn.';
+      return;
+    }
+    playerSpawn = {
+      x: previewBoatState.x,
+      z: previewBoatState.z,
+      rotation: previewBoatState.rot
+    };
+    refreshSpawnHud();
+    document.getElementById('status-bar').textContent = 'Player spawn set at preview boat — save JSON or Store for game.';
+  });
+  document.getElementById('btn-spawn-target').addEventListener('click', () => {
+    const wx = controls.target.x, wz = controls.target.z;
+    if (isLand(wx, wz)) {
+      document.getElementById('status-bar').textContent = 'Orbit target is on land — move target over water (right-drag).';
+      return;
+    }
+    playerSpawn = { x: wx, z: wz, rotation: controls.getAzimuthalAngle() };
+    refreshSpawnHud();
+    document.getElementById('status-bar').textContent = 'Player spawn set at orbit target.';
+  });
+  document.getElementById('btn-spawn-clear').addEventListener('click', () => {
+    playerSpawn = null;
+    refreshSpawnHud();
+    document.getElementById('status-bar').textContent = 'Player spawn cleared.';
+  });
+
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && sailPreviewOn) {
+      e.preventDefault();
+      setSailPreview(false);
+      return;
+    }
+    if (!sailPreviewOn) return;
+    previewKeys.add(e.key);
+  }, true);
+  window.addEventListener('keyup', e => {
+    previewKeys.delete(e.key);
+  }, true);
+
   document.getElementById('btn-phys-toggle').addEventListener('click', () => {
     physOn = !physOn;
     document.getElementById('status-bar').textContent = physOn ? 'Physics demo ON' : 'Physics demo OFF';
@@ -692,6 +914,18 @@
       heightsB64,
       wind: { angle: windAngle, speed: windSpeed },
       seed,
+      pngImport: {
+        mode: document.getElementById('png-mode').value,
+        circular: document.getElementById('png-circular').checked,
+        crop: { ...pngCropUv }
+      },
+      playerSpawn: playerSpawn
+        ? {
+            x: playerSpawn.x,
+            z: playerSpawn.z,
+            rotation: playerSpawn.rotation != null ? playerSpawn.rotation : 0
+          }
+        : null,
       towns: towns.map(t => ({
         ...t,
         stockpile: t.stockpile && typeof t.stockpile === 'object' ? t.stockpile : buildStockpileObject(t)
@@ -734,6 +968,31 @@
       document.getElementById('wind-a').value = String(turns - Math.floor(turns));
       document.getElementById('wind-sp').value = String(Number(data.wind.speed) || 5);
     }
+    if (data.pngImport && typeof data.pngImport === 'object') {
+      const pi = data.pngImport;
+      const modeEl = document.getElementById('png-mode');
+      if (pi.mode && modeEl) modeEl.value = pi.mode;
+      const circEl = document.getElementById('png-circular');
+      if (pi.circular != null && circEl) circEl.checked = !!pi.circular;
+      if (pi.crop && typeof pi.crop === 'object') {
+        pngCropUv = {
+          u0: Number(pi.crop.u0) || 0,
+          v0: Number(pi.crop.v0) || 0,
+          u1: pi.crop.u1 != null ? Number(pi.crop.u1) : 1,
+          v1: pi.crop.v1 != null ? Number(pi.crop.v1) : 1
+        };
+      }
+    }
+    if (data.playerSpawn && typeof data.playerSpawn === 'object'
+      && data.playerSpawn.x != null && data.playerSpawn.z != null
+      && Number.isFinite(Number(data.playerSpawn.x)) && Number.isFinite(Number(data.playerSpawn.z))) {
+      playerSpawn = {
+        x: Number(data.playerSpawn.x),
+        z: Number(data.playerSpawn.z),
+        rotation: data.playerSpawn.rotation != null ? Number(data.playerSpawn.rotation) : 0
+      };
+    } else playerSpawn = null;
+    refreshSpawnHud();
     townSeq = towns.length + 1;
     entSeq = entities.length + 1;
     buildTerrainMesh();
@@ -791,6 +1050,10 @@
         e.x *= s;
         e.z *= s;
       }
+      if (playerSpawn) {
+        playerSpawn.x *= s;
+        playerSpawn.z *= s;
+      }
     }
     controls.maxDistance = worldEdgeClamp * 12;
     resizeSkyDome();
@@ -804,42 +1067,163 @@
       : `Map half-extent ${worldEdgeClamp} — rebuilt terrain, ocean, sky.`;
   });
 
+  const pngPreview = document.getElementById('png-preview');
+  const pngImportPanel = document.getElementById('png-import-panel');
+
+  function redrawPngPreview() {
+    if (!pngPreview || !pendingPngImage) return;
+    const img = pendingPngImage;
+    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    const cw = pngPreview.width, ch = pngPreview.height;
+    const ctx = pngPreview.getContext('2d');
+    ctx.fillStyle = '#0a1018';
+    ctx.fillRect(0, 0, cw, ch);
+    const { dx, dy, dw, dh } = imageContainRect(iw, ih, cw, ch);
+    ctx.drawImage(img, dx, dy, dw, dh);
+    const cu0 = clamp01(Math.min(pngCropUv.u0, pngCropUv.u1));
+    const cu1 = clamp01(Math.max(pngCropUv.u0, pngCropUv.u1));
+    const cv0 = clamp01(Math.min(pngCropUv.v0, pngCropUv.v1));
+    const cv1 = clamp01(Math.max(pngCropUv.v0, pngCropUv.v1));
+    const x0 = dx + cu0 * dw, y0 = dy + cv0 * dh;
+    const x1 = dx + cu1 * dw, y1 = dy + cv1 * dh;
+    ctx.strokeStyle = 'rgba(100, 255, 170, 0.95)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.setLineDash([]);
+  }
+
+  function canvasEventToImageUv(ev) {
+    if (!pendingPngImage) return null;
+    const rect = pngPreview.getBoundingClientRect();
+    const mx = ((ev.clientX - rect.left) / Math.max(rect.width, 1)) * pngPreview.width;
+    const my = ((ev.clientY - rect.top) / Math.max(rect.height, 1)) * pngPreview.height;
+    const iw = pendingPngImage.naturalWidth || pendingPngImage.width;
+    const ih = pendingPngImage.naturalHeight || pendingPngImage.height;
+    const { dx, dy, dw, dh } = imageContainRect(iw, ih, pngPreview.width, pngPreview.height);
+    const u = (mx - dx) / dw, v = (my - dy) / dh;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+    return { u: clamp01(u), v: clamp01(v) };
+  }
+
+  function applyPngToHeights() {
+    const img = pendingPngImage;
+    if (!img) {
+      document.getElementById('status-bar').textContent = 'Choose a PNG first.';
+      return;
+    }
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    const u0 = Math.min(pngCropUv.u0, pngCropUv.u1);
+    const u1 = Math.max(pngCropUv.u0, pngCropUv.u1);
+    const v0 = Math.min(pngCropUv.v0, pngCropUv.v1);
+    const v1 = Math.max(pngCropUv.v0, pngCropUv.v1);
+    const sx = u0 * iw, sy = v0 * ih;
+    const sw = Math.max(1, (u1 - u0) * iw);
+    const sh = Math.max(1, (v1 - v0) * ih);
+    const tmp = document.createElement('canvas');
+    tmp.width = GRID_N;
+    tmp.height = GRID_N;
+    const tctx = tmp.getContext('2d');
+    if (!tctx) return;
+    tctx.drawImage(img, sx, sy, sw, sh, 0, 0, GRID_N, GRID_N);
+    const d = tctx.getImageData(0, 0, GRID_N, GRID_N).data;
+    let modeSel = document.getElementById('png-mode').value;
+    let resolvedMode = modeSel;
+    if (modeSel === 'auto') {
+      const samples = [];
+      const step = 8;
+      for (let iz = 0; iz < GRID_N; iz += step) {
+        for (let ix = 0; ix < GRID_N; ix += step) {
+          const p = (iz * GRID_N + ix) * 4;
+          samples.push((d[p] + d[p + 1] + d[p + 2]) / (3 * 255));
+        }
+      }
+      resolvedMode = detectPngModeFromLum(samples);
+    }
+    const circular = document.getElementById('png-circular').checked;
+    for (let iz = 0; iz < GRID_N; iz++) {
+      for (let ix = 0; ix < GRID_N; ix++) {
+        const p = (iz * GRID_N + ix) * 4;
+        const lum = (d[p] + d[p + 1] + d[p + 2]) / (3 * 255);
+        let h = lumToHeight01(lum, resolvedMode);
+        const gz = GRID_N - 1 - iz;
+        const nx = (ix / (GRID_N - 1)) * 2 - 1;
+        const nz = (gz / (GRID_N - 1)) * 2 - 1;
+        const r = Math.hypot(nx, nz);
+        if (circular) {
+          if (r > 1.0001) h = DEEP_WATER_H;
+          else if (r > 0.88) {
+            const edge = 1 - smoothstep(0.88, 1.02, r);
+            if (h > WATER_THR) h = DEEP_WATER_H + (h - DEEP_WATER_H) * edge;
+            else h = DEEP_WATER_H;
+          }
+        }
+        heights[gz * GRID_N + ix] = h;
+      }
+    }
+    buildTerrainMesh();
+    syncEntityMeshes();
+    frameEntireMap();
+    const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
+    document.getElementById('status-bar').textContent =
+      `PNG applied (${modeNote}${circular ? ', circular disc' : ''}). Heightmap row order matches voyage mesh.`;
+  }
+
+  pngPreview.addEventListener('pointerdown', e => {
+    if (!pendingPngImage) return;
+    const uv = canvasEventToImageUv(e);
+    if (!uv) return;
+    pngCropDrag = { anchor: uv };
+    pngCropUv = { u0: uv.u, v0: uv.v, u1: uv.u, v1: uv.v };
+    pngPreview.setPointerCapture(e.pointerId);
+    redrawPngPreview();
+  });
+  pngPreview.addEventListener('pointermove', e => {
+    if (!pngCropDrag || !pendingPngImage) return;
+    const uv = canvasEventToImageUv(e);
+    if (!uv) return;
+    pngCropUv = {
+      u0: pngCropDrag.anchor.u,
+      v0: pngCropDrag.anchor.v,
+      u1: uv.u,
+      v1: uv.v
+    };
+    redrawPngPreview();
+  });
+  pngPreview.addEventListener('pointerup', e => {
+    if (pngCropDrag) {
+      const du = Math.abs(pngCropUv.u1 - pngCropUv.u0);
+      const dv = Math.abs(pngCropUv.v1 - pngCropUv.v0);
+      if (du < 0.015 || dv < 0.015) pngCropUv = { u0: 0, v0: 0, u1: 1, v1: 1 };
+    }
+    pngCropDrag = null;
+    try { pngPreview.releasePointerCapture(e.pointerId); } catch (err) { /* noop */ }
+    redrawPngPreview();
+  });
+  pngPreview.addEventListener('pointercancel', () => { pngCropDrag = null; });
+
+  document.getElementById('btn-png-crop-reset').addEventListener('click', () => {
+    pngCropUv = { u0: 0, v0: 0, u1: 1, v1: 1 };
+    redrawPngPreview();
+  });
+  document.getElementById('btn-png-apply').addEventListener('click', () => applyPngToHeights());
+
   document.getElementById('btn-png').addEventListener('click', () => document.getElementById('file-png').click());
   document.getElementById('file-png').addEventListener('change', ev => {
     const f = ev.target.files && ev.target.files[0];
     if (!f) return;
     const img = new Image();
     img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = GRID_N; c.height = GRID_N;
-      const ctx = c.getContext('2d');
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, GRID_N, GRID_N);
-      const iw = img.naturalWidth || img.width;
-      const ih = img.naturalHeight || img.height;
-      const scale = Math.min(GRID_N / iw, GRID_N / ih);
-      const dw = Math.max(1, Math.floor(iw * scale));
-      const dh = Math.max(1, Math.floor(ih * scale));
-      const ox = Math.floor((GRID_N - dw) / 2);
-      const oy = Math.floor((GRID_N - dh) / 2);
-      ctx.drawImage(img, 0, 0, iw, ih, ox, oy, dw, dh);
-      const d = ctx.getImageData(0, 0, GRID_N, GRID_N).data;
-      for (let iz = 0; iz < GRID_N; iz++) {
-        for (let ix = 0; ix < GRID_N; ix++) {
-          const i = (iz * GRID_N + ix) * 4;
-          const lum = (d[i] + d[i + 1] + d[i + 2]) / (3 * 255);
-          const idx = iz * GRID_N + ix;
-          if (lum > 0.88) heights[idx] = WATER_THR * 0.35;
-          else {
-            const t = Math.max(0, 1 - lum);
-            heights[idx] = Math.max(0.16, Math.min(1, Math.pow(t, 0.82) * 1.55));
-          }
-        }
-      }
-      buildTerrainMesh();
-      syncEntityMeshes();
-      frameEntireMap();
-      document.getElementById('status-bar').textContent = 'PNG fitted (letterboxed), centered on chart — white=water, grey=land.';
+      pendingPngImage = img;
+      pngCropUv = { u0: 0, v0: 0, u1: 1, v1: 1 };
+      pngImportPanel.style.display = 'block';
+      redrawPngPreview();
+      document.getElementById('status-bar').textContent =
+        'PNG loaded — drag crop on preview, pick mask/heightmap mode, then Apply to terrain.';
+    };
+    img.onerror = () => {
+      document.getElementById('status-bar').textContent = 'Could not read image file.';
     };
     img.src = URL.createObjectURL(f);
     ev.target.value = '';
@@ -894,7 +1278,47 @@
       }
     }
 
-    controls.update();
+    if (sailPreviewOn) {
+      const turnL = previewKeys.has('ArrowLeft') || previewKeys.has('a') || previewKeys.has('A');
+      const turnR = previewKeys.has('ArrowRight') || previewKeys.has('d') || previewKeys.has('D');
+      const fwd = previewKeys.has('ArrowUp') || previewKeys.has('w') || previewKeys.has('W');
+      const back = previewKeys.has('ArrowDown') || previewKeys.has('s') || previewKeys.has('S');
+      const turn = (turnL ? 1 : 0) + (turnR ? -1 : 0);
+      const turnRate = 1.35;
+      previewBoatState.rot += turn * turnRate * dt * (0.42 + 0.38 * Math.min(Math.abs(previewBoatState.speed) / 26, 1));
+      let acc = 0;
+      if (fwd) acc = 15;
+      else if (back) acc = -8;
+      else acc = previewBoatState.speed * -0.38;
+      previewBoatState.speed += acc * dt;
+      previewBoatState.speed = Math.max(-7, Math.min(34, previewBoatState.speed));
+      const nx = previewBoatState.x + Math.sin(previewBoatState.rot) * previewBoatState.speed * dt;
+      const nz = previewBoatState.z + Math.cos(previewBoatState.rot) * previewBoatState.speed * dt;
+      if (!isLand(nx, nz)) {
+        previewBoatState.x = nx;
+        previewBoatState.z = nz;
+      } else {
+        previewBoatState.speed *= 0.32;
+      }
+      const lim = worldEdgeClamp;
+      previewBoatState.x = Math.max(-lim, Math.min(lim, previewBoatState.x));
+      previewBoatState.z = Math.max(-lim, Math.min(lim, previewBoatState.z));
+      const bx = previewBoatState.x, bz = previewBoatState.z, br = previewBoatState.rot;
+      const waveB = waterGerstnerY(bx, bz, t);
+      previewBoat.position.set(bx, SEA_LEVEL - 0.5 + waveB + 0.9, bz);
+      previewBoat.rotation.y = br;
+      const camDist = 54, camElev = 28;
+      camera.position.set(
+        bx - Math.sin(br) * camDist,
+        camElev + waveB * 0.45,
+        bz - Math.cos(br) * camDist
+      );
+      camera.lookAt(bx, SEA_LEVEL + 3.5 + waveB * 0.25, bz);
+    } else {
+      controls.update();
+    }
+
+    updateSpawnMarker3D(t);
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
   }
@@ -904,6 +1328,7 @@
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) applySerialized(JSON.parse(raw));
   } catch (e) {}
+  refreshSpawnHud();
   </script>
 </body>
 </html>
