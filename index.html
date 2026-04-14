@@ -905,20 +905,19 @@ const G = {
     anchored: false,
     shipName: 'The Black Wave',
     flagColor: '#1a1a1a',
-    shipType: 'sloop',
+    shipType: 'cutter',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     inventory: [
-      { id: 'food', name: 'Provisions', icon: 'F', count: 24 },
-      { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 36 },
-      { id: 'grapeshot', name: 'Grapeshot', icon: 'G', count: 24 },
-      { id: 'chainshot', name: 'Chain shot', icon: 'C', count: 18 },
+      { id: 'food', name: 'Provisions', icon: 'F', count: 12 },
+      { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 20 },
+      { id: 'grapeshot', name: 'Grapeshot', icon: 'G', count: 10 },
+      { id: 'chainshot', name: 'Chain shot', icon: 'C', count: 10 },
       { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 50 }
     ],
     crew: [
       { name: 'Captain Blackwood', role: 'captain', health: 100, task: 'helm' },
       { name: 'Salty Pete', role: 'gunner', health: 100, task: 'cannons' },
-      { name: 'One-Eye Jack', role: 'sailor', health: 100, task: 'sails' },
-      { name: 'Red Mary', role: 'navigator', health: 100, task: 'lookout' }
+      { name: 'One-Eye Jack', role: 'sailor', health: 100, task: 'sails' }
     ]
   },
   otherPlayers: new Map(),
@@ -1482,15 +1481,11 @@ function getItemMeta(id) {
   return ITEM_DEFS[id] || { name: String(id), icon: '?' };
 }
 function getInvCount(id) {
-  if (id === 'gold') {
-    let t = 0;
-    for (const i of G.player.inventory || []) {
-      if (i && i.id === 'gold') t += Math.max(0, Math.floor(Number(i.count) || 0));
-    }
-    return t;
+  let t = 0;
+  for (const i of G.player.inventory || []) {
+    if (i && i.id === id) t += Math.max(0, Math.floor(Number(i.count) || 0));
   }
-  const it = G.player.inventory.find(i => i.id === id);
-  return it ? Math.max(0, Math.floor(Number(it.count) || 0)) : 0;
+  return t;
 }
 function ensureSpecialAmmoRowsInInventory() {
   const add = (id, name, icon, count) => {
@@ -7601,6 +7596,32 @@ function slotSumById(id) {
   (G.player.cargoSlots || []).forEach(s => { if (s && s.id === id) t += s.count; });
   return t;
 }
+/** One row per item id; gold collapsed to a single purse. Fixes inflated totals after save/load or duplicate ledger rows. */
+function normalizeInventoryMergeStacks() {
+  const inv = G.player.inventory;
+  if (!Array.isArray(inv)) return;
+  const sums = new Map();
+  let goldTotal = 0;
+  for (const row of inv) {
+    if (!row || row.count <= 0) continue;
+    const c = Math.max(0, Math.floor(Number(row.count) || 0));
+    if (row.id === 'gold') {
+      goldTotal += c;
+      continue;
+    }
+    sums.set(row.id, (sums.get(row.id) || 0) + c);
+  }
+  const next = [];
+  for (const [id, count] of sums) {
+    if (count <= 0) continue;
+    const m = getItemMeta(id);
+    next.push({ id, name: m.name, icon: m.icon, count });
+  }
+  if (goldTotal > 0) {
+    next.push({ id: 'gold', name: 'Gold Coins', icon: 'Au', count: goldTotal });
+  }
+  G.player.inventory = next;
+}
 function syncInventoryFromCargoSlots() {
   const slots = Array.isArray(G.player.cargoSlots) ? G.player.cargoSlots : [];
   const fromSlots = new Map();
@@ -7608,10 +7629,15 @@ function syncInventoryFromCargoSlots() {
     if (s && s.count > 0) fromSlots.set(s.id, (fromSlots.get(s.id) || 0) + s.count);
   });
   let goldTotal = 0;
+  const ledgerSum = new Map();
   for (const row of G.player.inventory || []) {
-    if (row && row.id === 'gold' && row.count > 0) {
-      goldTotal += Math.max(0, Math.floor(Number(row.count) || 0));
+    if (!row || row.count <= 0) continue;
+    const c = Math.max(0, Math.floor(Number(row.count) || 0));
+    if (row.id === 'gold') {
+      goldTotal += c;
+      continue;
     }
+    ledgerSum.set(row.id, (ledgerSum.get(row.id) || 0) + c);
   }
   const slotGold = fromSlots.get('gold') || 0;
   if (slotGold > 0) {
@@ -7622,25 +7648,21 @@ function syncInventoryFromCargoSlots() {
     }
   }
   const next = [];
-  const usedSlotIds = new Set();
-  for (const row of G.player.inventory || []) {
-    if (!row || row.count <= 0) continue;
-    if (row.id === 'gold') continue;
-    if (fromSlots.has(row.id)) {
-      usedSlotIds.add(row.id);
-      const m = getItemMeta(row.id);
-      next.push({ id: row.id, name: m.name, icon: m.icon, count: fromSlots.get(row.id) });
-    } else {
-      next.push({ ...row });
-    }
+  const fromSlotIds = new Set();
+  for (const [id, count] of fromSlots) {
+    if (count <= 0) continue;
+    const m = getItemMeta(id);
+    next.push({ id, name: m.name, icon: m.icon, count });
+    fromSlotIds.add(id);
+  }
+  for (const [id, count] of ledgerSum) {
+    if (fromSlotIds.has(id)) continue;
+    if (count <= 0) continue;
+    const m = getItemMeta(id);
+    next.push({ id, name: m.name, icon: m.icon, count });
   }
   if (goldTotal > 0) {
     next.push({ id: 'gold', name: 'Gold Coins', icon: 'Au', count: goldTotal });
-  }
-  for (const [id, count] of fromSlots) {
-    if (count <= 0 || usedSlotIds.has(id)) continue;
-    const m = getItemMeta(id);
-    next.push({ id, name: m.name, icon: m.icon, count });
   }
   G.player.inventory = next;
 }
@@ -7688,8 +7710,10 @@ function ensureCargoSlots() {
 /** Fast path after picking up one item type at sea (avoids full multi-item reconcile). */
 function reconcileSlotsAfterPickup(itemId) {
   ensureCargoSlots();
-  const row = G.player.inventory.find(i => i.id === itemId);
-  const target = row ? Math.max(0, Math.floor(Number(row.count) || 0)) : 0;
+  let target = 0;
+  for (const i of G.player.inventory || []) {
+    if (i && i.id === itemId) target += Math.max(0, Math.floor(Number(i.count) || 0));
+  }
   let cur = slotSumById(itemId);
   while (cur > target) {
     let removed = false;
@@ -7767,7 +7791,11 @@ function reconcileSlotsWithInventory() {
   ensureCargoSlots();
   consolidateGoldPurse();
   const want = new Map();
-  G.player.inventory.forEach(row => { if (row && row.count > 0) want.set(row.id, row.count); });
+  G.player.inventory.forEach(row => {
+    if (!row || row.count <= 0) return;
+    const c = Math.max(0, Math.floor(Number(row.count) || 0));
+    want.set(row.id, (want.get(row.id) || 0) + c);
+  });
   want.delete('gold');
   for (const [id, target] of [...want.entries()]) {
     let cur = slotSumById(id);
@@ -11064,7 +11092,7 @@ function getCrewFromUI() {
     const color = row?.querySelector('.color-swatch.sel')?.dataset.color || '#3a3a3a';
     const hatRow = document.querySelector(`.crew-hat-row[data-idx="${idx}"]`);
     const hat = hatRow?.querySelector('.color-swatch.sel')?.dataset.optId || 'none';
-    const roles = ['gunner', 'sailor', 'navigator'];
+    const roles = ['gunner', 'sailor'];
     crew.push({ name, role: roles[idx] || 'sailor', color, hat, outfit: 'vest', parrot: false });
   });
   return crew;
@@ -11201,8 +11229,7 @@ function buildCreationUI() {
   crewDiv.innerHTML = '';
   const defaultCrew = [
     { name: 'Salty Pete', role: 'gunner', color: '#3a3a3a', hat: 'bandana' },
-    { name: 'One-Eye Jack', role: 'sailor', color: '#2a6a2a', hat: 'none' },
-    { name: 'Red Mary', role: 'navigator', color: '#1a3a6a', hat: 'tricorn' }
+    { name: 'One-Eye Jack', role: 'sailor', color: '#2a6a2a', hat: 'none' }
   ];
   defaultCrew.forEach((c, idx) => {
     const div = document.createElement('div');
@@ -11426,6 +11453,8 @@ function beginVoyageAfterCharacter() {
   spawnNPCs();
   rebuildPlayerShip();
   ensureSpecialAmmoRowsInInventory();
+  reconcileSlotsWithInventory();
+  trimCrewAndPrisonersToShipLimits();
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
   document.getElementById('create-screen').style.display = 'none';
   document.getElementById('mobile-layout-picker').style.display = 'none';
@@ -11542,10 +11571,10 @@ const SAVE_KEY = 'pirates_save_v1';
 
 function getDefaultStartingInventory() {
   return [
-    { id: 'food', name: 'Provisions', icon: 'F', count: 24 },
-    { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 36 },
-    { id: 'grapeshot', name: 'Grapeshot', icon: 'G', count: 24 },
-    { id: 'chainshot', name: 'Chain shot', icon: 'C', count: 18 },
+    { id: 'food', name: 'Provisions', icon: 'F', count: 12 },
+    { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 20 },
+    { id: 'grapeshot', name: 'Grapeshot', icon: 'G', count: 10 },
+    { id: 'chainshot', name: 'Chain shot', icon: 'C', count: 10 },
     { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 50 }
   ];
 }
@@ -11553,8 +11582,7 @@ function getDefaultStartingCrew() {
   return [
     { name: 'Captain Blackwood', role: 'captain', health: 100, task: 'helm', color: '#8b0000', hat: 'none', outfit: 'vest', parrot: false },
     { name: 'Salty Pete', role: 'gunner', health: 100, task: 'cannons', color: '#cc2222', hat: 'none', outfit: 'vest', parrot: false },
-    { name: 'One-Eye Jack', role: 'sailor', health: 100, task: 'sails', color: '#1a3a6a', hat: 'none', outfit: 'vest', parrot: false },
-    { name: 'Red Mary', role: 'navigator', health: 100, task: 'lookout', color: '#6a1a3a', hat: 'none', outfit: 'vest', parrot: false }
+    { name: 'One-Eye Jack', role: 'sailor', health: 100, task: 'sails', color: '#1a3a6a', hat: 'none', outfit: 'vest', parrot: false }
   ];
 }
 function applyDefaultStartingLoadout(opts) {
@@ -11572,7 +11600,7 @@ function applyDefaultStartingLoadout(opts) {
     savedParts = G.player.shipParts ? { ...normalizeShipParts(G.player.shipParts) } : null;
     savedFlag = G.player.flagColor || null;
   }
-  G.player.shipType = 'sloop';
+  G.player.shipType = 'cutter';
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
@@ -11620,7 +11648,7 @@ function saveProgress() {
       inventory: G.player.inventory,
       cargoSlots: G.player.cargoSlots,
       crew: G.player.crew,
-      gold: G.player.inventory.find(i => i.id === 'gold')?.count || 0,
+      gold: getInvCount('gold'),
       quests: G.quests,
       completedMissionLog: G.completedMissionLog || [],
       storyQuest: G.storyQuest,
@@ -11648,7 +11676,10 @@ function loadProgress() {
     if (data.shipName) G.player.shipName = data.shipName;
     if (data.shipType) G.player.shipType = data.shipType;
     if (data.shipParts) G.player.shipParts = normalizeShipParts(data.shipParts);
-    if (data.inventory) G.player.inventory = data.inventory;
+    if (data.inventory) {
+      G.player.inventory = data.inventory;
+      normalizeInventoryMergeStacks();
+    }
     if (data.cargoSlots && Array.isArray(data.cargoSlots)) G.player.cargoSlots = data.cargoSlots;
     if (data.cargoSlots && data.cargoSlots.some(Boolean)) syncInventoryFromCargoSlots();
     if (data.crew) G.player.crew = data.crew;
@@ -11874,7 +11905,7 @@ function executeStartNewVoyageAfterConfirm() {
   localStorage.removeItem(SAVE_KEY);
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
-  G.player.health = 100; G.player.shipName = 'The Black Wave'; G.player.shipType = 'sloop';
+  G.player.health = 100; G.player.shipName = 'The Black Wave'; G.player.shipType = 'cutter';
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
@@ -11901,7 +11932,7 @@ if (hasSave) {
   document.getElementById('save-info').style.display = 'block';
   document.getElementById('save-ship-name').textContent = G.player.shipName || 'Unknown Ship';
   const capName = G.player.crew[0]?.name || 'Unknown Captain';
-  const gold = G.player.inventory.find(i => i.id === 'gold')?.count || 0;
+  const gold = getInvCount('gold');
   const shipSpec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
   document.getElementById('save-details').innerHTML =
     `Captain: <span style="color:#e0d6c2">${capName}</span><br>` +
