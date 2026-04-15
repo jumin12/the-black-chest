@@ -296,6 +296,7 @@
         <input type="password" id="me-nav-pw" placeholder="Navigator password" autocomplete="off" />
         <button type="button" id="me-nav-unlock">Get session</button>
         <button type="button" id="me-publish-world" class="gold">Publish world to server</button>
+        <button type="button" id="me-revert-world">Revert server to previous chart</button>
       </div>
       <div id="me-nav-status" class="hint" style="margin-bottom:12px;"></div>
       <h3>Ship lab (preview)</h3>
@@ -347,6 +348,7 @@
   const STORAGE_KEY = 'pirates_custom_map_v1';
   const MAP_LIBRARY_INDEX_KEY = 'pirates_map_library_index_v1';
   const MAP_LIBRARY_DATA_PREFIX = 'pirates_map_saved_v1_';
+  const MAP_LIBRARY_LEGACY_MIGRATED_KEY = 'pirates_map_library_legacy_migrated_v1';
   const DEFAULT_EDIT_FACTION_NAMES = ['Crimson Compact', 'Azure Covenant', 'Verdant League', 'Amber Syndicate'];
   const DEFAULT_EDIT_FACTION_COLORS = ['#c94a4a', '#4a7ac9', '#4ac97a', '#c9a24a'];
   let editorFactionNames = DEFAULT_EDIT_FACTION_NAMES.slice();
@@ -378,6 +380,9 @@
     const idx = readMapLibraryIndex();
     if (idx.entries.length > 0) return;
     try {
+      if (localStorage.getItem(MAP_LIBRARY_LEGACY_MIGRATED_KEY) === '1') return;
+    } catch (e) { /* noop */ }
+    try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const data = JSON.parse(raw);
@@ -386,6 +391,7 @@
       idx.entries = [{ id, name: 'Stored map (before library)', updatedAt: Date.now() }];
       writeMapLibraryIndex(idx);
       localStorage.setItem(MAP_LIBRARY_DATA_PREFIX + id, raw);
+      try { localStorage.setItem(MAP_LIBRARY_LEGACY_MIGRATED_KEY, '1'); } catch (e2) { /* noop */ }
     } catch (e) { /* noop */ }
   }
   function saveNewMapToLibrary(name, mapObj) {
@@ -419,6 +425,9 @@
     writeMapLibraryIndex(idx);
     try { localStorage.removeItem(MAP_LIBRARY_DATA_PREFIX + id); } catch (e) { /* noop */ }
     if (editorSelectedLibraryId === id) editorSelectedLibraryId = null;
+    if (!idx.entries.length) {
+      try { localStorage.setItem(MAP_LIBRARY_LEGACY_MIGRATED_KEY, '1'); } catch (e2) { /* noop */ }
+    }
   }
   function setServerMapChoice(idOrNull) {
     const idx = readMapLibraryIndex();
@@ -1355,7 +1364,7 @@
   const _fogColDay = new THREE.Color(0x9ab8d8);
   const _fogColNight = new THREE.Color(0x1a2238);
 
-  const skyRadius = () => Math.max(3600, worldEdgeClamp * 3.6, camera.far * 1.62);
+  const skyRadius = () => Math.min(camera.far * 0.9, Math.max(2200, worldEdgeClamp * 2.8 + 400));
   const skyUniforms = {
     uTime: { value: 0 },
     uSunDir: { value: _edSunDir.clone() },
@@ -4275,6 +4284,26 @@
       if (j.ok) {
         if (st) st.textContent = `Published — revision ${j.revision}. Players sync this chart when they connect.`;
       } else if (st) st.textContent = j.error || 'Publish failed.';
+    }).catch(() => { if (st) st.textContent = 'Network error.'; });
+  });
+  document.getElementById('me-revert-world')?.addEventListener('click', () => {
+    const st = document.getElementById('me-nav-status');
+    if (!confirm('Restore the server’s previous world chart? All players will sync to that map.')) return;
+    let tok;
+    try { tok = sessionStorage.getItem('pirates_navigator_sess'); } catch (err) {}
+    if (!tok) {
+      if (st) st.textContent = 'Unlock with password first (Get session).';
+      return;
+    }
+    if (st) st.textContent = 'Reverting…';
+    fetch(`${location.protocol}//${location.host}/api/world-map-revert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tok })
+    }).then(r => r.json()).then(j => {
+      if (j.ok) {
+        if (st) st.textContent = `Reverted — revision ${j.revision}. Reload the voyage to pick up the chart.`;
+      } else if (st) st.textContent = j.error || 'Revert failed.';
     }).catch(() => { if (st) st.textContent = 'Network error.'; });
   });
   document.getElementById('btn-gen-deco')?.addEventListener('click', () => generateDecorations());
