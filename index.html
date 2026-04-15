@@ -689,15 +689,23 @@ input,textarea{-webkit-user-select:text;user-select:text;}
         </div>
         <div id="debug-tab-panel-maped" class="debug-tab-panel" style="display:none;margin-bottom:18px;" aria-label="Custom map">
           <h4 class="debug-section-head">3D map editor (new window)</h4>
-          <p class="debug-map-hint">Sculpt terrain, paint water, place trees, docks, houses, flagpoles, and define towns with faction, export good, and stockpiles. Save from the editor to a JSON file or to this browser via <em>Store for game</em>.</p>
+          <p class="debug-map-hint">Sculpt terrain, paint water, place props and ports. In the editor use <strong>Save to library</strong> for named saves; <strong>Store for game</strong> updates the quick slot only.</p>
           <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
             <button type="button" id="debug-open-map-editor">Open 3D map editor</button>
-            <button type="button" id="debug-load-stored-map">Load stored map (localStorage)</button>
+            <button type="button" id="debug-load-stored-map">Load quick slot</button>
             <button type="button" id="debug-load-map-file">Load map from JSON file</button>
-            <button type="button" id="debug-publish-world-map" style="border:1px solid rgba(200,160,80,0.55);background:linear-gradient(180deg,#6a5020,#402810);color:#f8e8c8;">Save current map to server</button>
+            <button type="button" id="debug-publish-world-map" style="border:1px solid rgba(200,160,80,0.55);background:linear-gradient(180deg,#6a5020,#402810);color:#f8e8c8;">Save map to server</button>
             <button type="button" id="debug-clear-custom-map" style="background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Clear custom map &amp; restore procedural</button>
           </div>
-          <p id="debug-custom-map-status" class="debug-seed-status" style="min-height:2.4em;"></p>
+          <p class="debug-map-hint" style="margin-top:4px;"><strong>Save map to server</strong> uploads the chart marked ★ below if set; otherwise the custom map currently loaded in this session.</p>
+          <h4 class="debug-section-head" style="margin-top:16px;">Saved maps (this browser)</h4>
+          <p class="debug-map-hint">Named saves from the editor. ★ <em>server</em> is the chart sent when you publish (unless you clear it).</p>
+          <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+            <button type="button" id="debug-map-refresh-library">Refresh list</button>
+            <button type="button" id="debug-map-clear-server-star">Clear ★ server choice</button>
+          </div>
+          <div id="debug-saved-maps-list" style="max-height:min(40vh,340px);overflow-y:auto;font-size:12px;line-height:1.45;border:1px solid rgba(80,120,160,0.25);border-radius:8px;padding:8px;background:rgba(8,12,22,0.5);"></div>
+          <p id="debug-custom-map-status" class="debug-seed-status" style="min-height:2.4em;margin-top:12px;"></p>
           <input type="file" id="debug-custom-map-file" accept=".json,application/json" style="display:none;" />
         </div>
         <div id="debug-tab-panel-main" class="debug-tab-panel">
@@ -1003,6 +1011,72 @@ const CAM_ZOOM_DEFAULT = clampCameraZoomLevel(Math.round(
 const CANONICAL_DEFAULT_WORLD_SEED = 42;
 /** Matches `map-editor.html` — custom heightmap + towns / props (local dev; not synced to server). */
 const CUSTOM_MAP_STORAGE_KEY = 'pirates_custom_map_v1';
+const MAP_LIBRARY_INDEX_KEY = 'pirates_map_library_index_v1';
+const MAP_LIBRARY_DATA_PREFIX = 'pirates_map_saved_v1_';
+
+function readMapLibraryIndexMain() {
+  try {
+    const raw = localStorage.getItem(MAP_LIBRARY_INDEX_KEY);
+    if (!raw) return { version: 1, entries: [], serverMapId: null };
+    const o = JSON.parse(raw);
+    return {
+      version: 1,
+      entries: Array.isArray(o.entries) ? o.entries : [],
+      serverMapId: o.serverMapId || null
+    };
+  } catch (e) {
+    return { version: 1, entries: [], serverMapId: null };
+  }
+}
+function writeMapLibraryIndexMain(idx) {
+  localStorage.setItem(MAP_LIBRARY_INDEX_KEY, JSON.stringify({
+    version: 1,
+    entries: idx.entries || [],
+    serverMapId: idx.serverMapId || null
+  }));
+}
+function ensureLegacyMapInLibraryMain() {
+  const idx = readMapLibraryIndexMain();
+  if (idx.entries.length > 0) return;
+  try {
+    const raw = localStorage.getItem(CUSTOM_MAP_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (!data || data.version == null || !data.heightsB64) return;
+    const id = 'm_migrated_' + Date.now().toString(36);
+    idx.entries = [{ id, name: 'Stored map (before library)', updatedAt: Date.now() }];
+    writeMapLibraryIndexMain(idx);
+    localStorage.setItem(MAP_LIBRARY_DATA_PREFIX + id, raw);
+  } catch (e) { /* noop */ }
+}
+function deleteMapFromLibraryMain(id) {
+  const idx = readMapLibraryIndexMain();
+  idx.entries = idx.entries.filter(e => e.id !== id);
+  if (idx.serverMapId === id) idx.serverMapId = null;
+  writeMapLibraryIndexMain(idx);
+  try { localStorage.removeItem(MAP_LIBRARY_DATA_PREFIX + id); } catch (e) { /* noop */ }
+}
+function setServerMapChoiceMain(idOrNull) {
+  const idx = readMapLibraryIndexMain();
+  idx.serverMapId = idOrNull || null;
+  writeMapLibraryIndexMain(idx);
+}
+function escapeMapLibHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/"/g, '&quot;');
+}
+function getPublishedWorldMapObjectFromLibraryOrSession() {
+  const idx = readMapLibraryIndexMain();
+  if (idx.serverMapId) {
+    try {
+      const raw = localStorage.getItem(MAP_LIBRARY_DATA_PREFIX + idx.serverMapId);
+      if (raw) return JSON.parse(raw);
+    } catch (e) { /* noop */ }
+  }
+  return buildWorldMapJsonFromCustomMapSession();
+}
 
 const G = {
   mode: 'start',
@@ -7659,6 +7733,29 @@ function buildWorldMapJsonFromCustomMapSession() {
   document.getElementById('debug-panel-close-btn')?.addEventListener('click', close);
   document.getElementById('debug-roster-filter')?.addEventListener('input', () => { _debugRosterLast = -1e9; updateDebugRoster(); });
   const mapTabStatus = document.getElementById('debug-custom-map-status');
+  function refreshDebugSavedMapsListMain() {
+    const wrap = document.getElementById('debug-saved-maps-list');
+    if (!wrap) return;
+    ensureLegacyMapInLibraryMain();
+    const idx = readMapLibraryIndexMain();
+    if (!idx.entries.length) {
+      wrap.innerHTML = '<div style="opacity:0.65;padding:4px;">No library saves yet — open the 3D editor and use <strong>Save to library</strong>.</div>';
+      return;
+    }
+    const serverId = idx.serverMapId;
+    wrap.innerHTML = idx.entries.map(ent => {
+      const star = ent.id === serverId ? ' <span style="color:#e8c060;">★ server</span>' : '';
+      const dt = new Date(ent.updatedAt || 0).toLocaleString();
+      return `<div style="border-bottom:1px solid rgba(80,100,130,0.22);padding:10px 4px;">` +
+        `<strong>${escapeMapLibHtml(ent.name)}</strong>${star}<br/>` +
+        `<span style="opacity:0.75;font-size:11px;">${escapeMapLibHtml(dt)}</span><br/>` +
+        `<span style="display:inline-flex;flex-wrap:wrap;gap:6px;margin-top:6px;">` +
+        `<button type="button" class="debug-map-load-lib" data-map-lib-id="${escapeMapLibHtml(ent.id)}">Load in game</button>` +
+        `<button type="button" class="debug-map-server-lib" data-map-lib-id="${escapeMapLibHtml(ent.id)}">Use for server</button>` +
+        `<button type="button" class="debug-map-del-lib" data-map-lib-id="${escapeMapLibHtml(ent.id)}">Delete</button>` +
+        `</span></div>`;
+    }).join('');
+  }
   const showDbgTab = id => {
     const main = document.getElementById('debug-tab-panel-main');
     const map = document.getElementById('debug-tab-panel-maped');
@@ -7670,6 +7767,7 @@ function buildWorldMapJsonFromCustomMapSession() {
     });
     if (main) main.style.display = id === 'main' ? 'block' : 'none';
     if (map) map.style.display = id === 'maped' ? 'block' : 'none';
+    if (id === 'maped') refreshDebugSavedMapsListMain();
   };
   dm.querySelectorAll('.debug-tab').forEach(btn => {
     btn.addEventListener('click', () => showDbgTab(btn.getAttribute('data-debug-tab') || 'main'));
@@ -7684,13 +7782,62 @@ function buildWorldMapJsonFromCustomMapSession() {
     try {
       const raw = localStorage.getItem(CUSTOM_MAP_STORAGE_KEY);
       if (!raw) {
-        if (mapTabStatus) mapTabStatus.textContent = 'No map in localStorage — use the editor’s “Store for game”.';
+        if (mapTabStatus) mapTabStatus.textContent = 'Quick slot empty — use the editor’s “Store for game” or load a library map below.';
         return;
       }
       const data = JSON.parse(raw);
-      if (applyCustomMapPayload(data, mapTabStatus)) notify('Custom map loaded from localStorage.');
+      if (applyCustomMapPayload(data, mapTabStatus)) notify('Custom map loaded from quick slot.');
     } catch (err) {
       if (mapTabStatus) mapTabStatus.textContent = 'Could not read stored map.';
+    }
+  });
+  document.getElementById('debug-map-refresh-library')?.addEventListener('click', () => {
+    refreshDebugSavedMapsListMain();
+    if (mapTabStatus) mapTabStatus.textContent = 'Library list refreshed.';
+  });
+  document.getElementById('debug-map-clear-server-star')?.addEventListener('click', () => {
+    setServerMapChoiceMain(null);
+    refreshDebugSavedMapsListMain();
+    if (mapTabStatus) mapTabStatus.textContent = 'Server publish will use the custom map currently in this session (or prompt you to load one).';
+  });
+  document.getElementById('debug-saved-maps-list')?.addEventListener('click', e => {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    const delB = t.closest('.debug-map-del-lib');
+    const loadB = t.closest('.debug-map-load-lib');
+    const srvB = t.closest('.debug-map-server-lib');
+    const el = delB || loadB || srvB;
+    const id = el && el.getAttribute('data-map-lib-id');
+    if (!id) return;
+    if (delB) {
+      if (!confirm('Delete this map from this browser?')) return;
+      deleteMapFromLibraryMain(id);
+      refreshDebugSavedMapsListMain();
+      if (mapTabStatus) mapTabStatus.textContent = 'Map removed from library.';
+      return;
+    }
+    if (srvB) {
+      setServerMapChoiceMain(id);
+      refreshDebugSavedMapsListMain();
+      if (mapTabStatus) mapTabStatus.textContent = '★ Server map set — “Save map to server” will upload that chart.';
+      return;
+    }
+    if (loadB) {
+      try {
+        const raw = localStorage.getItem(MAP_LIBRARY_DATA_PREFIX + id);
+        if (!raw) {
+          if (mapTabStatus) mapTabStatus.textContent = 'Missing map data.';
+          return;
+        }
+        const data = JSON.parse(raw);
+        if (applyCustomMapPayload(data, mapTabStatus)) {
+          try { localStorage.setItem(CUSTOM_MAP_STORAGE_KEY, raw); } catch (e2) { /* noop */ }
+          notify('Map loaded from library.');
+          refreshDebugSavedMapsListMain();
+        }
+      } catch (err) {
+        if (mapTabStatus) mapTabStatus.textContent = 'Could not load library map.';
+      }
     }
   });
   document.getElementById('debug-load-map-file')?.addEventListener('click', () => document.getElementById('debug-custom-map-file')?.click());
@@ -7715,9 +7862,9 @@ function buildWorldMapJsonFromCustomMapSession() {
     notify('Procedural world restored.');
   });
   document.getElementById('debug-publish-world-map')?.addEventListener('click', () => {
-    const mapObj = buildWorldMapJsonFromCustomMapSession();
+    const mapObj = getPublishedWorldMapObjectFromLibraryOrSession();
     if (!mapObj) {
-      if (mapTabStatus) mapTabStatus.textContent = 'Load a custom map first (editor → Store for game, localStorage, or JSON file).';
+      if (mapTabStatus) mapTabStatus.textContent = 'Load a custom map first (library, quick slot, or JSON), or set ★ server to a saved map.';
       return;
     }
     let tok = null;
