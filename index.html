@@ -1783,7 +1783,8 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 1500);
 /** Sky dome must exceed far plane so horizon rays always hit sky; water plane must cover frustum when orbiting. */
-const SKY_RADIUS = Math.max(900, camera.far * 1.45);
+/** Large enough that orbit + pitch never look past the dome; centered on camera each frame. */
+const SKY_RADIUS = Math.max(1200, camera.far * 1.62);
 const WATER_PLANE_SIZE = Math.max(CHUNK_SIZE * (RENDER_DIST * 2 + 1), camera.far * 2.75);
 
 const ambientLight = new THREE.AmbientLight(0x7799bb, 0.7);
@@ -2032,7 +2033,7 @@ function syncDayNightVisuals(camX, camZ) {
   waterUniforms.uMoonDir.value.copy(_skyMoonDir);
   waterUniforms.uDayFactor.value = dayFactor;
 
-  sky.position.set(camX, 0, camZ);
+  sky.position.copy(camera.position);
   renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
 }
 
@@ -4899,6 +4900,30 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   const sx = x + ndx * muzzle;
   const sy = y + 0.06;
   const sz = z + ndz * muzzle;
+  const flashMat = (color, op) => new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: op, depthWrite: false, blending: THREE.AdditiveBlending
+  });
+  const flashOuter = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), flashMat(0xffaa44, 0.85));
+  flashOuter.userData.isMuzzleFlash = true;
+  flashOuter.userData.life = 0.1;
+  flashOuter.userData.life0 = 0.1;
+  flashOuter.userData.flashOp0 = 0.85;
+  flashOuter.renderOrder = 2;
+  sg.add(flashOuter);
+  const flashMid = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), flashMat(0xffeecc, 0.95));
+  flashMid.userData.isMuzzleFlash = true;
+  flashMid.userData.life = 0.085;
+  flashMid.userData.life0 = 0.085;
+  flashMid.userData.flashOp0 = 0.95;
+  flashMid.renderOrder = 3;
+  sg.add(flashMid);
+  const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), flashMat(0xffffff, 1));
+  flashCore.userData.isMuzzleFlash = true;
+  flashCore.userData.life = 0.055;
+  flashCore.userData.life0 = 0.055;
+  flashCore.userData.flashOp0 = 1;
+  flashCore.renderOrder = 4;
+  sg.add(flashCore);
   const nudge = 0.24;
   const qx = Math.floor(sx * 1000), qy = Math.floor(sy * 1000), qz = Math.floor(sz * 1000);
   for (let i = 0; i < 18; i++) {
@@ -4931,6 +4956,16 @@ function updateCannonSmoke(dt) {
     const g = cannonSmokePuffs[i];
     let any = false;
     g.children.forEach(ch => {
+      if (ch.userData.isMuzzleFlash) {
+        ch.userData.life -= dt;
+        const l0 = ch.userData.life0 || 0.1;
+        const u = Math.max(0, ch.userData.life / l0);
+        const t = 1 - u;
+        ch.scale.setScalar(0.2 + t * 3.8 * Math.sin(t * 3.14159));
+        if (ch.material) ch.material.opacity = u * (ch.userData.flashOp0 ?? 1);
+        if (ch.userData.life > 0) any = true;
+        return;
+      }
       ch.userData.life -= dt;
       const d = ch.userData.drag != null ? ch.userData.drag : 0.88;
       ch.userData.vx *= Math.pow(d, dt * 60);
