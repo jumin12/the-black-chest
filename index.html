@@ -952,6 +952,9 @@ const ISLAND_HEIGHT_FALLOFF_POW = 1.48;
 /** Land vs sea — same thresholds for collision, dock tests, and terrain mesh (no phantom “coastal” shelves). */
 const PROC_LAND_HT_MIN = 0.22;
 const PROC_LAND_WARP_MAX = 0.865;
+/** Stricter than `dryLandSampleForMeta`: keeps ships / dock tips in water while the shore mesh can still dip slightly. */
+const PROC_COLLIDE_LAND_EXTRA_HT = 0.07;
+const PROC_COLLIDE_WARP_SHRINK = 0.024;
 const PROC_SEABED_Y = -4;
 const PROC_EDGE_WARP_AMP1 = 0.10;
 const PROC_EDGE_WARP_AMP2 = 0.038;
@@ -2047,7 +2050,7 @@ const waterFS = `
     vec3 refl = mix(reflNight, reflDay, uDayFactor) * fresnel;
     vec3 Lblend = normalize(Ls * uDayFactor + Lm * (1.0 - uDayFactor) + vec3(0.0,0.2,0.0));
     float sss = pow(max(dot(V,-Lblend+N*0.4),0.0),2.5)*0.3 * (0.35 + 0.65 * uDayFactor);
-    vec3 sub = vec3(0.0,0.45,0.35)*sss;
+    vec3 sub = vec3(0.0,0.45,0.35) * sss;
     vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
     color = pow(color,vec3(1.0/2.2));
     gl_FragColor = vec4(color,1.0);
@@ -2244,7 +2247,7 @@ function dryLandCollisionSampleForMeta(wx, wz, meta) {
   const warpedDist = dist + edgeWarp + coastWobble;
   const falloff = Math.max(0, 1 - warpedDist * warpedDist);
   const ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
-  return ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
+  return ht > PROC_LAND_HT_MIN + PROC_COLLIDE_LAND_EXTRA_HT && warpedDist < PROC_LAND_WARP_MAX - PROC_COLLIDE_WARP_SHRINK;
 }
 function dryLandAtWorldPosition(wx, wz) {
   if (G.customMap && G.customMap.heights && G.customMap.gridN) {
@@ -2440,22 +2443,29 @@ function placeTownDockSeaward(meta) {
   const da = meta.dockAngle || 0;
   const dirX = Math.cos(da), dirZ = Math.sin(da);
   let lo = R * 0.22;
-  if (!dryLandSampleForMeta(wx0 + dirX * lo, wz0 + dirZ * lo, meta)) lo = Math.max(4, R * 0.06);
+  if (!dryLandCollisionSampleForMeta(wx0 + dirX * lo, wz0 + dirZ * lo, meta)) lo = Math.max(4, R * 0.06);
   let hi = R * 1.05;
   let guard = 0;
-  while (dryLandSampleForMeta(wx0 + dirX * hi, wz0 + dirZ * hi, meta) && hi < R * 1.78 && guard++ < 28) hi += R * 0.055;
-  if (dryLandSampleForMeta(wx0 + dirX * hi, wz0 + dirZ * hi, meta)) {
+  while (dryLandCollisionSampleForMeta(wx0 + dirX * hi, wz0 + dirZ * hi, meta) && hi < R * 1.78 && guard++ < 28) hi += R * 0.055;
+  if (dryLandCollisionSampleForMeta(wx0 + dirX * hi, wz0 + dirZ * hi, meta)) {
     meta.dockX = wx0 + dirX * (R * 1.02);
     meta.dockZ = wz0 + dirZ * (R * 1.02);
   } else {
     for (let i = 0; i < 26; i++) {
       const mid = (lo + hi) * 0.5;
-      if (dryLandSampleForMeta(wx0 + dirX * mid, wz0 + dirZ * mid, meta)) lo = mid;
+      if (dryLandCollisionSampleForMeta(wx0 + dirX * mid, wz0 + dirZ * mid, meta)) lo = mid;
       else hi = mid;
     }
     const seaDist = hi + Math.min(11, R * 0.085);
     meta.dockX = wx0 + dirX * seaDist;
     meta.dockZ = wz0 + dirZ * seaDist;
+  }
+  let nudge = 0;
+  const step = Math.max(2.6, R * 0.034);
+  while (dryLandCollisionSampleForMeta(meta.dockX, meta.dockZ, meta) && nudge < 44) {
+    meta.dockX += dirX * step;
+    meta.dockZ += dirZ * step;
+    nudge++;
   }
   const ox = meta.dockX - wx0, oz = meta.dockZ - wz0;
   if (Math.abs(ox) + Math.abs(oz) > 0.25) meta.dockAngle = Math.atan2(ox, oz);
@@ -3160,7 +3170,7 @@ function decoRand(rng) {
   return typeof rng === 'function' ? rng : Math.random;
 }
 
-function createPalmTree(x, y, z, rng) {
+function createPalmTree(x, y, z, rng, yawOverride) {
   const r = decoRand(rng);
   const g = new THREE.Group();
   const height = 4 + r() * 3;
@@ -3178,7 +3188,12 @@ function createPalmTree(x, y, z, rng) {
     leaf.position.set(Math.sin(a) * 0.3, height, Math.cos(a) * 0.3);
     leaf.rotation.set(0, a, Math.cos(a) * 0.8); leaf.castShadow = true; g.add(leaf);
   }
-  g.position.set(x, y, z); g.rotation.y = r() * Math.PI * 2; return g;
+  const yaw = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
+    ? Number(yawOverride)
+    : (r() * Math.PI * 2);
+  g.position.set(x, y, z);
+  g.rotation.y = yaw;
+  return g;
 }
 
 function createRock(x, y, z, s, rng) {
@@ -3320,7 +3335,10 @@ function generateCustomMapChunk(cx, cz) {
     const surf = (sh <= wThr ? SEA_LEVEL - 1.5 : SEA_LEVEL + sh * maxH) + lift;
     const er = entityRngFromMapEntity(e);
     const er0 = decoRand(er);
-    if (e.type === 'tree') group.add(createPalmTree(e.x, surf + 0.08, e.z, er));
+    if (e.type === 'tree') {
+      const yAw = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : undefined;
+      group.add(createPalmTree(e.x, surf + 0.08, e.z, er, yAw));
+    }
     else if (e.type === 'bush') group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + er0() * 0.35, er));
     else if (e.type === 'building') {
       const bH = e.buildH != null ? Number(e.buildH) : (2.5 + er0() * 1.5);
@@ -3635,7 +3653,19 @@ function generateIsland(cx, cz) {
       const bW = 2.5 + rng() * 2;
       const half = bW * 0.5 + 0.02;
       const gyMax = maxFlatGround(bx, bz, half);
-      if (gyMax < PROC_LAND_HT_MIN * 0.5) continue;
+      const gyMin = Math.min(
+        terrainYWorld(bx - half, bz - half),
+        terrainYWorld(bx + half, bz - half),
+        terrainYWorld(bx - half, bz + half),
+        terrainYWorld(bx + half, bz + half)
+      );
+      if (gyMax < PROC_LAND_HT_MIN * 0.92 || gyMin < PROC_LAND_HT_MIN * 0.72) continue;
+      if (!dryLandCollisionSampleForMeta(bx, bz, meta0)) continue;
+      const cornerE = half * 0.82;
+      if (!dryLandCollisionSampleForMeta(bx - cornerE, bz - cornerE, meta0)) continue;
+      if (!dryLandCollisionSampleForMeta(bx + cornerE, bz - cornerE, meta0)) continue;
+      if (!dryLandCollisionSampleForMeta(bx - cornerE, bz + cornerE, meta0)) continue;
+      if (!dryLandCollisionSampleForMeta(bx + cornerE, bz + cornerE, meta0)) continue;
       const baseY = SEA_LEVEL + gyMax + 0.06;
       const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW),
         new THREE.MeshLambertMaterial({ color: [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868][bi] }));
