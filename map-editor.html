@@ -321,6 +321,8 @@
   const GRID_N = 768;
   /** Extra mesh vertices per height cell. Keep ≤2 in editor — full GRID_N height + high sub = millions of verts per frame. */
   const TERRAIN_MESH_SUB = 1;
+  /** Caps rendered terrain segments (plane subdivisions); each vertex still uses `sampleHeight` from full GRID_N. */
+  const EDITOR_TERRAIN_MESH_SEG_CAP = 384;
   /** Subsamples per grid cell when importing PNG (bilinear); higher = sharper coasts & detail. */
   const PNG_IMPORT_CELL_SUB = 4;
   const WATER_THR = 0.12;
@@ -1456,7 +1458,7 @@
     const lim = worldEdgeClamp;
     const baseSeg = GRID_N - 1;
     const sub = Math.max(1, TERRAIN_MESH_SUB | 0);
-    const seg = baseSeg * sub;
+    const seg = Math.min(baseSeg * sub, EDITOR_TERRAIN_MESH_SEG_CAP);
     const vxN = seg + 1;
     const geo = new THREE.PlaneGeometry(2 * lim, 2 * lim, seg, seg);
     geo.rotateX(-Math.PI / 2);
@@ -1528,6 +1530,15 @@
   const matTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
   const matPalm = new THREE.MeshLambertMaterial({ color: 0x4a9e3f });
   const matRockEd = new THREE.MeshLambertMaterial({ color: 0x7a7a7a });
+  /** Shared low-poly meshes for InstancedMesh (trees/bushes/rocks) — avoids tens of thousands of draw calls. */
+  const ED_INST = {
+    treeGeo: new THREE.ConeGeometry(0.42, 3.25, 7),
+    treeMat: new THREE.MeshLambertMaterial({ color: 0x3d7a32 }),
+    bushGeo: new THREE.SphereGeometry(0.48, 6, 5),
+    bushMat: new THREE.MeshLambertMaterial({ color: 0x356628 }),
+    rockGeo: new THREE.DodecahedronGeometry(0.68, 0),
+    rockMat: matRockEd
+  };
   function decoRand(rng) { return typeof rng === 'function' ? rng : Math.random; }
   function createPalmTree(x, y, z, rng) {
     const r = decoRand(rng);
@@ -1622,6 +1633,8 @@
 
   const entRoot = new THREE.Group();
   scene.add(entRoot);
+  let editorInstanced = { tree: null, bush: null, rock: null };
+  const EDITOR_INST_SHADOW_MAX = 480;
 
   const previewBoat = new THREE.Group();
   scene.add(previewBoat);
@@ -2109,37 +2122,90 @@
     return g;
   }
 
+  function instancedTreeFootY(base, lift) {
+    const h = ED_INST.treeGeo.parameters && ED_INST.treeGeo.parameters.height != null
+      ? ED_INST.treeGeo.parameters.height
+      : 3.25;
+    return base + 0.06 + lift + h * 0.5;
+  }
+  function fillInstancedPropLayer(list, kind) {
+    if (!list.length) return;
+    let geo, mat;
+    if (kind === 'tree') {
+      geo = ED_INST.treeGeo;
+      mat = ED_INST.treeMat;
+    } else if (kind === 'bush') {
+      geo = ED_INST.bushGeo;
+      mat = ED_INST.bushMat;
+    } else {
+      geo = ED_INST.rockGeo;
+      mat = ED_INST.rockMat;
+    }
+    const mesh = new THREE.InstancedMesh(geo, mat, list.length);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const indexById = new Map();
+    const dummy = new THREE.Object3D();
+    const ids = [];
+    const useShadow = list.length <= EDITOR_INST_SHADOW_MAX;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      indexById.set(e.id, i);
+      ids.push(e.id);
+      const base = terrainSurfaceY(e.x, e.z);
+      const lift = entLift(e);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      if (kind === 'tree') {
+        dummy.position.set(e.x, instancedTreeFootY(base, lift), e.z);
+        dummy.rotation.y = e.rot != null ? e.rot : 0;
+      } else if (kind === 'bush') {
+        dummy.position.set(e.x, base + 0.02 + lift, e.z);
+        dummy.rotation.y = e.rot != null ? e.rot : 0;
+      } else {
+        const s = e.scale != null ? e.scale : 0.8;
+        dummy.position.set(e.x, base + 0.08 + lift + s * 0.35, e.z);
+        dummy.rotation.y = e.rot != null ? e.rot : 0;
+        dummy.scale.setScalar(s);
+      }
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.userData.editorInstanceEntityIds = ids;
+    mesh.userData.editorInstancedKind = kind;
+    mesh.castShadow = useShadow;
+    mesh.receiveShadow = useShadow;
+    mesh.frustumCulled = true;
+    editorInstanced[kind] = { mesh, indexById };
+    entRoot.add(mesh);
+  }
+
   function syncEntityMeshes() {
     while (entRoot.children.length) entRoot.remove(entRoot.children[0]);
+    editorInstanced.tree = editorInstanced.bush = editorInstanced.rock = null;
+    const trees = [];
+    const bushes = [];
+    const rocks = [];
     for (const e of entities) {
+      if (!e) continue;
+      if (e.type === 'tree') trees.push(e);
+      else if (e.type === 'bush') bushes.push(e);
+      else if (e.type === 'rock') rocks.push(e);
+    }
+    fillInstancedPropLayer(trees, 'tree');
+    fillInstancedPropLayer(bushes, 'bush');
+    fillInstancedPropLayer(rocks, 'rock');
+    const skipTypes = new Set(['tree', 'bush', 'rock']);
+    for (const e of entities) {
+      if (!e || skipTypes.has(e.type)) continue;
       const rng = entityRng(e);
       const lift = entLift(e);
       let m = null;
-      if (e.type === 'tree') m = makeTree(e.x, e.z, rng, lift);
-      else if (e.type === 'bush') m = makeBush(e.x, e.z, rng, lift);
-      else if (e.type === 'building') m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng, lift, e);
+      if (e.type === 'building') m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng, lift, e);
       else if (e.type === 'house') m = makeHouse(e.x, e.z, rng, lift, e);
       else if (e.type === 'dock') m = makeDock(e.x, e.z, e.rot || 0, lift);
       else if (e.type === 'flagpole') m = makeFlagpole(e.x, e.z, lift);
-      else if (e.type === 'rock') {
-        const s = e.scale != null ? e.scale : 0.8;
-        const geo = new THREE.DodecahedronGeometry(s, 1);
-        const p = geo.attributes.position;
-        for (let i = 0; i < p.count; i++) {
-          p.setX(i, p.getX(i) + (rng() - 0.5) * s * 0.3);
-          p.setY(i, p.getY(i) * (0.5 + rng() * 0.5));
-          p.setZ(i, p.getZ(i) + (rng() - 0.5) * s * 0.3);
-        }
-        p.needsUpdate = true;
-        geo.computeVertexNormals();
-        const rock = new THREE.Mesh(geo, matRockEd);
-        const y = terrainSurfaceY(e.x, e.z) + 0.08 + lift;
-        rock.position.set(e.x, y + s * 0.35, e.z);
-        rock.rotation.y = e.rot != null ? e.rot : 0;
-        rock.castShadow = true;
-        rock.receiveShadow = true;
-        m = rock;
-      } else if (e.type === 'barrel') {
+      else if (e.type === 'barrel') {
         const g = new THREE.Group();
         const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.85, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
         body.position.y = 0.42;
@@ -2166,14 +2232,7 @@
       }
       if (m) {
         m.userData.editorEntityId = e.id;
-        if (e.type === 'tree') {
-          m.userData._treeBaseYaw = m.rotation.y;
-          m.rotation.y = m.userData._treeBaseYaw + (e.rot != null ? e.rot : 0);
-        } else if (e.type === 'bush') {
-          m.rotation.y = e.rot != null ? e.rot : 0;
-        } else {
-          m.rotation.y = e.rot != null ? e.rot : 0;
-        }
+        m.rotation.y = e.rot != null ? e.rot : 0;
         entRoot.add(m);
       }
     }
@@ -2183,6 +2242,32 @@
     if (!ent) return;
     const base = terrainSurfaceY(ent.x, ent.z);
     const lift = entLift(ent);
+    const kind = ent.type;
+    if (kind === 'tree' || kind === 'bush' || kind === 'rock') {
+      const st = editorInstanced[kind];
+      if (st && st.indexById && st.indexById.has(ent.id)) {
+        const idx = st.indexById.get(ent.id);
+        const dummy = new THREE.Object3D();
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        if (kind === 'tree') {
+          dummy.position.set(ent.x, instancedTreeFootY(base, lift), ent.z);
+          dummy.rotation.y = ent.rot != null ? ent.rot : 0;
+        } else if (kind === 'bush') {
+          dummy.position.set(ent.x, base + 0.02 + lift, ent.z);
+          dummy.rotation.y = ent.rot != null ? ent.rot : 0;
+        } else {
+          const s = ent.scale != null ? ent.scale : 0.8;
+          dummy.position.set(ent.x, base + 0.08 + lift + s * 0.35, ent.z);
+          dummy.rotation.y = ent.rot != null ? ent.rot : 0;
+          dummy.scale.setScalar(s);
+        }
+        dummy.updateMatrix();
+        st.mesh.setMatrixAt(idx, dummy.matrix);
+        st.mesh.instanceMatrix.needsUpdate = true;
+        return;
+      }
+    }
     for (const ch of entRoot.children) {
       if (ch.userData.editorEntityId !== ent.id) continue;
       if (ent.type === 'tree') {
@@ -2218,10 +2303,15 @@
   }
 
   function findEntityIdFromIntersect(hit) {
-    let o = hit.object;
-    while (o) {
-      if (o.userData && o.userData.editorEntityId) return o.userData.editorEntityId;
-      o = o.parent;
+    const o = hit.object;
+    if (o && o.isInstancedMesh && hit.instanceId != null && o.userData.editorInstanceEntityIds) {
+      const ids = o.userData.editorInstanceEntityIds;
+      if (hit.instanceId >= 0 && hit.instanceId < ids.length) return ids[hit.instanceId];
+    }
+    let cur = o;
+    while (cur) {
+      if (cur.userData && cur.userData.editorEntityId) return cur.userData.editorEntityId;
+      cur = cur.parent;
     }
     return null;
   }
@@ -2527,6 +2617,7 @@
             entPointerDrag = {
               kind: 'move',
               eids: [...selectedEntIds],
+              entRefs: [...selectedEntIds].map(id => entities.find(x => x.id === id)).filter(Boolean),
               lastHx: null,
               lastHz: null,
               pointerId: e.pointerId
@@ -2562,7 +2653,6 @@
     if (entPointerDrag && ev.pointerId === entPointerDrag.pointerId) {
       entPointerDrag = null;
       try { canvas.releasePointerCapture(ev.pointerId); } catch (err) { /* noop */ }
-      syncEntityMeshes();
       refreshEntityList();
     }
     painting = false;
@@ -2578,12 +2668,16 @@
   canvas.addEventListener('pointermove', e => {
     if (sailPreviewOn) return;
     if (entPointerDrag && tool === 'select') {
+      const refs = entPointerDrag.entRefs && entPointerDrag.entRefs.length
+        ? entPointerDrag.entRefs
+        : null;
       const ids = entPointerDrag.eids && entPointerDrag.eids.length
         ? entPointerDrag.eids
         : entPointerDrag.eid
           ? [entPointerDrag.eid]
           : [];
-      if (!ids.length) { entPointerDrag = null; return; }
+      const toMove = refs && refs.length ? refs : ids.map(id => entities.find(x => x.id === id)).filter(Boolean);
+      if (!toMove.length) { entPointerDrag = null; return; }
       const rect = canvas.getBoundingClientRect();
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -2598,9 +2692,7 @@
         } else {
           const dx = hx - entPointerDrag.lastHx;
           const dz = hz - entPointerDrag.lastHz;
-          for (const id of ids) {
-            const ent = entities.find(x => x.id === id);
-            if (!ent) continue;
+          for (const ent of toMove) {
             ent.x += dx;
             ent.z += dz;
             refreshEntityPlacementInScene(ent);
@@ -2609,7 +2701,6 @@
           entPointerDrag.lastHz = hz;
         }
       }
-      refreshEntityList();
       return;
     }
     if (!painting && !entPointerDrag && ['raise', 'lower', 'smooth', 'water'].includes(tool)) {
