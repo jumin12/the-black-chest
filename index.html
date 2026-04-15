@@ -89,6 +89,29 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   .tb-btn.active{box-shadow:0 0 0 2px rgba(212,168,72,0.5),0 2px 8px rgba(0,0,0,0.4);}
 }
 #anchor-status{position:absolute;top:50px;right:10px;}
+#spyglass-overlay{
+  pointer-events:none !important;
+  position:absolute;
+  inset:0;
+  z-index:13;
+  display:none;
+  background:
+    radial-gradient(ellipse 46% 42% at 50% 50%, rgba(255,250,235,0.07) 0%, rgba(0,0,0,0) 52%, rgba(0,0,0,0) 58%),
+    radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) min(34vmin,240px), rgba(0,14,32,0.55) min(40vmin,290px), rgba(0,4,12,0.88) 100%);
+  box-shadow:inset 0 0 100px rgba(0,0,0,0.6);
+}
+#spyglass-overlay .spyglass-ring{
+  position:absolute;
+  left:50%;
+  top:50%;
+  width:min(76vmin,540px);
+  height:min(76vmin,540px);
+  transform:translate(-50%,-50%);
+  border-radius:50%;
+  border:3px solid rgba(212,168,72,0.42);
+  box-shadow:0 0 0 2px rgba(0,0,0,0.45), inset 0 0 50px rgba(20,50,90,0.22);
+  pointer-events:none;
+}
 .log-tab:hover{color:#d4a848 !important;}
 .log-tab.active{color:#d4a848 !important;border-bottom:2px solid #d4a848 !important;}
 .tb-label{display:inline;}
@@ -620,6 +643,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     </div>
   </div>
   <div id="anchor-status" class="hud-box" style="display:none;">Anchored</div>
+  <div id="spyglass-overlay" aria-hidden="true"><div class="spyglass-ring"></div></div>
   <div id="notification"></div>
   <div id="combat-popups-root" aria-hidden="true"></div>
 
@@ -856,7 +880,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <kbd>Z</kbd> Fire Port &nbsp; <kbd>X</kbd> Fire Starboard &nbsp; <kbd>Space</kbd> Fire Both — choose shot type under the top bar (round / grape / chain)<br>
     <span style="color:#a89878;">PC: click the sea view to the left or right of your ship to fire that broadside (not on HUD)</span><br>
     <kbd>Q</kbd><kbd>E</kbd> Rotate camera &nbsp; <strong>Middle mouse drag</strong> orbit (yaw &amp; pitch) &nbsp; <kbd>Scroll</kbd> horizon ↔ deck &nbsp; <kbd>M</kbd> map &nbsp; <kbd>F3</kbd> debug &nbsp; <kbd>Esc</kbd> settings / close panels<br>
-    <span style="color:#a89878;">Deck walk (compass toolbar): WASD / arrows move, mouse looks (pointer lock), <strong>right-click</strong> spyglass, <kbd>Space</kbd> jump. Mobile: joystick walk, two-finger spyglass, double-tap open sea to jump.</span><br>
+    <span style="color:#a89878;">Deck walk (compass toolbar): WASD / arrows move, mouse looks (pointer lock), <strong>right-click</strong> spyglass (telescope overlay), <kbd>Space</kbd> jump. Mobile: joystick walk, two-finger spyglass, double-tap open sea to jump.</span><br>
     <kbd>B</kbd> Ship &nbsp; <kbd>I</kbd> Cargo hold &nbsp; <kbd>C</kbd> Crew &nbsp; <kbd>T</kbd> Chat
   </div>
 </div>
@@ -1188,7 +1212,9 @@ const G = {
     spyglass: false,
     savedFov: 50,
     lastMobileTapT: 0
-  }
+  },
+  /** True while coasting to a stop before `player.anchored` becomes true. */
+  anchorDropping: false
 };
 
 try {
@@ -4638,6 +4664,8 @@ function setCaptainWalkActive(on) {
     camera.fov = cw.savedFov || 50;
     camera.updateProjectionMatrix();
     if (btn) btn.classList.remove('active');
+    const glass = document.getElementById('spyglass-overlay');
+    if (glass) glass.style.display = 'none';
     if (document.pointerLockElement === renderer.domElement) {
       try { document.exitPointerLock(); } catch (e) {}
     }
@@ -4673,6 +4701,7 @@ function updateCaptainWalk(dt) {
       moveX /= len;
       moveZ /= len;
     }
+    moveZ = -moveZ;
     const sy = Math.sin(cw.yaw), cy = Math.cos(cw.yaw);
     const wx = moveX * cy + moveZ * sy;
     const wz = -moveX * sy + moveZ * cy;
@@ -4707,6 +4736,26 @@ function updateCaptainWalk(dt) {
   playerShipGroup.getWorldQuaternion(_cwTmpQ);
   _cwTmpQ2.setFromEuler(new THREE.Euler(cw.pitch, cw.yaw, 0, 'YXZ'));
   camera.quaternion.copy(_cwTmpQ).multiply(_cwTmpQ2);
+  syncCaptainFigureOnDeck();
+  const glass = document.getElementById('spyglass-overlay');
+  if (glass) glass.style.display = cw.spyglass ? 'block' : 'none';
+}
+
+function syncCaptainFigureOnDeck() {
+  const cw = G.captainWalk;
+  if (!cw.active) return;
+  const ship = playerShipGroup.children[0];
+  if (!ship) return;
+  const capIdx = G.player.crew.findIndex(c => c && c.role === 'captain');
+  if (capIdx < 0) return;
+  const deckY = captainWalkDeckBaseY(SHIP_TYPES[G.player.shipType || 'sloop']);
+  ship.children.forEach(ch => {
+    if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx !== capIdx) return;
+    ch.position.set(cw.x, deckY + Math.min(0.12, cw.airY * 0.45), cw.z);
+    ch.rotation.x = cw.airY > 0.04 ? -0.12 : 0;
+    ch.rotation.z = 0;
+    ch.rotation.y = cw.yaw;
+  });
 }
 
 function updateCrewDeckAnimations(dt) {
@@ -4736,6 +4785,7 @@ function updateCrewDeckAnimations(dt) {
     if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx == null) return;
     const member = G.player.crew[ch.userData.crewIdx];
     if (!member) return;
+    if (G.captainWalk.active && member.role === 'captain') return;
     const b = ch.userData.basePos;
     const k = ch.userData.animKey || 0;
     if (!ch.userData.crewSm) ch.userData.crewSm = { x: ch.position.x, y: ch.position.y, z: ch.position.z, ry: 0 };
@@ -9075,14 +9125,43 @@ function doFire() { doFireSide(1); doFireSide(-1); }
 
 function syncAnchorToolbarButton() {
   const ba = document.getElementById('btn-anchor');
-  if (ba) ba.classList.toggle('active', !!G.player.anchored);
+  if (ba) ba.classList.toggle('active', !!(G.player.anchored || G.anchorDropping));
+}
+function syncAnchorStatusHud() {
+  const el = document.getElementById('anchor-status');
+  if (!el) return;
+  if (G.player.anchored) {
+    el.style.display = 'block';
+    el.textContent = 'Anchored';
+  } else if (G.anchorDropping) {
+    el.style.display = 'block';
+    el.textContent = 'Heaving to…';
+  } else {
+    el.style.display = 'none';
+  }
 }
 function doAnchor() {
   if (G.spectate) return;
-  G.player.anchored = !G.player.anchored;
-  document.getElementById('anchor-status').style.display = G.player.anchored ? 'block' : 'none';
+  if (G.player.anchored) {
+    G.player.anchored = false;
+    G.anchorDropping = false;
+    G.player.speed = 0;
+    syncAnchorStatusHud();
+    syncAnchorToolbarButton();
+    notify('Anchor raised — make way from a standstill.');
+    return;
+  }
+  if (G.anchorDropping) {
+    G.anchorDropping = false;
+    syncAnchorStatusHud();
+    syncAnchorToolbarButton();
+    notify('Anchor run cancelled.');
+    return;
+  }
+  G.anchorDropping = true;
+  syncAnchorStatusHud();
   syncAnchorToolbarButton();
-  notify(G.player.anchored ? 'Anchor dropped' : 'Anchor raised');
+  notify('Heaving to — coasting to a stop…');
 }
 
 /* ============================== UI ======================================= */
@@ -10832,8 +10911,10 @@ function dockAtPort() {
   if (!berth) return;
   G.player.dockBerthIndex = berthIdx;
   G.docked = true; G.player.anchored = true; G.player.speed = 0;
+  G.anchorDropping = false;
   resetMobileCameraChase();
   syncAnchorToolbarButton();
+  syncAnchorStatusHud();
   const targetX = berth.x, targetZ = berth.z;
   const targetRot = berth.rot;
   G.dockingAnim = {
@@ -10881,9 +10962,12 @@ function prepareTradeInventoryView() {
 }
 function leavePort() {
   G.docked = false; G.player.anchored = false;
+  G.anchorDropping = false;
+  G.player.speed = 0;
   G.player.dockBerthIndex = null;
   resetMobileCameraChase();
   syncAnchorToolbarButton();
+  syncAnchorStatusHud();
   G.dockingAnim = null; G.sailsFurled = false;
   disposeYardShipPreview();
   dockRopes.forEach(r => { scene.remove(r); r.geometry.dispose(); r.material.dispose(); });
@@ -10891,7 +10975,6 @@ function leavePort() {
   document.getElementById('port-panel').style.display = 'none';
   restoreMobileGameControls();
   updateStoryBriefHud();
-  setTimeout(() => { G.player.speed = 2; }, 500);
 }
 
 function showPortTab(tab) {
@@ -12297,6 +12380,17 @@ function update(dt) {
     const newZ = G.player.z + Math.cos(G.player.rotation) * effectiveSpeed * dt;
     if (!isSeaObstructed(newX, newZ)) { G.player.x = newX; G.player.z = newZ; }
     else { G.player.speed *= 0.3; }
+    if (G.anchorDropping) {
+      G.player.speed *= (1 - Math.min(1, 2.85 * dt));
+      if (Math.abs(G.player.speed) < 0.055) {
+        G.player.speed = 0;
+        G.player.anchored = true;
+        G.anchorDropping = false;
+        syncAnchorStatusHud();
+        syncAnchorToolbarButton();
+        notify('Anchor dropped — made fast.');
+      }
+    }
     clampPlayerIntoWorldBounds();
     pushPlayerOutOfShipOverlaps();
   }
@@ -12316,6 +12410,8 @@ function update(dt) {
   G.camera.zoom += (G.camera.targetZoom - G.camera.zoom) * Math.min(1, 4 * dt);
   G.camera.zoom = clampCameraZoomLevel(G.camera.zoom);
   G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom);
+
+  if (G.mode === 'playing') syncAnchorStatusHud();
 
   if (G.portCooldown > 0) G.portCooldown -= dt;
   if (G.starboardCooldown > 0) G.starboardCooldown -= dt;
@@ -12844,6 +12940,7 @@ function update(dt) {
     G.playerSinkY = playerShipGroup.position.y;
     G.dockingAnim = null;
     setCaptainWalkActive(false);
+    G.anchorDropping = false;
     G.player.speed = 0; G.player.anchored = true;
     syncAnchorToolbarButton();
     const crewSaveN = Math.min(G.player.crew.length, 4);
@@ -12880,7 +12977,9 @@ function update(dt) {
       G.playerSinking = false;
       G.playerSinkTimer = 0;
       G.player.health = 100; G.player.anchored = false;
+      G.anchorDropping = false;
       syncAnchorToolbarButton();
+      syncAnchorStatusHud();
       const dx = G.deathSpawnX != null ? G.deathSpawnX : G.player.x;
       const dz = G.deathSpawnZ != null ? G.deathSpawnZ : G.player.z;
       let nx = G.player.x, nz = G.player.z;
