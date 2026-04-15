@@ -133,7 +133,7 @@
       <details class="me-section" open>
         <summary>2 · Objects &amp; spawn</summary>
         <div class="inner">
-          <p class="hint" style="margin-top:0;"><strong>Select &amp; move</strong> — drag props; <strong>Ctrl/⌘+click</strong> multi-select. <strong>Adjust</strong> — gizmo; <strong>arrows</strong> adjust lift/yaw on <em>all</em> selected. <strong>Place props</strong> — count scales with brush radius (small brush ≈ one). <strong>WASD</strong> pans.</p>
+          <p class="hint" style="margin-top:0;"><strong>Select &amp; move</strong> — drag props on terrain; <strong>Ctrl/⌘+click</strong> multi-select. <strong>Adjust</strong> — drag <span style="color:#5d8;">green cone</span> for height, <span style="color:#88b0ff;">blue ring</span> to rotate (or arrow keys). <strong>Place props</strong> — count scales with brush radius. <strong>WASD</strong> pans.</p>
           <div class="actions" style="flex-direction:row;flex-wrap:wrap;">
             <button type="button" id="btn-clear-sel">Clear selection</button>
             <button type="button" id="btn-del-ent" class="danger">Delete selected</button>
@@ -841,6 +841,9 @@
   const previewKeys = new Set();
   const editorKeyPan = new Set();
   let entPointerDrag = null;
+  let gizmoPointerDrag = null;
+  const _gizmoPlane = new THREE.Plane();
+  const _gizmoPt = new THREE.Vector3();
   /** When true, arrows adjust player spawn height/yaw instead of panning. */
   let selectedSpawnOnly = false;
   let lastBrushWorld = { x: 0, z: 0, valid: false };
@@ -1573,9 +1576,10 @@
     g.position.set(x, y, z);
     return g;
   }
+  /** Land / water surface for props — matches `generateCustomMapChunk` entity base in index.html (not sloped seabed vertices). */
   function terrainSurfaceY(wx, wz) {
     const h = sampleHeight(wx, wz);
-    return h <= WATER_THR ? SEA_LEVEL - 1.2 : SEA_LEVEL + h * MAX_H;
+    return h <= WATER_THR ? SEA_LEVEL - 1.5 : SEA_LEVEL + h * MAX_H;
   }
 
   const townMarkersRoot = new THREE.Group();
@@ -1853,16 +1857,18 @@
   );
   selGizmoRing.rotation.x = Math.PI / 2;
   const selGizmoUp = new THREE.Mesh(
-    new THREE.ConeGeometry(0.38, 1, 8),
+    new THREE.ConeGeometry(0.52, 1.2, 8),
     new THREE.MeshBasicMaterial({ color: 0x55ee99, depthTest: false, depthWrite: false })
   );
-  selGizmoUp.position.set(0, 2.4, 0);
+  selGizmoUp.position.set(0, 2.45, 0);
+  selGizmoUp.userData.editorGizmoHandle = 'lift';
   const selGizmoYaw = new THREE.Mesh(
-    new THREE.TorusGeometry(2, 0.07, 6, 32),
-    new THREE.MeshBasicMaterial({ color: 0x88b0ff, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false })
+    new THREE.TorusGeometry(2.15, 0.1, 6, 36),
+    new THREE.MeshBasicMaterial({ color: 0x88b0ff, transparent: true, opacity: 0.88, depthTest: false, depthWrite: false })
   );
   selGizmoYaw.rotation.x = Math.PI / 2;
-  selGizmoYaw.position.y = 0.2;
+  selGizmoYaw.position.y = 0.22;
+  selGizmoYaw.userData.editorGizmoHandle = 'yaw';
   selGizmo.add(selGizmoRing, selGizmoUp, selGizmoYaw);
   selGizmo.visible = false;
 
@@ -2097,7 +2103,7 @@
       new THREE.BoxGeometry(5, 0.45, 14),
       new THREE.MeshLambertMaterial({ color: 0x6a4a28 })
     );
-    deck.position.y = 0.25;
+    deck.position.set(0, 0, 0);
     g.add(deck);
     g.rotation.y = ang;
     const y = terrainSurfaceY(x, z) + 0.45 + (lift || 0);
@@ -2107,15 +2113,15 @@
   function makeFlagpole(x, z, lift) {
     const g = new THREE.Group();
     const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.12, 0.15, 10, 8),
+      new THREE.CylinderGeometry(0.12, 0.14, 9, 8),
       new THREE.MeshLambertMaterial({ color: 0x4a3a28 })
     );
-    pole.position.y = 5;
+    pole.position.y = 4.5;
     const flag = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.2, 1.4),
+      new THREE.PlaneGeometry(2, 1.2),
       new THREE.MeshLambertMaterial({ color: 0xc94a4a, side: THREE.DoubleSide })
     );
-    flag.position.set(1.1, 9.2, 0);
+    flag.position.set(1.05, 8.6, 0);
     g.add(pole, flag);
     const y = terrainSurfaceY(x, z) + (lift || 0);
     g.position.set(x, y, z);
@@ -2228,11 +2234,12 @@
         log.rotation.y = e.rot != null ? e.rot : rng() * Math.PI * 2;
         log.position.set(e.x, terrainSurfaceY(e.x, e.z) + 0.1 + lift, e.z);
         log.castShadow = true;
+        log.userData._driftWoodRollZ = log.rotation.z;
         m = log;
       }
       if (m) {
         m.userData.editorEntityId = e.id;
-        m.rotation.y = e.rot != null ? e.rot : 0;
+        if (e.type !== 'driftwood') m.rotation.y = e.rot != null ? e.rot : 0;
         entRoot.add(m);
       }
     }
@@ -2278,9 +2285,7 @@
         ch.position.set(ent.x, base + 0.02 + lift, ent.z);
         ch.rotation.y = ent.rot != null ? ent.rot : 0;
       } else if (ent.type === 'building') {
-        const foot = ch.userData._foot != null ? ch.userData._foot : 0.08;
-        const hh = ch.userData._halfH != null ? ch.userData._halfH : 2.5;
-        ch.position.set(ent.x, base + foot + hh + lift, ent.z);
+        ch.position.set(ent.x, base + lift, ent.z);
       } else if (ent.type === 'house') {
         ch.position.set(ent.x, base + 0.06 + lift, ent.z);
       } else if (ent.type === 'dock') {
@@ -2294,8 +2299,11 @@
         ch.position.set(ent.x, base + 0.02 + lift, ent.z);
       } else if (ent.type === 'driftwood') {
         ch.position.set(ent.x, base + 0.1 + lift, ent.z);
+        if (ch.userData._driftWoodRollZ == null) ch.userData._driftWoodRollZ = ch.rotation.z;
+        ch.rotation.z = ch.userData._driftWoodRollZ;
+        ch.rotation.y = ent.rot != null ? ent.rot : 0;
       }
-      if (ent.type !== 'tree' && ent.type !== 'bush') {
+      if (ent.type !== 'tree' && ent.type !== 'bush' && ent.type !== 'driftwood') {
         ch.rotation.y = ent.rot != null ? ent.rot : 0;
       }
       return;
@@ -2568,6 +2576,41 @@
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
+      if (tool === 'adjust' && selGizmo.visible) {
+        const gh = raycaster.intersectObjects([selGizmoUp, selGizmoYaw], false);
+        if (gh.length) {
+          const mode = gh[0].object.userData.editorGizmoHandle;
+          if (mode === 'lift') {
+            gizmoPointerDrag = { mode: 'lift', pointerId: e.pointerId, lastY: e.clientY };
+            controls.enabled = false;
+            try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+          }
+          if (mode === 'yaw') {
+            const planeY = selGizmo.position.y;
+            _gizmoPlane.set(new THREE.Vector3(0, 1, 0), -planeY);
+            let ang = 0;
+            if (raycaster.ray.intersectPlane(_gizmoPlane, _gizmoPt)) {
+              ang = Math.atan2(_gizmoPt.x - selGizmo.position.x, _gizmoPt.z - selGizmo.position.z);
+            }
+            gizmoPointerDrag = {
+              mode: 'yaw',
+              pointerId: e.pointerId,
+              lastAngle: ang,
+              cx: selGizmo.position.x,
+              cz: selGizmo.position.z,
+              planeY
+            };
+            controls.enabled = false;
+            try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+          }
+        }
+      }
       if (playerSpawn && spawnMarker.visible) {
         const spHits = raycaster.intersectObjects(spawnMarker.children, true);
         if (spHits.length) {
@@ -2650,6 +2693,12 @@
     else placeEntity(pt.x, pt.z);
   }
   function endPaintOrEntityPointer(ev) {
+    if (gizmoPointerDrag && ev.pointerId === gizmoPointerDrag.pointerId) {
+      gizmoPointerDrag = null;
+      controls.enabled = true;
+      try { canvas.releasePointerCapture(ev.pointerId); } catch (err) { /* noop */ }
+      refreshEntityList();
+    }
     if (entPointerDrag && ev.pointerId === entPointerDrag.pointerId) {
       entPointerDrag = null;
       try { canvas.releasePointerCapture(ev.pointerId); } catch (err) { /* noop */ }
@@ -2667,6 +2716,58 @@
   window.addEventListener('pointercancel', endPaintOrEntityPointer, true);
   canvas.addEventListener('pointermove', e => {
     if (sailPreviewOn) return;
+    if (gizmoPointerDrag && e.pointerId === gizmoPointerDrag.pointerId) {
+      const ids = selectedEntIds.size ? [...selectedEntIds] : selectedEntId ? [selectedEntId] : [];
+      if (!ids.length && !(selectedSpawnOnly && playerSpawn)) {
+        gizmoPointerDrag = null;
+        controls.enabled = true;
+        return;
+      }
+      if (gizmoPointerDrag.mode === 'lift') {
+        const dy = (gizmoPointerDrag.lastY - e.clientY) * 0.048;
+        gizmoPointerDrag.lastY = e.clientY;
+        if (selectedSpawnOnly && playerSpawn) {
+          playerSpawn.y = (playerSpawn.y != null ? playerSpawn.y : 0) + dy;
+          refreshSpawnHud();
+          return;
+        }
+        for (const id of ids) {
+          const ent = entities.find(x => x.id === id);
+          if (!ent) continue;
+          ent.yLift = (ent.yLift != null ? ent.yLift : 0) + dy;
+          refreshEntityPlacementInScene(ent);
+        }
+        refreshEntityList();
+        return;
+      }
+      if (gizmoPointerDrag.mode === 'yaw') {
+        const rect = canvas.getBoundingClientRect();
+        pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        _gizmoPlane.set(new THREE.Vector3(0, 1, 0), -gizmoPointerDrag.planeY);
+        if (raycaster.ray.intersectPlane(_gizmoPlane, _gizmoPt)) {
+          const ang = Math.atan2(_gizmoPt.x - gizmoPointerDrag.cx, _gizmoPt.z - gizmoPointerDrag.cz);
+          let d = ang - gizmoPointerDrag.lastAngle;
+          while (d > Math.PI) d -= Math.PI * 2;
+          while (d < -Math.PI) d += Math.PI * 2;
+          gizmoPointerDrag.lastAngle = ang;
+          if (selectedSpawnOnly && playerSpawn) {
+            playerSpawn.rotation = (playerSpawn.rotation != null ? playerSpawn.rotation : 0) + d;
+            refreshSpawnHud();
+            return;
+          }
+          for (const id of ids) {
+            const ent = entities.find(x => x.id === id);
+            if (!ent) continue;
+            ent.rot = (ent.rot != null ? ent.rot : 0) + d;
+            refreshEntityPlacementInScene(ent);
+          }
+          refreshEntityList();
+        }
+        return;
+      }
+    }
     if (entPointerDrag && tool === 'select') {
       const refs = entPointerDrag.entRefs && entPointerDrag.entRefs.length
         ? entPointerDrag.entRefs
