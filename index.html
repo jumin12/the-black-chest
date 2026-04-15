@@ -906,7 +906,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <kbd>Z</kbd> Fire Port &nbsp; <kbd>X</kbd> Fire Starboard &nbsp; <kbd>Space</kbd> Fire Both — choose shot type under the top bar (round / grape / chain)<br>
     <span style="color:#a89878;">PC: click the sea view to the left or right of your ship to fire that broadside (not on HUD)</span><br>
     <kbd>Q</kbd><kbd>E</kbd> Rotate camera &nbsp; <strong>Middle mouse drag</strong> orbit (yaw &amp; pitch) &nbsp; <kbd>Scroll</kbd> horizon ↔ deck &nbsp; <kbd>M</kbd> map &nbsp; <kbd>F3</kbd> debug &nbsp; <kbd>Esc</kbd> settings / close panels<br>
-    <span style="color:#a89878;">Deck walk (compass toolbar): WASD / arrows move, mouse looks (pointer lock), <strong>right-click</strong> spyglass (telescope overlay), <kbd>Space</kbd> jump. Mobile: joystick walk, <strong>hold spyglass button</strong> on the right (or two-finger), double-tap open sea to jump.</span><br>
+    <span style="color:#a89878;">Deck walk (compass toolbar): WASD / arrows move, mouse looks (pointer lock), <strong>right-click</strong> spyglass (telescope overlay), <kbd>Space</kbd> jump. Mobile: joystick walk, <strong>tap spyglass button</strong> on the right to toggle, double-tap open sea to jump.</span><br>
     <kbd>B</kbd> Ship &nbsp; <kbd>I</kbd> Cargo hold &nbsp; <kbd>C</kbd> Crew &nbsp; <kbd>T</kbd> Chat
   </div>
 </div>
@@ -2093,14 +2093,19 @@ const waterVS = `
   uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
   vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
     float k=6.2831853/wl; float c=sqrt(9.8/k); float a=s/k; vec2 dn=normalize(d);
-    float f=k*(dot(dn,p.xz)-c*sp*uTime);
+    float ph = sin(dot(p.xz,vec2(12.9898,78.233)))*0.55 + cos(dot(p.xz,vec2(-37.2,91.6)))*0.38;
+    ph += 0.16*sin(uTime*0.31+dot(p.xz*0.071,vec2(1.0,1.618)));
+    ph += 0.11*sin(uTime*0.47+dot(p.xz*0.053,vec2(-2.1,0.93)));
+    float f=k*(dot(dn,p.xz)-c*sp*uTime) + ph;
     return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
   }
   void main(){
     vec3 pos=position;
     pos += gw(pos,0.05,65.0,vec2(1,.2),0.6) + gw(pos,0.03,40.0,vec2(.35,1),.45)
          + gw(pos,0.02,22.0,vec2(-.55,.75),0.7) + gw(pos,0.015,13.0,vec2(.8,-.35),0.85)
-         + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4);
+         + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4)
+         + gw(pos,0.014,36.0,vec2(0.724,-0.689),0.56) + gw(pos,0.009,17.0,vec2(-0.553,0.834),0.67)
+         + gw(pos,0.0065,11.0,vec2(0.641,0.768),0.74) + gw(pos,0.0045,6.2,vec2(-0.812,0.584),0.88);
     vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
     float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
     pX += gw(pX,.05,65.,vec2(1,.2),.6) + gw(pX,.03,40.,vec2(.35,1),.45) + gw(pX,.02,22.,vec2(-.55,.75),.7) + gw(pX,.015,13.,vec2(.8,-.35),.85);
@@ -2113,6 +2118,11 @@ const waterFS = `
   varying vec3 vWorldPos; varying vec3 vNormal;
   void main(){
     vec3 N=normalize(vNormal);
+    float chopA = sin(vWorldPos.x*0.051+uTime*1.21)*sin(vWorldPos.z*0.047-uTime*0.89);
+    chopA += sin(dot(vWorldPos.xz,vec2(0.083,0.069))*8.9+uTime*2.18)*0.52;
+    chopA += sin(dot(vWorldPos.xz,vec2(-0.061,0.094))*13.4-uTime*1.63)*0.38;
+    chopA += sin(dot(vWorldPos.xz,vec2(0.112,-0.073))*5.7+uTime*0.74)*0.29;
+    N = normalize(N + vec3(chopA*0.046,0.0,chopA*0.042));
     vec3 Vraw = uCamPos - vWorldPos;
     float vLen = length(Vraw);
     vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0,1.0,0.0);
@@ -2153,7 +2163,7 @@ const waterFS = `
     gl_FragColor = vec4(color,1.0);
   }`;
 
-const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 200, 200);
+const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 224, 224);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
   uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
@@ -4345,6 +4355,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
       cn.userData.cannonSide = side;
       cn.userData.cannonIndexOnSide = idx;
       cn.userData.basePos = cn.position.clone();
+      cn.userData.barrelHalfLen = 0.575 * barrelScale;
       cn.userData.recoilVel = 0;
       cn.userData.recoilOffset = 0;
       g.add(cn);
@@ -4593,11 +4604,12 @@ function clampCrewToShipDeck(sm, spec, member, shipType) {
 const _cwTmpV = new THREE.Vector3();
 const _cwTmpQ = new THREE.Quaternion();
 const _cwTmpQ2 = new THREE.Quaternion();
+const _muzzleWorldTmp = new THREE.Vector3();
 /** Max deck walk speed (ship-local units/s); kept modest for a slow, deliberate stride. */
 const CAPTAIN_WALK_MAX_SPEED = 1.22;
 /** Acceleration toward target walk velocity (ship-local units/s²). */
 const CAPTAIN_WALK_ACCEL = 4.8;
-const CAPTAIN_WALK_EYE = 1.06;
+const CAPTAIN_WALK_EYE = 0.84;
 const CAPTAIN_WALK_JUMP_V = 5.1;
 const CAPTAIN_WALK_GRAVITY = 16;
 /** Narrower FOV ≈ 2× zoom vs previous ~22° setting. */
@@ -4839,8 +4851,8 @@ function syncCaptainFigureOnDeck() {
   const deckY = captainWalkDeckBaseY(SHIP_TYPES[G.player.shipType || 'sloop']);
   ship.children.forEach(ch => {
     if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx !== capIdx) return;
-    ch.position.set(cw.x, deckY + Math.min(0.12, cw.airY * 0.45), cw.z);
-    ch.rotation.x = cw.airY > 0.04 ? -0.12 : 0;
+    ch.position.set(cw.x, deckY + cw.airY, cw.z);
+    ch.rotation.x = cw.airY > 0.02 ? -0.2 * Math.min(1, cw.airY * 0.35) : 0;
     ch.rotation.z = 0;
     ch.rotation.y = cw.yaw;
   });
@@ -5374,32 +5386,47 @@ function rebuildPlayerShip() {
 
 /* ============================== CANNON VFX (smoke) ======================= */
 const cannonSmokePuffs = [];
+
+/** World-space bore tip from ship-local cannon rest pose (pre-recoil). */
+function getShipCannonMuzzleWorld(shipRoot, fireSide, indexOnSide) {
+  if (!shipRoot) return null;
+  let cannon = null;
+  shipRoot.traverse(ch => {
+    if (cannon || !ch.userData?.isShipCannon) return;
+    if (ch.userData.cannonSide === fireSide && ch.userData.cannonIndexOnSide === indexOnSide) cannon = ch;
+  });
+  if (!cannon || !cannon.parent || !cannon.userData.basePos) return null;
+  const bp = cannon.userData.basePos;
+  const side = cannon.userData.cannonSide;
+  const hl = cannon.userData.barrelHalfLen != null ? cannon.userData.barrelHalfLen : 0.575;
+  _muzzleWorldTmp.set(bp.x + side * hl, bp.y, bp.z);
+  cannon.parent.localToWorld(_muzzleWorldTmp);
+  return { x: _muzzleWorldTmp.x, y: _muzzleWorldTmp.y, z: _muzzleWorldTmp.z };
+}
+
 function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   const sg = new THREE.Group();
   const len = Math.hypot(dx, dz) || 1;
   const ndx = dx / len, ndz = dz / len;
-  const muzzle = 0.78;
-  const sx = x + ndx * muzzle;
-  const sy = y - 0.05;
-  const sz = z + ndz * muzzle;
+  const sx = x, sy = y, sz = z;
   const flashMat = (color, op) => new THREE.MeshBasicMaterial({
     color, transparent: true, opacity: op, depthWrite: false, blending: THREE.AdditiveBlending
   });
-  const flashOuter = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), flashMat(0xffaa44, 0.85));
+  const flashOuter = new THREE.Mesh(new THREE.SphereGeometry(0.36, 10, 8), flashMat(0xffaa44, 0.85));
   flashOuter.userData.isMuzzleFlash = true;
   flashOuter.userData.life = 0.1;
   flashOuter.userData.life0 = 0.1;
   flashOuter.userData.flashOp0 = 0.85;
   flashOuter.renderOrder = 2;
   sg.add(flashOuter);
-  const flashMid = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), flashMat(0xffeecc, 0.95));
+  const flashMid = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), flashMat(0xffeecc, 0.95));
   flashMid.userData.isMuzzleFlash = true;
   flashMid.userData.life = 0.085;
   flashMid.userData.life0 = 0.085;
   flashMid.userData.flashOp0 = 0.95;
   flashMid.renderOrder = 3;
   sg.add(flashMid);
-  const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), flashMat(0xffffff, 1));
+  const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 5), flashMat(0xffffff, 1));
   flashCore.userData.isMuzzleFlash = true;
   flashCore.userData.life = 0.055;
   flashCore.userData.life0 = 0.055;
@@ -5409,8 +5436,8 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   const perpX = -ndz, perpZ = ndx;
   const yaw = Math.atan2(ndx, ndz);
   const qx = Math.floor(sx * 1000), qy = Math.floor(sy * 1000), qz = Math.floor(sz * 1000);
-  for (let i = 0; i < 20; i++) {
-    const isJet = i < 5;
+  for (let i = 0; i < 18; i++) {
+    const isJet = i < 6;
     const r0 = fxHash01(qx, qy, qz, i * 5 + 11);
     const r1 = fxHash01(qx, qy, qz, i * 5 + 12);
     const r2 = fxHash01(qx, qy, qz, i * 5 + 13);
@@ -5421,35 +5448,35 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
     const r7 = fxHash01(qx, qy, qz, i * 5 + 18);
     const r8 = fxHash01(qx, qy, qz, i * 5 + 19);
     const sm = new THREE.Mesh(
-      new THREE.SphereGeometry((isJet ? 0.1 : 0.09) + r0 * (isJet ? 0.09 : 0.15), 6, 5),
+      new THREE.SphereGeometry((isJet ? 0.09 : 0.085) + r0 * (isJet ? 0.08 : 0.12), 6, 5),
       new THREE.MeshBasicMaterial({
-        color: i < 10 ? 0xe2e2e2 : 0x8a8a8a,
+        color: i < 9 ? 0xe2e2e2 : 0x8a8a8a,
         transparent: true,
-        opacity: isJet ? 0.56 : 0.46,
+        opacity: isJet ? 0.54 : 0.44,
         depthWrite: false
       })
     );
-    sm.rotation.y = yaw + (r6 - 0.5) * (isJet ? 0.18 : 0.72);
-    const fwdLen = isJet ? 2.2 + r1 * 0.55 : 1.05 + r1 * 0.95;
-    const sideS = isJet ? 0.45 + r2 * 0.14 : 0.55 + r2 * 0.32;
-    const vertS = isJet ? 0.4 + r3 * 0.12 : 0.48 + r3 * 0.22;
+    sm.rotation.y = yaw + (r6 - 0.5) * (isJet ? 0.12 : 0.35);
+    const fwdLen = isJet ? 2.45 + r1 * 0.5 : 1.15 + r1 * 0.55;
+    const sideS = isJet ? 0.42 + r2 * 0.12 : 0.5 + r2 * 0.26;
+    const vertS = isJet ? 0.38 + r3 * 0.1 : 0.44 + r3 * 0.18;
     sm.scale.set(sideS, vertS, fwdLen);
     sm.userData.baseScaleX = sideS;
     sm.userData.baseScaleY = vertS;
     sm.userData.baseScaleZ = fwdLen;
-    const along = isJet ? -0.03 + r4 * 0.16 : 0.04 + r4 * 0.38;
-    const pr = (r5 - 0.5) * (isJet ? 0.11 : 0.36);
-    const pp = (r7 - 0.5) * (isJet ? 0.11 : 0.36);
-    sm.position.set(ndx * along + perpX * pr, (r8 - 0.5) * (isJet ? 0.07 : 0.15), ndz * along + perpZ * pp);
-    const fwdSp = isJet ? 1.78 + r4 * 0.45 : 0.76 + r4 * 0.42;
-    sm.userData.vx = ndx * fwdSp + perpX * (r5 - 0.5) * (isJet ? 0.12 : 0.32);
-    sm.userData.vy = 0.07 + r6 * (isJet ? 0.22 : 0.34);
-    sm.userData.vz = ndz * fwdSp + perpZ * (r7 - 0.5) * (isJet ? 0.12 : 0.32);
-    const lf = (isJet ? 0.95 : 1.35) + fxHash01(qx, qy, qz, i * 5 + 20) * (isJet ? 0.35 : 1.05);
+    const along = isJet ? 0.02 + r4 * 0.2 : 0.05 + r4 * 0.26;
+    const pr = (r5 - 0.5) * (isJet ? 0.08 : 0.12);
+    const pp = (r7 - 0.5) * (isJet ? 0.08 : 0.12);
+    sm.position.set(ndx * along + perpX * pr, (r8 - 0.5) * (isJet ? 0.06 : 0.1), ndz * along + perpZ * pp);
+    const fwdSp = isJet ? 2.85 + r4 * 0.7 : 0.9 + r4 * 0.5;
+    sm.userData.vx = ndx * fwdSp + perpX * (r5 - 0.5) * (isJet ? 0.07 : 0.11);
+    sm.userData.vy = 0.1 + r6 * (isJet ? 0.32 : 0.22);
+    sm.userData.vz = ndz * fwdSp + perpZ * (r7 - 0.5) * (isJet ? 0.07 : 0.11);
+    const lf = (isJet ? 0.92 : 1.28) + fxHash01(qx, qy, qz, i * 5 + 20) * (isJet ? 0.32 : 0.95);
     sm.userData.life = lf;
     sm.userData.life0 = lf;
     sm.userData.drag = isJet ? 0.86 : 0.9;
-    sm.userData.smokeOp0 = isJet ? 0.56 : 0.46;
+    sm.userData.smokeOp0 = isJet ? 0.54 : 0.44;
     sg.add(sm);
   }
   sg.position.set(sx, sy, sz);
@@ -6214,8 +6241,6 @@ function npcFireBroadsideAtPlayer(npc) {
   if (side === 0) return;
 
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
-  const npcShipY = npc.mesh?.position.y || SEA_LEVEL + 0.5;
-  const cannonY = cannonWorldMuzzleYFromShip(npcShipY, npcSpec);
   const aimDx0 = px - npc.x, aimDz0 = pz - npc.z;
   const aimLen0 = Math.hypot(aimDx0, aimDz0) || 1;
   const baseDirX = aimDx0 / aimLen0;
@@ -6235,15 +6260,21 @@ function npcFireBroadsideAtPlayer(npc) {
 
     const localZ = (g - Math.floor(perSide / 2) + 0.5) * 1.45;
     const localX = side * (npcSpec.hullW * 0.55 + 0.6);
-    const wx = npc.x + localX * cosR + localZ * sinR;
-    const wz = npc.z - localX * sinR + localZ * cosR;
+    const mu = npc.mesh ? getShipCannonMuzzleWorld(npc.mesh, side, g) : null;
+    const npcShipY = npc.mesh?.position.y || SEA_LEVEL + 0.5;
+    const cannonY = cannonWorldMuzzleYFromShip(npcShipY, npcSpec);
+    const fallbackWx = npc.x + localX * cosR + localZ * sinR;
+    const fallbackWz = npc.z - localX * sinR + localZ * cosR;
+    const wx = mu ? mu.x : fallbackWx;
+    const wy = mu ? mu.y : cannonY;
+    const wz = mu ? mu.z : fallbackWz;
 
     kickShipBroadsideCannon(npc.mesh, side, g);
-    spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
-    fireCannonball(wx, wz, dirX, dirZ, cannonY, 'npc', null, 'ball');
+    spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
+    fireCannonball(wx, wz, dirX, dirZ, wy, 'npc', null, 'ball');
     if (ws?.readyState === 1 && isMultiplayerHost()) {
-      ws.send(JSON.stringify({ type: 'npc_cannon', x: wx, z: wz, dx: dirX, dz: dirZ, y: cannonY }));
-      ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
+      ws.send(JSON.stringify({ type: 'npc_cannon', x: wx, z: wz, dx: dirX, dz: dirZ, y: wy }));
+      ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
     }
   }
 }
@@ -9197,9 +9228,12 @@ function doFireSide(fireSide) {
   for (let i = 0; i < perSide; i++) {
     const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
     const localX = fireSide * (spec.hullW * 0.55 + 0.6);
-
-    const wx = G.player.x + localX * cosR + localZ * sinR;
-    const wz = G.player.z - localX * sinR + localZ * cosR;
+    const mu = getShipCannonMuzzleWorld(playerShipGroup, fireSide, i);
+    const fallbackWx = G.player.x + localX * cosR + localZ * sinR;
+    const fallbackWz = G.player.z - localX * sinR + localZ * cosR;
+    const wx = mu ? mu.x : fallbackWx;
+    const wy = mu ? mu.y : cannonY;
+    const wz = mu ? mu.z : fallbackWz;
 
     kickShipBroadsideCannon(playerShipGroup, fireSide, i);
 
@@ -9210,21 +9244,21 @@ function doFireSide(fireSide) {
         const c = Math.cos(spread), s = Math.sin(spread);
         const pdx = dirX * c - dirZ * s;
         const pdz = dirX * s + dirZ * c;
-        if (p === 0) spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
-        fireCannonball(wx, wz, pdx, pdz, cannonY, 'player', G.myId, 'grape_pellet');
+        if (p === 0) spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
+        fireCannonball(wx, wz, pdx, pdz, wy, 'player', G.myId, 'grape_pellet');
         if (ws?.readyState === 1) {
           ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: pdx, dz: pdz, ammoType: 'grape_pellet' }));
         }
       }
       if (ws?.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
+        ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
       }
     } else {
-      spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
-      fireCannonball(wx, wz, dirX, dirZ, cannonY, 'player', G.myId, ammoKind);
+      spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
+      fireCannonball(wx, wz, dirX, dirZ, wy, 'player', G.myId, ammoKind);
       if (ws?.readyState === 1) {
         ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind }));
-        ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: cannonY, z: wz, dx: dirX, dz: dirZ }));
+        ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
       }
     }
   }
@@ -12394,15 +12428,25 @@ function playerShipWaveAt(wx, wz) {
 }
 
 function spawnShipWakePiece(x, z, rotation, speed) {
-  const wakeGeo = new THREE.PlaneGeometry(0.8, 0.8);
+  const spd = Math.abs(speed || 0);
+  const stern = 1.75 + Math.min(4.4, spd * 0.48);
+  const lateral = (Math.random() - 0.5) * (0.85 + spd * 0.06);
+  const fx = Math.sin(rotation), fz = Math.cos(rotation);
+  const px = x - fz * stern - fx * lateral * 0.42;
+  const pz = z + fx * stern - fz * lateral * 0.42;
+  const { waveH } = playerShipWaveAt(px, pz);
+  const w = 0.55 + Math.random() * 0.5 + Math.min(1.15, spd / 10);
+  const h = 0.5 + Math.random() * 0.45 + Math.min(0.95, spd / 14);
+  const wakeGeo = new THREE.PlaneGeometry(w, h);
   wakeGeo.rotateX(-Math.PI / 2);
-  const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({ color: 0xccddee, transparent: true, opacity: 0.3, depthWrite: false }));
-  wake.position.set(
-    x - Math.sin(rotation) * 3 + (Math.random() - 0.5) * 1,
-    SEA_LEVEL + 0.05,
-    z - Math.cos(rotation) * 3 + (Math.random() - 0.5) * 1
-  );
-  wake.userData.life = 2.0;
+  const foam = 0xa8c4d8 + Math.floor(Math.random() * 0x101010);
+  const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({
+    color: foam, transparent: true, opacity: 0.14 + Math.random() * 0.1, depthWrite: false
+  }));
+  wake.rotation.y = rotation + (Math.random() - 0.5) * 0.35;
+  wake.position.set(px, SEA_LEVEL + 0.035 + waveH * 0.52, pz);
+  wake.userData.life = 1.35 + Math.random() * 0.55 + Math.min(0.85, spd * 0.06);
+  wake.userData.life0 = wake.userData.life;
   scene.add(wake);
   if (!G.wakeTrail) G.wakeTrail = [];
   G.wakeTrail.push(wake);
@@ -12411,7 +12455,7 @@ function spawnShipWakePiece(x, z, rotation, speed) {
 /** Per-ship wake cadence so local, remote, and AI vessels all leave a visible trail. */
 function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
   if (!G.wakeSpawnCooldowns) G.wakeSpawnCooldowns = new Map();
-  if (Math.abs(speed) <= 0.5) return;
+  if (Math.abs(speed) <= 0.42) return;
   let t = G.wakeSpawnCooldowns.get(key);
   if (t == null) t = 0;
   t -= dt;
@@ -12419,8 +12463,11 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
     G.wakeSpawnCooldowns.set(key, t);
     return;
   }
-  G.wakeSpawnCooldowns.set(key, 0.15);
+  const spd = Math.abs(speed);
+  const interval = Math.max(0.034, 0.19 - Math.min(0.13, spd * 0.014));
+  G.wakeSpawnCooldowns.set(key, interval);
   spawnShipWakePiece(x, z, rotation, speed);
+  if (spd > 2.8 && Math.random() < 0.42) spawnShipWakePiece(x, z, rotation, speed * 0.92);
 }
 
 /* ============================== GAME LOOP ================================ */
@@ -12608,8 +12655,10 @@ function update(dt) {
     for (let i = G.wakeTrail.length - 1; i >= 0; i--) {
       const w = G.wakeTrail[i];
       w.userData.life -= dt;
-      w.material.opacity = w.userData.life * 0.15;
-      w.scale.setScalar(1 + (2 - w.userData.life) * 1.5);
+      const u = Math.max(0, w.userData.life / (w.userData.life0 || 2));
+      w.material.opacity = Math.max(0, u * (0.12 + u * 0.14));
+      const g = 1 + (1 - u) * 2.1;
+      w.scale.set(g, g, g);
       if (w.userData.life <= 0) { scene.remove(w); w.geometry.dispose(); w.material.dispose(); G.wakeTrail.splice(i, 1); }
     }
   }
