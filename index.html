@@ -180,6 +180,9 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 .scheme-mini .m-fire{width:16px;height:16px;border-radius:4px;background:rgba(180,60,40,0.45);position:absolute;bottom:10px;}
 .scheme-mini .m-edge{position:absolute;top:0;bottom:0;width:22%;background:rgba(180,60,40,0.2);}
 #mobile-layout-confirm{margin-top:18px;background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;border:2px solid #b8942a;padding:14px 36px;font-size:16px;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-weight:bold;}
+#spyglass-overlay{pointer-events:none;display:none;position:fixed;inset:0;z-index:48;background:radial-gradient(circle at 50% 50%,transparent 34%,rgba(0,0,0,0.42) 58%,rgba(0,0,0,0.72) 100%);mix-blend-mode:multiply;}
+#spyglass-overlay.on{display:block;}
+#btn-deck-walk.tb-btn.sel{outline:2px solid rgba(140,200,255,0.65);background:rgba(30,50,70,0.35);}
 #settings-modal{display:none;position:fixed;inset:0;background:rgba(4,3,2,0.88);z-index:103;padding:16px;align-items:center;justify-content:center;}
 #settings-panel{max-width:380px;width:100%;background:linear-gradient(180deg,rgba(32,24,16,0.98),rgba(18,12,8,0.99));border:2px solid rgba(180,140,60,0.45);border-radius:12px;padding:22px 20px 20px;font-family:Georgia,serif;box-shadow:0 16px 48px rgba(0,0,0,0.45),inset 0 1px 0 rgba(255,230,180,0.06);}
 #settings-panel h3{color:#d4a848;margin:0 0 16px;font-size:20px;letter-spacing:0.06em;text-shadow:0 1px 2px rgba(0,0,0,0.35);}
@@ -628,8 +631,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <div class="tb-btn" id="btn-chat" title="Chat (T)" style="position:relative;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.4 8.4 0 01-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.4 8.4 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg><div id="chat-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:#cc2222;color:#fff;font-size:9px;font-weight:bold;min-width:16px;height:16px;border-radius:8px;align-items:center;justify-content:center;padding:0 3px;font-family:sans-serif;"></div></div>
     <div class="tb-btn" id="btn-anchor" title="Anchor (V)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><circle cx="12" cy="5" r="3"/><line x1="12" y1="8" x2="12" y2="21"/><path d="M5 12H2a10 10 0 0020 0h-3"/></svg></div>
     <div class="tb-btn" id="btn-help" title="Controls (?)" style="font-size:16px;font-weight:bold;color:#d4a848;">?</div>
+    <div class="tb-btn" id="btn-deck-walk" title="Captain deck (first person · RMB spyglass)" style="font-size:14px;color:#c9e8ff;font-family:Georgia,serif;">Deck</div>
     <div class="tb-btn" id="btn-settings" title="Settings" style="font-size:16px;color:#d4a848;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg></div>
   </div>
+  <div id="spyglass-overlay" aria-hidden="true"></div>
 
   <div id="log-panel" class="side-panel" style="left:10px;width:300px;max-width:85vw;">
     <div id="log-tabs" style="display:flex;gap:0;margin-bottom:10px;border-bottom:2px solid rgba(180,140,60,0.3);">
@@ -1155,6 +1160,19 @@ const G = {
     angle: Math.PI / 3.45, targetAngle: Math.PI / 3.45, yaw: Math.PI, targetYaw: Math.PI,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
     mobileOrbitFree: false
+  },
+  /** First-person deck roam + RMB spyglass (local only; ship still sails from helm when you exit). */
+  deckWalk: {
+    active: false,
+    lx: 0,
+    lz: 0,
+    yaw: 0,
+    pitch: 0,
+    vy: 0,
+    offY: 0,
+    grounded: true,
+    spyglass: false,
+    baseFov: 50
   },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
@@ -1935,13 +1953,15 @@ const sky = new THREE.Mesh(
         return v;
       }
       float stars(vec3 rd){
-        vec3 p = rd * 95.0;
+        vec3 p = rd * 198.0;
         vec3 i = floor(p);
         vec3 f = fract(p) - 0.5;
         float h = fract(sin(dot(i, vec3(127.1,311.7,74.7))) * 43758.5453);
         float d = dot(f,f);
-        float tw = 0.88 + 0.12 * sin(uTime * 0.35 + h * 18.0);
-        return smoothstep(0.11, 0.02, d) * step(0.965, h) * tw;
+        float twinkle = 0.22 + 0.78 * sin(uTime * 2.35 + h * 37.0) * sin(uTime * 3.8 + h * 19.0);
+        twinkle *= 0.72 + 0.28 * sin(uTime * 5.1 + h * 61.0);
+        twinkle *= 0.88 + 0.12 * sin(uTime * 7.4 + h * 83.0);
+        return smoothstep(0.02, 0.0012, d) * step(0.9925, h) * twinkle;
       }
       void main(){
         vec3 dir = normalize(vDir);
@@ -1964,19 +1984,30 @@ const sky = new THREE.Mesh(
         float low = smoothstep(0.15, 0.55, 1.0 - abs(dir.y));
         skyCol = mix(skyCol, mix(skyCol, duskBand, 0.85), dusk * low * 0.9);
 
-        float sunDisc = pow(sunDot, 280.0);
-        float sunGlow = pow(sunDot, 5.0) * 0.42;
-        skyCol += vec3(1.0, 0.96, 0.88) * sunDisc * 4.2 * uDayFactor;
+        float sunDisc = pow(sunDot, 920.0);
+        float sunGlow = pow(sunDot, 6.0) * 0.22;
+        skyCol += vec3(1.0, 0.96, 0.88) * sunDisc * 1.85 * uDayFactor;
         skyCol += vec3(1.0, 0.82, 0.48) * sunGlow * uDayFactor;
 
-        float moonDisc = pow(moonDot, 72.0);
-        float moonGlow = pow(moonDot, 2.0) * 0.11;
+        float mCos = max(dot(dir, mU), 0.0);
+        float moonDisc = pow(mCos, 1180.0);
+        float moonGlow = pow(mCos, 3.2) * 0.052;
         float moonVis = night * (0.55 + 0.45 * smoothstep(-0.05, 0.22, mU.y));
-        skyCol += vec3(0.88, 0.90, 1.0) * moonDisc * 3.4 * moonVis;
+        vec3 tanA = normalize(cross(mU, vec3(0.0, 1.0, 0.0)));
+        if (dot(tanA, tanA) < 0.01) tanA = normalize(cross(mU, vec3(1.0, 0.0, 0.0)));
+        vec3 bitA = cross(mU, tanA);
+        vec2 surfUV = vec2(dot(dir, tanA), dot(dir, bitA)) / max(mCos, 0.06);
+        float crateA = fbm(vec3(surfUV * 2.6, mCos * 2.4) + mU * 3.7 + vec3(3.1, 7.9, 11.3));
+        float crateB = fbm(vec3(surfUV * 5.1, 0.0) + mU * 6.2);
+        float mare = smoothstep(0.42, 0.58, crateA) * 0.42 + smoothstep(0.25, 0.4, crateB) * 0.22;
+        float rayC = smoothstep(0.15, 0.85, abs(sin(surfUV.x * 2.1 + crateB * 4.0))) * 0.08;
+        vec3 moonCol = vec3(0.82, 0.84, 0.92) * (1.0 - mare * 0.65 - rayC);
+        moonCol = mix(moonCol, vec3(0.58, 0.6, 0.68), mare * 0.35);
+        skyCol += moonCol * moonDisc * 2.05 * moonVis;
         skyCol += vec3(0.78, 0.80, 0.98) * moonGlow * moonVis;
 
         float st = stars(dir) * night * smoothstep(0.05, 0.42, y);
-        skyCol += vec3(0.92, 0.95, 1.0) * st * 1.85;
+        skyCol += vec3(0.92, 0.95, 1.0) * st * 1.15;
 
         vec3 cw = dir * 1.6 + vec3(uTime * 0.012, uTime * 0.008, uTime * 0.005);
         float c1 = fbm(cw);
@@ -2081,12 +2112,12 @@ function syncDayNightVisuals(camX, camZ) {
   _skySunDir.set(
     Math.cos(theta),
     Math.sin(theta),
-    0.07 * Math.sin(p * Math.PI * 4)
+    -0.07 * Math.sin(p * Math.PI * 4)
   ).normalize();
   _skyMoonDir.set(
     Math.cos(theta + Math.PI + 0.18),
     Math.sin(theta + Math.PI + 0.1),
-    -0.09 * Math.cos(p * Math.PI * 2)
+    0.09 * Math.cos(p * Math.PI * 2)
   ).normalize();
 
   const sunH = _skySunDir.y;
@@ -2126,6 +2157,123 @@ function syncDayNightVisuals(camX, camZ) {
 
   sky.position.copy(camera.position);
   renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
+}
+
+const _deckEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+let deckWalkRmbDown = false;
+let deckWalkLastMx = 0, deckWalkLastMy = 0;
+let deckWalkTapT = 0, deckWalkTapX = 0, deckWalkTapY = 0;
+let deckWalkTwoFingerHeld = false;
+
+function getDeckSpecBounds() {
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  return { spec, maxLx: spec.hullW * 0.38, maxLz: spec.hullLen * 0.42 };
+}
+function resetDeckWalkSpawn() {
+  const b = getDeckSpecBounds();
+  G.deckWalk.lx = 0;
+  G.deckWalk.lz = -b.maxLz * 0.55;
+  G.deckWalk.yaw = 0;
+  G.deckWalk.pitch = 0;
+  G.deckWalk.vy = 0;
+  G.deckWalk.offY = 0;
+  G.deckWalk.grounded = true;
+}
+function setDeckWalkActive(on) {
+  const dw = G.deckWalk;
+  if (!dw) return;
+  if (on) {
+    if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.player.health <= 0) {
+      notify('You must be under way at sea to walk the deck.');
+      return;
+    }
+    dw.active = true;
+    dw.baseFov = camera.fov || 50;
+    resetDeckWalkSpawn();
+    deckWalkRmbDown = false;
+    deckWalkTwoFingerHeld = false;
+    mobileOrbitTouchId = null;
+    middleDown = false;
+    document.getElementById('btn-deck-walk')?.classList.add('sel');
+    notify(isMobile
+      ? 'Captain deck — joystick to walk · double-tap sea to jump · drag sea to look · two fingers spyglass.'
+      : 'Captain deck — WASD walk · Space jump · hold right mouse spyglass.');
+  } else {
+    dw.active = false;
+    dw.spyglass = false;
+    deckWalkRmbDown = false;
+    deckWalkTwoFingerHeld = false;
+    camera.fov = dw.baseFov;
+    camera.updateProjectionMatrix();
+    const sg = document.getElementById('spyglass-overlay');
+    if (sg) { sg.classList.remove('on'); sg.setAttribute('aria-hidden', 'true'); }
+    document.getElementById('btn-deck-walk')?.classList.remove('sel');
+  }
+}
+function exitDeckWalkIfInvalid() {
+  const dw = G.deckWalk;
+  if (!dw || !dw.active) return;
+  if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.player.health <= 0) {
+    setDeckWalkActive(false);
+  }
+}
+function updateDeckWalk(dt) {
+  const dw = G.deckWalk;
+  if (!dw || !dw.active) return;
+  exitDeckWalkIfInvalid();
+  if (!dw.active) return;
+  const b = getDeckSpecBounds();
+  let fwd = 0, strafe = 0;
+  if (!fullmapOpen) {
+    if (keys['w'] || keys['arrowup']) fwd += 1;
+    if (keys['s'] || keys['arrowdown']) fwd -= 1;
+    if (keys['d'] || keys['arrowright']) strafe += 1;
+    if (keys['a'] || keys['arrowleft']) strafe -= 1;
+  }
+  if (G.touch.active && !fullmapOpen) {
+    fwd = -G.touch.joyY;
+    strafe = G.touch.joyX;
+    fwd = Math.max(-1, Math.min(1, fwd * 1.15));
+    strafe = Math.max(-1, Math.min(1, strafe * 1.15));
+  }
+  const spd = 2.95;
+  dw.lz += fwd * spd * dt;
+  dw.lx += strafe * spd * dt;
+  dw.lx = Math.max(-b.maxLx, Math.min(b.maxLx, dw.lx));
+  dw.lz = Math.max(-b.maxLz, Math.min(b.maxLz, dw.lz));
+  dw.vy -= 20 * dt;
+  dw.offY += dw.vy * dt;
+  if (dw.offY <= 0) {
+    dw.offY = 0;
+    dw.vy = 0;
+    dw.grounded = true;
+  }
+  const looking = deckWalkRmbDown || (isMobile && mobileOrbitTouchId != null);
+  if (!looking && !deckWalkTwoFingerHeld) {
+    dw.pitch *= (1 - Math.min(1, 2.4 * dt));
+    dw.yaw *= (1 - Math.min(1, 1.2 * dt));
+  }
+}
+function applyDeckWalkCamera() {
+  const dw = G.deckWalk;
+  if (!dw || !dw.active) return;
+  const b = getDeckSpecBounds();
+  const deckY = b.spec.hullH * 0.65 + 1.62 + dw.offY;
+  const v = new THREE.Vector3(dw.lx, deckY, dw.lz);
+  playerShipGroup.updateMatrixWorld(true);
+  playerShipGroup.localToWorld(v);
+  camera.position.copy(v);
+  const headYaw = G.player.rotation + dw.yaw;
+  _deckEuler.set(dw.pitch, headYaw, 0, 'YXZ');
+  camera.quaternion.setFromEuler(_deckEuler);
+  dw.spyglass = deckWalkRmbDown || (isMobile && deckWalkTwoFingerHeld);
+  camera.fov = dw.spyglass ? 22 : dw.baseFov;
+  camera.updateProjectionMatrix();
+  const sg = document.getElementById('spyglass-overlay');
+  if (sg) {
+    if (dw.spyglass) { sg.classList.add('on'); sg.setAttribute('aria-hidden', 'false'); }
+    else { sg.classList.remove('on'); sg.setAttribute('aria-hidden', 'true'); }
+  }
 }
 
 let windParticles, windParticleGeo;
@@ -7555,6 +7703,9 @@ initAmmoTypeBar();
 /* ============================== INPUT ==================================== */
 const keys = {};
 let middleDown = false, lastMX = 0, lastMY = 0;
+function syncDeckWalkMultiTouch(ev) {
+  if (G.deckWalk && G.deckWalk.active) deckWalkTwoFingerHeld = ev.touches.length >= 2;
+}
 /** Mobile one-finger orbit outside HUD (same sensitivity scale as middle-mouse on PC). */
 let mobileOrbitTouchId = null, mobileOrbitLX = 0, mobileOrbitLY = 0;
 const CAM_ORBIT_SENS_X = 0.0055;
@@ -7674,10 +7825,20 @@ window.addEventListener('keydown', e => {
       if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 30); }
     }
   }
-  if (e.key === ' ' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) { e.preventDefault(); doFire(); }
+  if (e.key === ' ' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) {
+    e.preventDefault();
+    if (G.deckWalk && G.deckWalk.active) {
+      if (G.deckWalk.grounded) { G.deckWalk.vy = 7.2; G.deckWalk.grounded = false; }
+    } else doFire();
+  }
   if (k === 'z' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(-1);
   if (k === 'x' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(1);
   if (e.key === 'Escape') {
+    if (G.deckWalk && G.deckWalk.active) {
+      setDeckWalkActive(false);
+      e.preventDefault();
+      return;
+    }
     if (G.spectate) {
       endSpectateMode();
       e.preventDefault();
@@ -8391,20 +8552,39 @@ function unlockDebugConsole() {
   });
 })();
 window.addEventListener('wheel', e => {
+  if (G.deckWalk && G.deckWalk.active) return;
   G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom - e.deltaY * 0.32);
 }, { passive: true });
 
 window.addEventListener('mousedown', e => {
-  if (e.button === 1 && G.mode === 'playing') {
+  if (e.button === 2 && G.deckWalk && G.deckWalk.active && G.mode === 'playing') {
+    deckWalkRmbDown = true;
+    deckWalkLastMx = e.clientX;
+    deckWalkLastMy = e.clientY;
+    e.preventDefault();
+    return;
+  }
+  if (e.button === 1 && G.mode === 'playing' && !(G.deckWalk && G.deckWalk.active)) {
     middleDown = true;
     lastMX = e.clientX;
     lastMY = e.clientY;
     e.preventDefault();
   }
 });
-window.addEventListener('mouseup', e => { if (e.button === 1) middleDown = false; });
+window.addEventListener('mouseup', e => {
+  if (e.button === 1) middleDown = false;
+  if (e.button === 2) deckWalkRmbDown = false;
+});
 window.addEventListener('mousemove', e => {
-  if (!middleDown || G.mode !== 'playing') return;
+  if (G.deckWalk && G.deckWalk.active && deckWalkRmbDown && G.mode === 'playing') {
+    const dx = e.clientX - deckWalkLastMx, dy = e.clientY - deckWalkLastMy;
+    deckWalkLastMx = e.clientX;
+    deckWalkLastMy = e.clientY;
+    G.deckWalk.yaw -= dx * 0.0022;
+    G.deckWalk.pitch = THREE.MathUtils.clamp(G.deckWalk.pitch - dy * 0.0022, -1.18, 1.18);
+    return;
+  }
+  if (!middleDown || G.mode !== 'playing' || (G.deckWalk && G.deckWalk.active)) return;
   const dx = e.clientX - lastMX, dy = e.clientY - lastMY;
   lastMX = e.clientX;
   lastMY = e.clientY;
@@ -8415,6 +8595,7 @@ window.addEventListener('mousemove', e => {
 window.addEventListener('touchstart', e => {
   if (!isMobile || G.mode !== 'playing' || G.docked || G.playerSinking) return;
   if (typeof fullmapOpen !== 'undefined' && fullmapOpen) return;
+  syncDeckWalkMultiTouch(e);
   if (e.touches.length >= 2) {
     mobileOrbitTouchId = null;
     return;
@@ -8428,6 +8609,7 @@ window.addEventListener('touchstart', e => {
   mobileOrbitLY = t.clientY;
 }, { passive: true, capture: true });
 window.addEventListener('touchmove', e => {
+  syncDeckWalkMultiTouch(e);
   if (mobileOrbitTouchId == null) return;
   for (let i = 0; i < e.changedTouches.length; i++) {
     const t = e.changedTouches[i];
@@ -8435,14 +8617,20 @@ window.addEventListener('touchmove', e => {
     const dx = t.clientX - mobileOrbitLX, dy = t.clientY - mobileOrbitLY;
     mobileOrbitLX = t.clientX;
     mobileOrbitLY = t.clientY;
-    G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X * 1.05;
-    G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y * 1.05);
-    G.camera.mobileOrbitFree = true;
+    if (G.deckWalk && G.deckWalk.active) {
+      G.deckWalk.yaw -= dx * CAM_ORBIT_SENS_X * 1.05;
+      G.deckWalk.pitch = THREE.MathUtils.clamp(G.deckWalk.pitch - dy * CAM_ORBIT_SENS_Y * 1.05, -1.18, 1.18);
+    } else {
+      G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X * 1.05;
+      G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y * 1.05);
+      G.camera.mobileOrbitFree = true;
+    }
     e.preventDefault();
     break;
   }
 }, { passive: false, capture: true });
 window.addEventListener('touchend', e => {
+  syncDeckWalkMultiTouch(e);
   if (mobileOrbitTouchId == null) return;
   for (let i = 0; i < e.changedTouches.length; i++) {
     if (e.changedTouches[i].identifier === mobileOrbitTouchId) {
@@ -8452,6 +8640,7 @@ window.addEventListener('touchend', e => {
   }
 }, { capture: true });
 window.addEventListener('touchcancel', e => {
+  syncDeckWalkMultiTouch(e);
   if (mobileOrbitTouchId == null) return;
   for (let i = 0; i < e.changedTouches.length; i++) {
     if (e.changedTouches[i].identifier === mobileOrbitTouchId) {
@@ -8493,6 +8682,7 @@ joyZone?.addEventListener('touchstart', e => {
 }, { passive: false });
 
 window.addEventListener('touchmove', e => {
+  syncDeckWalkMultiTouch(e);
   for (let i = 0; i < e.changedTouches.length; i++) {
     const t = e.changedTouches[i];
     if (t.identifier === joyTouchId) {
@@ -8511,16 +8701,22 @@ window.addEventListener('touchmove', e => {
   }
   if (e.touches.length === 2) {
     const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    if (pinchDist > 0) {
-      let od = orbitDistanceFromZoomLevel(G.camera.targetZoom);
-      od = Math.max(CAM_ORBIT_AT_DECK, Math.min(CAM_ORBIT_AT_HORIZON, od - (d - pinchDist) * 0.2));
-      G.camera.targetZoom = clampCameraZoomLevel(zoomLevelFromOrbitDistance(od));
+    if (G.deckWalk && G.deckWalk.active) {
+      pinchDist = d;
+      e.preventDefault();
+    } else {
+      if (pinchDist > 0) {
+        let od = orbitDistanceFromZoomLevel(G.camera.targetZoom);
+        od = Math.max(CAM_ORBIT_AT_DECK, Math.min(CAM_ORBIT_AT_HORIZON, od - (d - pinchDist) * 0.2));
+        G.camera.targetZoom = clampCameraZoomLevel(zoomLevelFromOrbitDistance(od));
+      }
+      pinchDist = d; e.preventDefault();
     }
-    pinchDist = d; e.preventDefault();
   }
 }, { passive: false });
 
 window.addEventListener('touchend', e => {
+  syncDeckWalkMultiTouch(e);
   for (let i = 0; i < e.changedTouches.length; i++) {
     if (e.changedTouches[i].identifier === joyTouchId) {
       joyTouchId = null; G.touch.joyX = 0; G.touch.joyY = 0; G.touch.active = false;
@@ -8620,13 +8816,33 @@ function pcBroadsideSideFromPointer(clientX, clientY) {
   const cdx = clientX - c0.x, cdy = clientY - c0.y;
   return (cdx * sdx + cdy * sdy) >= 0 ? 1 : -1;
 }
+renderer.domElement.addEventListener('contextmenu', e => {
+  if (G.mode === 'playing' && G.deckWalk && G.deckWalk.active) e.preventDefault();
+});
 renderer.domElement.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
+  if (G.deckWalk && G.deckWalk.active) return;
   if (isMobile || G.mode !== 'playing' || fullmapOpen || G.docked || G.playerSinking) return;
   if (e.target !== renderer.domElement) return;
   e.preventDefault();
   doFireSide(pcBroadsideSideFromPointer(e.clientX, e.clientY));
 });
+renderer.domElement.addEventListener('touchend', e => {
+  if (!isMobile || !G.deckWalk || !G.deckWalk.active || G.mode !== 'playing' || fullmapOpen || G.docked) return;
+  const t = e.changedTouches[0];
+  if (!t) return;
+  if (pointInAnyClientRect(t.clientX, t.clientY, collectMobileOrbitExcludeRects())) return;
+  const now = performance.now();
+  const dtap = now - deckWalkTapT;
+  const dist = Math.hypot(t.clientX - deckWalkTapX, t.clientY - deckWalkTapY);
+  if (dtap < 320 && dist < 44 && G.deckWalk.grounded) {
+    G.deckWalk.vy = 7.2;
+    G.deckWalk.grounded = false;
+  }
+  deckWalkTapT = now;
+  deckWalkTapX = t.clientX;
+  deckWalkTapY = t.clientY;
+}, { passive: true });
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
@@ -12129,6 +12345,7 @@ function update(dt) {
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.35 + waveH, G.player.z);
     playerShipGroup.rotation.set(wavePitch, G.player.rotation, waveRoll);
   }
+  updateDeckWalk(dt);
 
   if (!G.playerSinking) {
     tickShipWakeSpawner('me', G.player.x, G.player.z, G.player.rotation, G.player.speed, dt);
@@ -12699,7 +12916,7 @@ function update(dt) {
     else { camX = t.x; camZ = t.z; }
   }
   water.position.set(camX, SEA_LEVEL - 0.5, camZ);
-  if (isMobile && !G.spectate && !G.camera.mobileOrbitFree) {
+  if (isMobile && !G.spectate && !G.camera.mobileOrbitFree && !(G.deckWalk && G.deckWalk.active)) {
     const targetY = G.player.rotation + Math.PI;
     let camDiff = targetY - G.camera.yaw;
     while (camDiff > Math.PI) camDiff -= Math.PI * 2;
@@ -12707,13 +12924,17 @@ function update(dt) {
     G.camera.yaw += camDiff * Math.min(1, 2.5 * dt);
     G.camera.targetYaw = G.camera.yaw;
   }
-  const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
-  camera.position.set(
-    camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
-    cDist * Math.sin(cAng),
-    camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
-  );
-  camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
+  if (G.deckWalk && G.deckWalk.active) {
+    applyDeckWalkCamera();
+  } else {
+    const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
+    camera.position.set(
+      camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
+      cDist * Math.sin(cAng),
+      camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
+    );
+    camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
+  }
 
   syncDayNightVisuals(camX, camZ);
 
@@ -12767,17 +12988,21 @@ function warmUpGameView() {
     if (t) { camX = t.x; camZ = t.z; }
   }
   water.position.set(camX, SEA_LEVEL - 0.5, camZ);
-  if (isMobile && !G.spectate && !G.camera.mobileOrbitFree) {
+  if (isMobile && !G.spectate && !G.camera.mobileOrbitFree && !(G.deckWalk && G.deckWalk.active)) {
     G.camera.yaw = G.player.rotation + Math.PI;
     G.camera.targetYaw = G.camera.yaw;
   }
-  const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
-  camera.position.set(
-    camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
-    cDist * Math.sin(cAng),
-    camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
-  );
-  camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
+  if (G.deckWalk && G.deckWalk.active) {
+    applyDeckWalkCamera();
+  } else {
+    const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
+    camera.position.set(
+      camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
+      cDist * Math.sin(cAng),
+      camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
+    );
+    camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
+  }
   syncDayNightVisuals(camX, camZ);
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
   waterUniforms.uTime.value = G.time;
@@ -13513,6 +13738,7 @@ document.getElementById('duplicate-session-reload')?.addEventListener('click', (
 syncQuestToggleButton();
 
 function openSettingsPanel(options = {}) {
+  setDeckWalkActive(false);
   const fromMainMenu = options.fromMainMenu === true;
   const m = document.getElementById('settings-modal');
   if (!m) return;
@@ -13531,6 +13757,10 @@ function openSettingsPanel(options = {}) {
   if (isMobile && G.mode === 'playing' && !fromMainMenu) hideMobileControls();
 }
 
+document.getElementById('btn-deck-walk')?.addEventListener('click', () => {
+  if (G.deckWalk && G.deckWalk.active) setDeckWalkActive(false);
+  else setDeckWalkActive(true);
+});
 document.getElementById('btn-settings')?.addEventListener('click', () => openSettingsPanel({}));
 document.getElementById('menu-settings-btn')?.addEventListener('click', () => openSettingsPanel({ fromMainMenu: true }));
 
@@ -13582,6 +13812,7 @@ function refreshMainMenuSavePanel() {
 
 function exitGameToMainMenu() {
   if (G.mode !== 'playing') return;
+  setDeckWalkActive(false);
   try {
     saveProgress();
   } catch (e) {}
