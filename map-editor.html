@@ -247,12 +247,22 @@
           <div class="actions">
             <button type="button" id="btn-load-map" class="gold">Load map (JSON)…</button>
             <button type="button" id="btn-save-json">Download JSON</button>
-            <button type="button" id="btn-send-game" class="gold">Store for game</button>
+            <button type="button" id="btn-send-game" class="gold">Store for game (quick slot)</button>
             <button type="button" id="btn-clear-map">Clear props &amp; ports (keep land)</button>
             <button type="button" id="btn-fresh-map" class="danger">New blank ocean</button>
             <button type="button" id="btn-gen-deco" class="gold">Fill map — trees, bushes, rocks</button>
             <button type="button" id="btn-png">PNG heightmap / mask…</button>
           </div>
+          <label class="row" style="margin-top:12px;">Saved maps library</label>
+          <input type="text" id="me-library-map-name" placeholder="Name for new save…" maxlength="80" style="width:100%;box-sizing:border-box;" />
+          <div class="actions" style="flex-direction:row;flex-wrap:wrap;margin-top:6px;">
+            <button type="button" id="btn-library-save-new" class="gold">Save to library</button>
+            <button type="button" id="btn-library-update" disabled>Update selected</button>
+            <button type="button" id="btn-library-clear-sel">Clear selection</button>
+            <button type="button" id="btn-library-clear-server">Clear ★ server</button>
+          </div>
+          <div id="me-saved-maps-list" style="max-height:220px;overflow-y:auto;font-size:10px;background:rgba(6,10,18,0.65);border-radius:8px;padding:6px;margin-top:8px;line-height:1.45;border:1px solid rgba(80,120,160,0.25);"></div>
+          <p class="hint" style="margin-top:8px;">★ <strong>Server map</strong> — the chart marked with ★ is sent when you <em>Publish world to server</em> (below). If none is marked, the chart currently in the editor is published.</p>
           <div id="png-import-panel" style="display:none;">
             <label class="row">Interpretation</label>
             <select id="png-mode">
@@ -335,10 +345,119 @@
   const EDITOR_WAVE_SCALE = 0.42;
   const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
   const STORAGE_KEY = 'pirates_custom_map_v1';
+  const MAP_LIBRARY_INDEX_KEY = 'pirates_map_library_index_v1';
+  const MAP_LIBRARY_DATA_PREFIX = 'pirates_map_saved_v1_';
   const DEFAULT_EDIT_FACTION_NAMES = ['Crimson Compact', 'Azure Covenant', 'Verdant League', 'Amber Syndicate'];
   const DEFAULT_EDIT_FACTION_COLORS = ['#c94a4a', '#4a7ac9', '#4ac97a', '#c9a24a'];
   let editorFactionNames = DEFAULT_EDIT_FACTION_NAMES.slice();
   let editorFactionColors = DEFAULT_EDIT_FACTION_COLORS.slice();
+  let editorSelectedLibraryId = null;
+
+  function readMapLibraryIndex() {
+    try {
+      const raw = localStorage.getItem(MAP_LIBRARY_INDEX_KEY);
+      if (!raw) return { version: 1, entries: [], serverMapId: null };
+      const o = JSON.parse(raw);
+      return {
+        version: 1,
+        entries: Array.isArray(o.entries) ? o.entries : [],
+        serverMapId: o.serverMapId || null
+      };
+    } catch (e) {
+      return { version: 1, entries: [], serverMapId: null };
+    }
+  }
+  function writeMapLibraryIndex(idx) {
+    localStorage.setItem(MAP_LIBRARY_INDEX_KEY, JSON.stringify({
+      version: 1,
+      entries: idx.entries || [],
+      serverMapId: idx.serverMapId || null
+    }));
+  }
+  function ensureLegacyMapInLibrary() {
+    const idx = readMapLibraryIndex();
+    if (idx.entries.length > 0) return;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (!data || data.version == null || !data.heightsB64) return;
+      const id = 'm_migrated_' + Date.now().toString(36);
+      idx.entries = [{ id, name: 'Stored map (before library)', updatedAt: Date.now() }];
+      writeMapLibraryIndex(idx);
+      localStorage.setItem(MAP_LIBRARY_DATA_PREFIX + id, raw);
+    } catch (e) { /* noop */ }
+  }
+  function saveNewMapToLibrary(name, mapObj) {
+    const json = JSON.stringify(mapObj);
+    const id = 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9);
+    const idx = readMapLibraryIndex();
+    const trimmed = String(name || '').trim() || 'Untitled map';
+    idx.entries.unshift({ id, name: trimmed, updatedAt: Date.now() });
+    writeMapLibraryIndex(idx);
+    localStorage.setItem(MAP_LIBRARY_DATA_PREFIX + id, json);
+    localStorage.setItem(STORAGE_KEY, json);
+    return id;
+  }
+  function updateMapInLibrary(id, name, mapObj) {
+    const idx = readMapLibraryIndex();
+    const ent = idx.entries.find(e => e.id === id);
+    if (!ent) return false;
+    const trimmed = String(name || '').trim();
+    if (trimmed) ent.name = trimmed;
+    ent.updatedAt = Date.now();
+    writeMapLibraryIndex(idx);
+    const json = JSON.stringify(mapObj);
+    localStorage.setItem(MAP_LIBRARY_DATA_PREFIX + id, json);
+    localStorage.setItem(STORAGE_KEY, json);
+    return true;
+  }
+  function deleteMapFromLibrary(id) {
+    const idx = readMapLibraryIndex();
+    idx.entries = idx.entries.filter(e => e.id !== id);
+    if (idx.serverMapId === id) idx.serverMapId = null;
+    writeMapLibraryIndex(idx);
+    try { localStorage.removeItem(MAP_LIBRARY_DATA_PREFIX + id); } catch (e) { /* noop */ }
+    if (editorSelectedLibraryId === id) editorSelectedLibraryId = null;
+  }
+  function setServerMapChoice(idOrNull) {
+    const idx = readMapLibraryIndex();
+    idx.serverMapId = idOrNull || null;
+    writeMapLibraryIndex(idx);
+  }
+  function escapeLibHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/"/g, '&quot;');
+  }
+  function refreshSavedMapsListEditor() {
+    const wrap = document.getElementById('me-saved-maps-list');
+    const btnUp = document.getElementById('btn-library-update');
+    if (btnUp) btnUp.disabled = !editorSelectedLibraryId;
+    if (!wrap) return;
+    ensureLegacyMapInLibrary();
+    const idx = readMapLibraryIndex();
+    if (!idx.entries.length) {
+      wrap.innerHTML = '<div style="opacity:0.55;padding:4px;">No named saves yet — use <strong>Save to library</strong> or load JSON.</div>';
+      return;
+    }
+    const serverId = idx.serverMapId;
+    wrap.innerHTML = idx.entries.map(ent => {
+      const sel = ent.id === editorSelectedLibraryId ? ' style="background:rgba(80,140,200,0.2);"' : '';
+      const star = ent.id === serverId ? ' <span style="color:#e8c060;">★ server</span>' : '';
+      const dt = new Date(ent.updatedAt || 0).toLocaleString();
+      return `<div class="me-lib-row" data-lib-id="${escapeLibHtml(ent.id)}"${sel}>` +
+        `<div style="font-weight:600;">${escapeLibHtml(ent.name)}${star}</div>` +
+        `<div style="opacity:0.75;font-size:9px;">${escapeLibHtml(dt)}</div>` +
+        `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">` +
+        `<button type="button" class="me-lib-load" data-lib-id="${escapeLibHtml(ent.id)}">Load</button>` +
+        `<button type="button" class="me-lib-server" data-lib-id="${escapeLibHtml(ent.id)}">Use for server</button>` +
+        `<button type="button" class="me-lib-del danger" data-lib-id="${escapeLibHtml(ent.id)}">Delete</button>` +
+        `</div></div>`;
+    }).join('');
+  }
+
   function rebuildTownFactionSelects() {
     const tf = document.getElementById('town-fac');
     if (!tf) return;
@@ -3532,6 +3651,8 @@
     reader.onload = () => {
       try {
         applySerialized(JSON.parse(String(reader.result)));
+        editorSelectedLibraryId = null;
+        refreshSavedMapsListEditor();
       } catch (err) { alert('Invalid JSON'); }
     };
     reader.readAsText(f);
@@ -3809,8 +3930,87 @@
   document.getElementById('btn-send-game').addEventListener('click', () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeMap()));
-      document.getElementById('status-bar').textContent = 'Saved to localStorage — use Navigator console → Map tab → Load stored map.';
+      document.getElementById('status-bar').textContent =
+        'Quick slot saved — voyage Map tab can load it; use <strong>Save to library</strong> for a named list.';
     } catch (e) { alert('Storage failed'); }
+  });
+
+  document.getElementById('btn-library-save-new')?.addEventListener('click', () => {
+    const nameInp = document.getElementById('me-library-map-name');
+    const name = nameInp ? nameInp.value : '';
+    if (!String(name).trim()) {
+      alert('Enter a map name in the field above.');
+      return;
+    }
+    try {
+      const id = saveNewMapToLibrary(name, serializeMap());
+      editorSelectedLibraryId = id;
+      refreshSavedMapsListEditor();
+      document.getElementById('status-bar').textContent =
+        'Saved to library and quick slot — listed in the voyage Navigator → Map editor tab.';
+    } catch (e) {
+      alert('Save failed — browser storage may be full.');
+    }
+  });
+  document.getElementById('btn-library-update')?.addEventListener('click', () => {
+    if (!editorSelectedLibraryId) return;
+    const nameInp = document.getElementById('me-library-map-name');
+    const name = nameInp ? nameInp.value : '';
+    if (!updateMapInLibrary(editorSelectedLibraryId, name, serializeMap())) {
+      document.getElementById('status-bar').textContent = 'Nothing to update — load a library map first.';
+      return;
+    }
+    refreshSavedMapsListEditor();
+    document.getElementById('status-bar').textContent = 'Library entry updated.';
+  });
+  document.getElementById('btn-library-clear-sel')?.addEventListener('click', () => {
+    editorSelectedLibraryId = null;
+    refreshSavedMapsListEditor();
+  });
+  document.getElementById('btn-library-clear-server')?.addEventListener('click', () => {
+    setServerMapChoice(null);
+    refreshSavedMapsListEditor();
+    document.getElementById('status-bar').textContent = 'Server ★ cleared — publish uses the current editor chart.';
+  });
+  document.getElementById('me-saved-maps-list')?.addEventListener('click', ev => {
+    const t = ev.target;
+    if (!(t instanceof HTMLElement)) return;
+    const delBtn = t.closest('.me-lib-del');
+    const loadBtn = t.closest('.me-lib-load');
+    const srvBtn = t.closest('.me-lib-server');
+    const btnEl = delBtn || loadBtn || srvBtn;
+    const id = btnEl && btnEl.getAttribute('data-lib-id');
+    if (!id) return;
+    if (delBtn) {
+      if (!confirm('Delete this saved map from this browser?')) return;
+      deleteMapFromLibrary(id);
+      refreshSavedMapsListEditor();
+      document.getElementById('status-bar').textContent = 'Removed from library.';
+      return;
+    }
+    if (srvBtn) {
+      setServerMapChoice(id);
+      refreshSavedMapsListEditor();
+      document.getElementById('status-bar').textContent =
+        '★ Server map set — Publish world uses this chart (editor F3 or voyage Navigator).';
+      return;
+    }
+    if (loadBtn) {
+      try {
+        const raw = localStorage.getItem(MAP_LIBRARY_DATA_PREFIX + id);
+        if (!raw) return;
+        applySerialized(JSON.parse(raw));
+        editorSelectedLibraryId = id;
+        const lib = readMapLibraryIndex();
+        const ent = lib.entries.find(e => e.id === id);
+        const nameInp = document.getElementById('me-library-map-name');
+        if (nameInp && ent) nameInp.value = ent.name;
+        refreshSavedMapsListEditor();
+        document.getElementById('status-bar').textContent = 'Loaded from library.';
+      } catch (e) {
+        document.getElementById('status-bar').textContent = 'Could not load that save.';
+      }
+    }
   });
 
   const viewportWrap = document.getElementById('viewport-wrap');
@@ -3985,10 +4185,19 @@
       if (st) st.textContent = 'Unlock with password first (Get session).';
       return;
     }
+    let mapPayload = null;
+    const pubIdx = readMapLibraryIndex();
+    if (pubIdx.serverMapId) {
+      try {
+        const raw = localStorage.getItem(MAP_LIBRARY_DATA_PREFIX + pubIdx.serverMapId);
+        if (raw) mapPayload = JSON.parse(raw);
+      } catch (err) { /* noop */ }
+    }
+    if (!mapPayload) mapPayload = serializeMap();
     fetch(`${location.protocol}//${location.host}/api/world-map`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: tok, map: serializeMap() })
+      body: JSON.stringify({ token: tok, map: mapPayload })
     }).then(r => r.json()).then(j => {
       if (j.ok) {
         if (st) st.textContent = `Published — revision ${j.revision}. Players sync this chart when they connect.`;
@@ -3997,6 +4206,8 @@
   });
   document.getElementById('btn-gen-deco')?.addEventListener('click', () => generateDecorations());
 
+  ensureLegacyMapInLibrary();
+  refreshSavedMapsListEditor();
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) applySerialized(JSON.parse(raw));
