@@ -1798,27 +1798,106 @@ if (!isMobile) {
   sunLight.shadow.camera.top = 150; sunLight.shadow.camera.bottom = -150;
 }
 scene.add(sunLight);
-scene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4));
+const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4);
+scene.add(hemiLight);
+
+/** Full day length (seconds). Sun rises east (+X), arcs through zenith, sets west. */
+const DAY_CYCLE_SECONDS = 600;
+const _skySunDir = new THREE.Vector3(0, 1, 0);
+const _skyMoonDir = new THREE.Vector3(-0.3, 0.5, 0.2);
+const _fogColDay = new THREE.Color(0x9ab8d8);
+const _fogColNight = new THREE.Color(0x1a2238);
 
 /* ================================ SKY ==================================== */
+const skyUniforms = {
+  uTime: { value: 0 },
+  uSunDir: { value: _skySunDir.clone() },
+  uMoonDir: { value: _skyMoonDir.clone() },
+  uDayFactor: { value: 1 }
+};
 const sky = new THREE.Mesh(
-  new THREE.SphereGeometry(SKY_RADIUS, 32, 32),
+  new THREE.SphereGeometry(SKY_RADIUS, 48, 48),
   new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
-    uniforms: { uTime: { value: 0 }, uSunPos: { value: new THREE.Vector3(200, 300, 100) } },
+    uniforms: skyUniforms,
     vertexShader: `varying vec3 vDir; void main(){ vDir = normalize((modelMatrix * vec4(position,1.0)).xyz); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: `
-      uniform float uTime; uniform vec3 uSunPos; varying vec3 vDir;
+      uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uDayFactor;
+      varying vec3 vDir;
+      float hash12(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+      float noise3(vec3 x){
+        vec3 p = floor(x), f = fract(x);
+        f = f*f*(3.0-2.0*f);
+        float n = p.x + p.y*57.0 + 113.0*p.z;
+        return mix(mix(mix(hash12(vec2(n+0.0,0.0)), hash12(vec2(n+1.0,0.0)), f.x),
+                       mix(hash12(vec2(n+57.0,0.0)), hash12(vec2(n+58.0,0.0)), f.x), f.y),
+                   mix(mix(hash12(vec2(n+113.0,0.0)), hash12(vec2(n+114.0,0.0)), f.x),
+                       mix(hash12(vec2(n+170.0,0.0)), hash12(vec2(n+171.0,0.0)), f.x), f.y), f.z);
+      }
+      float fbm(vec3 p){
+        float v = 0.0, a = 0.52;
+        for(int i = 0; i < 5; i++){
+          v += a * noise3(p);
+          p = p * 2.04 + vec3(17.0, 13.0, 11.0);
+          a *= 0.5;
+        }
+        return v;
+      }
+      float stars(vec3 rd){
+        vec3 p = rd * 95.0;
+        vec3 i = floor(p);
+        vec3 f = fract(p) - 0.5;
+        float h = fract(sin(dot(i, vec3(127.1,311.7,74.7))) * 43758.5453);
+        float d = dot(f,f);
+        float tw = 0.88 + 0.12 * sin(uTime * 0.35 + h * 18.0);
+        return smoothstep(0.11, 0.02, d) * step(0.965, h) * tw;
+      }
       void main(){
-        float y = vDir.y*0.5+0.5;
-        vec3 sky = mix(vec3(0.55,0.75,0.92), vec3(0.18,0.38,0.68), pow(y,0.6));
-        vec3 sd = normalize(uSunPos); float sd2 = max(dot(vDir,sd),0.0);
-        sky += vec3(1.0,0.9,0.6)*pow(sd2,200.0)*2.0 + vec3(0.8,0.6,0.3)*pow(sd2,6.0)*0.25;
-        float cn = sin(vDir.x*8.0+uTime*0.02)*cos(vDir.z*6.0+uTime*0.015)*0.5+0.5;
-        cn *= sin(vDir.x*3.0-uTime*0.01)*cos(vDir.z*4.0+uTime*0.008)*0.5+0.5;
-        sky = mix(sky, vec3(0.96,0.96,0.98), smoothstep(0.3,0.7,y)*smoothstep(0.4,0.6,cn)*0.55);
-        gl_FragColor = vec4(sky,1.0);
+        vec3 dir = normalize(vDir);
+        vec3 sU = normalize(uSunDir);
+        vec3 mU = normalize(uMoonDir);
+        float sunDot = max(dot(dir, sU), 0.0);
+        float moonDot = max(dot(dir, mU), 0.0);
+        float y = dir.y * 0.5 + 0.5;
+        float night = 1.0 - uDayFactor;
+
+        vec3 zenithD = vec3(0.32, 0.58, 0.98);
+        vec3 horizD = vec3(0.62, 0.78, 0.98);
+        vec3 zenithN = vec3(0.015, 0.025, 0.07);
+        vec3 horizN = vec3(0.035, 0.045, 0.11);
+        vec3 skyCol = mix(mix(horizN, zenithN, pow(y, 0.48)), mix(horizD, zenithD, pow(y, 0.52)), uDayFactor);
+
+        float dusk = smoothstep(-0.12, 0.14, sU.y) * (1.0 - smoothstep(0.22, 0.55, sU.y));
+        vec3 sunset = vec3(0.98, 0.42, 0.28);
+        vec3 duskBand = mix(vec3(0.72, 0.38, 0.55), sunset, 0.6);
+        float low = smoothstep(0.15, 0.55, 1.0 - abs(dir.y));
+        skyCol = mix(skyCol, mix(skyCol, duskBand, 0.85), dusk * low * 0.9);
+
+        float sunDisc = pow(sunDot, 280.0);
+        float sunGlow = pow(sunDot, 5.0) * 0.42;
+        skyCol += vec3(1.0, 0.96, 0.88) * sunDisc * 4.2 * uDayFactor;
+        skyCol += vec3(1.0, 0.82, 0.48) * sunGlow * uDayFactor;
+
+        float moonDisc = pow(moonDot, 90.0);
+        float moonGlow = pow(moonDot, 2.2) * 0.08;
+        skyCol += vec3(0.82, 0.86, 1.0) * moonDisc * 2.6 * night;
+        skyCol += vec3(0.75, 0.78, 0.95) * moonGlow * night;
+
+        float st = stars(dir) * night * smoothstep(0.08, 0.38, y);
+        skyCol += vec3(0.92, 0.95, 1.0) * st * 1.35;
+
+        vec3 cw = dir * 1.6 + vec3(uTime * 0.012, uTime * 0.008, uTime * 0.005);
+        float c1 = fbm(cw);
+        float c2 = fbm(cw * 1.7 + 10.0);
+        float clouds = smoothstep(0.45, 0.82, c1 * 0.65 + c2 * 0.35);
+        clouds *= smoothstep(-0.2, 0.55, sU.y);
+        clouds *= (0.35 + 0.65 * uDayFactor);
+        vec3 cloudCol = vec3(0.94, 0.96, 1.0);
+        skyCol = mix(skyCol, cloudCol, clouds * 0.62);
+        skyCol = mix(skyCol, skyCol * 0.88 + cloudCol * 0.12, clouds * 0.15 * uDayFactor);
+
+        gl_FragColor = vec4(skyCol, 1.0);
       }`
   })
 );
@@ -1826,7 +1905,10 @@ scene.add(sky);
 
 /* =============================== WATER =================================== */
 const waterUniforms = {
-  uTime: { value: 0 }, uSunDir: { value: new THREE.Vector3(0.4, 0.6, 0.2).normalize() },
+  uTime: { value: 0 },
+  uSunDir: { value: _skySunDir.clone() },
+  uMoonDir: { value: _skyMoonDir.clone() },
+  uDayFactor: { value: 1 },
   uCamPos: { value: new THREE.Vector3() }
 };
 const waterVS = `
@@ -1849,14 +1931,15 @@ const waterVS = `
     gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
   }`;
 const waterFS = `
-  uniform float uTime; uniform vec3 uSunDir; uniform vec3 uCamPos;
+  uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uDayFactor; uniform vec3 uCamPos;
   varying vec3 vWorldPos; varying vec3 vNormal;
   void main(){
     vec3 N=normalize(vNormal);
     vec3 Vraw = uCamPos - vWorldPos;
     float vLen = length(Vraw);
     vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0,1.0,0.0);
-    vec3 L=normalize(uSunDir);
+    vec3 Ls = normalize(uSunDir);
+    vec3 Lm = normalize(uMoonDir);
     float NdotV = clamp(dot(N,V), 0.02, 1.0);
     float fresnel = pow(1.0 - NdotV, 4.0); fresnel = mix(0.03,0.65,fresnel);
     vec3 deepBlue = vec3(0.02,0.08,0.18);
@@ -1865,17 +1948,27 @@ const waterFS = `
     vec3 nearSurf = vec3(0.08,0.50,0.45);
     float depthFactor = smoothstep(-0.3,0.3,vWorldPos.y);
     vec3 wc = mix(deepBlue, mix(midOcean, mix(shallow, nearSurf, depthFactor), depthFactor*0.7), 0.5+fresnel*0.5);
-    float NdL = max(dot(N,L),0.0);
-    vec3 diff = wc*(0.35+0.65*NdL);
+    wc = mix(wc * vec3(0.55,0.62,0.95), wc, uDayFactor);
+    float NdLs = max(dot(N,Ls),0.0);
+    float NdLm = max(dot(N,Lm),0.0);
+    float diffSun = 0.35 + 0.65 * NdLs;
+    float diffMoon = 0.22 + 0.48 * NdLm;
+    vec3 diff = wc * mix(diffMoon, diffSun, uDayFactor);
     vec3 reflDir = reflect(-V, N);
-    float sunRefl = max(dot(reflDir, L), 0.0);
-    float sunGlint = pow(sunRefl, 800.0) * 0.6;
+    float sunRefl = max(dot(reflDir, Ls), 0.0);
+    float moonRefl = max(dot(reflDir, Lm), 0.0);
+    float sunGlint = pow(sunRefl, 800.0) * 0.6 * uDayFactor;
+    float moonGlint = pow(moonRefl, 220.0) * 0.22 * (1.0 - uDayFactor);
     float distFromCam = length(vWorldPos.xz - uCamPos.xz);
     float falloff = exp(-distFromCam * distFromCam * 0.00001);
     vec3 specC = vec3(1.0,0.97,0.90) * sunGlint * falloff;
+    specC += vec3(0.78,0.82,1.0) * moonGlint * falloff;
     vec3 Rv=reflect(-V,N); float er=pow(max(Rv.y*0.5+0.5,0.0),0.4);
-    vec3 refl = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er)*fresnel;
-    float sss = pow(max(dot(V,-L+N*0.4),0.0),2.5)*0.3;
+    vec3 reflDay = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er);
+    vec3 reflNight = mix(vec3(0.12,0.18,0.38),vec3(0.05,0.08,0.22),er);
+    vec3 refl = mix(reflNight, reflDay, uDayFactor) * fresnel;
+    vec3 Lblend = normalize(Ls * uDayFactor + Lm * (1.0 - uDayFactor) + vec3(0.0,0.2,0.0));
+    float sss = pow(max(dot(V,-Lblend+N*0.4),0.0),2.5)*0.3 * (0.35 + 0.65 * uDayFactor);
     vec3 sub = vec3(0.0,0.45,0.35)*sss;
     vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
     color = pow(color,vec3(1.0/2.2));
@@ -1890,6 +1983,58 @@ const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
 }));
 water.renderOrder = -1;
 scene.add(water);
+
+function syncDayNightVisuals(camX, camZ) {
+  const p = (G.time % DAY_CYCLE_SECONDS) / DAY_CYCLE_SECONDS;
+  const theta = p * Math.PI * 2 - Math.PI * 0.5;
+  _skySunDir.set(
+    Math.cos(theta),
+    Math.sin(theta),
+    0.07 * Math.sin(p * Math.PI * 4)
+  ).normalize();
+  _skyMoonDir.set(
+    Math.cos(theta + Math.PI + 0.18),
+    Math.sin(theta + Math.PI + 0.1),
+    -0.09 * Math.cos(p * Math.PI * 2)
+  ).normalize();
+
+  const sunH = _skySunDir.y;
+  const dayFactor = THREE.MathUtils.clamp((sunH + 0.18) / 0.52, 0, 1);
+  const dawn = Math.max(0, 1 - Math.abs(sunH - 0.06) * 7) * (1 - dayFactor);
+
+  const sunDist = 520;
+  sunLight.position.set(
+    camX + _skySunDir.x * sunDist,
+    Math.max(40, _skySunDir.y * sunDist + 80),
+    camZ + _skySunDir.z * sunDist
+  );
+  sunLight.target.position.set(camX, SEA_LEVEL, camZ);
+  sunLight.target.updateMatrixWorld();
+  sunLight.intensity = 0.06 + dayFactor * 1.42 + dawn * 0.4;
+  sunLight.color.setHSL(0.09 + (1 - dayFactor) * 0.04, 0.5 + dayFactor * 0.38, 0.42 + dayFactor * 0.52);
+
+  ambientLight.intensity = 0.26 + dayFactor * 0.58;
+  ambientLight.color.setRGB(0.44 + 0.28 * dayFactor, 0.5 + 0.26 * dayFactor, 0.62 + 0.18 * dayFactor);
+
+  hemiLight.intensity = 0.2 + dayFactor * 0.42;
+
+  scene.fog.color.lerpColors(_fogColDay, _fogColNight, 1 - dayFactor);
+  scene.fog.density = 0.00135 + (1 - dayFactor) * 0.00055;
+
+  if (!isMobile) sunLight.castShadow = dayFactor > 0.2;
+
+  skyUniforms.uTime.value = G.time;
+  skyUniforms.uSunDir.value.copy(_skySunDir);
+  skyUniforms.uMoonDir.value.copy(_skyMoonDir);
+  skyUniforms.uDayFactor.value = dayFactor;
+
+  waterUniforms.uSunDir.value.copy(_skySunDir);
+  waterUniforms.uMoonDir.value.copy(_skyMoonDir);
+  waterUniforms.uDayFactor.value = dayFactor;
+
+  sky.position.set(camX, 0, camZ);
+  renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
+}
 
 let windParticles, windParticleGeo;
 function initWindStreamVisual() {
@@ -12231,9 +12376,7 @@ function update(dt) {
   );
   camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
 
-  sunLight.position.set(camX + 200, 300, camZ + 100);
-  sunLight.target.position.set(camX, 0, camZ); sunLight.target.updateMatrixWorld();
-  sky.position.set(camX, 0, camZ);
+  syncDayNightVisuals(camX, camZ);
 
   if (G.spectate) updateSpectateInfoPanel();
 
@@ -12270,7 +12413,6 @@ function update(dt) {
 function render() {
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
-  sky.material.uniforms.uTime.value = G.time;
   renderer.render(scene, camera);
   renderCargoPreviewIfOpen();
   renderYardShipPreviewIfOpen();
@@ -12296,14 +12438,10 @@ function warmUpGameView() {
     camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
   );
   camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
-  sunLight.position.set(camX + 200, 300, camZ + 100);
-  sunLight.target.position.set(camX, 0, camZ);
-  sunLight.target.updateMatrixWorld();
-  sky.position.set(camX, 0, camZ);
+  syncDayNightVisuals(camX, camZ);
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
-  sky.material.uniforms.uTime.value = G.time;
   renderer.render(scene, camera);
 }
 
@@ -13341,6 +13479,7 @@ if (!hasSave) ensurePlayerInOpenOcean();
 updateChunks();
 spawnNPCs();
 nudgePlayerSpawnClearOfShips();
+syncDayNightVisuals(G.player.x, G.player.z);
 
 document.getElementById('ui-layer').style.display = 'none';
 document.getElementById('touch-controls').style.display = 'none';
@@ -13352,11 +13491,11 @@ function menuRender() {
     G.time += 0.016;
     water.position.set(0, SEA_LEVEL - 0.5, 0);
     waterUniforms.uTime.value = G.time;
-    waterUniforms.uCamPos.value.copy(camera.position);
-    sky.material.uniforms.uTime.value = G.time;
     const camR = 25;
     camera.position.set(Math.sin(G.time * 0.04) * camR, 15 + Math.sin(G.time * 0.02) * 3, Math.cos(G.time * 0.04) * camR);
     camera.lookAt(0, 1, 0);
+    waterUniforms.uCamPos.value.copy(camera.position);
+    syncDayNightVisuals(0, 0);
     if (!ws || ws.readyState !== 1) updateNPCs(0.016);
     updateSeagulls(0.016);
     updateFish(0.016);
