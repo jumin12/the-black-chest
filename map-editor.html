@@ -243,14 +243,14 @@
       <details class="me-section" open>
         <summary>7 · Import / export</summary>
         <div class="inner">
-          <p class="hint" style="margin-top:0;">JSON includes <code>heightsB64</code>, <code>entities</code>, <code>towns</code>, <code>playerSpawn</code>, <code>wind</code>, <code>factions</code>, <code>pngImport</code>, <code>worldEdgeClamp</code>, <code>seed</code>.</p>
+          <p class="hint" style="margin-top:0;">JSON includes <code>heightsB64</code>, <code>entities</code>, <code>towns</code>, <code>playerSpawn</code>, <code>wind</code>, <code>factions</code>, <code>pngImport</code>, <code>worldEdgeClamp</code>, <code>seed</code>. <strong>Fill map</strong> densely plants only trees, bushes, and rocks on land (replaces a prior fill).</p>
           <div class="actions">
             <button type="button" id="btn-load-map" class="gold">Load map (JSON)…</button>
             <button type="button" id="btn-save-json">Download JSON</button>
             <button type="button" id="btn-send-game" class="gold">Store for game</button>
             <button type="button" id="btn-clear-map">Clear props &amp; ports (keep land)</button>
             <button type="button" id="btn-fresh-map" class="danger">New blank ocean</button>
-            <button type="button" id="btn-gen-deco" class="gold">Generate decorations</button>
+            <button type="button" id="btn-gen-deco" class="gold">Fill map — trees, bushes, rocks</button>
             <button type="button" id="btn-png">PNG heightmap / mask…</button>
           </div>
           <div id="png-import-panel" style="display:none;">
@@ -896,12 +896,14 @@
     return 'mask';
   }
   /** Mild lift — keep imported heightmap closer to in-game island relief. */
-  const PNG_LAND_GAIN = 0.92;
+  const PNG_LAND_GAIN = 0.68;
   /** After PNG decode, compress land range toward sea (editor preview vs chunky mesas). */
-  const EDITOR_PNG_LAND_REL_SCALE = 0.46;
+  const EDITOR_PNG_LAND_REL_SCALE = 0.30;
+  /** Extra squash after shelf pass so PNG islands match playable procedural scale. */
+  const EDITOR_PNG_POST_SHELF_SQUASH = 0.78;
   function boostLandHeight01(h) {
     if (h <= WATER_THR) return h;
-    return Math.min(1, WATER_THR + 0.045 + (h - WATER_THR) * PNG_LAND_GAIN);
+    return Math.min(1, WATER_THR + 0.028 + (h - WATER_THR) * PNG_LAND_GAIN);
   }
   /** Stored height 0..1. Mask: bright = water; mid-bright = shoal so land “fills” visually. */
   function lumToHeight01(lum, mode) {
@@ -909,15 +911,15 @@
     if (mode === 'height') {
       if (lum < 0.11) return DEEP_WATER_H;
       const t = clamp01((lum - 0.11) / 0.89);
-      const shaped = Math.pow(t, 0.92);
-      let h = Math.max(WATER_THR + 0.04, Math.min(0.44, shaped * 0.38 + 0.03));
+      const shaped = Math.pow(t, 0.95);
+      let h = Math.max(WATER_THR + 0.032, Math.min(0.28, shaped * 0.22 + 0.025));
       return boostLandHeight01(h);
     }
     if (lum > 0.93) return WATER_THR * 0.35;
     if (lum > 0.84) return WATER_THR * 0.55;
     const t = Math.max(0, 1 - lum);
-    /* Gentler gamma so slightly lighter island interiors don’t sink below the rim (solid plateaus). */
-    let h = Math.max(0.22, Math.min(1, Math.pow(t, 0.42) * 1.75));
+    /* Lower plateaus — PNG land should read like archipelago hills, not towers. */
+    let h = Math.max(0.13, Math.min(0.48, Math.pow(t, 0.48) * 1.05));
     return boostLandHeight01(h);
   }
   /**
@@ -3061,35 +3063,62 @@
     refreshEditorWildlife();
   });
 
+  const NATURAL_FILL_TYPES = ['tree', 'bush', 'rock'];
   function generateDecorations() {
+    entities = entities.filter(e => e && !NATURAL_FILL_TYPES.includes(e.type));
     const rng = mulberry32(parseWorldSeed32(document.getElementById('inp-seed').value) ^ 0xdec0de81);
-    let placed = 0;
-    const tries = Math.min(200000, Math.floor(GRID_N * GRID_N * 0.045));
-    for (let n = 0; n < tries; n++) {
-      const gx = Math.floor(rng() * GRID_N);
-      const gz = Math.floor(rng() * GRID_N);
-      const h = heights[gz * GRID_N + gx];
-      if (h <= WATER_THR + 0.05) continue;
-      let coastal = false;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = gx + dx, nz = gz + dz;
-        if (nx < 0 || nx >= GRID_N || nz < 0 || nz >= GRID_N) { coastal = true; break; }
-        if (heights[nz * GRID_N + nx] <= WATER_THR) { coastal = true; break; }
+    const lim = worldEdgeClamp;
+    const cellW = (2 * lim) / Math.max(1, GRID_N - 1);
+    const portClear = 40;
+    const structureClear = 7;
+    function nearPort(wx, wz) {
+      for (const t of towns) {
+        const px = t.dockX != null ? Number(t.dockX) : (t.worldX != null ? Number(t.worldX) : NaN);
+        const pz = t.dockZ != null ? Number(t.dockZ) : (t.worldZ != null ? Number(t.worldZ) : NaN);
+        if (!Number.isFinite(px) || !Number.isFinite(pz)) continue;
+        if (Math.hypot(wx - px, wz - pz) < portClear) return true;
       }
-      if (coastal || h > 0.9) continue;
-      const lim = worldEdgeClamp;
-      const wx = (gx / (GRID_N - 1)) * 2 * lim - lim;
-      const wz = (gz / (GRID_N - 1)) * 2 * lim - lim;
-      if (entities.some(e => e && Math.hypot(e.x - wx, e.z - wz) < 5)) continue;
-      const roll = rng();
-      const type = roll < 0.5 ? 'tree' : roll < 0.82 ? 'bush' : roll < 0.93 ? 'rock' : 'driftwood';
-      entities.push({ id: 'e' + (entSeq++), type, x: wx, z: wz, rot: rng() * Math.PI * 2 });
-      placed++;
+      return false;
+    }
+    function nearHandPlaced(wx, wz) {
+      for (const e of entities) {
+        if (!e || NATURAL_FILL_TYPES.includes(e.type)) continue;
+        if (Math.hypot(e.x - wx, e.z - wz) < structureClear) return true;
+      }
+      return false;
+    }
+    let placed = 0;
+    const maxPlaced = Math.min(62000, Math.floor(GRID_N * GRID_N * 0.28));
+    const fillChance = 0.58;
+    for (let gz = 1; gz < GRID_N - 1 && placed < maxPlaced; gz++) {
+      for (let gx = 1; gx < GRID_N - 1 && placed < maxPlaced; gx++) {
+        const h = heights[gz * GRID_N + gx];
+        if (h <= WATER_THR + 0.02) continue;
+        let coastal = false;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          if (heights[(gz + dz) * GRID_N + gx + dx] <= WATER_THR) {
+            coastal = true;
+            break;
+          }
+        }
+        if (coastal) continue;
+        if (h > 0.88) continue;
+        if (rng() > fillChance) continue;
+        const wx0 = (gx / (GRID_N - 1)) * 2 * lim - lim;
+        const wz0 = (gz / (GRID_N - 1)) * 2 * lim - lim;
+        if (nearPort(wx0, wz0) || nearHandPlaced(wx0, wz0)) continue;
+        const wx = wx0 + (rng() - 0.5) * cellW * 0.95;
+        const wz = wz0 + (rng() - 0.5) * cellW * 0.95;
+        const roll = rng();
+        const type = roll < 0.48 ? 'tree' : roll < 0.86 ? 'bush' : 'rock';
+        entities.push({ id: 'e' + (entSeq++), type, x: wx, z: wz, rot: rng() * Math.PI * 2 });
+        placed++;
+      }
     }
     syncEntityMeshes();
     refreshEntityList();
     document.getElementById('status-bar').textContent =
-      `Placed ${placed} decorations — trees, bushes, rocks, driftwood (inland, away from shore).`;
+      `Filled map with ${placed} natural props (trees, bushes, rocks) — inland only; ports & buildings spared. Re-run replaces prior fill.`;
   }
 
   document.getElementById('btn-save-json').addEventListener('click', () => {
@@ -3287,6 +3316,12 @@
     }
     applyImportedShallowWaterShelfPasses(3);
     applyBeachShelfAndInlandGrassLift();
+    const psq = EDITOR_PNG_POST_SHELF_SQUASH;
+    for (let i = 0; i < heights.length; i++) {
+      if (heights[i] > WATER_THR) {
+        heights[i] = WATER_THR + (heights[i] - WATER_THR) * psq;
+      }
+    }
     buildTerrainMesh();
     syncEntityMeshes();
     refreshEntityList();
