@@ -1314,8 +1314,11 @@
   canvas.style.touchAction = 'none';
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.1;
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0c1828);
+  scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
+  scene.background = new THREE.Color(0x152a45);
   const camera = new THREE.PerspectiveCamera(55, 2, 1, 20000);
   camera.position.set(400, 520, 400);
   const controls = new OrbitControls(camera, canvas);
@@ -1332,29 +1335,113 @@
   scene.add(ambientLight);
   const sunLight = new THREE.DirectionalLight(0xffeedd, 1.6);
   sunLight.position.set(200, 300, 100);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(2048, 2048);
+  sunLight.shadow.camera.near = 10;
+  sunLight.shadow.camera.far = 2200;
+  const sh = 420;
+  sunLight.shadow.camera.left = -sh;
+  sunLight.shadow.camera.right = sh;
+  sunLight.shadow.camera.top = sh;
+  sunLight.shadow.camera.bottom = -sh;
   scene.add(sunLight);
-  scene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4));
+  scene.add(sunLight.target);
+  const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4);
+  scene.add(hemiLight);
 
-  const skyRadius = () => Math.max(3600, worldEdgeClamp * 3.6);
+  const DAY_CYCLE_SECONDS = 600;
+  const _edSunDir = new THREE.Vector3(0, 1, 0);
+  const _edMoonDir = new THREE.Vector3(-0.3, 0.5, 0.2);
+  const _fogColDay = new THREE.Color(0x9ab8d8);
+  const _fogColNight = new THREE.Color(0x1a2238);
+
+  const skyRadius = () => Math.max(3600, worldEdgeClamp * 3.6, camera.far * 1.62);
+  const skyUniforms = {
+    uTime: { value: 0 },
+    uSunDir: { value: _edSunDir.clone() },
+    uMoonDir: { value: _edMoonDir.clone() },
+    uDayFactor: { value: 1 },
+    uSkyCamPos: { value: new THREE.Vector3() }
+  };
   const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(skyRadius(), 40, 40),
+    new THREE.SphereGeometry(skyRadius(), 48, 48),
     new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
-      uniforms: { uTime: { value: 0 }, uSunPos: { value: new THREE.Vector3(200, 300, 100) } },
-      vertexShader: `varying vec3 vDir; void main(){ vDir = normalize((modelMatrix * vec4(position,1.0)).xyz); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+      fog: false,
+      uniforms: skyUniforms,
+      vertexShader: `uniform vec3 uSkyCamPos; varying vec3 vDir; void main(){ vec4 wp = modelMatrix * vec4(position, 1.0); vDir = normalize(wp.xyz - uSkyCamPos); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: `
-        uniform float uTime; uniform vec3 uSunPos; varying vec3 vDir;
-        void main(){
-          float y = vDir.y*0.5+0.5;
-          vec3 sky = mix(vec3(0.55,0.75,0.92), vec3(0.18,0.38,0.68), pow(y,0.6));
-          vec3 sd = normalize(uSunPos); float sd2 = max(dot(vDir,sd),0.0);
-          sky += vec3(1.0,0.9,0.6)*pow(sd2,200.0)*2.0 + vec3(0.8,0.6,0.3)*pow(sd2,6.0)*0.25;
-          float cn = sin(vDir.x*8.0+uTime*0.02)*cos(vDir.z*6.0+uTime*0.015)*0.5+0.5;
-          cn *= sin(vDir.x*3.0-uTime*0.01)*cos(vDir.z*4.0+uTime*0.008)*0.5+0.5;
-          sky = mix(sky, vec3(0.96,0.96,0.98), smoothstep(0.3,0.7,y)*smoothstep(0.4,0.6,cn)*0.55);
-          gl_FragColor = vec4(sky,1.0);
-        }`
+      uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uDayFactor;
+      varying vec3 vDir;
+      float hash12(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+      float noise3(vec3 x){
+        vec3 p = floor(x), f = fract(x);
+        f = f*f*(3.0-2.0*f);
+        float n = p.x + p.y*57.0 + 113.0*p.z;
+        return mix(mix(mix(hash12(vec2(n+0.0,0.0)), hash12(vec2(n+1.0,0.0)), f.x),
+                       mix(hash12(vec2(n+57.0,0.0)), hash12(vec2(n+58.0,0.0)), f.x), f.y),
+                   mix(mix(hash12(vec2(n+113.0,0.0)), hash12(vec2(n+114.0,0.0)), f.x),
+                       mix(hash12(vec2(n+170.0,0.0)), hash12(vec2(n+171.0,0.0)), f.x), f.y), f.z);
+      }
+      float fbm(vec3 p){
+        float v = 0.0, a = 0.52;
+        for(int i = 0; i < 5; i++){
+          v += a * noise3(p);
+          p = p * 2.04 + vec3(17.0, 13.0, 11.0);
+          a *= 0.5;
+        }
+        return v;
+      }
+      float stars(vec3 rd){
+        vec3 p = rd * 95.0;
+        vec3 i = floor(p);
+        vec3 f = fract(p) - 0.5;
+        float h = fract(sin(dot(i, vec3(127.1,311.7,74.7))) * 43758.5453);
+        float d = dot(f,f);
+        float tw = 0.88 + 0.12 * sin(uTime * 0.35 + h * 18.0);
+        return smoothstep(0.11, 0.02, d) * step(0.965, h) * tw;
+      }
+      void main(){
+        vec3 dir = normalize(vDir);
+        vec3 sU = normalize(uSunDir);
+        vec3 mU = normalize(uMoonDir);
+        float sunDot = max(dot(dir, sU), 0.0);
+        float moonDot = max(dot(dir, mU), 0.0);
+        float y = dir.y * 0.5 + 0.5;
+        float night = 1.0 - uDayFactor;
+        vec3 zenithD = vec3(0.32, 0.58, 0.98);
+        vec3 horizD = vec3(0.62, 0.78, 0.98);
+        vec3 zenithN = vec3(0.015, 0.025, 0.07);
+        vec3 horizN = vec3(0.035, 0.045, 0.11);
+        vec3 skyCol = mix(mix(horizN, zenithN, pow(y, 0.48)), mix(horizD, zenithD, pow(y, 0.52)), uDayFactor);
+        float dusk = smoothstep(-0.12, 0.14, sU.y) * (1.0 - smoothstep(0.22, 0.55, sU.y));
+        vec3 sunset = vec3(0.98, 0.42, 0.28);
+        vec3 duskBand = mix(vec3(0.72, 0.38, 0.55), sunset, 0.6);
+        float low = smoothstep(0.15, 0.55, 1.0 - abs(dir.y));
+        skyCol = mix(skyCol, mix(skyCol, duskBand, 0.85), dusk * low * 0.9);
+        float sunDisc = pow(sunDot, 280.0);
+        float sunGlow = pow(sunDot, 5.0) * 0.42;
+        skyCol += vec3(1.0, 0.96, 0.88) * sunDisc * 4.2 * uDayFactor;
+        skyCol += vec3(1.0, 0.82, 0.48) * sunGlow * uDayFactor;
+        float moonDisc = pow(moonDot, 72.0);
+        float moonGlow = pow(moonDot, 2.0) * 0.11;
+        float moonVis = night * (0.55 + 0.45 * smoothstep(-0.05, 0.22, mU.y));
+        skyCol += vec3(0.88, 0.90, 1.0) * moonDisc * 3.4 * moonVis;
+        skyCol += vec3(0.78, 0.80, 0.98) * moonGlow * moonVis;
+        float st = stars(dir) * night * smoothstep(0.05, 0.42, y);
+        skyCol += vec3(0.92, 0.95, 1.0) * st * 1.85;
+        vec3 cw = dir * 1.6 + vec3(uTime * 0.012, uTime * 0.008, uTime * 0.005);
+        float c1 = fbm(cw);
+        float c2 = fbm(cw * 1.7 + 10.0);
+        float clouds = smoothstep(0.45, 0.82, c1 * 0.65 + c2 * 0.35);
+        clouds *= smoothstep(-0.2, 0.55, sU.y);
+        clouds *= (0.35 + 0.65 * uDayFactor);
+        vec3 cloudCol = vec3(0.94, 0.96, 1.0);
+        skyCol = mix(skyCol, cloudCol, clouds * 0.62);
+        skyCol = mix(skyCol, skyCol * 0.88 + cloudCol * 0.12, clouds * 0.15 * uDayFactor);
+        gl_FragColor = vec4(skyCol, 1.0);
+      }`
     })
   );
   scene.add(sky);
@@ -1362,7 +1449,9 @@
   const waterUniforms = {
     uTime: { value: 0 },
     uWaveScale: { value: EDITOR_WAVE_SCALE },
-    uSunDir: { value: new THREE.Vector3(0.4, 0.6, 0.2).normalize() },
+    uSunDir: { value: _edSunDir.clone() },
+    uMoonDir: { value: _edMoonDir.clone() },
+    uDayFactor: { value: 1 },
     uCamPos: { value: new THREE.Vector3() }
   };
   const waterVS = `
@@ -1372,49 +1461,108 @@
       float f=k*(dot(dn,p.xz)-c*sp*uTime);
       return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
     }
-    vec3 wsum(vec3 p){
-      return gw(p,0.05,65.0,vec2(1,.2),0.6) + gw(p,0.03,40.0,vec2(.35,1),.45)
-        + gw(p,0.02,22.0,vec2(-.55,.75),0.7) + gw(p,0.015,13.0,vec2(.8,-.35),0.85)
-        + gw(p,0.008,7.5,vec2(-.25,-.85),1.1) + gw(p,0.005,4.5,vec2(.85,.45),1.4);
-    }
     void main(){
       vec3 pos=position;
-      pos += wsum(pos) * uWaveScale;
+      pos += (gw(pos,0.05,65.0,vec2(1,.2),0.6) + gw(pos,0.03,40.0,vec2(.35,1),.45)
+         + gw(pos,0.02,22.0,vec2(-.55,.75),0.7) + gw(pos,0.015,13.0,vec2(.8,-.35),0.85)
+         + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4)) * uWaveScale;
       vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
       float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
-      pX += wsum(pX) * uWaveScale;
-      pZ += wsum(pZ) * uWaveScale;
+      vec3 wX = (gw(pX,0.05,65.,vec2(1,.2),.6) + gw(pX,.03,40.,vec2(.35,1),.45) + gw(pX,.02,22.,vec2(-.55,.75),.7) + gw(pX,.015,13.,vec2(.8,-.35),.85)) * uWaveScale;
+      vec3 wZ = (gw(pZ,0.05,65.,vec2(1,.2),.6) + gw(pZ,.03,40.,vec2(.35,1),.45) + gw(pZ,.02,22.,vec2(-.55,.75),.7) + gw(pZ,.015,13.,vec2(.8,-.35),.85)) * uWaveScale;
+      pX += wX; pZ += wZ;
       vNormal = normalize(cross(pZ-pos, pX-pos));
       gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
     }`;
   const waterFS = `
-    uniform float uTime; uniform vec3 uSunDir; uniform vec3 uCamPos;
+    uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uDayFactor; uniform vec3 uCamPos;
     varying vec3 vWorldPos; varying vec3 vNormal;
     void main(){
-      vec3 N=normalize(vNormal); vec3 V=normalize(uCamPos-vWorldPos); vec3 L=normalize(uSunDir);
-      float fresnel = pow(1.0-max(dot(N,V),0.0),4.0); fresnel = mix(0.03,0.65,fresnel);
+      vec3 N=normalize(vNormal);
+      vec3 Vraw = uCamPos - vWorldPos;
+      float vLen = length(Vraw);
+      vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0,1.0,0.0);
+      vec3 Ls = normalize(uSunDir);
+      vec3 Lm = normalize(uMoonDir);
+      float NdotV = clamp(dot(N,V), 0.02, 1.0);
+      float fresnel = pow(1.0 - NdotV, 4.0); fresnel = mix(0.03,0.65,fresnel);
       vec3 deepBlue = vec3(0.02,0.08,0.18);
       vec3 midOcean = vec3(0.04,0.18,0.32);
       vec3 shallow = vec3(0.05,0.38,0.38);
       vec3 nearSurf = vec3(0.08,0.50,0.45);
       float depthFactor = smoothstep(-0.3,0.3,vWorldPos.y);
       vec3 wc = mix(deepBlue, mix(midOcean, mix(shallow, nearSurf, depthFactor), depthFactor*0.7), 0.5+fresnel*0.5);
-      float NdL = max(dot(N,L),0.0);
-      vec3 diff = wc*(0.35+0.65*NdL);
+      wc = mix(wc * vec3(0.55,0.62,0.95), wc, uDayFactor);
+      float NdLs = max(dot(N,Ls),0.0);
+      float NdLm = max(dot(N,Lm),0.0);
+      float diffSun = 0.35 + 0.65 * NdLs;
+      float diffMoon = 0.22 + 0.48 * NdLm;
+      vec3 diff = wc * mix(diffMoon, diffSun, uDayFactor);
       vec3 reflDir = reflect(-V, N);
-      float sunRefl = max(dot(reflDir, L), 0.0);
-      float sunGlint = pow(sunRefl, 800.0) * 0.6;
+      float sunRefl = max(dot(reflDir, Ls), 0.0);
+      float moonRefl = max(dot(reflDir, Lm), 0.0);
+      float sunGlint = pow(sunRefl, 800.0) * 0.6 * uDayFactor;
+      float moonGlint = pow(moonRefl, 220.0) * 0.22 * (1.0 - uDayFactor);
       float distFromCam = length(vWorldPos.xz - uCamPos.xz);
       float falloff = exp(-distFromCam * distFromCam * 0.00001);
       vec3 specC = vec3(1.0,0.97,0.90) * sunGlint * falloff;
+      specC += vec3(0.78,0.82,1.0) * moonGlint * falloff;
       vec3 Rv=reflect(-V,N); float er=pow(max(Rv.y*0.5+0.5,0.0),0.4);
-      vec3 refl = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er)*fresnel;
-      float sss = pow(max(dot(V,-L+N*0.4),0.0),2.5)*0.3;
-      vec3 sub = vec3(0.0,0.45,0.35)*sss;
+      vec3 reflDay = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er);
+      vec3 reflNight = mix(vec3(0.12,0.18,0.38),vec3(0.05,0.08,0.22),er);
+      vec3 refl = mix(reflNight, reflDay, uDayFactor) * fresnel;
+      vec3 Lblend = normalize(Ls * uDayFactor + Lm * (1.0 - uDayFactor) + vec3(0.0,0.2,0.0));
+      float sss = pow(max(dot(V,-Lblend+N*0.4),0.0),2.5)*0.3 * (0.35 + 0.65 * uDayFactor);
+      vec3 sub = vec3(0.0,0.45,0.35) * sss;
       vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
       color = pow(color,vec3(1.0/2.2));
       gl_FragColor = vec4(color,1.0);
     }`;
+
+  let editorWorldTime = 0;
+  function syncEditorDayNight(camX, camZ) {
+    const p = (editorWorldTime % DAY_CYCLE_SECONDS) / DAY_CYCLE_SECONDS;
+    const theta = p * Math.PI * 2 - Math.PI * 0.5;
+    _edSunDir.set(
+      Math.cos(theta),
+      Math.sin(theta),
+      0.07 * Math.sin(p * Math.PI * 4)
+    ).normalize();
+    _edMoonDir.set(
+      Math.cos(theta + Math.PI + 0.18),
+      Math.sin(theta + Math.PI + 0.1),
+      -0.09 * Math.cos(p * Math.PI * 2)
+    ).normalize();
+    const sunH = _edSunDir.y;
+    const dayFactor = THREE.MathUtils.clamp((sunH + 0.18) / 0.52, 0, 1);
+    const dawn = Math.max(0, 1 - Math.abs(sunH - 0.06) * 7) * (1 - dayFactor);
+    const sunDist = 520;
+    sunLight.position.set(
+      camX + _edSunDir.x * sunDist,
+      Math.max(40, _edSunDir.y * sunDist + 80),
+      camZ + _edSunDir.z * sunDist
+    );
+    sunLight.target.position.set(camX, SEA_LEVEL, camZ);
+    sunLight.target.updateMatrixWorld();
+    sunLight.intensity = 0.06 + dayFactor * 1.42 + dawn * 0.4;
+    sunLight.color.setHSL(0.09 + (1 - dayFactor) * 0.04, 0.5 + dayFactor * 0.38, 0.42 + dayFactor * 0.52);
+    ambientLight.intensity = 0.26 + dayFactor * 0.58;
+    ambientLight.color.setRGB(0.44 + 0.28 * dayFactor, 0.5 + 0.26 * dayFactor, 0.62 + 0.18 * dayFactor);
+    hemiLight.intensity = 0.2 + dayFactor * 0.42;
+    scene.fog.color.lerpColors(_fogColDay, _fogColNight, 1 - dayFactor);
+    scene.fog.density = 0.00135 + (1 - dayFactor) * 0.00055;
+    sunLight.castShadow = dayFactor > 0.2;
+    skyUniforms.uTime.value = editorWorldTime;
+    skyUniforms.uSunDir.value.copy(_edSunDir);
+    skyUniforms.uMoonDir.value.copy(_edMoonDir);
+    skyUniforms.uDayFactor.value = dayFactor;
+    skyUniforms.uSkyCamPos.value.copy(camera.position);
+    waterUniforms.uSunDir.value.copy(_edSunDir);
+    waterUniforms.uMoonDir.value.copy(_edMoonDir);
+    waterUniforms.uDayFactor.value = dayFactor;
+    sky.position.copy(camera.position);
+    renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
+  }
 
   let water = null;
   const waterMaterial = new THREE.ShaderMaterial({
@@ -1438,7 +1586,7 @@
   }
   function resizeSkyDome() {
     sky.geometry.dispose();
-    sky.geometry = new THREE.SphereGeometry(skyRadius(), 40, 40);
+    sky.geometry = new THREE.SphereGeometry(skyRadius(), 48, 48);
   }
   rebuildWaterPlane();
 
@@ -1651,18 +1799,9 @@
 
   const matTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
   const matPalm = new THREE.MeshLambertMaterial({ color: 0x4a9e3f });
-  const matRockEd = new THREE.MeshLambertMaterial({ color: 0x7a7a7a });
-  /** Shared low-poly meshes for InstancedMesh (trees/bushes/rocks) — avoids tens of thousands of draw calls. */
-  const ED_INST = {
-    treeGeo: new THREE.ConeGeometry(0.42, 3.25, 7),
-    treeMat: new THREE.MeshLambertMaterial({ color: 0x3d7a32 }),
-    bushGeo: new THREE.SphereGeometry(0.48, 6, 5),
-    bushMat: new THREE.MeshLambertMaterial({ color: 0x356628 }),
-    rockGeo: new THREE.DodecahedronGeometry(0.68, 0),
-    rockMat: matRockEd
-  };
+  const matRock = new THREE.MeshLambertMaterial({ color: 0x7a7a7a });
   function decoRand(rng) { return typeof rng === 'function' ? rng : Math.random; }
-  function createPalmTree(x, y, z, rng) {
+  function createPalmTree(x, y, z, rng, yawOverride) {
     const r = decoRand(rng);
     const g = new THREE.Group();
     const height = 4 + r() * 3;
@@ -1680,7 +1819,20 @@
       leaf.position.set(Math.sin(a) * 0.3, height, Math.cos(a) * 0.3);
       leaf.rotation.set(0, a, Math.cos(a) * 0.8); leaf.castShadow = true; g.add(leaf);
     }
-    g.position.set(x, y, z); g.rotation.y = r() * Math.PI * 2; return g;
+    const yaw = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
+      ? Number(yawOverride)
+      : (r() * Math.PI * 2);
+    g.position.set(x, y, z);
+    g.rotation.y = yaw;
+    return g;
+  }
+  function createRock(x, y, z, s, rng) {
+    const r = decoRand(rng);
+    const geo = new THREE.DodecahedronGeometry(s, 1);
+    const p = geo.attributes.position;
+    for (let i = 0; i < p.count; i++) { p.setX(i, p.getX(i) + (r() - 0.5) * s * 0.3); p.setY(i, p.getY(i) * (0.5 + r() * 0.5)); p.setZ(i, p.getZ(i) + (r() - 0.5) * s * 0.3); }
+    p.needsUpdate = true; geo.computeVertexNormals();
+    const rock = new THREE.Mesh(geo, matRock); rock.position.set(x, y, z); rock.castShadow = true; rock.receiveShadow = true; return rock;
   }
   function createBush(x, y, z, s, rng) {
     const r = decoRand(rng);
@@ -1694,6 +1846,27 @@
     }
     g.position.set(x, y, z);
     return g;
+  }
+  function createBarrel(x, y, z, rng) {
+    const r = decoRand(rng);
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.85, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
+    body.position.y = 0.42; body.castShadow = true; g.add(body);
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.35, 0.035, 4, 10), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+    band.position.y = 0.32; band.rotation.x = Math.PI / 2; g.add(band);
+    g.position.set(x, y, z); g.rotation.y = r() * Math.PI * 2;
+    return g;
+  }
+  function createDriftwood(x, y, z, rng) {
+    const r = decoRand(rng);
+    const log = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.11, 1.1 + r() * 0.9, 5),
+      new THREE.MeshLambertMaterial({ color: [0x5a4030, 0x6a5040, 0x4a3828][Math.floor(r() * 3)] })
+    );
+    log.rotation.z = Math.PI / 2 * (0.82 + r() * 0.28);
+    log.rotation.y = r() * Math.PI * 2;
+    log.position.set(x, y, z); log.castShadow = true;
+    return log;
   }
   /** Land / water surface for props — matches `generateCustomMapChunk` entity base in index.html (not sloped seabed vertices). */
   function terrainSurfaceY(wx, wz) {
@@ -1756,8 +1929,6 @@
 
   const entRoot = new THREE.Group();
   scene.add(entRoot);
-  let editorInstanced = { tree: null, bush: null, rock: null };
-  const EDITOR_INST_SHADOW_MAX = 480;
 
   const previewBoat = new THREE.Group();
   scene.add(previewBoat);
@@ -2134,7 +2305,7 @@
     return e && e.yLift != null ? Number(e.yLift) : 0;
   }
   function makeTree(x, z, rng, lift) {
-    const y = terrainSurfaceY(x, z) + 0.06 + (lift || 0);
+    const y = terrainSurfaceY(x, z) + 0.08 + (lift || 0);
     return createPalmTree(x, y, z, rng);
   }
   function makeBush(x, z, rng, lift) {
@@ -2247,118 +2418,44 @@
     return g;
   }
 
-  function instancedTreeFootY(base, lift) {
-    const h = ED_INST.treeGeo.parameters && ED_INST.treeGeo.parameters.height != null
-      ? ED_INST.treeGeo.parameters.height
-      : 3.25;
-    return base + 0.06 + lift + h * 0.5;
-  }
-  function fillInstancedPropLayer(list, kind) {
-    if (!list.length) return;
-    let geo, mat;
-    if (kind === 'tree') {
-      geo = ED_INST.treeGeo;
-      mat = ED_INST.treeMat;
-    } else if (kind === 'bush') {
-      geo = ED_INST.bushGeo;
-      mat = ED_INST.bushMat;
-    } else {
-      geo = ED_INST.rockGeo;
-      mat = ED_INST.rockMat;
-    }
-    const mesh = new THREE.InstancedMesh(geo, mat, list.length);
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    const indexById = new Map();
-    const dummy = new THREE.Object3D();
-    const ids = [];
-    const useShadow = list.length <= EDITOR_INST_SHADOW_MAX;
-    for (let i = 0; i < list.length; i++) {
-      const e = list[i];
-      indexById.set(e.id, i);
-      ids.push(e.id);
-      const base = terrainSurfaceY(e.x, e.z);
-      const lift = entLift(e);
-      dummy.rotation.set(0, 0, 0);
-      dummy.scale.set(1, 1, 1);
-      if (kind === 'tree') {
-        dummy.position.set(e.x, instancedTreeFootY(base, lift), e.z);
-        dummy.rotation.y = e.rot != null ? e.rot : 0;
-      } else if (kind === 'bush') {
-        dummy.position.set(e.x, base + 0.02 + lift, e.z);
-        dummy.rotation.y = e.rot != null ? e.rot : 0;
-      } else {
-        const s = e.scale != null ? e.scale : 0.8;
-        dummy.position.set(e.x, base + 0.08 + lift + s * 0.35, e.z);
-        dummy.rotation.y = e.rot != null ? e.rot : 0;
-        dummy.scale.setScalar(s);
-      }
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.userData.editorInstanceEntityIds = ids;
-    mesh.userData.editorInstancedKind = kind;
-    mesh.castShadow = useShadow;
-    mesh.receiveShadow = useShadow;
-    mesh.frustumCulled = true;
-    editorInstanced[kind] = { mesh, indexById };
-    entRoot.add(mesh);
-  }
-
   function syncEntityMeshes() {
     while (entRoot.children.length) entRoot.remove(entRoot.children[0]);
-    editorInstanced.tree = editorInstanced.bush = editorInstanced.rock = null;
-    const trees = [];
-    const bushes = [];
-    const rocks = [];
     for (const e of entities) {
       if (!e) continue;
-      if (e.type === 'tree') trees.push(e);
-      else if (e.type === 'bush') bushes.push(e);
-      else if (e.type === 'rock') rocks.push(e);
-    }
-    fillInstancedPropLayer(trees, 'tree');
-    fillInstancedPropLayer(bushes, 'bush');
-    fillInstancedPropLayer(rocks, 'rock');
-    const skipTypes = new Set(['tree', 'bush', 'rock']);
-    for (const e of entities) {
-      if (!e || skipTypes.has(e.type)) continue;
       const rng = entityRng(e);
       const lift = entLift(e);
+      const base = terrainSurfaceY(e.x, e.z);
+      const er0 = decoRand(rng);
       let m = null;
-      if (e.type === 'building') m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng, lift, e);
+      if (e.type === 'tree') {
+        const yAw = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : undefined;
+        m = createPalmTree(e.x, base + 0.08 + lift, e.z, rng, yAw);
+        m.userData._palmYawStored = m.rotation.y;
+      } else if (e.type === 'bush') {
+        m = createBush(e.x, base + 0.02 + lift, e.z, 0.35 + er0() * 0.35, rng);
+      } else if (e.type === 'rock') {
+        const s = e.scale != null ? e.scale : 0.8;
+        m = createRock(e.x, base + 0.08 + lift + s * 0.35, e.z, s, rng);
+        if (e.rot != null && Number.isFinite(Number(e.rot))) m.rotation.y = Number(e.rot);
+      } else if (e.type === 'building') m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng, lift, e);
       else if (e.type === 'house') m = makeHouse(e.x, e.z, rng, lift, e);
       else if (e.type === 'dock') m = makeDock(e.x, e.z, e.rot || 0, lift);
       else if (e.type === 'flagpole') m = makeFlagpole(e.x, e.z, lift);
       else if (e.type === 'barrel') {
-        const g = new THREE.Group();
-        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.85, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
-        body.position.y = 0.42;
-        body.castShadow = true;
-        g.add(body);
-        const band = new THREE.Mesh(new THREE.TorusGeometry(0.35, 0.035, 4, 10), new THREE.MeshLambertMaterial({ color: 0x222222 }));
-        band.position.y = 0.32;
-        band.rotation.x = Math.PI / 2;
-        g.add(band);
-        const y = terrainSurfaceY(e.x, e.z) + 0.02 + lift;
-        g.position.set(e.x, y, e.z);
-        g.rotation.y = e.rot != null ? e.rot : 0;
-        m = g;
+        m = createBarrel(e.x, base + 0.02 + lift, e.z, rng);
+        if (e.rot != null && Number.isFinite(Number(e.rot))) m.rotation.y = Number(e.rot);
+        m.userData._barrelYaw = m.rotation.y;
       } else if (e.type === 'driftwood') {
-        const log = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.07, 0.11, 1.1 + rng() * 0.9, 5),
-          new THREE.MeshLambertMaterial({ color: [0x5a4030, 0x6a5040, 0x4a3828][Math.floor(rng() * 3)] })
-        );
-        log.rotation.z = Math.PI / 2 * (0.82 + rng() * 0.28);
-        log.rotation.y = e.rot != null ? e.rot : rng() * Math.PI * 2;
-        log.position.set(e.x, terrainSurfaceY(e.x, e.z) + 0.1 + lift, e.z);
-        log.castShadow = true;
-        log.userData._driftWoodRollZ = log.rotation.z;
-        m = log;
+        m = createDriftwood(e.x, base + 0.1 + lift, e.z, rng);
+        if (e.rot != null && Number.isFinite(Number(e.rot))) m.rotation.y = Number(e.rot);
+        m.userData._driftWoodRollZ = m.rotation.z;
+        m.userData._driftWoodYawStored = m.rotation.y;
       }
       if (m) {
         m.userData.editorEntityId = e.id;
-        if (e.type !== 'driftwood') m.rotation.y = e.rot != null ? e.rot : 0;
+        if (e.type !== 'tree' && e.type !== 'driftwood' && e.type !== 'barrel' && e.type !== 'rock') {
+          m.rotation.y = e.rot != null ? e.rot : 0;
+        }
         entRoot.add(m);
       }
     }
@@ -2368,41 +2465,16 @@
     if (!ent) return;
     const base = terrainSurfaceY(ent.x, ent.z);
     const lift = entLift(ent);
-    const kind = ent.type;
-    if (kind === 'tree' || kind === 'bush' || kind === 'rock') {
-      const st = editorInstanced[kind];
-      if (st && st.indexById && st.indexById.has(ent.id)) {
-        const idx = st.indexById.get(ent.id);
-        const dummy = new THREE.Object3D();
-        dummy.rotation.set(0, 0, 0);
-        dummy.scale.set(1, 1, 1);
-        if (kind === 'tree') {
-          dummy.position.set(ent.x, instancedTreeFootY(base, lift), ent.z);
-          dummy.rotation.y = ent.rot != null ? ent.rot : 0;
-        } else if (kind === 'bush') {
-          dummy.position.set(ent.x, base + 0.02 + lift, ent.z);
-          dummy.rotation.y = ent.rot != null ? ent.rot : 0;
-        } else {
-          const s = ent.scale != null ? ent.scale : 0.8;
-          dummy.position.set(ent.x, base + 0.08 + lift + s * 0.35, ent.z);
-          dummy.rotation.y = ent.rot != null ? ent.rot : 0;
-          dummy.scale.setScalar(s);
-        }
-        dummy.updateMatrix();
-        st.mesh.setMatrixAt(idx, dummy.matrix);
-        st.mesh.instanceMatrix.needsUpdate = true;
-        return;
-      }
-    }
     for (const ch of entRoot.children) {
       if (ch.userData.editorEntityId !== ent.id) continue;
       if (ent.type === 'tree') {
-        ch.position.set(ent.x, base + 0.06 + lift, ent.z);
-        const by = ch.userData._treeBaseYaw != null ? ch.userData._treeBaseYaw : 0;
-        ch.rotation.y = by + (ent.rot != null ? ent.rot : 0);
+        ch.position.set(ent.x, base + 0.08 + lift, ent.z);
+        ch.rotation.y = (ent.rot != null && Number.isFinite(Number(ent.rot)))
+          ? Number(ent.rot)
+          : (ch.userData._palmYawStored != null ? ch.userData._palmYawStored : ch.rotation.y);
       } else if (ent.type === 'bush') {
         ch.position.set(ent.x, base + 0.02 + lift, ent.z);
-        ch.rotation.y = ent.rot != null ? ent.rot : 0;
+        ch.rotation.y = ent.rot != null ? Number(ent.rot) : 0;
       } else if (ent.type === 'building') {
         ch.position.set(ent.x, base + lift, ent.z);
       } else if (ent.type === 'house') {
@@ -2414,15 +2486,21 @@
       } else if (ent.type === 'rock') {
         const s = ent.scale != null ? ent.scale : 0.8;
         ch.position.set(ent.x, base + 0.08 + lift + s * 0.35, ent.z);
+        ch.rotation.y = ent.rot != null ? Number(ent.rot) : 0;
       } else if (ent.type === 'barrel') {
         ch.position.set(ent.x, base + 0.02 + lift, ent.z);
+        ch.rotation.y = (ent.rot != null && Number.isFinite(Number(ent.rot)))
+          ? Number(ent.rot)
+          : (ch.userData._barrelYaw != null ? ch.userData._barrelYaw : ch.rotation.y);
       } else if (ent.type === 'driftwood') {
         ch.position.set(ent.x, base + 0.1 + lift, ent.z);
         if (ch.userData._driftWoodRollZ == null) ch.userData._driftWoodRollZ = ch.rotation.z;
         ch.rotation.z = ch.userData._driftWoodRollZ;
-        ch.rotation.y = ent.rot != null ? ent.rot : 0;
+        ch.rotation.y = (ent.rot != null && Number.isFinite(Number(ent.rot)))
+          ? Number(ent.rot)
+          : (ch.userData._driftWoodYawStored != null ? ch.userData._driftWoodYawStored : ch.rotation.y);
       }
-      if (ent.type !== 'tree' && ent.type !== 'bush' && ent.type !== 'driftwood') {
+      if (ent.type !== 'tree' && ent.type !== 'bush' && ent.type !== 'driftwood' && ent.type !== 'barrel' && ent.type !== 'rock') {
         ch.rotation.y = ent.rot != null ? ent.rot : 0;
       }
       return;
@@ -4032,18 +4110,13 @@
   function tick(now) {
     const dt = Math.min(0.05, (now - lastT) * 0.001);
     lastT = now;
+    editorWorldTime += dt;
     const t = now * 0.001;
     waterUniforms.uTime.value = t;
     waterUniforms.uCamPos.value.copy(camera.position);
-    const wa = Number(document.getElementById('wind-a').value) * Math.PI * 2;
-    const ws = Number(document.getElementById('wind-sp').value);
-    const sx = Math.sin(wa) * (0.35 + ws * 0.02);
-    const sz = Math.cos(wa) * (0.35 + ws * 0.02);
-    waterUniforms.uSunDir.value.set(sx, 0.62, sz).normalize();
-    if (sky.material && sky.material.uniforms) {
-      sky.material.uniforms.uTime.value = t;
-      sky.material.uniforms.uSunPos.value.set(200 + sx * 80, 300, 100 + sz * 80);
-    }
+    const camFx = sailPreviewOn ? previewBoatState.x : controls.target.x;
+    const camFz = sailPreviewOn ? previewBoatState.z : controls.target.z;
+    syncEditorDayNight(camFx, camFz);
 
     updateEditorWildlife(dt, t);
     updateAmbientPreviewBoat(t);
