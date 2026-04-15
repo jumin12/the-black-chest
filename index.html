@@ -1775,6 +1775,9 @@ renderer.domElement.style.outline = 'none';
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 1500);
+/** Sky dome must exceed far plane so horizon rays always hit sky; water plane must cover frustum when orbiting. */
+const SKY_RADIUS = Math.max(900, camera.far * 1.45);
+const WATER_PLANE_SIZE = Math.max(CHUNK_SIZE * (RENDER_DIST * 2 + 1), camera.far * 2.75);
 
 const ambientLight = new THREE.AmbientLight(0x7799bb, 0.7);
 scene.add(ambientLight);
@@ -1792,7 +1795,7 @@ scene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4));
 
 /* ================================ SKY ==================================== */
 const sky = new THREE.Mesh(
-  new THREE.SphereGeometry(700, 24, 24),
+  new THREE.SphereGeometry(SKY_RADIUS, 32, 32),
   new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -1842,8 +1845,13 @@ const waterFS = `
   uniform float uTime; uniform vec3 uSunDir; uniform vec3 uCamPos;
   varying vec3 vWorldPos; varying vec3 vNormal;
   void main(){
-    vec3 N=normalize(vNormal); vec3 V=normalize(uCamPos-vWorldPos); vec3 L=normalize(uSunDir);
-    float fresnel = pow(1.0-max(dot(N,V),0.0),4.0); fresnel = mix(0.03,0.65,fresnel);
+    vec3 N=normalize(vNormal);
+    vec3 Vraw = uCamPos - vWorldPos;
+    float vLen = length(Vraw);
+    vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0,1.0,0.0);
+    vec3 L=normalize(uSunDir);
+    float NdotV = clamp(dot(N,V), 0.02, 1.0);
+    float fresnel = pow(1.0 - NdotV, 4.0); fresnel = mix(0.03,0.65,fresnel);
     vec3 deepBlue = vec3(0.02,0.08,0.18);
     vec3 midOcean = vec3(0.04,0.18,0.32);
     vec3 shallow = vec3(0.05,0.38,0.38);
@@ -1867,8 +1875,7 @@ const waterFS = `
     gl_FragColor = vec4(color,1.0);
   }`;
 
-const wSize = CHUNK_SIZE * (RENDER_DIST * 2 + 1);
-const waterGeom = new THREE.PlaneGeometry(wSize, wSize, 200, 200);
+const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 200, 200);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
   uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
@@ -12185,7 +12192,7 @@ function update(dt) {
     if (!t) endSpectateMode('Spectate target lost.');
     else { camX = t.x; camZ = t.z; }
   }
-  water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
+  water.position.set(camX, SEA_LEVEL - 0.5, camZ);
   if (isMobile && !G.spectate && !G.camera.mobileOrbitFree) {
     const targetY = G.player.rotation + Math.PI;
     let camDiff = targetY - G.camera.yaw;
@@ -12255,7 +12262,7 @@ function warmUpGameView() {
     const t = resolveSpectateTargetXZR();
     if (t) { camX = t.x; camZ = t.z; }
   }
-  water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
+  water.position.set(camX, SEA_LEVEL - 0.5, camZ);
   if (isMobile && !G.spectate && !G.camera.mobileOrbitFree) {
     G.camera.yaw = G.player.rotation + Math.PI;
     G.camera.targetYaw = G.camera.yaw;
