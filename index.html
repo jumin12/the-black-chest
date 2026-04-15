@@ -95,10 +95,14 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   inset:0;
   z-index:13;
   display:none;
-  background:
-    radial-gradient(ellipse 46% 42% at 50% 50%, rgba(255,250,235,0.07) 0%, rgba(0,0,0,0) 52%, rgba(0,0,0,0) 58%),
-    radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 0%, rgba(0,0,0,0) min(34vmin,240px), rgba(0,14,32,0.55) min(40vmin,290px), rgba(0,4,12,0.88) 100%);
-  box-shadow:inset 0 0 100px rgba(0,0,0,0.6);
+  background:radial-gradient(
+    circle at 50% 50%,
+    rgba(0,0,0,0) 0,
+    rgba(0,0,0,0) min(34vmin,238px),
+    #05040a min(34vmin,238px),
+    #020108 100%
+  );
+  box-shadow:inset 0 0 90px rgba(0,0,0,0.55);
 }
 #spyglass-overlay .spyglass-ring{
   position:absolute;
@@ -4062,13 +4066,20 @@ const otherShipGroups = new Map();
 const BROADSIDE_ANGLE = Math.PI * 0.22;
 const BROADSIDE_RANGE = 40;
 
+/** World Y for broadside spawn, smoke/flash, and deck firing-arc placement (gun-port height, below old 0.6·hullH). */
+function cannonWorldMuzzleYFromShip(shipWorldY, spec) {
+  if (!spec) return shipWorldY;
+  return shipWorldY + spec.hullH * 0.52 - 0.1;
+}
+
 function createArcMesh(color) {
   const geo = new THREE.BufferGeometry();
   const segments = 16;
-  const verts = [0, 0.1, 0];
+  const arcH = -0.12;
+  const verts = [0, arcH, 0];
   for (let i = 0; i <= segments; i++) {
     const a = -BROADSIDE_ANGLE + (i / segments) * BROADSIDE_ANGLE * 2;
-    verts.push(Math.sin(a) * BROADSIDE_RANGE, 0.1, Math.cos(a) * BROADSIDE_RANGE);
+    verts.push(Math.sin(a) * BROADSIDE_RANGE, arcH, Math.cos(a) * BROADSIDE_RANGE);
   }
   const indices = [];
   for (let i = 0; i < segments; i++) { indices.push(0, i + 1, i + 2); }
@@ -4586,10 +4597,12 @@ const _cwTmpQ2 = new THREE.Quaternion();
 const CAPTAIN_WALK_MAX_SPEED = 1.22;
 /** Acceleration toward target walk velocity (ship-local units/s²). */
 const CAPTAIN_WALK_ACCEL = 4.8;
-const CAPTAIN_WALK_EYE = 1.52;
+const CAPTAIN_WALK_EYE = 1.06;
 const CAPTAIN_WALK_JUMP_V = 5.1;
 const CAPTAIN_WALK_GRAVITY = 16;
-const CAPTAIN_WALK_SPYGLASS_FOV = 22;
+/** Narrower FOV ≈ 2× zoom vs previous ~22° setting. */
+const CAPTAIN_WALK_SPYGLASS_FOV = 11;
+const CAPTAIN_WALK_PHYS_SUBSTEPS = 4;
 const CAPTAIN_WALK_SENS_X = 0.0024;
 const CAPTAIN_WALK_SENS_Y = 0.002;
 
@@ -4636,14 +4649,18 @@ function resolveCaptainWalkXZ(lx, lz, spec, shipType, shipMesh) {
   if (shipMesh) {
     shipMesh.traverse(obj => {
       if (!obj.userData || !obj.userData.isShipCannon || !obj.position) return;
-      const cx = obj.position.x, cz = obj.position.z;
+      const bp = obj.userData.basePos;
+      const cx = bp ? bp.x : obj.position.x;
+      const cz = bp ? bp.z : obj.position.z;
       const c = pushOutOfCircleXZStatic(x, z, cx, cz, 0.3);
       x = c.x;
       z = c.z;
     });
     shipMesh.children.forEach(ch => {
       if (!ch.userData || !ch.userData.isCrew) return;
-      const cx = ch.position.x, cz = ch.position.z;
+      const b = ch.userData.basePos;
+      const cx = b ? b.x : ch.position.x;
+      const cz = b ? b.z : ch.position.z;
       const c = pushOutOfCircleXZStatic(x, z, cx, cz, 0.42);
       x = c.x;
       z = c.z;
@@ -4755,26 +4772,38 @@ function updateCaptainWalk(dt) {
       cw.vx = tvx;
       cw.vz = tvz;
     }
-    const nx = cw.x + cw.vx * dt;
-    const nz = cw.z + cw.vz * dt;
-    const r0 = resolveCaptainWalkXZ(nx, nz, spec, G.player.shipType || 'sloop', ship);
-    const moved = Math.hypot(r0.x - cw.x, r0.z - cw.z);
-    const expectStep = Math.hypot(cw.vx, cw.vz) * dt;
-    if (moved < 1e-3 && expectStep > 0.04) {
-      const rx = resolveCaptainWalkXZ(cw.x + cw.vx * dt, cw.z, spec, G.player.shipType || 'sloop', ship);
-      const rz = resolveCaptainWalkXZ(cw.x, cw.z + cw.vz * dt, spec, G.player.shipType || 'sloop', ship);
-      const pick = Math.hypot(rx.x - cw.x, rx.z - cw.z) > Math.hypot(rz.x - cw.x, rz.z - cw.z) ? rx : rz;
-      cw.x = pick.x;
-      cw.z = pick.z;
-      if (pick === rx) cw.vz *= 0.15;
-      else cw.vx *= 0.15;
-    } else {
-      cw.x = r0.x;
-      cw.z = r0.z;
-      if (expectStep > 1e-3 && moved < expectStep * 0.38) {
-        const bleed = Math.max(0.08, moved / (expectStep + 1e-6));
-        cw.vx *= bleed;
-        cw.vz *= bleed;
+    const sub = Math.max(1, CAPTAIN_WALK_PHYS_SUBSTEPS);
+    const sdt = dt / sub;
+    for (let si = 0; si < sub; si++) {
+      const px0 = cw.x, pz0 = cw.z;
+      const nx = cw.x + cw.vx * sdt;
+      const nz = cw.z + cw.vz * sdt;
+      const r0 = resolveCaptainWalkXZ(nx, nz, spec, G.player.shipType || 'sloop', ship);
+      const moved = Math.hypot(r0.x - px0, r0.z - pz0);
+      const expectStep = Math.hypot(cw.vx, cw.vz) * sdt;
+      if (moved < 1e-4 && expectStep > 0.012) {
+        const rx = resolveCaptainWalkXZ(px0 + cw.vx * sdt, pz0, spec, G.player.shipType || 'sloop', ship);
+        const rz = resolveCaptainWalkXZ(px0, pz0 + cw.vz * sdt, spec, G.player.shipType || 'sloop', ship);
+        const mx = Math.hypot(rx.x - px0, rx.z - pz0);
+        const mz = Math.hypot(rz.x - px0, rz.z - pz0);
+        if (mx < 1e-4 && mz < 1e-4) {
+          cw.vx = 0;
+          cw.vz = 0;
+          break;
+        }
+        const pick = mx > mz ? rx : rz;
+        cw.x = pick.x;
+        cw.z = pick.z;
+        if (pick === rx) cw.vz = 0;
+        else cw.vx = 0;
+      } else {
+        cw.x = r0.x;
+        cw.z = r0.z;
+        if (expectStep > 1e-4 && moved < expectStep * 0.32) {
+          const bleed = Math.max(0.12, moved / (expectStep + 1e-6));
+          cw.vx *= bleed;
+          cw.vz *= bleed;
+        }
       }
     }
     cw.vy -= CAPTAIN_WALK_GRAVITY * dt;
@@ -5351,7 +5380,7 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   const ndx = dx / len, ndz = dz / len;
   const muzzle = 0.78;
   const sx = x + ndx * muzzle;
-  const sy = y + 0.06;
+  const sy = y - 0.05;
   const sz = z + ndz * muzzle;
   const flashMat = (color, op) => new THREE.MeshBasicMaterial({
     color, transparent: true, opacity: op, depthWrite: false, blending: THREE.AdditiveBlending
@@ -6185,7 +6214,8 @@ function npcFireBroadsideAtPlayer(npc) {
   if (side === 0) return;
 
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
-  const cannonY = (npc.mesh?.position.y || SEA_LEVEL + 0.5) + npcSpec.hullH * 0.6;
+  const npcShipY = npc.mesh?.position.y || SEA_LEVEL + 0.5;
+  const cannonY = cannonWorldMuzzleYFromShip(npcShipY, npcSpec);
   const aimDx0 = px - npc.x, aimDz0 = pz - npc.z;
   const aimLen0 = Math.hypot(aimDx0, aimDz0) || 1;
   const baseDirX = aimDx0 / aimLen0;
@@ -9159,7 +9189,7 @@ function doFireSide(fireSide) {
 
   const rot = G.player.rotation;
   const shipY = playerShipGroup.position.y;
-  const cannonY = shipY + spec.hullH * 0.6;
+  const cannonY = cannonWorldMuzzleYFromShip(shipY, spec);
   const cosR = Math.cos(rot), sinR = Math.sin(rot);
 
   const broadsideAngle = rot + fireSide * Math.PI / 2;
@@ -12591,7 +12621,7 @@ function update(dt) {
   if (showArcs) {
     const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
     const shipY = playerShipGroup.position.y;
-    const gunY = shipY + spec.hullH * 0.6 + 0.06;
+    const gunY = cannonWorldMuzzleYFromShip(shipY, spec) + 0.02;
     const cosR = Math.cos(G.player.rotation), sinR = Math.sin(G.player.rotation);
     const gunOffset = spec.hullW * 0.55 + 0.6;
     const lxPort = -gunOffset;
