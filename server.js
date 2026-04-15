@@ -450,14 +450,9 @@ function loadPersistedState() {
     return;
   }
   WORLD_SEED = raw.seed != null ? Number(raw.seed) >>> 0 : DEFAULT_WORLD_SEED >>> 0;
-  // If `world_seed.json` defines `leaderboard` (even `[]`), treat it as authoritative. Otherwise
-  // `pickBestLeaderboardArrays` would prefer a longer stale `leaderboard.json` / shadow copy and
-  // undo navigator wipes after restart.
-  if (Object.prototype.hasOwnProperty.call(raw, 'leaderboard')) {
-    const lb = raw.leaderboard;
-    leaderboardHistory = Array.isArray(lb) ? lb.map(normalizeLbEntry) : [];
-    return;
-  }
+  // Merge `world_seed.leaderboard` with standalone files and pick the best copy by length/mtime.
+  // Treating repo `leaderboard: []` as sole authority used to wipe live rankings on deploy/restart
+  // when longer data existed only in `leaderboard.json` / shadow on disk.
   const picked = pickBestLeaderboardArrays(collectLeaderboardCandidatesFromDisk(raw, worldMtime));
   leaderboardHistory = picked.map(normalizeLbEntry);
   migrateLegacyStandaloneLeaderboard();

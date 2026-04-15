@@ -2153,6 +2153,9 @@ function applyCustomMapPayload(data, statusEl) {
   }
   resetFactionVisualsToDefault();
   if (cm.factions) applyFactionOverrideFromMapData(cm.factions);
+  const prevTownStockpiles = G.townStockpiles && typeof G.townStockpiles === 'object' && Object.keys(G.townStockpiles).length
+    ? cloneTownStockpileTable(G.townStockpiles)
+    : null;
   G.customMap = cm;
   if (cm.wind && typeof cm.wind === 'object') {
     if (cm.wind.angle != null) G.wind.angle = Number(cm.wind.angle);
@@ -2160,6 +2163,7 @@ function applyCustomMapPayload(data, statusEl) {
   }
   G.townStockpiles = {};
   initTownStockpiles();
+  if (prevTownStockpiles) mergePriorTownStockpilesAfterMapApply(prevTownStockpiles);
   G.chunks.clear();
   islandGroup.clear();
   G.islands = [];
@@ -2656,6 +2660,44 @@ const TRADE_DELIVERY_UNITS = 12;
 function portStockKey(meta) {
   if (meta && meta.customTownId != null && String(meta.customTownId).length) return `c:${meta.customTownId}`;
   return `${meta.cx | 0},${meta.cz | 0}`;
+}
+function cloneTownStockpileTable(src) {
+  if (!src || typeof src !== 'object') return {};
+  const o = {};
+  for (const k of Object.keys(src)) {
+    const row = src[k];
+    if (row && typeof row === 'object') o[k] = { ...row };
+  }
+  return o;
+}
+function priorStockpileKeysForPort(p) {
+  const keys = [];
+  if (!p) return keys;
+  const canon = portStockKey(p);
+  keys.push(canon);
+  if (p.customTownId != null && String(p.customTownId).length) {
+    const id = String(p.customTownId);
+    keys.push(`c:${id}`, id);
+  }
+  keys.push(`${p.cx | 0},${p.cz | 0}`);
+  return keys;
+}
+/** After re-applying a custom chart (e.g. server reconnect), restore local warehouse rows keyed by older id/cx,cz forms. */
+function mergePriorTownStockpilesAfterMapApply(prev) {
+  if (!prev || typeof prev !== 'object') return;
+  const ports = collectAllTradingPorts();
+  for (const p of ports) {
+    const kCanon = portStockKey(p);
+    let found = null;
+    for (const alt of priorStockpileKeysForPort(p)) {
+      const row = prev[alt];
+      if (row && typeof row === 'object' && Object.keys(row).length) {
+        found = row;
+        break;
+      }
+    }
+    if (found) G.townStockpiles[kCanon] = { ...found };
+  }
 }
 function initTownStockpiles() {
   if (G.townStockpiles && Object.keys(G.townStockpiles).length > 0) return;
