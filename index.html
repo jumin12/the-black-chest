@@ -1237,6 +1237,8 @@ const G = {
   captainWalk: {
     active: false,
     x: 0, z: 0, vx: 0, vz: 0, vy: 0, airY: 0,
+    /** `main` = lower deck; `qd` = quarterdeck (stern) after jumping up. */
+    deckTier: 'main',
     yaw: 0, pitch: 0,
     spyglass: false,
     savedFov: 50,
@@ -2093,19 +2095,14 @@ const waterVS = `
   uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
   vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
     float k=6.2831853/wl; float c=sqrt(9.8/k); float a=s/k; vec2 dn=normalize(d);
-    float ph = sin(dot(p.xz,vec2(12.9898,78.233)))*0.55 + cos(dot(p.xz,vec2(-37.2,91.6)))*0.38;
-    ph += 0.16*sin(uTime*0.31+dot(p.xz*0.071,vec2(1.0,1.618)));
-    ph += 0.11*sin(uTime*0.47+dot(p.xz*0.053,vec2(-2.1,0.93)));
-    float f=k*(dot(dn,p.xz)-c*sp*uTime) + ph;
+    float f=k*(dot(dn,p.xz)-c*sp*uTime);
     return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
   }
   void main(){
     vec3 pos=position;
     pos += gw(pos,0.05,65.0,vec2(1,.2),0.6) + gw(pos,0.03,40.0,vec2(.35,1),.45)
          + gw(pos,0.02,22.0,vec2(-.55,.75),0.7) + gw(pos,0.015,13.0,vec2(.8,-.35),0.85)
-         + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4)
-         + gw(pos,0.014,36.0,vec2(0.724,-0.689),0.56) + gw(pos,0.009,17.0,vec2(-0.553,0.834),0.67)
-         + gw(pos,0.0065,11.0,vec2(0.641,0.768),0.74) + gw(pos,0.0045,6.2,vec2(-0.812,0.584),0.88);
+         + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4);
     vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
     float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
     pX += gw(pX,.05,65.,vec2(1,.2),.6) + gw(pX,.03,40.,vec2(.35,1),.45) + gw(pX,.02,22.,vec2(-.55,.75),.7) + gw(pX,.015,13.,vec2(.8,-.35),.85);
@@ -2118,11 +2115,6 @@ const waterFS = `
   varying vec3 vWorldPos; varying vec3 vNormal;
   void main(){
     vec3 N=normalize(vNormal);
-    float chopA = sin(vWorldPos.x*0.051+uTime*1.21)*sin(vWorldPos.z*0.047-uTime*0.89);
-    chopA += sin(dot(vWorldPos.xz,vec2(0.083,0.069))*8.9+uTime*2.18)*0.52;
-    chopA += sin(dot(vWorldPos.xz,vec2(-0.061,0.094))*13.4-uTime*1.63)*0.38;
-    chopA += sin(dot(vWorldPos.xz,vec2(0.112,-0.073))*5.7+uTime*0.74)*0.29;
-    N = normalize(N + vec3(chopA*0.046,0.0,chopA*0.042));
     vec3 Vraw = uCamPos - vWorldPos;
     float vLen = length(Vraw);
     vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0,1.0,0.0);
@@ -2163,7 +2155,7 @@ const waterFS = `
     gl_FragColor = vec4(color,1.0);
   }`;
 
-const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 224, 224);
+const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 200, 200);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
   uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
@@ -4344,7 +4336,8 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     if (cc < 1) cc = 1;
     const visualCount = cc === 1 ? 2 : cc;
     const barrelScale = cc === 1 ? 0.88 : 1;
-    const cg = new THREE.CylinderGeometry(0.1 * barrelScale, 0.15 * barrelScale, 1.15 * barrelScale, 6); cg.rotateZ(Math.PI / 2);
+    const barrelLen = 1.15 * barrelScale;
+    const cg = new THREE.CylinderGeometry(0.1 * barrelScale, 0.15 * barrelScale, barrelLen, 6); cg.rotateZ(Math.PI / 2);
     const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
     for (let c = 0; c < visualCount; c++) {
       const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
@@ -4354,8 +4347,8 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
       cn.userData.isShipCannon = true;
       cn.userData.cannonSide = side;
       cn.userData.cannonIndexOnSide = idx;
+      cn.userData.barrelHalfLen = barrelLen * 0.5;
       cn.userData.basePos = cn.position.clone();
-      cn.userData.barrelHalfLen = 0.575 * barrelScale;
       cn.userData.recoilVel = 0;
       cn.userData.recoilOffset = 0;
       g.add(cn);
@@ -4604,12 +4597,12 @@ function clampCrewToShipDeck(sm, spec, member, shipType) {
 const _cwTmpV = new THREE.Vector3();
 const _cwTmpQ = new THREE.Quaternion();
 const _cwTmpQ2 = new THREE.Quaternion();
-const _muzzleWorldTmp = new THREE.Vector3();
+const _muzzleW = new THREE.Vector3();
 /** Max deck walk speed (ship-local units/s); kept modest for a slow, deliberate stride. */
 const CAPTAIN_WALK_MAX_SPEED = 1.22;
 /** Acceleration toward target walk velocity (ship-local units/s²). */
 const CAPTAIN_WALK_ACCEL = 4.8;
-const CAPTAIN_WALK_EYE = 0.84;
+const CAPTAIN_WALK_EYE = 0.82;
 const CAPTAIN_WALK_JUMP_V = 5.1;
 const CAPTAIN_WALK_GRAVITY = 16;
 /** Narrower FOV ≈ 2× zoom vs previous ~22° setting. */
@@ -4620,6 +4613,38 @@ const CAPTAIN_WALK_SENS_Y = 0.002;
 
 function captainWalkDeckBaseY(spec) {
   return spec.hullH * 0.65;
+}
+
+/** Extra Y (ship-local) for captain standing on quarterdeck vs main deck. */
+function captainQuarterdeckBoostY(spec) {
+  return spec.hullH * 0.55 + 0.02;
+}
+
+function inQuarterdeckFootprint(x, z, spec) {
+  const hw = spec.hullW, L = spec.hullLen;
+  const cz = -L * 0.38;
+  const hz = L * 0.11;
+  const hx = hw * 0.4;
+  return x >= -hx && x <= hx && z >= cz - hz && z <= cz + hz;
+}
+
+/** World-space muzzle point at barrel tip; `fireSide` ±1, `indexOnSide` gun index. */
+function getCannonMuzzleWorldPos(shipRoot, fireSide, indexOnSide, out) {
+  if (!shipRoot || !out) return false;
+  let cn = null;
+  shipRoot.traverse(obj => {
+    if (cn) return;
+    const ud = obj.userData;
+    if (ud && ud.isShipCannon && ud.cannonSide === fireSide && ud.cannonIndexOnSide === indexOnSide) cn = obj;
+  });
+  if (!cn) return false;
+  const side = cn.userData.cannonSide;
+  const half = cn.userData.barrelHalfLen != null ? cn.userData.barrelHalfLen : 0.575;
+  _cwTmpV.set(side * half, 0, 0);
+  cn.updateMatrixWorld(true);
+  _cwTmpV.applyMatrix4(cn.matrixWorld);
+  out.copy(_cwTmpV);
+  return true;
 }
 
 function pushOutOfCircleXZStatic(x, z, cx, cz, rKeep) {
@@ -4643,10 +4668,19 @@ function pushOutOfAabbXZEdges(x, z, minX, maxX, minZ, maxZ) {
 }
 
 /** Keep captain on walkable deck and out of masts, wheel, quarterdeck block, cannons, and crew. */
-function resolveCaptainWalkXZ(lx, lz, spec, shipType, shipMesh) {
+function resolveCaptainWalkXZ(lx, lz, spec, shipType, shipMesh, walkCtx) {
   const hw = spec.hullW, L = spec.hullLen;
-  let x = Math.max(-hw * 0.38, Math.min(hw * 0.38, lx));
-  let z = Math.max(-L * 0.44, Math.min(L * 0.26, lz));
+  const airY = walkCtx && walkCtx.airY != null ? walkCtx.airY : 0;
+  const deckTier = walkCtx && walkCtx.deckTier === 'qd' ? 'qd' : 'main';
+  let x = lx, z = lz;
+  if (deckTier === 'qd') {
+    const cz = -L * 0.38, hz = L * 0.11, hx = hw * 0.4;
+    x = Math.max(-hx, Math.min(hx, lx));
+    z = Math.max(cz - hz, Math.min(cz + hz, lz));
+  } else {
+    x = Math.max(-hw * 0.38, Math.min(hw * 0.38, lx));
+    z = Math.max(-L * 0.44, Math.min(L * 0.26, lz));
+  }
   const rp = repelCrewFromMastsXZ(x, z, spec, shipType);
   x = rp.x;
   z = rp.z;
@@ -4654,10 +4688,12 @@ function resolveCaptainWalkXZ(lx, lz, spec, shipType, shipMesh) {
   const wCircle = pushOutOfCircleXZStatic(x, z, 0, wheelZ, 0.5);
   x = wCircle.x;
   z = wCircle.z;
-  const qx0 = -hw * 0.44, qx1 = hw * 0.44, qz0 = -L * 0.5, qz1 = -L * 0.24;
-  const qPush = pushOutOfAabbXZEdges(x, z, qx0, qx1, qz0, qz1);
-  x = qPush.x;
-  z = qPush.z;
+  if (deckTier === 'main' && airY < 0.055) {
+    const qx0 = -hw * 0.44, qx1 = hw * 0.44, qz0 = -L * 0.5, qz1 = -L * 0.24;
+    const qPush = pushOutOfAabbXZEdges(x, z, qx0, qx1, qz0, qz1);
+    x = qPush.x;
+    z = qPush.z;
+  }
   if (shipMesh) {
     shipMesh.traverse(obj => {
       if (!obj.userData || !obj.userData.isShipCannon || !obj.position) return;
@@ -4678,8 +4714,14 @@ function resolveCaptainWalkXZ(lx, lz, spec, shipType, shipMesh) {
       z = c.z;
     });
   }
-  x = Math.max(-hw * 0.38, Math.min(hw * 0.38, x));
-  z = Math.max(-L * 0.44, Math.min(L * 0.26, z));
+  if (deckTier === 'qd') {
+    const cz = -L * 0.38, hz = L * 0.11, hx = hw * 0.4;
+    x = Math.max(-hx, Math.min(hx, x));
+    z = Math.max(cz - hz, Math.min(cz + hz, z));
+  } else {
+    x = Math.max(-hw * 0.38, Math.min(hw * 0.38, x));
+    z = Math.max(-L * 0.44, Math.min(L * 0.26, z));
+  }
   return { x, z };
 }
 
@@ -4702,10 +4744,12 @@ function setCaptainWalkActive(on) {
     cw.active = true;
     cw.x = 0;
     cw.z = -spec.hullLen * 0.06;
-    cw.yaw = 0;
+    /** π: ship +Z is bow; default camera −Z looks toward stern without this offset. */
+    cw.yaw = Math.PI;
     cw.pitch = 0;
     cw.vy = 0;
     cw.airY = 0;
+    cw.deckTier = 'main';
     cw.vx = 0;
     cw.vz = 0;
     cw.spyglass = false;
@@ -4722,6 +4766,7 @@ function setCaptainWalkActive(on) {
     cw.spyglass = false;
     cw.vy = 0;
     cw.airY = 0;
+    cw.deckTier = 'main';
     cw.vx = 0;
     cw.vz = 0;
     camera.fov = cw.savedFov || 50;
@@ -4786,16 +4831,17 @@ function updateCaptainWalk(dt) {
     }
     const sub = Math.max(1, CAPTAIN_WALK_PHYS_SUBSTEPS);
     const sdt = dt / sub;
+    const wCtx = { airY: cw.airY, deckTier: cw.deckTier };
     for (let si = 0; si < sub; si++) {
       const px0 = cw.x, pz0 = cw.z;
       const nx = cw.x + cw.vx * sdt;
       const nz = cw.z + cw.vz * sdt;
-      const r0 = resolveCaptainWalkXZ(nx, nz, spec, G.player.shipType || 'sloop', ship);
+      const r0 = resolveCaptainWalkXZ(nx, nz, spec, G.player.shipType || 'sloop', ship, wCtx);
       const moved = Math.hypot(r0.x - px0, r0.z - pz0);
       const expectStep = Math.hypot(cw.vx, cw.vz) * sdt;
       if (moved < 1e-4 && expectStep > 0.012) {
-        const rx = resolveCaptainWalkXZ(px0 + cw.vx * sdt, pz0, spec, G.player.shipType || 'sloop', ship);
-        const rz = resolveCaptainWalkXZ(px0, pz0 + cw.vz * sdt, spec, G.player.shipType || 'sloop', ship);
+        const rx = resolveCaptainWalkXZ(px0 + cw.vx * sdt, pz0, spec, G.player.shipType || 'sloop', ship, wCtx);
+        const rz = resolveCaptainWalkXZ(px0, pz0 + cw.vz * sdt, spec, G.player.shipType || 'sloop', ship, wCtx);
         const mx = Math.hypot(rx.x - px0, rx.z - pz0);
         const mz = Math.hypot(rz.x - px0, rz.z - pz0);
         if (mx < 1e-4 && mz < 1e-4) {
@@ -4819,17 +4865,21 @@ function updateCaptainWalk(dt) {
       }
     }
     cw.vy -= CAPTAIN_WALK_GRAVITY * dt;
+    const preAir = cw.airY;
     cw.airY += cw.vy * dt;
     if (cw.airY <= 0) {
       cw.airY = 0;
       cw.vy = 0;
+      if (preAir > 0.05 && inQuarterdeckFootprint(cw.x, cw.z, spec)) cw.deckTier = 'qd';
     }
+    if (cw.deckTier === 'qd' && !inQuarterdeckFootprint(cw.x, cw.z, spec)) cw.deckTier = 'main';
   }
   const targetFov = cw.spyglass ? CAPTAIN_WALK_SPYGLASS_FOV : (cw.savedFov || 50);
   camera.fov += (targetFov - camera.fov) * Math.min(1, 10 * dt);
   camera.updateProjectionMatrix();
   playerShipGroup.updateMatrixWorld(true);
-  const eyeLocalY = deckY + CAPTAIN_WALK_EYE + cw.airY;
+  const qdBoost = cw.deckTier === 'qd' ? captainQuarterdeckBoostY(spec) : 0;
+  const eyeLocalY = deckY + CAPTAIN_WALK_EYE + cw.airY + qdBoost;
   _cwTmpV.set(cw.x, eyeLocalY, cw.z);
   _cwTmpV.applyMatrix4(playerShipGroup.matrixWorld);
   camera.position.copy(_cwTmpV);
@@ -4848,11 +4898,14 @@ function syncCaptainFigureOnDeck() {
   if (!ship) return;
   const capIdx = G.player.crew.findIndex(c => c && c.role === 'captain');
   if (capIdx < 0) return;
-  const deckY = captainWalkDeckBaseY(SHIP_TYPES[G.player.shipType || 'sloop']);
+  const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
+  const deckY = captainWalkDeckBaseY(spec);
+  const qdBoost = cw.deckTier === 'qd' ? captainQuarterdeckBoostY(spec) : 0;
+  const figY = deckY + qdBoost + cw.airY + 0.04;
   ship.children.forEach(ch => {
     if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx !== capIdx) return;
-    ch.position.set(cw.x, deckY + cw.airY, cw.z);
-    ch.rotation.x = cw.airY > 0.02 ? -0.2 * Math.min(1, cw.airY * 0.35) : 0;
+    ch.position.set(cw.x, figY, cw.z);
+    ch.rotation.x = cw.airY > 0.04 ? -0.12 : 0;
     ch.rotation.z = 0;
     ch.rotation.y = cw.yaw;
   });
@@ -5386,47 +5439,31 @@ function rebuildPlayerShip() {
 
 /* ============================== CANNON VFX (smoke) ======================= */
 const cannonSmokePuffs = [];
-
-/** World-space bore tip from ship-local cannon rest pose (pre-recoil). */
-function getShipCannonMuzzleWorld(shipRoot, fireSide, indexOnSide) {
-  if (!shipRoot) return null;
-  let cannon = null;
-  shipRoot.traverse(ch => {
-    if (cannon || !ch.userData?.isShipCannon) return;
-    if (ch.userData.cannonSide === fireSide && ch.userData.cannonIndexOnSide === indexOnSide) cannon = ch;
-  });
-  if (!cannon || !cannon.parent || !cannon.userData.basePos) return null;
-  const bp = cannon.userData.basePos;
-  const side = cannon.userData.cannonSide;
-  const hl = cannon.userData.barrelHalfLen != null ? cannon.userData.barrelHalfLen : 0.575;
-  _muzzleWorldTmp.set(bp.x + side * hl, bp.y, bp.z);
-  cannon.parent.localToWorld(_muzzleWorldTmp);
-  return { x: _muzzleWorldTmp.x, y: _muzzleWorldTmp.y, z: _muzzleWorldTmp.z };
-}
-
 function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   const sg = new THREE.Group();
   const len = Math.hypot(dx, dz) || 1;
   const ndx = dx / len, ndz = dz / len;
-  const sx = x, sy = y, sz = z;
+  const sx = x;
+  const sy = y;
+  const sz = z;
   const flashMat = (color, op) => new THREE.MeshBasicMaterial({
     color, transparent: true, opacity: op, depthWrite: false, blending: THREE.AdditiveBlending
   });
-  const flashOuter = new THREE.Mesh(new THREE.SphereGeometry(0.36, 10, 8), flashMat(0xffaa44, 0.85));
+  const flashOuter = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), flashMat(0xffaa44, 0.85));
   flashOuter.userData.isMuzzleFlash = true;
   flashOuter.userData.life = 0.1;
   flashOuter.userData.life0 = 0.1;
   flashOuter.userData.flashOp0 = 0.85;
   flashOuter.renderOrder = 2;
   sg.add(flashOuter);
-  const flashMid = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), flashMat(0xffeecc, 0.95));
+  const flashMid = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), flashMat(0xffeecc, 0.95));
   flashMid.userData.isMuzzleFlash = true;
   flashMid.userData.life = 0.085;
   flashMid.userData.life0 = 0.085;
   flashMid.userData.flashOp0 = 0.95;
   flashMid.renderOrder = 3;
   sg.add(flashMid);
-  const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 5), flashMat(0xffffff, 1));
+  const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), flashMat(0xffffff, 1));
   flashCore.userData.isMuzzleFlash = true;
   flashCore.userData.life = 0.055;
   flashCore.userData.life0 = 0.055;
@@ -5436,8 +5473,8 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   const perpX = -ndz, perpZ = ndx;
   const yaw = Math.atan2(ndx, ndz);
   const qx = Math.floor(sx * 1000), qy = Math.floor(sy * 1000), qz = Math.floor(sz * 1000);
-  for (let i = 0; i < 18; i++) {
-    const isJet = i < 6;
+  for (let i = 0; i < 20; i++) {
+    const isJet = i < 5;
     const r0 = fxHash01(qx, qy, qz, i * 5 + 11);
     const r1 = fxHash01(qx, qy, qz, i * 5 + 12);
     const r2 = fxHash01(qx, qy, qz, i * 5 + 13);
@@ -5448,35 +5485,35 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
     const r7 = fxHash01(qx, qy, qz, i * 5 + 18);
     const r8 = fxHash01(qx, qy, qz, i * 5 + 19);
     const sm = new THREE.Mesh(
-      new THREE.SphereGeometry((isJet ? 0.09 : 0.085) + r0 * (isJet ? 0.08 : 0.12), 6, 5),
+      new THREE.SphereGeometry((isJet ? 0.1 : 0.09) + r0 * (isJet ? 0.09 : 0.15), 6, 5),
       new THREE.MeshBasicMaterial({
-        color: i < 9 ? 0xe2e2e2 : 0x8a8a8a,
+        color: i < 10 ? 0xe2e2e2 : 0x8a8a8a,
         transparent: true,
-        opacity: isJet ? 0.54 : 0.44,
+        opacity: isJet ? 0.56 : 0.46,
         depthWrite: false
       })
     );
-    sm.rotation.y = yaw + (r6 - 0.5) * (isJet ? 0.12 : 0.35);
-    const fwdLen = isJet ? 2.45 + r1 * 0.5 : 1.15 + r1 * 0.55;
-    const sideS = isJet ? 0.42 + r2 * 0.12 : 0.5 + r2 * 0.26;
-    const vertS = isJet ? 0.38 + r3 * 0.1 : 0.44 + r3 * 0.18;
+    sm.rotation.y = yaw + (r6 - 0.5) * (isJet ? 0.18 : 0.72);
+    const fwdLen = isJet ? 2.2 + r1 * 0.55 : 1.05 + r1 * 0.95;
+    const sideS = isJet ? 0.45 + r2 * 0.14 : 0.55 + r2 * 0.32;
+    const vertS = isJet ? 0.4 + r3 * 0.12 : 0.48 + r3 * 0.22;
     sm.scale.set(sideS, vertS, fwdLen);
     sm.userData.baseScaleX = sideS;
     sm.userData.baseScaleY = vertS;
     sm.userData.baseScaleZ = fwdLen;
-    const along = isJet ? 0.02 + r4 * 0.2 : 0.05 + r4 * 0.26;
-    const pr = (r5 - 0.5) * (isJet ? 0.08 : 0.12);
-    const pp = (r7 - 0.5) * (isJet ? 0.08 : 0.12);
-    sm.position.set(ndx * along + perpX * pr, (r8 - 0.5) * (isJet ? 0.06 : 0.1), ndz * along + perpZ * pp);
-    const fwdSp = isJet ? 2.85 + r4 * 0.7 : 0.9 + r4 * 0.5;
-    sm.userData.vx = ndx * fwdSp + perpX * (r5 - 0.5) * (isJet ? 0.07 : 0.11);
-    sm.userData.vy = 0.1 + r6 * (isJet ? 0.32 : 0.22);
-    sm.userData.vz = ndz * fwdSp + perpZ * (r7 - 0.5) * (isJet ? 0.07 : 0.11);
-    const lf = (isJet ? 0.92 : 1.28) + fxHash01(qx, qy, qz, i * 5 + 20) * (isJet ? 0.32 : 0.95);
+    const along = isJet ? 0.04 + r4 * 0.22 : 0.1 + r4 * 0.32;
+    const pr = (r5 - 0.5) * (isJet ? 0.05 : 0.14);
+    const pp = (r7 - 0.5) * (isJet ? 0.05 : 0.14);
+    sm.position.set(ndx * along + perpX * pr, (r8 - 0.5) * (isJet ? 0.05 : 0.1), ndz * along + perpZ * pp);
+    const fwdSp = isJet ? 2.05 + r4 * 0.5 : 0.85 + r4 * 0.38;
+    sm.userData.vx = ndx * fwdSp + perpX * (r5 - 0.5) * (isJet ? 0.06 : 0.14);
+    sm.userData.vy = 0.05 + r6 * (isJet ? 0.16 : 0.26);
+    sm.userData.vz = ndz * fwdSp + perpZ * (r7 - 0.5) * (isJet ? 0.06 : 0.14);
+    const lf = (isJet ? 0.95 : 1.35) + fxHash01(qx, qy, qz, i * 5 + 20) * (isJet ? 0.35 : 1.05);
     sm.userData.life = lf;
     sm.userData.life0 = lf;
     sm.userData.drag = isJet ? 0.86 : 0.9;
-    sm.userData.smokeOp0 = isJet ? 0.54 : 0.44;
+    sm.userData.smokeOp0 = isJet ? 0.56 : 0.46;
     sg.add(sm);
   }
   sg.position.set(sx, sy, sz);
@@ -6241,6 +6278,8 @@ function npcFireBroadsideAtPlayer(npc) {
   if (side === 0) return;
 
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
+  const npcShipY = npc.mesh?.position.y || SEA_LEVEL + 0.5;
+  const fallbackY = cannonWorldMuzzleYFromShip(npcShipY, npcSpec);
   const aimDx0 = px - npc.x, aimDz0 = pz - npc.z;
   const aimLen0 = Math.hypot(aimDx0, aimDz0) || 1;
   const baseDirX = aimDx0 / aimLen0;
@@ -6260,14 +6299,14 @@ function npcFireBroadsideAtPlayer(npc) {
 
     const localZ = (g - Math.floor(perSide / 2) + 0.5) * 1.45;
     const localX = side * (npcSpec.hullW * 0.55 + 0.6);
-    const mu = npc.mesh ? getShipCannonMuzzleWorld(npc.mesh, side, g) : null;
-    const npcShipY = npc.mesh?.position.y || SEA_LEVEL + 0.5;
-    const cannonY = cannonWorldMuzzleYFromShip(npcShipY, npcSpec);
-    const fallbackWx = npc.x + localX * cosR + localZ * sinR;
-    const fallbackWz = npc.z - localX * sinR + localZ * cosR;
-    const wx = mu ? mu.x : fallbackWx;
-    const wy = mu ? mu.y : cannonY;
-    const wz = mu ? mu.z : fallbackWz;
+    const wx0 = npc.x + localX * cosR + localZ * sinR;
+    const wz0 = npc.z - localX * sinR + localZ * cosR;
+    let wx = wx0, wy = fallbackY, wz = wz0;
+    if (npc.mesh && getCannonMuzzleWorldPos(npc.mesh, side, g, _muzzleW)) {
+      wx = _muzzleW.x;
+      wy = _muzzleW.y;
+      wz = _muzzleW.z;
+    }
 
     kickShipBroadsideCannon(npc.mesh, side, g);
     spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
@@ -9219,21 +9258,23 @@ function doFireSide(fireSide) {
   triggerCombatFireHint();
 
   const rot = G.player.rotation;
-  const shipY = playerShipGroup.position.y;
-  const cannonY = cannonWorldMuzzleYFromShip(shipY, spec);
   const cosR = Math.cos(rot), sinR = Math.sin(rot);
+  const shipY = playerShipGroup.position.y;
+  const fallbackY = cannonWorldMuzzleYFromShip(shipY, spec);
 
   const broadsideAngle = rot + fireSide * Math.PI / 2;
   const dirX = Math.sin(broadsideAngle), dirZ = Math.cos(broadsideAngle);
   for (let i = 0; i < perSide; i++) {
     const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
     const localX = fireSide * (spec.hullW * 0.55 + 0.6);
-    const mu = getShipCannonMuzzleWorld(playerShipGroup, fireSide, i);
-    const fallbackWx = G.player.x + localX * cosR + localZ * sinR;
-    const fallbackWz = G.player.z - localX * sinR + localZ * cosR;
-    const wx = mu ? mu.x : fallbackWx;
-    const wy = mu ? mu.y : cannonY;
-    const wz = mu ? mu.z : fallbackWz;
+    const wx0 = G.player.x + localX * cosR + localZ * sinR;
+    const wz0 = G.player.z - localX * sinR + localZ * cosR;
+    let wx = wx0, wy = fallbackY, wz = wz0;
+    if (getCannonMuzzleWorldPos(playerShipGroup, fireSide, i, _muzzleW)) {
+      wx = _muzzleW.x;
+      wy = _muzzleW.y;
+      wz = _muzzleW.z;
+    }
 
     kickShipBroadsideCannon(playerShipGroup, fireSide, i);
 
@@ -12428,25 +12469,15 @@ function playerShipWaveAt(wx, wz) {
 }
 
 function spawnShipWakePiece(x, z, rotation, speed) {
-  const spd = Math.abs(speed || 0);
-  const stern = 1.75 + Math.min(4.4, spd * 0.48);
-  const lateral = (Math.random() - 0.5) * (0.85 + spd * 0.06);
-  const fx = Math.sin(rotation), fz = Math.cos(rotation);
-  const px = x - fz * stern - fx * lateral * 0.42;
-  const pz = z + fx * stern - fz * lateral * 0.42;
-  const { waveH } = playerShipWaveAt(px, pz);
-  const w = 0.55 + Math.random() * 0.5 + Math.min(1.15, spd / 10);
-  const h = 0.5 + Math.random() * 0.45 + Math.min(0.95, spd / 14);
-  const wakeGeo = new THREE.PlaneGeometry(w, h);
+  const wakeGeo = new THREE.PlaneGeometry(0.8, 0.8);
   wakeGeo.rotateX(-Math.PI / 2);
-  const foam = 0xa8c4d8 + Math.floor(Math.random() * 0x101010);
-  const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({
-    color: foam, transparent: true, opacity: 0.14 + Math.random() * 0.1, depthWrite: false
-  }));
-  wake.rotation.y = rotation + (Math.random() - 0.5) * 0.35;
-  wake.position.set(px, SEA_LEVEL + 0.035 + waveH * 0.52, pz);
-  wake.userData.life = 1.35 + Math.random() * 0.55 + Math.min(0.85, spd * 0.06);
-  wake.userData.life0 = wake.userData.life;
+  const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({ color: 0xccddee, transparent: true, opacity: 0.3, depthWrite: false }));
+  wake.position.set(
+    x - Math.sin(rotation) * 3 + (Math.random() - 0.5) * 1,
+    SEA_LEVEL + 0.05,
+    z - Math.cos(rotation) * 3 + (Math.random() - 0.5) * 1
+  );
+  wake.userData.life = 2.0;
   scene.add(wake);
   if (!G.wakeTrail) G.wakeTrail = [];
   G.wakeTrail.push(wake);
@@ -12455,7 +12486,7 @@ function spawnShipWakePiece(x, z, rotation, speed) {
 /** Per-ship wake cadence so local, remote, and AI vessels all leave a visible trail. */
 function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
   if (!G.wakeSpawnCooldowns) G.wakeSpawnCooldowns = new Map();
-  if (Math.abs(speed) <= 0.42) return;
+  if (Math.abs(speed) <= 0.5) return;
   let t = G.wakeSpawnCooldowns.get(key);
   if (t == null) t = 0;
   t -= dt;
@@ -12463,11 +12494,8 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
     G.wakeSpawnCooldowns.set(key, t);
     return;
   }
-  const spd = Math.abs(speed);
-  const interval = Math.max(0.034, 0.19 - Math.min(0.13, spd * 0.014));
-  G.wakeSpawnCooldowns.set(key, interval);
+  G.wakeSpawnCooldowns.set(key, 0.15);
   spawnShipWakePiece(x, z, rotation, speed);
-  if (spd > 2.8 && Math.random() < 0.42) spawnShipWakePiece(x, z, rotation, speed * 0.92);
 }
 
 /* ============================== GAME LOOP ================================ */
@@ -12655,10 +12683,8 @@ function update(dt) {
     for (let i = G.wakeTrail.length - 1; i >= 0; i--) {
       const w = G.wakeTrail[i];
       w.userData.life -= dt;
-      const u = Math.max(0, w.userData.life / (w.userData.life0 || 2));
-      w.material.opacity = Math.max(0, u * (0.12 + u * 0.14));
-      const g = 1 + (1 - u) * 2.1;
-      w.scale.set(g, g, g);
+      w.material.opacity = w.userData.life * 0.15;
+      w.scale.setScalar(1 + (2 - w.userData.life) * 1.5);
       if (w.userData.life <= 0) { scene.remove(w); w.geometry.dispose(); w.material.dispose(); G.wakeTrail.splice(i, 1); }
     }
   }
