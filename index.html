@@ -864,6 +864,11 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <h3>Settings</h3>
     <label for="settings-volume">Sound volume</label>
     <input type="range" id="settings-volume" min="0" max="100" value="80" />
+    <label for="settings-show-firing-arcs" style="margin-top:14px;">Show broadside firing arcs</label>
+    <div style="margin-top:6px;">
+      <input type="checkbox" id="settings-show-firing-arcs" checked style="accent-color:#d4a848;vertical-align:middle;" />
+      <span style="color:#8a7a68;font-size:12px;margin-left:8px;vertical-align:middle;">Red aim wedges at gun deck (PC &amp; chase view)</span>
+    </div>
     <div id="settings-scheme-row" style="display:none;">
       <label for="settings-scheme-select">Mobile helm layout</label>
       <select id="settings-scheme-select">
@@ -1161,6 +1166,7 @@ const G = {
   crewReloading: false, crewReloadTimer: 0,
   currentSailAngle: 0,
   soundVolume: 0.8,
+  showFiringArches: true,
   mobileControlScheme: 0,
   combatFlashUntil: 0,
   crewDeckCombatT: 0,
@@ -1179,6 +1185,8 @@ try {
   if (_pv != null) G.soundVolume = Math.max(0, Math.min(1, parseFloat(_pv)));
   const _ps = localStorage.getItem('pirates_mobile_scheme');
   if (_ps != null) G.mobileControlScheme = Math.max(0, Math.min(3, parseInt(_ps, 10)));
+  const _pfa = localStorage.getItem('pirates_show_firing_arches');
+  if (_pfa != null) G.showFiringArches = _pfa === '1';
 } catch (e) {}
 
 /** One active play session per browser profile (shared localStorage): block second tab from entering the voyage. */
@@ -2146,16 +2154,16 @@ let windParticles, windParticleGeo;
 function initWindStreamVisual() {
   const n = 520;
   const pos = new Float32Array(n * 3);
-  const lim = WORLD_EDGE_CLAMP - 80;
+  const extent = 2800;
   for (let i = 0; i < n; i++) {
-    pos[i * 3] = (Math.random() * 2 - 1) * lim;
-    pos[i * 3 + 1] = 7 + Math.random() * 40;
-    pos[i * 3 + 2] = (Math.random() * 2 - 1) * lim;
+    pos[i * 3] = (Math.random() - 0.5) * extent * 2;
+    pos[i * 3 + 1] = 5 + Math.random() * 34;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * extent * 2;
   }
   windParticleGeo = new THREE.BufferGeometry();
   windParticleGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   windParticles = new THREE.Points(windParticleGeo, new THREE.PointsMaterial({
-    color: 0xb8ddff, size: 0.26, transparent: true, opacity: 0.4, depthWrite: false,
+    color: 0xb8ddff, size: 0.42, transparent: true, opacity: 0.34, depthWrite: false,
     blending: THREE.AdditiveBlending, sizeAttenuation: true
   }));
   windParticles.position.set(0, 0, 0);
@@ -2164,37 +2172,48 @@ function initWindStreamVisual() {
 function scatterWindStreaksNearPlayer() {
   if (!windParticleGeo) return;
   const arr = windParticleGeo.attributes.position.array;
-  const lim = WORLD_EDGE_CLAMP - 80;
+  const px = G.player.x, pz = G.player.z;
+  const spread = 340 + (G.camera.zoom / 200) * 120;
   for (let i = 0; i < arr.length; i += 3) {
-    arr[i] = (Math.random() * 2 - 1) * lim;
-    arr[i + 1] = 7 + Math.random() * 40;
-    arr[i + 2] = (Math.random() * 2 - 1) * lim;
+    arr[i] = px + (Math.random() - 0.5) * spread * 2;
+    arr[i + 1] = 5 + Math.random() * 32;
+    arr[i + 2] = pz + (Math.random() - 0.5) * spread * 2;
   }
   windParticleGeo.attributes.position.needsUpdate = true;
 }
 function updateWindStreamVisual(dt) {
   if (!windParticles || !windParticleGeo || G.mode !== 'playing') return;
   const arr = windParticleGeo.attributes.position.array;
-  const lim = WORLD_EDGE_CLAMP - 50;
-  const span = lim * 2;
+  const px = G.player.x, pz = G.player.z;
+  const recycleR = 480 + (G.camera.zoom / 200) * 100;
+  const recycleR2 = recycleR * recycleR;
   for (let i = 0; i < arr.length; i += 3) {
-    let wx = arr[i], wy = arr[i + 1], wz = arr[i + 2];
+    let wx = arr[i], wz = arr[i + 2];
     const wdat = getWindAt(wx, wz);
-    const dirX = Math.sin(wdat.angle);
-    const dirZ = Math.cos(wdat.angle);
-    const flow = wdat.speed * 16.0 * dt;
-    wx += dirX * flow;
-    wz += dirZ * flow;
-    wy += Math.sin(G.time * 1.05 + i * 0.019) * 0.09 * dt;
-    while (wx < -lim) wx += span;
-    while (wx > lim) wx -= span;
-    while (wz < -lim) wz += span;
-    while (wz > lim) wz -= span;
-    if (wy < 4) wy = 8 + Math.random() * 12;
-    else if (wy > 54) wy = 12 + Math.random() * 28;
+    const W = wdat.angle;
+    const dirX = Math.sin(W);
+    const dirZ = Math.cos(W);
+    const perpX = -dirZ;
+    const perpZ = dirX;
+    const baseSpeed = wdat.speed * 0.4 * dt;
+    const along = 0.88 + 0.12 * Math.sin(G.time * 1.2 + i * 0.02);
+    const cross = 0.1 * Math.sin(G.time * 0.95 + i * 0.031);
+    wx += (dirX * along + perpX * cross) * baseSpeed;
+    wz += (dirZ * along + perpZ * cross) * baseSpeed;
+    arr[i + 1] += Math.sin(G.time * 0.65 + i * 0.015) * 0.35 * dt;
+    const dx = wx - px, dz = wz - pz;
+    if (dx * dx + dz * dz > recycleR2) {
+      const wNear = getWindAt(px, pz);
+      const ux = Math.sin(wNear.angle), uz = Math.cos(wNear.angle);
+      const r = 260 + Math.random() * 200;
+      const spread = (Math.random() - 0.5) * 240;
+      wx = px - ux * r - uz * spread;
+      wz = pz - uz * r + ux * spread;
+      arr[i + 1] = 6 + Math.random() * 26;
+    }
     arr[i] = wx;
-    arr[i + 1] = wy;
     arr[i + 2] = wz;
+    if (arr[i + 1] < 3 || arr[i + 1] > 48) arr[i + 1] = 6 + Math.random() * 26;
   }
   windParticleGeo.attributes.position.needsUpdate = true;
 }
@@ -12145,13 +12164,29 @@ function update(dt) {
   }
 
   const hasGuns = G.player.shipParts.cannon && G.player.shipParts.cannon !== 'none';
-  arcLeft.visible = hasGuns;
-  arcRight.visible = hasGuns;
-  if (hasGuns) {
-    arcLeft.position.set(G.player.x, SEA_LEVEL + 2, G.player.z);
-    arcLeft.rotation.y = G.player.rotation + Math.PI / 2;
-    arcRight.position.set(G.player.x, SEA_LEVEL + 2, G.player.z);
-    arcRight.rotation.y = G.player.rotation - Math.PI / 2;
+  const showArcs = hasGuns && G.showFiringArches;
+  arcLeft.visible = showArcs;
+  arcRight.visible = showArcs;
+  if (showArcs) {
+    const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
+    const shipY = playerShipGroup.position.y;
+    const gunY = shipY + spec.hullH * 0.6 + 0.06;
+    const cosR = Math.cos(G.player.rotation), sinR = Math.sin(G.player.rotation);
+    const gunOffset = spec.hullW * 0.55 + 0.6;
+    const lxPort = -gunOffset;
+    arcLeft.position.set(
+      G.player.x + lxPort * cosR,
+      gunY,
+      G.player.z - lxPort * sinR
+    );
+    arcLeft.rotation.y = G.player.rotation - Math.PI / 2;
+    const lxStar = gunOffset;
+    arcRight.position.set(
+      G.player.x + lxStar * cosR,
+      gunY,
+      G.player.z - lxStar * sinR
+    );
+    arcRight.rotation.y = G.player.rotation + Math.PI / 2;
     arcLeft.material.opacity = G.portCooldown > 0 ? 0.04 : 0.12;
     arcRight.material.opacity = G.starboardCooldown > 0 ? 0.04 : 0.12;
     arcLeft.material.color.set(G.portCooldown > 0 ? 0x666666 : 0xff4444);
@@ -13525,6 +13560,8 @@ function openSettingsPanel(options = {}) {
   if (!fromMainMenu) document.getElementById('btn-settings')?.classList.add('active');
   const vol = document.getElementById('settings-volume');
   if (vol) vol.value = String(Math.round(G.soundVolume * 100));
+  const firingArcs = document.getElementById('settings-show-firing-arcs');
+  if (firingArcs) firingArcs.checked = !!G.showFiringArches;
   const row = document.getElementById('settings-scheme-row');
   if (row) row.style.display = isMobile ? 'block' : 'none';
   const sel = document.getElementById('settings-scheme-select');
@@ -13627,6 +13664,11 @@ document.getElementById('settings-volume')?.addEventListener('input', e => {
   G.soundVolume = v;
   if (masterGain) masterGain.gain.value = v;
   try { localStorage.setItem('pirates_volume', String(v)); } catch (err) {}
+});
+
+document.getElementById('settings-show-firing-arcs')?.addEventListener('change', e => {
+  G.showFiringArches = !!e.target.checked;
+  try { localStorage.setItem('pirates_show_firing_arches', G.showFiringArches ? '1' : '0'); } catch (err) {}
 });
 
 document.getElementById('settings-scheme-select')?.addEventListener('change', e => {
