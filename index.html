@@ -969,7 +969,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <div class="touch-btn" id="touch-zoom-in" title="Closer (deck)">+</div>
   <div class="touch-btn" id="touch-zoom-out" title="Wider (horizon)">&minus;</div>
 </div>
-<div id="deck-spyglass-btn" class="touch-btn" title="Hold for spyglass" aria-label="Spyglass" style="display:none;">
+<div id="deck-spyglass-btn" class="touch-btn" title="Toggle spyglass" aria-label="Spyglass" style="display:none;">
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="10" r="6"/><path d="M21 21l-5-5"/></svg>
 </div>
 
@@ -1232,7 +1232,7 @@ const G = {
   /** First-person deck walk: positions are in ship-local space (see captain walk helpers). */
   captainWalk: {
     active: false,
-    x: 0, z: 0, vy: 0, airY: 0,
+    x: 0, z: 0, vx: 0, vz: 0, vy: 0, airY: 0,
     yaw: 0, pitch: 0,
     spyglass: false,
     savedFov: 50,
@@ -4582,7 +4582,10 @@ function clampCrewToShipDeck(sm, spec, member, shipType) {
 const _cwTmpV = new THREE.Vector3();
 const _cwTmpQ = new THREE.Quaternion();
 const _cwTmpQ2 = new THREE.Quaternion();
-const CAPTAIN_WALK_SPEED = 2.45;
+/** Max deck walk speed (ship-local units/s); kept modest for a slow, deliberate stride. */
+const CAPTAIN_WALK_MAX_SPEED = 1.22;
+/** Acceleration toward target walk velocity (ship-local units/s²). */
+const CAPTAIN_WALK_ACCEL = 4.8;
 const CAPTAIN_WALK_EYE = 1.52;
 const CAPTAIN_WALK_JUMP_V = 5.1;
 const CAPTAIN_WALK_GRAVITY = 16;
@@ -4674,6 +4677,8 @@ function setCaptainWalkActive(on) {
     cw.pitch = 0;
     cw.vy = 0;
     cw.airY = 0;
+    cw.vx = 0;
+    cw.vz = 0;
     cw.spyglass = false;
     cw.savedFov = camera.fov;
     if (btn) btn.classList.add('active');
@@ -4681,13 +4686,15 @@ function setCaptainWalkActive(on) {
       try { renderer.domElement.requestPointerLock(); } catch (e) {}
     }
     notify(isMobile
-      ? 'Captain on deck — drag to look; hold spyglass button on the right. Double-tap sea to jump.'
+      ? 'Captain on deck — drag to look; tap spyglass on the right to toggle. Double-tap sea to jump.'
       : 'Captain on deck — move to look; hold right mouse for spyglass. Space / double-tap to jump.');
   } else {
     cw.active = false;
     cw.spyglass = false;
     cw.vy = 0;
     cw.airY = 0;
+    cw.vx = 0;
+    cw.vz = 0;
     camera.fov = cw.savedFov || 50;
     camera.updateProjectionMatrix();
     if (btn) btn.classList.remove('active');
@@ -4733,18 +4740,42 @@ function updateCaptainWalk(dt) {
     const sy = Math.sin(cw.yaw), cy = Math.cos(cw.yaw);
     const wx = moveX * cy + moveZ * sy;
     const wz = -moveX * sy + moveZ * cy;
-    const nx = cw.x + wx * CAPTAIN_WALK_SPEED * dt;
-    const nz = cw.z + wz * CAPTAIN_WALK_SPEED * dt;
+    let tvx = 0, tvz = 0;
+    if (len > 1e-4) {
+      tvx = wx * CAPTAIN_WALK_MAX_SPEED;
+      tvz = wz * CAPTAIN_WALK_MAX_SPEED;
+    }
+    const dvx = tvx - cw.vx, dvz = tvz - cw.vz;
+    const dmag = Math.hypot(dvx, dvz);
+    const maxDv = CAPTAIN_WALK_ACCEL * dt;
+    if (dmag > maxDv && dmag > 1e-6) {
+      cw.vx += (dvx / dmag) * maxDv;
+      cw.vz += (dvz / dmag) * maxDv;
+    } else {
+      cw.vx = tvx;
+      cw.vz = tvz;
+    }
+    const nx = cw.x + cw.vx * dt;
+    const nz = cw.z + cw.vz * dt;
     const r0 = resolveCaptainWalkXZ(nx, nz, spec, G.player.shipType || 'sloop', ship);
-    if (Math.hypot(r0.x - cw.x, r0.z - cw.z) < 1e-3 && len > 0.08) {
-      const rx = resolveCaptainWalkXZ(cw.x + wx * CAPTAIN_WALK_SPEED * dt, cw.z, spec, G.player.shipType || 'sloop', ship);
-      const rz = resolveCaptainWalkXZ(cw.x, cw.z + wz * CAPTAIN_WALK_SPEED * dt, spec, G.player.shipType || 'sloop', ship);
+    const moved = Math.hypot(r0.x - cw.x, r0.z - cw.z);
+    const expectStep = Math.hypot(cw.vx, cw.vz) * dt;
+    if (moved < 1e-3 && expectStep > 0.04) {
+      const rx = resolveCaptainWalkXZ(cw.x + cw.vx * dt, cw.z, spec, G.player.shipType || 'sloop', ship);
+      const rz = resolveCaptainWalkXZ(cw.x, cw.z + cw.vz * dt, spec, G.player.shipType || 'sloop', ship);
       const pick = Math.hypot(rx.x - cw.x, rx.z - cw.z) > Math.hypot(rz.x - cw.x, rz.z - cw.z) ? rx : rz;
       cw.x = pick.x;
       cw.z = pick.z;
+      if (pick === rx) cw.vz *= 0.15;
+      else cw.vx *= 0.15;
     } else {
       cw.x = r0.x;
       cw.z = r0.z;
+      if (expectStep > 1e-3 && moved < expectStep * 0.38) {
+        const bleed = Math.max(0.08, moved / (expectStep + 1e-6));
+        cw.vx *= bleed;
+        cw.vz *= bleed;
+      }
     }
     cw.vy -= CAPTAIN_WALK_GRAVITY * dt;
     cw.airY += cw.vy * dt;
@@ -8725,7 +8756,6 @@ window.addEventListener('touchstart', e => {
   if (typeof fullmapOpen !== 'undefined' && fullmapOpen) return;
   if (e.touches.length >= 2) {
     mobileOrbitTouchId = null;
-    if (G.captainWalk?.active) G.captainWalk.spyglass = true;
     return;
   }
   if (mobileOrbitTouchId != null) return;
@@ -8773,9 +8803,6 @@ window.addEventListener('touchcancel', e => {
       break;
     }
   }
-}, { capture: true });
-window.addEventListener('touchend', e => {
-  if (G.captainWalk?.active && isMobile && e.touches.length < 2) G.captainWalk.spyglass = false;
 }, { capture: true });
 
 /* Touch joystick */
@@ -8907,25 +8934,24 @@ document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => {
 (function bindDeckSpyglassMobile() {
   const b = document.getElementById('deck-spyglass-btn');
   if (!b) return;
-  const setHeld = v => {
-    if (!G.captainWalk?.active) return;
-    G.captainWalk.spyglass = v;
-    b.classList.toggle('held', !!v);
-  };
   b.addEventListener('touchstart', e => {
     if (!G.captainWalk?.active || G.mode !== 'playing') return;
     e.preventDefault();
-    setHeld(true);
+    e.stopPropagation();
+    G.captainWalk.spyglass = !G.captainWalk.spyglass;
+    b.classList.toggle('held', G.captainWalk.spyglass);
   }, { passive: false });
-  b.addEventListener('touchend', () => setHeld(false));
-  b.addEventListener('touchcancel', () => setHeld(false));
 })();
 function syncDeckSpyglassMobileButton() {
   const el = document.getElementById('deck-spyglass-btn');
   if (!el) return;
   const on = isMobile && G.mode === 'playing' && G.captainWalk?.active;
   el.style.display = on ? 'flex' : 'none';
-  if (!on) el.classList.remove('held');
+  if (!on) {
+    el.classList.remove('held');
+  } else {
+    el.classList.toggle('held', !!G.captainWalk.spyglass);
+  }
   if (!on && isMobile && G.captainWalk && !G.captainWalk.active) G.captainWalk.spyglass = false;
 }
 
