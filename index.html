@@ -559,6 +559,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
           <div class="scheme-mini"><div class="m-edge" style="left:0;"></div><div class="m-edge" style="right:0;left:auto;"></div><div class="m-joy" style="left:50%;transform:translateX(-50%);"></div></div>
         </label>
       </div>
+      <p class="hint" style="margin:10px 0 0;font-size:11px;color:#8a7a68;line-height:1.45;">At sea: drag one finger on open water (outside the wheel, broadside buttons, HUD, and minimap) to orbit the camera like the ship preview. The +/− zoom buttons restore chase view behind the ship.</p>
       <button type="button" id="mobile-layout-confirm">Begin voyage</button>
     </div>
   </div>
@@ -844,7 +845,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <kbd>W</kbd><kbd>S</kbd> Sail &nbsp; <kbd>A</kbd><kbd>D</kbd> Turn<br>
     <kbd>Z</kbd> Fire Port &nbsp; <kbd>X</kbd> Fire Starboard &nbsp; <kbd>Space</kbd> Fire Both — choose shot type under the top bar (round / grape / chain)<br>
     <span style="color:#a89878;">PC: click the sea view to the left or right of your ship to fire that broadside (not on HUD)</span><br>
-    <kbd>Q</kbd><kbd>E</kbd> Rotate Camera &nbsp; <kbd>Scroll</kbd> Horizon ↔ Deck &nbsp; <kbd>M</kbd> Map &nbsp; <kbd>F3</kbd> Debug console &nbsp; <kbd>Esc</kbd> settings / close panels<br>
+    <kbd>Q</kbd><kbd>E</kbd> Rotate camera &nbsp; <strong>Middle mouse drag</strong> orbit (yaw &amp; pitch) &nbsp; <kbd>Scroll</kbd> horizon ↔ deck &nbsp; <kbd>M</kbd> map &nbsp; <kbd>F3</kbd> debug &nbsp; <kbd>Esc</kbd> settings / close panels<br>
     <kbd>B</kbd> Ship &nbsp; <kbd>I</kbd> Cargo hold &nbsp; <kbd>C</kbd> Crew &nbsp; <kbd>T</kbd> Chat
   </div>
 </div>
@@ -968,6 +969,12 @@ const CAM_ORBIT_AT_HORIZON = 178;
 function clampCameraZoomLevel(z) {
   return Math.max(CAM_ZOOM_HORIZON, Math.min(CAM_ZOOM_DECK, z));
 }
+/** Vertical orbit angle (pitch): camera height uses `sin(angle)`. */
+const CAM_ANGLE_MIN = 0.07;
+const CAM_ANGLE_MAX = Math.PI / 2 - 0.04;
+function clampCameraAngle(a) {
+  return Math.max(CAM_ANGLE_MIN, Math.min(CAM_ANGLE_MAX, a));
+}
 function orbitDistanceFromZoomLevel(zoomLevel) {
   const z = clampCameraZoomLevel(zoomLevel);
   const t = (z - CAM_ZOOM_HORIZON) / (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON);
@@ -1048,7 +1055,12 @@ const G = {
   /** Recent finished contracts & story beats for Captains Log (newest first). */
   completedMissionLog: [],
   storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
-  camera: { offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT, angle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI },
+  camera: {
+    offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
+    angle: Math.PI / 4, targetAngle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI,
+    /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
+    mobileOrbitFree: false
+  },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
   crewReloading: false, crewReloadTimer: 0,
@@ -7085,6 +7097,42 @@ initAmmoTypeBar();
 /* ============================== INPUT ==================================== */
 const keys = {};
 let middleDown = false, lastMX = 0, lastMY = 0;
+/** Mobile one-finger orbit outside HUD (same sensitivity scale as middle-mouse on PC). */
+let mobileOrbitTouchId = null, mobileOrbitLX = 0, mobileOrbitLY = 0;
+const CAM_ORBIT_SENS_X = 0.0055;
+const CAM_ORBIT_SENS_Y = 0.0042;
+function resetMobileCameraChase() {
+  if (!isMobile) return;
+  G.camera.mobileOrbitFree = false;
+  const y = (G.player && G.player.rotation != null ? G.player.rotation : 0) + Math.PI;
+  G.camera.yaw = y;
+  G.camera.targetYaw = y;
+}
+function collectMobileOrbitExcludeRects() {
+  const ids = [
+    'joystick-zone', 'touch-port', 'touch-starboard', 'touch-zoom',
+    'touch-edge-left', 'touch-edge-right', 'compass-stack', 'stats-ammo-stack',
+    'minimap', 'toolbar', 'story-brief-hud', 'anchor-status', 'dock-prompt',
+    'notification', 'spectate-return-btn', 'spectate-hud'
+  ];
+  const rects = [];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const st = window.getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') < 0.04) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width > 1 && r.height > 1) rects.push(r);
+  }
+  return rects;
+}
+function pointInAnyClientRect(x, y, rects) {
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+  }
+  return false;
+}
 let pinchDist = 0;
 /** Edge-broadside tap (scheme 3): fire on release so pinch-zoom never triggers cannons. */
 let edgeCannonGesture = null;
@@ -7793,9 +7841,72 @@ window.addEventListener('wheel', e => {
   G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom - e.deltaY * 0.32);
 }, { passive: true });
 
-window.addEventListener('mousedown', e => { if (e.button === 1) { middleDown = true; lastMX = e.clientX; lastMY = e.clientY; e.preventDefault(); } });
+window.addEventListener('mousedown', e => {
+  if (e.button === 1 && G.mode === 'playing') {
+    middleDown = true;
+    lastMX = e.clientX;
+    lastMY = e.clientY;
+    e.preventDefault();
+  }
+});
 window.addEventListener('mouseup', e => { if (e.button === 1) middleDown = false; });
-window.addEventListener('mousemove', e => { if (middleDown) { G.camera.offsetX -= (e.clientX - lastMX) * 0.3; G.camera.offsetZ -= (e.clientY - lastMY) * 0.3; lastMX = e.clientX; lastMY = e.clientY; } });
+window.addEventListener('mousemove', e => {
+  if (!middleDown || G.mode !== 'playing') return;
+  const dx = e.clientX - lastMX, dy = e.clientY - lastMY;
+  lastMX = e.clientX;
+  lastMY = e.clientY;
+  G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X;
+  G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y);
+  if (isMobile) G.camera.mobileOrbitFree = true;
+});
+window.addEventListener('touchstart', e => {
+  if (!isMobile || G.mode !== 'playing' || G.docked || G.playerSinking) return;
+  if (typeof fullmapOpen !== 'undefined' && fullmapOpen) return;
+  if (e.touches.length >= 2) {
+    mobileOrbitTouchId = null;
+    return;
+  }
+  if (mobileOrbitTouchId != null) return;
+  const t = e.touches[0];
+  const rects = collectMobileOrbitExcludeRects();
+  if (pointInAnyClientRect(t.clientX, t.clientY, rects)) return;
+  mobileOrbitTouchId = t.identifier;
+  mobileOrbitLX = t.clientX;
+  mobileOrbitLY = t.clientY;
+}, { passive: true, capture: true });
+window.addEventListener('touchmove', e => {
+  if (mobileOrbitTouchId == null) return;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const t = e.changedTouches[i];
+    if (t.identifier !== mobileOrbitTouchId) continue;
+    const dx = t.clientX - mobileOrbitLX, dy = t.clientY - mobileOrbitLY;
+    mobileOrbitLX = t.clientX;
+    mobileOrbitLY = t.clientY;
+    G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X * 1.05;
+    G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y * 1.05);
+    G.camera.mobileOrbitFree = true;
+    e.preventDefault();
+    break;
+  }
+}, { passive: false, capture: true });
+window.addEventListener('touchend', e => {
+  if (mobileOrbitTouchId == null) return;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === mobileOrbitTouchId) {
+      mobileOrbitTouchId = null;
+      break;
+    }
+  }
+}, { capture: true });
+window.addEventListener('touchcancel', e => {
+  if (mobileOrbitTouchId == null) return;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === mobileOrbitTouchId) {
+      mobileOrbitTouchId = null;
+      break;
+    }
+  }
+}, { capture: true });
 
 /* Touch joystick */
 const joyZone = document.getElementById('joystick-zone');
@@ -7805,6 +7916,7 @@ let joyCenter = { x: 0, y: 0 };
 
 joyZone?.addEventListener('touchstart', e => {
   e.preventDefault();
+  mobileOrbitTouchId = null;
   if (joyTouchId != null) {
     let still = false;
     for (let ti = 0; ti < e.touches.length; ti++) {
@@ -7919,8 +8031,8 @@ function bindEdgeBroadsideTap(el, fireSide) {
 }
 bindEdgeBroadsideTap(document.getElementById('touch-edge-left'), 1);
 bindEdgeBroadsideTap(document.getElementById('touch-edge-right'), -1);
-document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom + 55); }, { passive: false });
-document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom - 55); }, { passive: false });
+document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); resetMobileCameraChase(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom + 55); }, { passive: false });
+document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); resetMobileCameraChase(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom - 55); }, { passive: false });
 
 const _pcProj = new THREE.Vector3();
 function worldToScreenClient(wx, wy, wz) {
@@ -8425,6 +8537,7 @@ function endSpectateMode(hint) {
   const inf = document.getElementById('spectate-info-panel');
   if (inf) inf.innerHTML = '';
   if (hint) notify(hint);
+  resetMobileCameraChase();
   const y = G.player.rotation + Math.PI;
   G.camera.yaw = y;
   G.camera.targetYaw = y;
@@ -8433,6 +8546,8 @@ function beginSpectate(spec) {
   if (G.mode !== 'playing') return;
   const dm = document.getElementById('debug-modal-root');
   if (dm) { dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); }
+  mobileOrbitTouchId = null;
+  resetMobileCameraChase();
   G.spectate = spec;
   const hud = document.getElementById('spectate-hud');
   if (hud) hud.style.display = 'block';
@@ -9899,6 +10014,7 @@ function dockAtPort() {
   if (!berth) return;
   G.player.dockBerthIndex = berthIdx;
   G.docked = true; G.player.anchored = true; G.player.speed = 0;
+  resetMobileCameraChase();
   syncAnchorToolbarButton();
   const targetX = berth.x, targetZ = berth.z;
   const targetRot = berth.rot;
@@ -9948,6 +10064,7 @@ function prepareTradeInventoryView() {
 function leavePort() {
   G.docked = false; G.player.anchored = false;
   G.player.dockBerthIndex = null;
+  resetMobileCameraChase();
   syncAnchorToolbarButton();
   G.dockingAnim = null; G.sailsFurled = false;
   disposeYardShipPreview();
@@ -11368,6 +11485,8 @@ function update(dt) {
   if (keys['q']) G.camera.targetYaw -= 1.5 * dt;
   if (keys['e']) G.camera.targetYaw += 1.5 * dt;
   G.camera.yaw += (G.camera.targetYaw - G.camera.yaw) * Math.min(1, 4 * dt);
+  G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle);
+  G.camera.angle += (G.camera.targetAngle - G.camera.angle) * Math.min(1, 4 * dt);
 
   if (!G.touch.active) {
     G.camera.offsetX *= (1 - 2 * dt);
@@ -12025,7 +12144,7 @@ function update(dt) {
     else { camX = t.x; camZ = t.z; }
   }
   water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
-  if (isMobile && !G.spectate) {
+  if (isMobile && !G.spectate && !G.camera.mobileOrbitFree) {
     const targetY = G.player.rotation + Math.PI;
     let camDiff = targetY - G.camera.yaw;
     while (camDiff > Math.PI) camDiff -= Math.PI * 2;
@@ -12095,7 +12214,7 @@ function warmUpGameView() {
     if (t) { camX = t.x; camZ = t.z; }
   }
   water.position.set(G.player.x, SEA_LEVEL - 0.5, G.player.z);
-  if (isMobile && !G.spectate) {
+  if (isMobile && !G.spectate && !G.camera.mobileOrbitFree) {
     G.camera.yaw = G.player.rotation + Math.PI;
     G.camera.targetYaw = G.camera.yaw;
   }
