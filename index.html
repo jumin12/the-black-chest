@@ -1814,15 +1814,17 @@ const skyUniforms = {
   uTime: { value: 0 },
   uSunDir: { value: _skySunDir.clone() },
   uMoonDir: { value: _skyMoonDir.clone() },
-  uDayFactor: { value: 1 }
+  uDayFactor: { value: 1 },
+  uSkyCamPos: { value: new THREE.Vector3() }
 };
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(SKY_RADIUS, 48, 48),
   new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
+    fog: false,
     uniforms: skyUniforms,
-    vertexShader: `varying vec3 vDir; void main(){ vDir = normalize((modelMatrix * vec4(position,1.0)).xyz); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    vertexShader: `uniform vec3 uSkyCamPos; varying vec3 vDir; void main(){ vec4 wp = modelMatrix * vec4(position, 1.0); vDir = normalize(wp.xyz - uSkyCamPos); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
     fragmentShader: `
       uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uDayFactor;
       varying vec3 vDir;
@@ -1880,13 +1882,14 @@ const sky = new THREE.Mesh(
         skyCol += vec3(1.0, 0.96, 0.88) * sunDisc * 4.2 * uDayFactor;
         skyCol += vec3(1.0, 0.82, 0.48) * sunGlow * uDayFactor;
 
-        float moonDisc = pow(moonDot, 90.0);
-        float moonGlow = pow(moonDot, 2.2) * 0.08;
-        skyCol += vec3(0.82, 0.86, 1.0) * moonDisc * 2.6 * night;
-        skyCol += vec3(0.75, 0.78, 0.95) * moonGlow * night;
+        float moonDisc = pow(moonDot, 72.0);
+        float moonGlow = pow(moonDot, 2.0) * 0.11;
+        float moonVis = night * (0.55 + 0.45 * smoothstep(-0.05, 0.22, mU.y));
+        skyCol += vec3(0.88, 0.90, 1.0) * moonDisc * 3.4 * moonVis;
+        skyCol += vec3(0.78, 0.80, 0.98) * moonGlow * moonVis;
 
-        float st = stars(dir) * night * smoothstep(0.08, 0.38, y);
-        skyCol += vec3(0.92, 0.95, 1.0) * st * 1.35;
+        float st = stars(dir) * night * smoothstep(0.05, 0.42, y);
+        skyCol += vec3(0.92, 0.95, 1.0) * st * 1.85;
 
         vec3 cw = dir * 1.6 + vec3(uTime * 0.012, uTime * 0.008, uTime * 0.005);
         float c1 = fbm(cw);
@@ -2028,6 +2031,7 @@ function syncDayNightVisuals(camX, camZ) {
   skyUniforms.uSunDir.value.copy(_skySunDir);
   skyUniforms.uMoonDir.value.copy(_skyMoonDir);
   skyUniforms.uDayFactor.value = dayFactor;
+  skyUniforms.uSkyCamPos.value.copy(camera.position);
 
   waterUniforms.uSunDir.value.copy(_skySunDir);
   waterUniforms.uMoonDir.value.copy(_skyMoonDir);
@@ -4122,7 +4126,14 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
       const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
       const cn = new THREE.Mesh(c === 0 ? cg : cg.clone(), cm);
       cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * 1.8);
-      cn.castShadow = true; g.add(cn);
+      cn.castShadow = true;
+      cn.userData.isShipCannon = true;
+      cn.userData.cannonSide = side;
+      cn.userData.cannonIndexOnSide = idx;
+      cn.userData.basePos = cn.position.clone();
+      cn.userData.recoilVel = 0;
+      cn.userData.recoilOffset = 0;
+      g.add(cn);
     }
   }
 
@@ -4924,27 +4935,50 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz) {
   flashCore.userData.flashOp0 = 1;
   flashCore.renderOrder = 4;
   sg.add(flashCore);
-  const nudge = 0.24;
+  const perpX = -ndz, perpZ = ndx;
+  const yaw = Math.atan2(ndx, ndz);
   const qx = Math.floor(sx * 1000), qy = Math.floor(sy * 1000), qz = Math.floor(sz * 1000);
-  for (let i = 0; i < 18; i++) {
-    const r0 = fxHash01(qx, qy, qz, i * 3 + 11);
-    const r1 = fxHash01(qx, qy, qz, i * 3 + 12);
-    const r2 = fxHash01(qx, qy, qz, i * 3 + 13);
-    const r3 = fxHash01(qx, qy, qz, i * 3 + 14);
-    const r4 = fxHash01(qx, qy, qz, i * 3 + 15);
-    const r5 = fxHash01(qx, qy, qz, i * 3 + 16);
+  for (let i = 0; i < 20; i++) {
+    const isJet = i < 5;
+    const r0 = fxHash01(qx, qy, qz, i * 5 + 11);
+    const r1 = fxHash01(qx, qy, qz, i * 5 + 12);
+    const r2 = fxHash01(qx, qy, qz, i * 5 + 13);
+    const r3 = fxHash01(qx, qy, qz, i * 5 + 14);
+    const r4 = fxHash01(qx, qy, qz, i * 5 + 15);
+    const r5 = fxHash01(qx, qy, qz, i * 5 + 16);
+    const r6 = fxHash01(qx, qy, qz, i * 5 + 17);
+    const r7 = fxHash01(qx, qy, qz, i * 5 + 18);
+    const r8 = fxHash01(qx, qy, qz, i * 5 + 19);
     const sm = new THREE.Mesh(
-      new THREE.SphereGeometry(0.16 + r0 * 0.22, 6, 5),
-      new THREE.MeshBasicMaterial({ color: i < 8 ? 0xeeeeee : 0x9a9a9a, transparent: true, opacity: 0.5, depthWrite: false })
+      new THREE.SphereGeometry((isJet ? 0.1 : 0.09) + r0 * (isJet ? 0.09 : 0.15), 6, 5),
+      new THREE.MeshBasicMaterial({
+        color: i < 10 ? 0xe2e2e2 : 0x8a8a8a,
+        transparent: true,
+        opacity: isJet ? 0.56 : 0.46,
+        depthWrite: false
+      })
     );
-    sm.position.set((r1 - 0.5) * nudge, (r2 - 0.5) * nudge * 0.5, (r3 - 0.5) * nudge);
-    sm.userData.vx = ndx * (0.55 + r4 * 0.35) + (r5 - 0.5) * 0.1;
-    sm.userData.vy = 0.1 + fxHash01(qx, qy, qz, i * 3 + 17) * 0.38;
-    sm.userData.vz = ndz * (0.55 + fxHash01(qx, qy, qz, i * 3 + 18) * 0.35) + (fxHash01(qx, qy, qz, i * 3 + 19) - 0.5) * 0.1;
-    const lf = 1.55 + fxHash01(qx, qy, qz, i * 3 + 20) * 1.15;
+    sm.rotation.y = yaw + (r6 - 0.5) * (isJet ? 0.18 : 0.72);
+    const fwdLen = isJet ? 2.2 + r1 * 0.55 : 1.05 + r1 * 0.95;
+    const sideS = isJet ? 0.45 + r2 * 0.14 : 0.55 + r2 * 0.32;
+    const vertS = isJet ? 0.4 + r3 * 0.12 : 0.48 + r3 * 0.22;
+    sm.scale.set(sideS, vertS, fwdLen);
+    sm.userData.baseScaleX = sideS;
+    sm.userData.baseScaleY = vertS;
+    sm.userData.baseScaleZ = fwdLen;
+    const along = isJet ? -0.03 + r4 * 0.16 : 0.04 + r4 * 0.38;
+    const pr = (r5 - 0.5) * (isJet ? 0.11 : 0.36);
+    const pp = (r7 - 0.5) * (isJet ? 0.11 : 0.36);
+    sm.position.set(ndx * along + perpX * pr, (r8 - 0.5) * (isJet ? 0.07 : 0.15), ndz * along + perpZ * pp);
+    const fwdSp = isJet ? 1.78 + r4 * 0.45 : 0.76 + r4 * 0.42;
+    sm.userData.vx = ndx * fwdSp + perpX * (r5 - 0.5) * (isJet ? 0.12 : 0.32);
+    sm.userData.vy = 0.07 + r6 * (isJet ? 0.22 : 0.34);
+    sm.userData.vz = ndz * fwdSp + perpZ * (r7 - 0.5) * (isJet ? 0.12 : 0.32);
+    const lf = (isJet ? 0.95 : 1.35) + fxHash01(qx, qy, qz, i * 5 + 20) * (isJet ? 0.35 : 1.05);
     sm.userData.life = lf;
     sm.userData.life0 = lf;
-    sm.userData.drag = 0.9;
+    sm.userData.drag = isJet ? 0.86 : 0.9;
+    sm.userData.smokeOp0 = isJet ? 0.56 : 0.46;
     sg.add(sm);
   }
   sg.position.set(sx, sy, sz);
@@ -4975,8 +5009,20 @@ function updateCannonSmoke(dt) {
       ch.position.z += ch.userData.vz * dt;
       ch.userData.vy += 0.22 * dt;
       const t = 1 - ch.userData.life / Math.max(0.001, ch.userData.life0 || 1);
-      ch.scale.setScalar(1 + t * 4.5);
-      if (ch.material) ch.material.opacity = Math.max(0, (ch.userData.life / (ch.userData.life0 || 1)) * 0.5);
+      const grow = 1 + t * 4.15;
+      if (ch.userData.baseScaleX != null) {
+        ch.scale.set(
+          ch.userData.baseScaleX * grow,
+          ch.userData.baseScaleY * grow,
+          ch.userData.baseScaleZ * grow
+        );
+      } else {
+        ch.scale.setScalar(1 + t * 4.5);
+      }
+      if (ch.material) {
+        const op0 = ch.userData.smokeOp0 != null ? ch.userData.smokeOp0 : 0.5;
+        ch.material.opacity = Math.max(0, (ch.userData.life / (ch.userData.life0 || 1)) * op0);
+      }
       if (ch.userData.life > 0) any = true;
     });
     if (!any) {
@@ -4984,6 +5030,45 @@ function updateCannonSmoke(dt) {
       g.children.forEach(ch => { ch.geometry.dispose(); ch.material.dispose(); });
       cannonSmokePuffs.splice(i, 1);
     }
+  }
+}
+
+function kickShipBroadsideCannon(shipRoot, fireSide, indexOnSide) {
+  if (!shipRoot) return;
+  shipRoot.traverse(ch => {
+    if (!ch.userData?.isShipCannon) return;
+    if (ch.userData.cannonSide !== fireSide) return;
+    if (ch.userData.cannonIndexOnSide !== indexOnSide) return;
+    ch.userData.recoilVel = (ch.userData.recoilVel || 0) + 0.92;
+  });
+}
+
+function updateShipCannonRecoilOnGroup(root, dt) {
+  if (!root) return;
+  const omega = 13.5;
+  root.traverse(ch => {
+    if (!ch.userData?.isShipCannon) return;
+    const bp = ch.userData.basePos;
+    if (!bp) return;
+    let v = ch.userData.recoilVel || 0;
+    let x = ch.userData.recoilOffset || 0;
+    v += (-omega * omega * x - 2 * omega * v) * dt;
+    x += v * dt;
+    if (Math.abs(x) < 0.0004 && Math.abs(v) < 0.008) { x = 0; v = 0; }
+    ch.userData.recoilVel = v;
+    ch.userData.recoilOffset = x;
+    ch.position.x = bp.x - ch.userData.cannonSide * x;
+  });
+}
+
+function updateAllShipCannonRecoil(dt) {
+  updateShipCannonRecoilOnGroup(playerShipGroup, dt);
+  for (let i = 0; i < G.npcs.length; i++) {
+    const n = G.npcs[i];
+    if (n.mesh) updateShipCannonRecoilOnGroup(n.mesh, dt);
+  }
+  for (const og of otherShipGroups.values()) {
+    updateShipCannonRecoilOnGroup(og, dt);
   }
 }
 
@@ -5681,6 +5766,7 @@ function npcFireBroadsideAtPlayer(npc) {
     const wx = npc.x + localX * cosR + localZ * sinR;
     const wz = npc.z - localX * sinR + localZ * cosR;
 
+    kickShipBroadsideCannon(npc.mesh, side, g);
     spawnCannonMuzzleSmoke(wx, cannonY, wz, dirX, dirZ);
     fireCannonball(wx, wz, dirX, dirZ, cannonY, 'npc', null, 'ball');
     if (ws?.readyState === 1 && isMultiplayerHost()) {
@@ -8479,6 +8565,8 @@ function doFireSide(fireSide) {
 
     const wx = G.player.x + localX * cosR + localZ * sinR;
     const wz = G.player.z - localX * sinR + localZ * cosR;
+
+    kickShipBroadsideCannon(playerShipGroup, fireSide, i);
 
     if (ammoKind === 'grape') {
       const pelletsPerGun = 10;
@@ -12441,6 +12529,7 @@ function update(dt) {
     ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
   }
   updateCannonSmoke(dt);
+  updateAllShipCannonRecoil(dt);
   updateWindStreamVisual(dt);
   refreshCargoPanelIfOpen();
 }
