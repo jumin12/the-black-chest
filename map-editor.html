@@ -114,7 +114,7 @@
       <details class="me-section" open>
         <summary>1 · Terrain &amp; brush</summary>
         <div class="inner">
-          <p class="hint" style="margin-top:0;">Raise past green into <strong>grey peaks</strong>. Brush ring follows the cursor on terrain.</p>
+          <p class="hint" style="margin-top:0;">Raise past green into <strong>grey peaks</strong>. Brush ring follows the cursor; same radius controls how many props you paint at once.</p>
           <label class="row">Sculpt tools</label>
           <div class="tool-grid" id="tools"></div>
           <label class="row">Brush radius (world units)</label>
@@ -133,7 +133,7 @@
       <details class="me-section" open>
         <summary>2 · Objects &amp; spawn</summary>
         <div class="inner">
-          <p class="hint" style="margin-top:0;"><strong>Select &amp; move</strong> — drag props on the terrain (no gizmo; arrows do not move props). <strong>Adjust (gizmo · arrows)</strong> — gizmo on selection; <strong>arrows</strong> change lift and yaw (no click-drag move). Port markers and spawn work in both. <strong>WASD</strong> pans.</p>
+          <p class="hint" style="margin-top:0;"><strong>Select &amp; move</strong> — drag props; <strong>Ctrl/⌘+click</strong> multi-select. <strong>Adjust</strong> — gizmo; <strong>arrows</strong> adjust lift/yaw on <em>all</em> selected. <strong>Place props</strong> — count scales with brush radius (small brush ≈ one). <strong>WASD</strong> pans.</p>
           <div class="actions" style="flex-direction:row;flex-wrap:wrap;">
             <button type="button" id="btn-clear-sel">Clear selection</button>
             <button type="button" id="btn-del-ent" class="danger">Delete selected</button>
@@ -317,10 +317,12 @@
   const MAP_HALF_MIN = 400;
   const MAP_HALF_MAX = 12000;
   let worldEdgeClamp = DEFAULT_WORLD_EDGE_CLAMP;
-  /** Higher grid = finer PNG islands & coast detail (keep ≤ server cap, typically 512). */
-  const GRID_N = 640;
-  /** Extra mesh vertices per height cell — smoother silhouettes (height still sampled from GRID_N). */
-  const TERRAIN_MESH_SUB = 2;
+  /** Finer height field for PNG / sculpt (must be ≤ server world-map cap, currently 768). */
+  const GRID_N = 768;
+  /** Extra mesh vertices per height cell. Keep ≤2 in editor — full GRID_N height + high sub = millions of verts per frame. */
+  const TERRAIN_MESH_SUB = 1;
+  /** Subsamples per grid cell when importing PNG (bilinear); higher = sharper coasts & detail. */
+  const PNG_IMPORT_CELL_SUB = 4;
   const WATER_THR = 0.12;
   /** World vertical scale; editor allows height01 up to EDITOR_HEIGHT_01_MAX for grey peaks. */
   const MAX_H = 26;
@@ -874,12 +876,14 @@
     return { dx, dy, dw, dh };
   }
   /** Auto: coast masks usually have big bright “ocean” regions; heightmaps are smoother with few near-white pixels. */
-  function detectPngModeFromImageData(d) {
+  function detectPngModeFromImageData(d, pw, ph) {
+    const w = Math.max(1, pw | 0), h = Math.max(1, ph | 0);
     let n = 0, sum = 0, sumSq = 0, bright = 0;
-    const step = 6;
-    for (let iz = 0; iz < GRID_N; iz += step) {
-      for (let ix = 0; ix < GRID_N; ix += step) {
-        const p = (iz * GRID_N + ix) * 4;
+    const step = Math.max(2, Math.floor(Math.min(w, h) / 12));
+    for (let iz = 0; iz < h; iz += step) {
+      for (let ix = 0; ix < w; ix += step) {
+        const p = (iz * w + ix) * 4;
+        if (p + 2 >= d.length) continue;
         const lum = (d[p] + d[p + 1] + d[p + 2]) / (3 * 255);
         n++;
         sum += lum;
@@ -897,10 +901,10 @@
   }
   /** Mild lift — keep imported heightmap closer to in-game island relief. */
   const PNG_LAND_GAIN = 0.68;
-  /** After PNG decode, compress land range toward sea (editor preview vs chunky mesas). */
-  const EDITOR_PNG_LAND_REL_SCALE = 0.30;
-  /** Extra squash after shelf pass so PNG islands match playable procedural scale. */
-  const EDITOR_PNG_POST_SHELF_SQUASH = 0.78;
+  /** After PNG decode, land bulk — coast profile + shelf taper edges like procedural islands. */
+  const EDITOR_PNG_LAND_REL_SCALE = 0.52;
+  /** Final gentle scale after shelf (procedural voyage uses similar overall relief). */
+  const EDITOR_PNG_POST_SHELF_SQUASH = 0.9;
   function boostLandHeight01(h) {
     if (h <= WATER_THR) return h;
     return Math.min(1, WATER_THR + 0.028 + (h - WATER_THR) * PNG_LAND_GAIN);
@@ -919,7 +923,7 @@
     if (lum > 0.84) return WATER_THR * 0.55;
     const t = Math.max(0, 1 - lum);
     /* Lower plateaus — PNG land should read like archipelago hills, not towers. */
-    let h = Math.max(0.13, Math.min(0.48, Math.pow(t, 0.48) * 1.05));
+    let h = Math.max(0.13, Math.min(0.58, Math.pow(t, 0.45) * 1.12));
     return boostLandHeight01(h);
   }
   /**
@@ -1076,6 +1080,85 @@
           }
           if (landNear) heights[i] = Math.max(heights[i], best);
         }
+      }
+    }
+  }
+
+  /**
+   * Taper land relief from the shoreline inward (same exponent as procedural islands).
+   * Uses geodesic distance on the land grid so large continents and tiny islets both read naturally.
+   */
+  function applyProceduralLikePngCoastProfile() {
+    const N = GRID_N;
+    const dist = new Int32Array(N * N);
+    dist.fill(-1);
+    const qx = [];
+    const qz = [];
+    for (let gz = 0; gz < N; gz++) {
+      for (let gx = 0; gx < N; gx++) {
+        const i = gz * N + gx;
+        if (heights[i] <= WATER_THR) continue;
+        let coastal = false;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = gx + dx, nz = gz + dz;
+          if (nx < 0 || nx >= N || nz < 0 || nz >= N) {
+            coastal = true;
+            break;
+          }
+          if (heights[nz * N + nx] <= WATER_THR) {
+            coastal = true;
+            break;
+          }
+        }
+        if (coastal) {
+          dist[i] = 0;
+          qx.push(gx);
+          qz.push(gz);
+        }
+      }
+    }
+    let qh = 0;
+    while (qh < qx.length) {
+      const gx = qx[qh], gz = qz[qh++];
+      const d0 = dist[gz * N + gx];
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = gx + dx, nz = gz + dz;
+        if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue;
+        const ni = nz * N + nx;
+        if (heights[ni] <= WATER_THR) continue;
+        if (dist[ni] >= 0) continue;
+        dist[ni] = d0 + 1;
+        qx.push(nx);
+        qz.push(nz);
+      }
+    }
+    const falloffCells = 13.5;
+    for (let gz = 0; gz < N; gz++) {
+      for (let gx = 0; gx < N; gx++) {
+        const i = gz * N + gx;
+        const base = heights[i];
+        if (base <= WATER_THR) continue;
+        let d = dist[i];
+        if (d < 0) d = falloffCells * 3;
+        const t = smoothstep(0, falloffCells, d);
+        const shape = Math.pow(t, ISLAND_HEIGHT_FALLOFF_POW);
+        heights[i] = WATER_THR + (base - WATER_THR) * (0.11 + 0.89 * shape);
+      }
+    }
+  }
+
+  /** Small deterministic roughness on imported land (procedural islands are noise-driven). */
+  function applyLightPngLandNoise(amplitude01) {
+    const amp = Math.max(0, amplitude01);
+    if (amp <= 0) return;
+    for (let gz = 0; gz < GRID_N; gz++) {
+      for (let gx = 0; gx < GRID_N; gx++) {
+        const i = gz * GRID_N + gx;
+        if (heights[i] <= WATER_THR) continue;
+        let h = Math.imul(gz, 668265263) ^ Math.imul(gx, 374761393) ^ 0x9e3779b9;
+        h = Math.imul(h ^ (h >>> 16), 0x7feb352d);
+        const n = ((h >>> 0) & 0xffff) / 65535 * 2 - 1;
+        heights[i] = clamp01(heights[i] + n * amp);
       }
     }
   }
@@ -1817,15 +1900,31 @@
       selGizmo.visible = true;
       return;
     }
-    if (!selectedEntId) return;
-    const ent = entities.find(x => x.id === selectedEntId);
-    if (!ent) return;
-    const lift = ent.yLift != null ? Number(ent.yLift) : 0;
-    let y = terrainSurfaceY(ent.x, ent.z) + 1.35 + lift;
-    if (ent.type === 'building') y = terrainSurfaceY(ent.x, ent.z) + 2.85 + lift;
-    if (ent.type === 'dock') y = terrainSurfaceY(ent.x, ent.z) + 1.1 + lift;
-    selGizmo.position.set(ent.x, y, ent.z);
-    selGizmo.rotation.y = ent.rot != null ? ent.rot : 0;
+    const ids = selectedEntIds.size ? [...selectedEntIds] : selectedEntId ? [selectedEntId] : [];
+    if (!ids.length) return;
+    let sx = 0, sz = 0, n = 0, liftAcc = 0;
+    for (const id of ids) {
+      const ent = entities.find(x => x.id === id);
+      if (!ent) continue;
+      sx += ent.x;
+      sz += ent.z;
+      liftAcc += ent.yLift != null ? Number(ent.yLift) : 0;
+      n++;
+    }
+    if (!n) return;
+    sx /= n;
+    sz /= n;
+    const lift = liftAcc / n;
+    let y = terrainSurfaceY(sx, sz) + 1.35 + lift;
+    if (ids.length === 1) {
+      const ent = entities.find(x => x.id === ids[0]);
+      if (ent && ent.type === 'building') y = terrainSurfaceY(ent.x, ent.z) + 2.85 + lift;
+      if (ent && ent.type === 'dock') y = terrainSurfaceY(ent.x, ent.z) + 1.1 + lift;
+      selGizmo.rotation.y = ent.rot != null ? ent.rot : 0;
+    } else {
+      selGizmo.rotation.y = 0;
+    }
+    selGizmo.position.set(sx, y, sz);
     selGizmo.visible = true;
   }
 
@@ -2169,6 +2268,32 @@
   }
 
   let selectedEntId = null;
+  /** Multi-select (Ctrl/⌘+click in viewport or list). */
+  const selectedEntIds = new Set();
+  function clearEntitySelection() {
+    selectedEntIds.clear();
+    selectedEntId = null;
+  }
+  function selectEntityExclusive(id) {
+    selectedEntIds.clear();
+    if (id) {
+      selectedEntIds.add(id);
+      selectedEntId = id;
+    } else {
+      selectedEntId = null;
+    }
+  }
+  function toggleEntitySelection(id) {
+    if (!id) return;
+    if (selectedEntIds.has(id)) {
+      selectedEntIds.delete(id);
+      if (!selectedEntIds.size) selectedEntId = null;
+      else if (selectedEntId === id) selectedEntId = [...selectedEntIds][selectedEntIds.size - 1];
+    } else {
+      selectedEntIds.add(id);
+      selectedEntId = id;
+    }
+  }
   function refreshEntityList() {
     const el = document.getElementById('entity-list');
     const at = document.getElementById('assign-town');
@@ -2191,24 +2316,26 @@
     el.innerHTML = spawnRow + entities.map(e => {
       const tn = e.townId ? towns.find(t => t.id === e.townId) : null;
       const tag = tn ? ` [${tn.townName}]` : '';
-      const sel = e.id === selectedEntId ? ' <strong>*</strong>' : '';
+      const sel = selectedEntIds.has(e.id) ? ' <strong>*</strong>' : '';
       const ly = e.yLift != null ? ` y+${e.yLift.toFixed(1)}` : '';
       return `<div data-eid="${e.id}" style="cursor:pointer;padding:2px 0;border-bottom:1px solid rgba(80,100,130,0.2);">${e.type} @ ${e.x.toFixed(0)},${e.z.toFixed(0)}${ly}${tag}${sel}</div>`;
     }).join('') || (spawnRow ? '' : '<div style="opacity:0.6;">No objects — use tools above.</div>');
     el.querySelectorAll('[data-spawn]').forEach(row => {
-      row.addEventListener('click', () => {
+      row.addEventListener('click', ev => {
         selectedSpawnOnly = true;
-        selectedEntId = null;
+        clearEntitySelection();
         hideTownInspector();
         refreshEntityList();
       });
     });
     el.querySelectorAll('[data-eid]').forEach(row => {
-      row.addEventListener('click', () => {
+      row.addEventListener('click', ev => {
         selectedSpawnOnly = false;
-        selectedEntId = row.getAttribute('data-eid');
-        const sel = entities.find(x => x.id === selectedEntId);
-        if (sel && sel.townId) showTownInspectorForTown(sel.townId);
+        const id = row.getAttribute('data-eid');
+        if (ev.ctrlKey || ev.metaKey) toggleEntitySelection(id);
+        else selectEntityExclusive(id);
+        const primary = entities.find(x => x.id === selectedEntId);
+        if (primary && primary.townId) showTownInspectorForTown(primary.townId);
         else hideTownInspector();
         refreshEntityList();
       });
@@ -2230,10 +2357,20 @@
     const r = Number(document.getElementById('brush-r').value);
     const s = Number(document.getElementById('brush-s').value) * 0.0015;
     const lim = worldEdgeClamp;
-    for (let iz = 0; iz < GRID_N; iz++) {
-      for (let ix = 0; ix < GRID_N; ix++) {
-        const px = (ix / (GRID_N - 1)) * 2 * lim - lim;
-        const pz = (iz / (GRID_N - 1)) * 2 * lim - lim;
+    const gMax = GRID_N - 1;
+    const invSpan = gMax / (2 * lim);
+    let ix0 = Math.floor((wx - r + lim) * invSpan);
+    let ix1 = Math.ceil((wx + r + lim) * invSpan);
+    let iz0 = Math.floor((wz - r + lim) * invSpan);
+    let iz1 = Math.ceil((wz + r + lim) * invSpan);
+    ix0 = Math.max(0, Math.min(gMax, ix0));
+    ix1 = Math.max(0, Math.min(gMax, ix1));
+    iz0 = Math.max(0, Math.min(gMax, iz0));
+    iz1 = Math.max(0, Math.min(gMax, iz1));
+    for (let iz = iz0; iz <= iz1; iz++) {
+      for (let ix = ix0; ix <= ix1; ix++) {
+        const px = (ix / gMax) * 2 * lim - lim;
+        const pz = (iz / gMax) * 2 * lim - lim;
         const d = Math.hypot(px - wx, pz - wz);
         if (d > r) continue;
         const fall = 1 - d / r;
@@ -2262,6 +2399,27 @@
     const v = document.getElementById('assign-town').value;
     return v || null;
   }
+  /** How many props to drop for a brush of radius `r` (world units); ~one when r is small. */
+  function placementCountForBrushRadius(r) {
+    const spacing = 13;
+    const cap = 96;
+    const n = Math.round((Math.PI * r * r) / (spacing * spacing));
+    return Math.max(1, Math.min(cap, n));
+  }
+  function appendPlacedEntity(typeStr, wx, wz, tid, rotY) {
+    const e = {
+      id: 'e' + (entSeq++),
+      type: typeStr,
+      x: wx,
+      z: wz,
+      townId: tid
+    };
+    if (['dock', 'building', 'house', 'flagpole'].includes(typeStr)) {
+      e.rot = rotY != null ? rotY : controls.getAzimuthalAngle();
+    }
+    entities.push(e);
+    return e;
+  }
   function placeEntity(wx, wz) {
     if (tool === 'select' || tool === 'adjust') return;
     if (tool === 'spawn') {
@@ -2272,7 +2430,7 @@
         rotation: controls.getAzimuthalAngle()
       };
       selectedSpawnOnly = true;
-      selectedEntId = null;
+      clearEntitySelection();
       refreshSpawnHud();
       document.getElementById('status-bar').textContent = 'Player spawn placed — arrows adjust height/yaw; export saves it.';
       return;
@@ -2283,23 +2441,31 @@
       alert('Choose an active town in “Assign building” first, or add a town.');
       return;
     }
-    const e = {
-      id: 'e' + (entSeq++),
-      type: tool,
-      x: wx, z: wz,
-      townId: tid
-    };
-    if (['dock', 'building', 'house', 'flagpole'].includes(tool)) {
-      e.rot = controls.getAzimuthalAngle();
-    }
-    entities.push(e);
-    selectedEntId = e.id;
+    const r = Number(document.getElementById('brush-r').value);
+    const n = placementCountForBrushRadius(r);
+    const rng = mulberry32(parseWorldSeed32(document.getElementById('inp-seed').value) ^ (Math.imul(Math.floor(wx), 12582917) ^ Math.imul(Math.floor(wz), 2246822519)));
+    const lim = worldEdgeClamp;
     selectedSpawnOnly = false;
+    clearEntitySelection();
+    const baseYaw = controls.getAzimuthalAngle();
+    for (let k = 0; k < n; k++) {
+      const ang = rng() * Math.PI * 2;
+      const rr = n <= 1 ? 0 : r * Math.sqrt(rng());
+      let px = wx + Math.cos(ang) * rr;
+      let pz = wz + Math.sin(ang) * rr;
+      px = Math.max(-lim, Math.min(lim, px));
+      pz = Math.max(-lim, Math.min(lim, pz));
+      const yawJ = (['dock', 'building', 'house', 'flagpole'].includes(tool) ? 0.12 : 0.9) * (rng() - 0.5);
+      const e = appendPlacedEntity(tool, px, pz, tid, baseYaw + yawJ);
+      selectedEntIds.add(e.id);
+      selectedEntId = e.id;
+    }
     tool = 'select';
     toolsEl.querySelectorAll('.tool').forEach(x => x.classList.toggle('sel', x.dataset.tool === tool));
     syncEntityMeshes();
     refreshEntityList();
-    if (e.townId) showTownInspectorForTown(e.townId);
+    const last = entities.find(x => x.id === selectedEntId);
+    if (last && last.townId) showTownInspectorForTown(last.townId);
     else hideTownInspector();
   }
 
@@ -2316,7 +2482,7 @@
         const spHits = raycaster.intersectObjects(spawnMarker.children, true);
         if (spHits.length) {
           selectedSpawnOnly = true;
-          selectedEntId = null;
+          clearEntitySelection();
           hideTownInspector();
           refreshEntityList();
           e.preventDefault();
@@ -2339,7 +2505,7 @@
         const tid = findTownIdFromIntersect(pickTown);
         if (tid) {
           selectedSpawnOnly = false;
-          selectedEntId = null;
+          clearEntitySelection();
           showTownInspectorForTown(tid);
           refreshEntityList();
           e.preventDefault();
@@ -2351,7 +2517,8 @@
         const eid = findEntityIdFromIntersect(pickEnt);
         if (eid) {
           selectedSpawnOnly = false;
-          selectedEntId = eid;
+          if (e.ctrlKey || e.metaKey) toggleEntitySelection(eid);
+          else if (!selectedEntIds.has(eid)) selectEntityExclusive(eid);
           const entPick = entities.find(x => x.id === eid);
           if (entPick && entPick.townId) showTownInspectorForTown(entPick.townId);
           else hideTownInspector();
@@ -2359,8 +2526,9 @@
           if (tool === 'select') {
             entPointerDrag = {
               kind: 'move',
-              eid,
-              lastClientX: e.clientX,
+              eids: [...selectedEntIds],
+              lastHx: null,
+              lastHz: null,
               pointerId: e.pointerId
             };
             try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
@@ -2370,7 +2538,7 @@
           return;
         }
       }
-      selectedEntId = null;
+      clearEntitySelection();
       selectedSpawnOnly = false;
       hideTownInspector();
       refreshEntityList();
@@ -2410,8 +2578,12 @@
   canvas.addEventListener('pointermove', e => {
     if (sailPreviewOn) return;
     if (entPointerDrag && tool === 'select') {
-      const ent = entities.find(x => x.id === entPointerDrag.eid);
-      if (!ent) { entPointerDrag = null; return; }
+      const ids = entPointerDrag.eids && entPointerDrag.eids.length
+        ? entPointerDrag.eids
+        : entPointerDrag.eid
+          ? [entPointerDrag.eid]
+          : [];
+      if (!ids.length) { entPointerDrag = null; return; }
       const rect = canvas.getBoundingClientRect();
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -2419,10 +2591,24 @@
       const th = raycaster.intersectObjects(terrainPickTargets(), false);
       th.sort((a, b) => a.distance - b.distance);
       if (th.length) {
-        ent.x = th[0].point.x;
-        ent.z = th[0].point.z;
+        const hx = th[0].point.x, hz = th[0].point.z;
+        if (entPointerDrag.lastHx == null) {
+          entPointerDrag.lastHx = hx;
+          entPointerDrag.lastHz = hz;
+        } else {
+          const dx = hx - entPointerDrag.lastHx;
+          const dz = hz - entPointerDrag.lastHz;
+          for (const id of ids) {
+            const ent = entities.find(x => x.id === id);
+            if (!ent) continue;
+            ent.x += dx;
+            ent.z += dz;
+            refreshEntityPlacementInScene(ent);
+          }
+          entPointerDrag.lastHx = hx;
+          entPointerDrag.lastHz = hz;
+        }
       }
-      refreshEntityPlacementInScene(ent);
       refreshEntityList();
       return;
     }
@@ -2495,10 +2681,13 @@
   });
 
   document.getElementById('btn-assign').addEventListener('click', () => {
-    const e = entities.find(x => x.id === selectedEntId);
     const tid = document.getElementById('assign-town').value;
-    if (!e || !tid) return;
-    e.townId = tid;
+    const ids = selectedEntIds.size ? [...selectedEntIds] : selectedEntId ? [selectedEntId] : [];
+    if (!tid || !ids.length) return;
+    for (const id of ids) {
+      const e = entities.find(x => x.id === id);
+      if (e) e.townId = tid;
+    }
     refreshEntityList();
   });
   document.getElementById('btn-del-ent').addEventListener('click', () => {
@@ -2510,14 +2699,16 @@
       document.getElementById('status-bar').textContent = 'Player spawn removed.';
       return;
     }
-    entities = entities.filter(x => x.id !== selectedEntId);
-    selectedEntId = null;
+    const drop = new Set(selectedEntIds.size ? selectedEntIds : selectedEntId ? [selectedEntId] : []);
+    if (!drop.size) return;
+    entities = entities.filter(x => !drop.has(x.id));
+    clearEntitySelection();
     hideTownInspector();
     syncEntityMeshes();
     refreshEntityList();
   });
   document.getElementById('btn-clear-sel').addEventListener('click', () => {
-    selectedEntId = null;
+    clearEntitySelection();
     selectedSpawnOnly = false;
     entPointerDrag = null;
     hideTownInspector();
@@ -2610,20 +2801,22 @@
       refreshSpawnHud();
       return;
     }
-    if (selectedEntId && !selectedSpawnOnly && tool === 'adjust'
+    const adjustIds = selectedEntIds.size ? [...selectedEntIds] : selectedEntId ? [selectedEntId] : [];
+    if (adjustIds.length && !selectedSpawnOnly && tool === 'adjust'
       && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-      const ent = entities.find(x => x.id === selectedEntId);
-      if (ent) {
-        e.preventDefault();
-        const stepY = e.shiftKey ? 0.75 : 0.28;
-        const stepR = e.shiftKey ? 0.15 : 0.06;
+      e.preventDefault();
+      const stepY = e.shiftKey ? 0.75 : 0.28;
+      const stepR = e.shiftKey ? 0.15 : 0.06;
+      for (const id of adjustIds) {
+        const ent = entities.find(x => x.id === id);
+        if (!ent) continue;
         if (e.key === 'ArrowUp') ent.yLift = (ent.yLift != null ? ent.yLift : 0) + stepY;
         else if (e.key === 'ArrowDown') ent.yLift = (ent.yLift != null ? ent.yLift : 0) - stepY;
         else if (e.key === 'ArrowLeft') ent.rot = (ent.rot != null ? ent.rot : 0) - stepR;
         else if (e.key === 'ArrowRight') ent.rot = (ent.rot != null ? ent.rot : 0) + stepR;
         refreshEntityPlacementInScene(ent);
-        refreshEntityList();
       }
+      refreshEntityList();
       return;
     }
     const panCodes = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD']);
@@ -2763,7 +2956,7 @@
   function resetEditorPlacedEntitiesOnly() {
     entities = [];
     entSeq = 1;
-    selectedEntId = null;
+    clearEntitySelection();
     syncEntityMeshes();
   }
 
@@ -3064,7 +3257,8 @@
   });
 
   const NATURAL_FILL_TYPES = ['tree', 'bush', 'rock'];
-  function generateDecorations() {
+  function generateDecorations(options) {
+    const silent = options && options.silent;
     entities = entities.filter(e => e && !NATURAL_FILL_TYPES.includes(e.type));
     const rng = mulberry32(parseWorldSeed32(document.getElementById('inp-seed').value) ^ 0xdec0de81);
     const lim = worldEdgeClamp;
@@ -3117,8 +3311,11 @@
     }
     syncEntityMeshes();
     refreshEntityList();
-    document.getElementById('status-bar').textContent =
-      `Filled map with ${placed} natural props (trees, bushes, rocks) — inland only; ports & buildings spared. Re-run replaces prior fill.`;
+    if (!silent) {
+      document.getElementById('status-bar').textContent =
+        `Filled map with ${placed} natural props (trees, bushes, rocks) — inland only; ports & buildings spared. Re-run replaces prior fill.`;
+    }
+    return placed;
   }
 
   document.getElementById('btn-save-json').addEventListener('click', () => {
@@ -3268,7 +3465,7 @@
     const probeD = pctx.getImageData(0, 0, PN, PN).data;
     let modeSel = document.getElementById('png-mode').value;
     let resolvedMode = (modeSel === 'auto' || modeSel === 'mask_inv')
-      ? (modeSel === 'mask_inv' ? 'mask_inv' : detectPngModeFromImageData(probeD))
+      ? (modeSel === 'mask_inv' ? 'mask_inv' : detectPngModeFromImageData(probeD, PN, PN))
       : modeSel;
     const full = document.createElement('canvas');
     full.width = iw;
@@ -3290,15 +3487,38 @@
     worldEdgeClamp = Math.max(MAP_HALF_MIN, Math.min(MAP_HALF_MAX, Math.round(baseHalf * Math.sqrt(cropFrac))));
     if (inpHalf) inpHalf.value = String(worldEdgeClamp);
     controls.maxDistance = worldEdgeClamp * 12;
+    const sub = Math.max(1, PNG_IMPORT_CELL_SUB | 0);
+    const invSub = 1 / sub;
     for (let iz = 0; iz < GRID_N; iz++) {
       for (let ix = 0; ix < GRID_N; ix++) {
-        const tu = (ix + 0.5) / GRID_N;
-        const tv = (iz + 0.5) / GRID_N;
-        const pu = u0 + tu * (u1 - u0);
-        const pv = v0 + tv * (v1 - v0);
-        const fx = pu * iw - 0.5;
-        const fy = pv * ih - 0.5;
-        const lum = sampleImageLumBilinear(imgD, iw, ih, fx, fy);
+        let lum;
+        if (sub <= 1) {
+          const tu = (ix + 0.5) / GRID_N;
+          const tv = (iz + 0.5) / GRID_N;
+          const pu = u0 + tu * (u1 - u0);
+          const pv = v0 + tv * (v1 - v0);
+          lum = sampleImageLumBilinear(imgD, iw, ih, pu * iw - 0.5, pv * ih - 0.5);
+        } else {
+          let sum = 0;
+          let mn = 1;
+          let mx = 0;
+          const cnt = sub * sub;
+          for (let sj = 0; sj < sub; sj++) {
+            for (let si = 0; si < sub; si++) {
+              const tu = (ix + (si + 0.5) * invSub) / GRID_N;
+              const tv = (iz + (sj + 0.5) * invSub) / GRID_N;
+              const pu = u0 + tu * (u1 - u0);
+              const pv = v0 + tv * (v1 - v0);
+              const s = sampleImageLumBilinear(imgD, iw, ih, pu * iw - 0.5, pv * ih - 0.5);
+              sum += s;
+              mn = Math.min(mn, s);
+              mx = Math.max(mx, s);
+            }
+          }
+          if (resolvedMode === 'height') lum = sum / cnt;
+          else if (resolvedMode === 'mask_inv') lum = mx;
+          else lum = mn;
+        }
         heights[iz * GRID_N + ix] = lumToHeight01(lum, resolvedMode);
       }
     }
@@ -3314,6 +3534,7 @@
         heights[i] = WATER_THR + (heights[i] - WATER_THR) * EDITOR_PNG_LAND_REL_SCALE;
       }
     }
+    applyProceduralLikePngCoastProfile();
     applyImportedShallowWaterShelfPasses(3);
     applyBeachShelfAndInlandGrassLift();
     const psq = EDITOR_PNG_POST_SHELF_SQUASH;
@@ -3322,6 +3543,8 @@
         heights[i] = WATER_THR + (heights[i] - WATER_THR) * psq;
       }
     }
+    applyLightPngLandNoise(0.015);
+    const decoPlaced = generateDecorations({ silent: true });
     buildTerrainMesh();
     syncEntityMeshes();
     refreshEntityList();
@@ -3329,7 +3552,7 @@
     refreshEditorWildlife();
     const modeNote = modeSel === 'auto' ? `auto → ${resolvedMode}` : resolvedMode;
     document.getElementById('status-bar').textContent =
-      `PNG applied (${modeNote}) · ${GRID_N}² bilinear · map half ${worldEdgeClamp} · coast shelf on. Top → −Z, left → −X.`;
+      `PNG applied (${modeNote}) · ${GRID_N}² ×${sub} supersample · map half ${worldEdgeClamp} · ${decoPlaced} props · wildlife. Top → −Z, left → −X.`;
   }
 
   pngPreview.addEventListener('pointerdown', e => {
