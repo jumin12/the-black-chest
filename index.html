@@ -695,6 +695,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
             <button type="button" id="debug-load-stored-map">Load quick slot</button>
             <button type="button" id="debug-load-map-file">Load map from JSON file</button>
             <button type="button" id="debug-publish-world-map" style="border:1px solid rgba(200,160,80,0.55);background:linear-gradient(180deg,#6a5020,#402810);color:#f8e8c8;">Save map to server</button>
+            <button type="button" id="debug-revert-world-map" style="border:1px solid rgba(120,140,180,0.55);background:linear-gradient(180deg,#303850,#202830);color:#c8d8e8;">Revert server to previous chart</button>
             <button type="button" id="debug-clear-custom-map" style="background:rgba(120,40,40,0.35);border:1px solid rgba(180,80,80,0.5);color:#e8b0b0;">Clear custom map &amp; restore procedural</button>
           </div>
           <p class="debug-map-hint" style="margin-top:4px;"><strong>Save map to server</strong> uploads the chart marked ★ below if set; otherwise the custom map currently loaded in this session.</p>
@@ -1016,6 +1017,8 @@ const CANONICAL_DEFAULT_WORLD_SEED = 42;
 const CUSTOM_MAP_STORAGE_KEY = 'pirates_custom_map_v1';
 const MAP_LIBRARY_INDEX_KEY = 'pirates_map_library_index_v1';
 const MAP_LIBRARY_DATA_PREFIX = 'pirates_map_saved_v1_';
+/** After the user clears all library rows (or we one-time migrate legacy STORAGE_KEY), do not re-import that blob. */
+const MAP_LIBRARY_LEGACY_MIGRATED_KEY = 'pirates_map_library_legacy_migrated_v1';
 
 function readMapLibraryIndexMain() {
   try {
@@ -1042,6 +1045,9 @@ function ensureLegacyMapInLibraryMain() {
   const idx = readMapLibraryIndexMain();
   if (idx.entries.length > 0) return;
   try {
+    if (localStorage.getItem(MAP_LIBRARY_LEGACY_MIGRATED_KEY) === '1') return;
+  } catch (e) { /* noop */ }
+  try {
     const raw = localStorage.getItem(CUSTOM_MAP_STORAGE_KEY);
     if (!raw) return;
     const data = JSON.parse(raw);
@@ -1050,6 +1056,7 @@ function ensureLegacyMapInLibraryMain() {
     idx.entries = [{ id, name: 'Stored map (before library)', updatedAt: Date.now() }];
     writeMapLibraryIndexMain(idx);
     localStorage.setItem(MAP_LIBRARY_DATA_PREFIX + id, raw);
+    try { localStorage.setItem(MAP_LIBRARY_LEGACY_MIGRATED_KEY, '1'); } catch (e2) { /* noop */ }
   } catch (e) { /* noop */ }
 }
 function deleteMapFromLibraryMain(id) {
@@ -1058,6 +1065,9 @@ function deleteMapFromLibraryMain(id) {
   if (idx.serverMapId === id) idx.serverMapId = null;
   writeMapLibraryIndexMain(idx);
   try { localStorage.removeItem(MAP_LIBRARY_DATA_PREFIX + id); } catch (e) { /* noop */ }
+  if (!idx.entries.length) {
+    try { localStorage.setItem(MAP_LIBRARY_LEGACY_MIGRATED_KEY, '1'); } catch (e2) { /* noop */ }
+  }
 }
 function setServerMapChoiceMain(idOrNull) {
   const idx = readMapLibraryIndexMain();
@@ -1141,7 +1151,8 @@ const G = {
   storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
-    angle: Math.PI / 4, targetAngle: Math.PI / 4, yaw: Math.PI, targetYaw: Math.PI,
+    /** ~52° — slightly higher / more downward than π/4 so the bow and sea ahead read clearer. */
+    angle: Math.PI / 3.45, targetAngle: Math.PI / 3.45, yaw: Math.PI, targetYaw: Math.PI,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
     mobileOrbitFree: false
   },
@@ -1858,10 +1869,9 @@ renderer.domElement.style.outline = 'none';
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 1500);
-/** Sky dome must exceed far plane so horizon rays always hit sky; water plane must cover frustum when orbiting. */
-/** Large enough that orbit + pitch never look past the dome; centered on camera each frame. */
-const SKY_RADIUS = Math.max(1200, camera.far * 1.62);
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 8000);
+/** Sky is a sphere centered on the camera; radius must be < camera.far or the dome is clipped (black sky). */
+const SKY_RADIUS = camera.far * 0.9;
 const WATER_PLANE_SIZE = Math.max(CHUNK_SIZE * (RENDER_DIST * 2 + 1), camera.far * 2.75);
 
 const ambientLight = new THREE.AmbientLight(0x7799bb, 0.7);
@@ -7917,6 +7927,28 @@ function buildWorldMapJsonFromCustomMapSession() {
       if (mapTabStatus) mapTabStatus.textContent = 'Network error — is the game running on a host with the API?';
     });
   });
+  document.getElementById('debug-revert-world-map')?.addEventListener('click', () => {
+    if (!confirm('Restore the server’s previous world chart? Players will receive the old map on sync.')) return;
+    let tok = null;
+    try { tok = sessionStorage.getItem('pirates_navigator_sess'); } catch (e) {}
+    if (!tok) {
+      if (mapTabStatus) mapTabStatus.textContent = 'Unlock the Navigator console from the main tab (password) first.';
+      return;
+    }
+    if (mapTabStatus) mapTabStatus.textContent = 'Reverting server map…';
+    fetch(`${getHttpOrigin()}/api/world-map-revert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tok })
+    }).then(r => r.json()).then(j => {
+      if (j.ok) {
+        if (mapTabStatus) mapTabStatus.textContent = `Server reverted — revision ${j.revision}. Reload or wait for world_map sync.`;
+        notify('Previous world map restored on server.');
+      } else if (mapTabStatus) mapTabStatus.textContent = j.error || 'Revert failed.';
+    }).catch(() => {
+      if (mapTabStatus) mapTabStatus.textContent = 'Network error — is the game running on a host with the API?';
+    });
+  });
   dm.addEventListener('click', e => {
     const btn = e.target.closest('.debug-locate-btn');
     if (!btn || !dm.contains(btn)) return;
@@ -9023,7 +9055,7 @@ function resolveSpectateTargetXZR() {
 function spectateCameraLookAtY() {
   const sp = G.spectate;
   if (sp && sp.kind === 'dock') return SEA_LEVEL + 12;
-  return SEA_LEVEL + 2.5;
+  return SEA_LEVEL + 1.35;
 }
 function updateSpectateInfoPanel() {
   const el = document.getElementById('spectate-info-panel');

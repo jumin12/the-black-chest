@@ -11,6 +11,8 @@ const TICK_RATE = 45;
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
 const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
 const WORLD_MAP_FILE = path.join(DATA_DIR, 'world_map.json');
+/** Snapshot of the chart before the last successful publish — used for one-step revert. */
+const WORLD_MAP_BACKUP_FILE = path.join(DATA_DIR, 'world_map.prev.json');
 /** Full map JSON (same shape as editor export); null if no published chart. */
 let WORLD_MAP_PAYLOAD = null;
 let WORLD_MAP_REVISION = 0;
@@ -504,12 +506,42 @@ function persistWorldMapToDisk() {
 
 function setWorldMapAndBroadcast(mapObj) {
   if (!validateWorldMapPayload(mapObj)) return false;
+  if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
+    try {
+      writeFileAtomic(WORLD_MAP_BACKUP_FILE, JSON.stringify({
+        revision: WORLD_MAP_REVISION >>> 0,
+        updatedAt: Date.now(),
+        map: WORLD_MAP_PAYLOAD
+      }));
+    } catch (e) {
+      console.error('[playground] world_map.prev backup failed:', e.message);
+    }
+  }
   WORLD_MAP_PAYLOAD = mapObj;
   WORLD_MAP_REVISION = (WORLD_MAP_REVISION >>> 0) + 1;
   if (!WORLD_MAP_REVISION) WORLD_MAP_REVISION = 1;
   persistWorldMapToDisk();
   broadcastAll({ type: 'world_map', revision: WORLD_MAP_REVISION });
   return true;
+}
+
+function revertWorldMapFromBackupAndBroadcast() {
+  try {
+    if (!fs.existsSync(WORLD_MAP_BACKUP_FILE)) return false;
+    const raw = fs.readFileSync(WORLD_MAP_BACKUP_FILE, 'utf8');
+    const o = JSON.parse(raw);
+    if (!o || typeof o !== 'object' || !o.map) return false;
+    if (!validateWorldMapPayload(o.map)) return false;
+    WORLD_MAP_PAYLOAD = o.map;
+    WORLD_MAP_REVISION = (WORLD_MAP_REVISION >>> 0) + 1;
+    if (!WORLD_MAP_REVISION) WORLD_MAP_REVISION = 1;
+    persistWorldMapToDisk();
+    broadcastAll({ type: 'world_map', revision: WORLD_MAP_REVISION });
+    return true;
+  } catch (e) {
+    console.error('[playground] world_map revert failed:', e.message);
+    return false;
+  }
 }
 
 loadWorldMapFromDisk();
@@ -710,6 +742,30 @@ const server = http.createServer((req, res) => {
       const tooBig = e && String(e.message || '').includes('too large');
       res.writeHead(tooBig ? 413 : 400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
       res.end(JSON.stringify({ ok: false, error: tooBig ? 'Map JSON too large' : 'Bad request' }));
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/world-map-revert') {
+    readJsonBody(req).then(body => {
+      pruneAdminSessions();
+      const token = body.token;
+      const exp = token ? adminSessions.get(token) : 0;
+      if (!token || !exp || exp <= Date.now()) {
+        res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'Session expired or missing. Unlock the navigator console again.' }));
+        return;
+      }
+      if (!revertWorldMapFromBackupAndBroadcast()) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+        res.end(JSON.stringify({ ok: false, error: 'No previous chart on disk (nothing published yet, or backup missing).' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: true, revision: WORLD_MAP_REVISION }));
+    }).catch(() => {
+      res.writeHead(400, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      res.end(JSON.stringify({ ok: false, error: 'Bad request' }));
     });
     return;
   }
