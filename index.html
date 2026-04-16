@@ -1003,6 +1003,7 @@ const WORLD_GLB_PATHS = {
   tree2: 'assets/3d models/decorations/tree2.glb',
   tree3: 'assets/3d models/decorations/tree3.glb',
   bush1: 'assets/3d models/decorations/bush1.glb',
+  bush2: 'assets/3d models/decorations/bush2.glb',
   fish1: 'assets/3d models/wildlife/fish1.glb',
   fish2: 'assets/3d models/wildlife/fish2.glb',
   fish3: 'assets/3d models/wildlife/fish3.glb',
@@ -2669,6 +2670,7 @@ function applyCustomMapPayload(data, statusEl) {
     try { ws.send(JSON.stringify({ type: 'get_leaderboard' })); } catch (e) {}
   }
   G.chunks.clear();
+  clearProceduralDockBerthStyleCache();
   islandGroup.clear();
   G.islands = [];
   G.townFlagMeshes = [];
@@ -2755,6 +2757,8 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
     meta.dockAngle = (hashChunk(cx + 99, cz + 99, worldSeedOpt) * 2 - 1) * Math.PI;
     placeTownDockSeaward(meta);
   }
+  const _dockBerthStyle = proceduralDockBerthStyleByChunk[`${cx},${cz}`];
+  if (_dockBerthStyle) meta.dockBerthStyle = _dockBerthStyle;
   return meta;
 }
 
@@ -2898,6 +2902,14 @@ function findNearestPortDock(wx, wz) {
 }
 
 const DOCK_BERTH_ALONG = [-6.2, 0, 6.2];
+const proceduralDockBerthStyleByChunk = Object.create(null);
+function clearProceduralDockBerthStyleCache() {
+  for (const k of Object.keys(proceduralDockBerthStyleByChunk)) delete proceduralDockBerthStyleByChunk[k];
+}
+/** Same rule as `generateIsland` pier choice — not driven by decoration RNG. */
+function proceduralTownDockKey(cx, cz, worldSeedOpt) {
+  return hashChunk(cx + 501, cz + 307, worldSeedOpt) < 0.5 ? 'dock1' : 'dock2';
+}
 const DOCK_TRIGGER_RADIUS = 24;
 function computeDockBerthSlots(meta) {
   if (!meta || meta.dockX == null) return [];
@@ -2908,9 +2920,11 @@ function computeDockBerthSlots(meta) {
   const landZ = (meta.worldZ != null ? meta.worldZ : meta.dockZ) - meta.dockZ;
   const dot = widX * landX + widZ * landZ;
   const seaSign = dot >= 0 ? -1 : 1;
-  const seaDepth = 5.85;
-  const pierDeck = 2.35 * seaSign;
-  return DOCK_BERTH_ALONG.map((along, index) => {
+  const gltfDock = !!(meta && meta.hasTown && meta.dockBerthStyle === 'gltf');
+  const alongOffsets = gltfDock ? [-5.5, 0, 5.5] : DOCK_BERTH_ALONG;
+  const seaDepth = gltfDock ? 6.05 : 5.85;
+  const pierDeck = (gltfDock ? 2.05 : 2.35) * seaSign;
+  return alongOffsets.map((along, index) => {
     const bx = meta.dockX + longX * along + widX * seaDepth * seaSign;
     const bz = meta.dockZ + longZ * along + widZ * seaDepth * seaSign;
     const clAL = along - 1.15, clAR = along + 1.15;
@@ -3479,7 +3493,10 @@ function createRock(x, y, z, s, rng) {
 
 function createBush(x, y, z, s, rng) {
   const r = decoRand(rng);
-  const tpl = worldGltfData.bush1;
+  const bushKey = (worldGltfData.bush1 && worldGltfData.bush1.scene && worldGltfData.bush2 && worldGltfData.bush2.scene)
+    ? (r() < 0.5 ? 'bush1' : 'bush2')
+    : (worldGltfData.bush2 && worldGltfData.bush2.scene ? 'bush2' : 'bush1');
+  const tpl = worldGltfData[bushKey];
   if (tpl && tpl.scene) {
     const root = tpl.scene.clone(true);
     const th = Math.max(0.28, s * 1.35) * (0.85 + r() * 0.35);
@@ -3949,7 +3966,7 @@ function generateIsland(cx, cz) {
     const dockGround = dockYLand > 0 ? dockYLand : 0;
     const dockDeckClear = 0.52;
     const dockCenterY = SEA_LEVEL + dockGround + dockDeckClear;
-    const dockKey = rng() < 0.5 ? 'dock1' : 'dock2';
+    const dockKey = proceduralTownDockKey(cx, cz);
     const dockTpl = worldGltfData[dockKey];
     let dockUsedGltf = false;
     if (dockTpl && dockTpl.scene) {
@@ -3979,19 +3996,25 @@ function generateIsland(cx, cz) {
     }
     group.userData.dockAngle = dockAngle;
 
-    const dockUndersideY = dockCenterY - 0.2;
-    const postH = 5.8;
-    const postTopY = dockUndersideY - 0.06;
-    for (let pi = 0; pi < 8; pi++) {
-      const side = pi % 2 === 0 ? 1 : -1;
-      const along = (Math.floor(pi / 2) - 1.5) * 4;
-      const ppx = dockX + dockLongX * along + dockWidX * 2.3 * side;
-      const ppz = dockZ + dockLongZ * along + dockWidZ * 2.3 * side;
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, postH, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
-      post.position.set(ppx, postTopY - postH * 0.5, ppz);
-      post.castShadow = true;
-      group.add(post);
+    if (!dockUsedGltf) {
+      const dockUndersideY = dockCenterY - 0.2;
+      const postH = 5.8;
+      const postTopY = dockUndersideY - 0.06;
+      for (let pi = 0; pi < 8; pi++) {
+        const side = pi % 2 === 0 ? 1 : -1;
+        const along = (Math.floor(pi / 2) - 1.5) * 4;
+        const ppx = dockX + dockLongX * along + dockWidX * 2.3 * side;
+        const ppz = dockZ + dockLongZ * along + dockWidZ * 2.3 * side;
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, postH, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
+        post.position.set(ppx, postTopY - postH * 0.5, ppz);
+        post.castShadow = true;
+        group.add(post);
+      }
     }
+
+    proceduralDockBerthStyleByChunk[`${cx},${cz}`] = dockUsedGltf ? 'gltf' : 'box';
+    meta0.dockBerthStyle = proceduralDockBerthStyleByChunk[`${cx},${cz}`];
+    group.userData.dockBerthStyle = meta0.dockBerthStyle;
 
     const tryTownSite = (bx, bz, half) => {
       const c00 = terrainYWorld(bx - half, bz - half);
@@ -4586,6 +4609,14 @@ function resolveGltfHullKey(type, meshOpts) {
   return null;
 }
 
+function firstLoadedPlayerSloopKey(preferred) {
+  const p = normalizePlayerSloopVisual(preferred);
+  for (const k of [p, 'sloop1', 'sloop2', 'sloop3']) {
+    if (shipGltfRoots[k]) return k;
+  }
+  return null;
+}
+
 function fitGltfHullToSpec(hullRoot, spec) {
   _gltfBox.setFromObject(hullRoot);
   _gltfBox.getSize(_gltfSize);
@@ -4652,11 +4683,17 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     cannonTier = 'light';
   }
   const spec = SHIP_TYPES[type] || SHIP_TYPES.sloop;
-  const glbKey = resolveGltfHullKey(type, meshOpts);
+  const forcePlayerSloopGltf = type === 'sloop' && honorPlayerLoadout && !isMerchantHull && !meshOpts.pirateHull;
+  let glbKey = resolveGltfHullKey(type, meshOpts);
+  if (forcePlayerSloopGltf) {
+    const pref = meshOpts.previewSloopVariant != null ? meshOpts.previewSloopVariant : G.player.shipVisualVariant;
+    glbKey = firstLoadedPlayerSloopKey(pref);
+  }
   if (glbKey && shipGltfRoots[glbKey]) {
     const glbGroup = buildGltfShipMesh(type, parts, flagColor, shipName, meshOpts, spec, glbKey);
     if (glbGroup) return glbGroup;
   }
+  if (forcePlayerSloopGltf) return new THREE.Group();
   const g = new THREE.Group();
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
@@ -7839,6 +7876,7 @@ function applySharedWorldFromServerSeed(s, opts) {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
   G.chunks.clear();
+  clearProceduralDockBerthStyleCache();
   islandGroup.clear();
   G.islands = [];
   G.townFlagMeshes = [];
@@ -14323,6 +14361,9 @@ function buildCreationUI() {
   document.getElementById('cap-parrot').onchange = () => { drawCrewPreview(); updatePreviewShip(); };
   document.getElementById('cap-name').oninput = () => { drawCrewPreview(); updatePreviewShip(); };
   document.getElementById('ship-name-input').oninput = updatePreviewShip;
+  if (!voyageSaveExistsInStorage()) {
+    G.player.shipVisualVariant = normalizePlayerSloopVisual('sloop1');
+  }
   const hullPick = normalizePlayerSloopVisual(G.player.shipVisualVariant);
   document.querySelectorAll('input[name="hull-variant"]').forEach(r => {
     r.checked = r.value === hullPick;
@@ -14371,8 +14412,13 @@ function buildCreationUI() {
     });
   }
 
-  setup3DPreview();
-  requestAnimationFrame(renderPreview);
+  const kickPreview = () => { setup3DPreview(); requestAnimationFrame(renderPreview); };
+  const pr = preloadShipGltfAssets();
+  if (pr && typeof pr.then === 'function') {
+    pr.then(kickPreview).catch(kickPreview);
+  } else {
+    kickPreview();
+  }
 }
 
 let tutorialStepIndex = 0;
@@ -14571,6 +14617,7 @@ function beginVoyageAfterCharacter() {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
   G.chunks.clear();
+  clearProceduralDockBerthStyleCache();
   islandGroup.clear();
   G.islands = [];
   G.townFlagMeshes = [];
@@ -15107,7 +15154,9 @@ document.getElementById('start-btn').onclick = () => {
     G.playWorldAwaitingNetInit = true;
     G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
     G.npcs = [];
-    G.chunks.clear(); islandGroup.clear(); G.islands = [];
+    G.chunks.clear();
+    clearProceduralDockBerthStyleCache();
+    islandGroup.clear(); G.islands = [];
     G.townFlagMeshes = [];
     destroyAmbientWildlife();
     noise = new SimplexNoise(G.worldSeed);
