@@ -689,15 +689,31 @@ const ASSET_MIME = {
   '.ico': 'image/x-icon'
 };
 
+/** Path only (no query), for rare clients that send an absolute request-target. */
+function requestPathOnly(reqUrl) {
+  if (!reqUrl || typeof reqUrl !== 'string') return '';
+  let s = reqUrl;
+  const q = s.indexOf('?');
+  if (q >= 0) s = s.slice(0, q);
+  if (s.startsWith('http://') || s.startsWith('https://')) {
+    try {
+      return new URL(s).pathname || '';
+    } catch (e) {
+      return '';
+    }
+  }
+  return s.startsWith('/') ? s : `/${s}`;
+}
+
 function resolveAssetsDiskPath(reqUrl) {
-  const q = reqUrl.indexOf('?');
-  const raw = q >= 0 ? reqUrl.slice(0, q) : reqUrl;
+  const rawPath = requestPathOnly(reqUrl);
   let pathname;
   try {
-    pathname = decodeURIComponent(raw);
+    pathname = decodeURIComponent(rawPath);
   } catch (e) {
     return null;
   }
+  pathname = pathname.replace(/\+/g, ' ');
   if (!pathname.startsWith('/assets/')) return null;
   const rel = pathname.slice('/assets/'.length);
   if (!rel || rel.split(/[/\\]/).includes('..')) return null;
@@ -705,6 +721,25 @@ function resolveAssetsDiskPath(reqUrl) {
   const fullResolved = path.resolve(path.join(__dirname, 'assets', rel));
   if (fullResolved !== rootResolved && !fullResolved.startsWith(rootResolved + path.sep)) return null;
   return fullResolved;
+}
+
+function assetDeploySelfCheck() {
+  const sampleRel = ['3d models', 'ships', 'pirate-sloop1.glb'];
+  const sampleAbs = path.join(__dirname, 'assets', ...sampleRel);
+  const root = path.join(__dirname, 'assets');
+  let sample = { rel: `assets/${sampleRel.join('/')}`, bytes: null, err: null };
+  try {
+    const st = fs.statSync(sampleAbs);
+    sample.bytes = st.isFile() ? st.size : -1;
+  } catch (e) {
+    sample.err = e && e.code ? e.code : String(e);
+  }
+  return {
+    assetsRoot: root,
+    assetsRootExists: fs.existsSync(root),
+    sampleGlb: sample,
+    renderGitCommit: process.env.RENDER_GIT_COMMIT || null
+  };
 }
 
 function serveAssetFile(res, filePath) {
@@ -850,19 +885,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.url === '/health') {
+  if (requestPathOnly(req.url) === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({
       status: 'ok',
       players: players.size,
       seed: WORLD_SEED,
       worldMapRevision: WORLD_MAP_REVISION >>> 0,
-      navigatorAuthConfigured: !!(NAVIGATOR_ADMIN_PASSWORD && String(NAVIGATOR_ADMIN_PASSWORD).length > 0)
+      navigatorAuthConfigured: !!(NAVIGATOR_ADMIN_PASSWORD && String(NAVIGATOR_ADMIN_PASSWORD).length > 0),
+      assets: assetDeploySelfCheck()
     }));
     return;
   }
 
-  if (req.url === '/' || req.url === '/index.html' || req.url.startsWith('/index.html?')) {
+  const pathOnly = requestPathOnly(req.url);
+  if (pathOnly === '/' || pathOnly === '/index.html') {
     fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
@@ -870,7 +907,7 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (req.url === '/map-editor.html' || req.url.startsWith('/map-editor.html?')) {
+  if (pathOnly === '/map-editor.html') {
     fs.readFile(path.join(__dirname, 'map-editor.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
@@ -878,7 +915,7 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (req.url === '/editor-ship-builders.js' || req.url.startsWith('/editor-ship-builders.js?')) {
+  if (pathOnly === '/editor-ship-builders.js') {
     fs.readFile(path.join(__dirname, 'editor-ship-builders.js'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', ...CORS_HEADERS });
