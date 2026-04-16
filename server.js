@@ -123,6 +123,8 @@ const CHAT_HISTORY_MAX = 200;
 const chatHistory = [];
 
 const BANS_FILE = path.join(DATA_DIR, 'bans.json');
+/** If this file exists (optional body = message), new WebSocket joins are rejected until it is removed. */
+const MAINTENANCE_FLAG_FILE = path.join(DATA_DIR, 'maintenance.flag');
 let leaderboardHistory = [];
 /** Max rows kept after merge/sort (large enough for full roster; still bounded for memory). */
 const LEADERBOARD_CAP = 2000;
@@ -130,6 +132,37 @@ const LEADERBOARD_CAP = 2000;
 let bannedIps = new Set();
 /** @type {Set<number>} */
 const mutedPlayerIds = new Set();
+
+let isShuttingDown = false;
+let _maintMsgCache = { at: 0, msg: null };
+const MAINT_MSG_CACHE_MS = 400;
+function peekMaintenanceJoinBlockMessage() {
+  if (isShuttingDown) {
+    return process.env.SHUTDOWN_JOIN_MESSAGE && String(process.env.SHUTDOWN_JOIN_MESSAGE).trim()
+      ? String(process.env.SHUTDOWN_JOIN_MESSAGE).trim()
+      : 'The server is restarting. Please wait a moment and try again.';
+  }
+  const envM = process.env.MAINTENANCE_MESSAGE;
+  if (envM != null && String(envM).trim() !== '') return String(envM).trim();
+  const now = Date.now();
+  if (_maintMsgCache.at > 0 && now - _maintMsgCache.at < MAINT_MSG_CACHE_MS) return _maintMsgCache.msg;
+  _maintMsgCache.at = now;
+  try {
+    if (!fs.existsSync(MAINTENANCE_FLAG_FILE)) {
+      _maintMsgCache.at = now;
+      _maintMsgCache.msg = null;
+      return null;
+    }
+    const text = fs.readFileSync(MAINTENANCE_FLAG_FILE, 'utf8').trim();
+    _maintMsgCache.at = now;
+    _maintMsgCache.msg = text || 'The server is temporarily closed for maintenance. Please try again shortly.';
+    return _maintMsgCache.msg;
+  } catch (e) {
+    _maintMsgCache.at = now;
+    _maintMsgCache.msg = null;
+    return null;
+  }
+}
 
 function normalizeLbEntry(e) {
   if (!e || typeof e !== 'object') {
@@ -657,14 +690,6 @@ function persistLeaderboardShutdown() {
 function persistCaptainAccountsShutdown() {
   flushCaptainAccountsIfDirty();
 }
-process.on('SIGINT', () => {
-  persistLeaderboardShutdown();
-  persistCaptainAccountsShutdown();
-});
-process.on('SIGTERM', () => {
-  persistLeaderboardShutdown();
-  persistCaptainAccountsShutdown();
-});
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -742,9 +767,13 @@ function assetDeploySelfCheck() {
   };
 }
 
+const ASSET_LONG_CACHE_EXT = new Set(['.glb', '.gltf', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp3', '.wav', '.ogg', '.ico', '.svg']);
 function serveAssetFile(res, filePath) {
   const ext = path.extname(filePath).toLowerCase();
   const ct = ASSET_MIME[ext] || 'application/octet-stream';
+  const cacheCtrl = ASSET_LONG_CACHE_EXT.has(ext)
+    ? 'public, max-age=31536000, immutable'
+    : 'public, max-age=86400';
   fs.stat(filePath, (err, st) => {
     if (err || !st.isFile()) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...CORS_HEADERS });
@@ -754,7 +783,7 @@ function serveAssetFile(res, filePath) {
     res.writeHead(200, {
       'Content-Type': ct,
       'Content-Length': String(st.size),
-      'Cache-Control': 'public, max-age=86400',
+      'Cache-Control': cacheCtrl,
       ...CORS_HEADERS
     });
     fs.createReadStream(filePath).pipe(res);
@@ -886,9 +915,17 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPathOnly(req.url) === '/health') {
+    const maint = peekMaintenanceJoinBlockMessage();
+    const accepting = !maint;
+    const maintReconnect = maint
+      ? Math.max(5, Math.min(120, Number(process.env.MAINTENANCE_RECONNECT_SEC) || 20))
+      : null;
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({
-      status: 'ok',
+      status: isShuttingDown ? 'draining' : (maint ? 'maintenance' : 'ok'),
+      acceptingPlayers: accepting,
+      maintenanceMessage: maint || null,
+      reconnectInSec: maintReconnect,
       players: players.size,
       seed: WORLD_SEED,
       worldMapRevision: WORLD_MAP_REVISION >>> 0,
@@ -1098,6 +1135,19 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ type: 'banned', reason: 'You are banned from this server.' }));
     } catch (e) {}
     ws.close();
+    return;
+  }
+
+  const joinBlock = peekMaintenanceJoinBlockMessage();
+  if (joinBlock) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'server_maintenance',
+        message: joinBlock,
+        reconnectInSec: Math.max(5, Math.min(120, Number(process.env.MAINTENANCE_RECONNECT_SEC) || 20))
+      }));
+    } catch (e) {}
+    try { ws.close(1000, 'maintenance'); } catch (e2) {}
     return;
   }
 
@@ -1832,6 +1882,45 @@ setInterval(() => {
   broadcast({ type: 'state', players: snapshot });
 }, 1000 / TICK_RATE);
 
+function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  _maintMsgCache.at = 0;
+  const graceMs = Math.max(500, Math.min(60000, Number(process.env.SHUTDOWN_GRACE_MS) || 3500));
+  const msg = process.env.SHUTDOWN_CLIENT_MESSAGE && String(process.env.SHUTDOWN_CLIENT_MESSAGE).trim()
+    ? String(process.env.SHUTDOWN_CLIENT_MESSAGE).trim()
+    : 'The server is restarting. Your voyage is saved on this device — you can rejoin in a moment.';
+  const reconnectSec = Math.max(8, Math.min(120, Math.ceil(graceMs / 1000) + 8));
+  console.log(`[playground] ${signal || 'shutdown'}: notifying clients, saving, closing in ${graceMs}ms`);
+  try {
+    broadcastAll({
+      type: 'server_shutting_down',
+      message: msg,
+      reconnectInSec: reconnectSec
+    });
+  } catch (e) {}
+  try { persistWorldMapToDisk(); } catch (e) {}
+  persistLeaderboardShutdown();
+  persistCaptainAccountsShutdown();
+  try { saveBans(); } catch (e) {}
+  setTimeout(() => {
+    try {
+      wss.clients.forEach(client => {
+        try { client.close(1001, 'Server restart'); } catch (e) {}
+      });
+    } catch (e) {}
+    try {
+      server.close(() => process.exit(0));
+    } catch (e) {
+      process.exit(0);
+    }
+    setTimeout(() => process.exit(0), 4000).unref();
+  }, graceMs);
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Pirate game server running on port ${PORT}`);
   console.log(`World seed: ${WORLD_SEED}`);
@@ -1839,4 +1928,5 @@ server.listen(PORT, '0.0.0.0', () => {
     ? `password configured (${NAVIGATOR_ADMIN_PASSWORD_SOURCE === 'env' ? 'NAVIGATOR_ADMIN_PASSWORD' : 'navigator_admin.secret'})`
     : 'NOT SET — set NAVIGATOR_ADMIN_PASSWORD or add navigator_admin.secret beside server.js for F3';
   console.log(`Navigator admin: ${navMsg}`);
+  console.log('[playground] Maintenance: set MAINTENANCE_MESSAGE or create', MAINTENANCE_FLAG_FILE, 'to block joins; SIGTERM/SIGINT triggers graceful save + client kick.');
 });
