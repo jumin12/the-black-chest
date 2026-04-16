@@ -986,6 +986,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 </script>
 <script type="module">
 import * as THREE from 'three';
+import WebGPURenderer from 'three/addons/renderers/webgpu/WebGPURenderer.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
@@ -1113,6 +1114,12 @@ function scheduleDeferredWorldGltfPreload() {
   }
 }
 
+/** Start loading world glTF immediately when entering play (custom-map props need meshes without waiting for idle). */
+function prioritizeWorldGltfForGameplay() {
+  worldGltfPreloadScheduled = true;
+  preloadWorldDecorGltf();
+}
+
 /** @deprecated Prefer `preloadShipHullsGltf` — this name now resolves when hulls are ready; world loads in background. */
 function preloadShipGltfAssets() {
   scheduleDeferredWorldGltfPreload();
@@ -1207,6 +1214,7 @@ const RENDER_DIST = 3;
 function mainCanvasPixelRatio() {
   return Math.min(window.devicePixelRatio || 1, 2);
 }
+const SAVE_KEY = 'pirates_save_v1';
 const ISLAND_CHANCE = 0.25;
 /** Gentler dome than falloff² — smoother procedural islands (matches map-editor). */
 const ISLAND_HEIGHT_FALLOFF_POW = 1.48;
@@ -2142,19 +2150,56 @@ class SimplexNoise {
 let noise;
 
 /* ============================= THREE.JS SETUP ============================ */
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(mainCanvasPixelRatio());
-if (renderer.outputColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
-renderer.shadowMap.enabled = !isMobile;
-if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.setClearColor(0x152a45, 1);
-document.body.prepend(renderer.domElement);
-renderer.domElement.style.touchAction = 'none';
-renderer.domElement.tabIndex = 0;
-renderer.domElement.style.outline = 'none';
+function applyMainRendererSurface(r) {
+  r.setSize(window.innerWidth, window.innerHeight);
+  r.setPixelRatio(mainCanvasPixelRatio());
+  if (r.outputColorSpace !== undefined) r.outputColorSpace = THREE.SRGBColorSpace;
+  r.toneMapping = THREE.ACESFilmicToneMapping;
+  r.toneMappingExposure = 1.1;
+  if (r.shadowMap) {
+    r.shadowMap.enabled = !isMobile;
+    if (!isMobile) r.shadowMap.type = THREE.PCFSoftShadowMap;
+  }
+  r.setClearColor(0x152a45, 1);
+  document.body.prepend(r.domElement);
+  r.domElement.style.touchAction = 'none';
+  r.domElement.tabIndex = 0;
+  r.domElement.style.outline = 'none';
+}
+async function createMainRendererWithRetry() {
+  const p = { antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' };
+  const stripFailed = r => {
+    try {
+      if (r && r.domElement && r.domElement.parentNode) r.domElement.parentNode.removeChild(r.domElement);
+    } catch (e) {}
+    try { if (r && r.dispose) r.dispose(); } catch (e2) {}
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let r = null;
+    try {
+      r = new WebGPURenderer(p);
+      applyMainRendererSurface(r);
+      if (typeof r.init === 'function') await r.init();
+      return r;
+    } catch (e) {
+      stripFailed(r);
+      if (attempt === 0) await new Promise(res => setTimeout(res, 450));
+    }
+  }
+  let r = null;
+  try {
+    r = new WebGPURenderer({ ...p, forceWebGL: true });
+    applyMainRendererSurface(r);
+    if (typeof r.init === 'function') await r.init();
+    return r;
+  } catch (e) {
+    stripFailed(r);
+  }
+  r = new THREE.WebGLRenderer(p);
+  applyMainRendererSurface(r);
+  return r;
+}
+const renderer = await createMainRendererWithRetry();
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
@@ -3687,17 +3732,72 @@ function generateCustomMapChunk(cx, cz) {
     const er0 = decoRand(er);
     if (e.type === 'tree') {
       const yAw = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : undefined;
-      group.add(createPalmTree(e.x, surf + 0.08, e.z, er, yAw));
+      const mkTree = String(e.modelKey || '').trim();
+      const treePool = ['tree1', 'tree2', 'tree3'];
+      const tk = treePool.includes(mkTree) ? mkTree : treePool[Math.floor(er0() * treePool.length)];
+      const tplTree = worldGltfData[tk];
+      if (tplTree && tplTree.scene) {
+        const root = tplTree.scene.clone(true);
+        const th = 4.1 + er0() * 3.4;
+        scaleGltfRootToHeight(root, th);
+        const yaw = yAw != null ? yAw : er0() * Math.PI * 2;
+        root.rotation.y = yaw;
+        anchorGltfBottomAtWorldY(root, surf + 0.08, e.x, e.z);
+        root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+        group.add(root);
+      } else {
+        group.add(createPalmTree(e.x, surf + 0.08, e.z, er, yAw));
+      }
     }
-    else if (e.type === 'bush') group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + er0() * 0.35, er));
+    else if (e.type === 'bush') {
+      const mkBush = String(e.modelKey || '').trim();
+      const bushPool = ['bush1', 'bush2'];
+      const bk = bushPool.includes(mkBush) ? mkBush : (bushPool[Math.floor(er0() * bushPool.length)]);
+      const tplB = worldGltfData[bk];
+      if (tplB && tplB.scene) {
+        const root = tplB.scene.clone(true);
+        const th = Math.max(0.28, (0.35 + er0() * 0.35) * 1.35) * (0.85 + er0() * 0.35);
+        scaleGltfRootToHeight(root, th);
+        root.rotation.y = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : er0() * Math.PI * 2;
+        anchorGltfBottomAtWorldY(root, surf + 0.02, e.x, e.z);
+        root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+        group.add(root);
+      } else {
+        group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + er0() * 0.35, er));
+      }
+    }
+    else if (e.type === 'gltfProp') {
+      const mk = String(e.modelKey || '').trim();
+      const wTpl = worldGltfData[mk];
+      const sc = wTpl && wTpl.scene ? wTpl.scene : (shipGltfRoots[mk] || null);
+      const rot = e.rot != null ? Number(e.rot) : 0;
+      if (sc) {
+        const root = sc.clone(true);
+        root.rotation.y = rot;
+        _worldPlBox.setFromObject(root);
+        _worldPlSize.subVectors(_worldPlBox.max, _worldPlBox.min);
+        const foot = Math.max(_worldPlSize.x, _worldPlSize.z, 0.01);
+        const targetFoot = e.footTarget != null ? Number(e.footTarget) : 5.5 + er0() * 4.5;
+        root.scale.setScalar(targetFoot / foot);
+        anchorGltfBottomAtWorldY(root, surf + 0.12, e.x, e.z);
+        root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+        if (wTpl && wTpl.animations && wTpl.animations.length) registerTownAnimations(root);
+        group.add(root);
+      }
+    }
     else if (e.type === 'building' || e.type === 'house') {
       const rot = e.rot != null ? Number(e.rot) : 0;
+      const mkExplicit = String(e.modelKey || '').trim();
       const modelId = String(e.buildingKind || e.model || '').toLowerCase();
-      let gk = 'house1';
-      if (modelId.includes('tavern')) gk = 'tavern';
-      else if (modelId.includes('church')) gk = 'church1';
-      else if (modelId.includes('gov')) gk = 'govres1';
-      else if (e.type === 'house' || modelId.includes('house')) gk = er0() < 0.5 ? 'house1' : 'house2';
+      let gk = '';
+      if (mkExplicit && worldGltfData[mkExplicit] && worldGltfData[mkExplicit].scene) gk = mkExplicit;
+      if (!gk) {
+        gk = 'house1';
+        if (modelId.includes('tavern')) gk = 'tavern';
+        else if (modelId.includes('church')) gk = 'church1';
+        else if (modelId.includes('gov')) gk = 'govres1';
+        else if (e.type === 'house' || modelId.includes('house')) gk = er0() < 0.5 ? 'house1' : 'house2';
+      }
       const tpl = worldGltfData[gk];
       if (tpl && tpl.scene) {
         const root = tpl.scene.clone(true);
@@ -3757,7 +3857,8 @@ function generateCustomMapChunk(cx, cz) {
       }
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
-      const dk = er0() < 0.5 ? 'dock1' : 'dock2';
+      const mkDock = String(e.modelKey || '').trim();
+      const dk = (mkDock === 'dock1' || mkDock === 'dock2') ? mkDock : (er0() < 0.5 ? 'dock1' : 'dock2');
       const dTpl = worldGltfData[dk];
       if (dTpl && dTpl.scene) {
         const dRoot = dTpl.scene.clone(true);
@@ -8014,7 +8115,7 @@ function schedulePlayWorldNetFallback() {
 }
 /** Current localStorage voyage (not the `hasSave` snapshot from first paint — fixes Continue after saving mid-session). */
 function voyageSaveExistsInStorage() {
-  try { return !!localStorage.getItem('pirates_save_v1'); } catch (e) { return false; }
+  try { return !!localStorage.getItem(SAVE_KEY); } catch (e) { return false; }
 }
 function connectToServer() {
   if (wsUserBanned) return;
@@ -10864,7 +10965,15 @@ function ensureCargoPreview() {
   if (!container || cargoRenderer) return;
   const h = Math.max(280, container.clientHeight || 340);
   const w = Math.max(200, container.clientWidth || 280);
-  cargoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  try {
+    const wgr = new WebGPURenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    wgr.setPixelRatio(mainCanvasPixelRatio());
+    wgr.toneMapping = THREE.ACESFilmicToneMapping;
+    cargoRenderer = wgr;
+    if (typeof wgr.init === 'function') void wgr.init().catch(() => {});
+  } catch (e) {
+    cargoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+  }
   cargoRenderer.setSize(w, h);
   cargoRenderer.setPixelRatio(mainCanvasPixelRatio());
   cargoRenderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -10995,7 +11104,15 @@ function ensureYardShipPreview() {
   if (!container || yardShipRenderer) return;
   const h = Math.max(200, container.clientHeight || 260);
   const w = Math.max(200, container.clientWidth || 280);
-  yardShipRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  try {
+    const wgr = new WebGPURenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    wgr.setPixelRatio(mainCanvasPixelRatio());
+    wgr.toneMapping = THREE.ACESFilmicToneMapping;
+    yardShipRenderer = wgr;
+    if (typeof wgr.init === 'function') void wgr.init().catch(() => {});
+  } catch (e) {
+    yardShipRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+  }
   yardShipRenderer.setSize(w, h);
   yardShipRenderer.setPixelRatio(mainCanvasPixelRatio());
   yardShipRenderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -14279,7 +14396,15 @@ function setup3DPreview() {
   }
 
   if (!previewRenderer) {
-    previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    try {
+      const wgr = new WebGPURenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+      wgr.setPixelRatio(mainCanvasPixelRatio());
+      wgr.toneMapping = THREE.ACESFilmicToneMapping;
+      previewRenderer = wgr;
+      if (typeof wgr.init === 'function') void wgr.init().catch(() => {});
+    } catch (e) {
+      previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    }
     previewRenderer.setPixelRatio(mainCanvasPixelRatio());
     previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
     container.insertBefore(previewRenderer.domElement, container.firstChild);
@@ -14653,7 +14778,7 @@ function ensurePlayerCrewOrDefault() {
   G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
 }
 
-function beginVoyageAfterCharacter() {
+async function beginVoyageAfterCharacter() {
   if (!acquireGameTabLockOrExplain()) {
     showDuplicateSessionOverlay();
     return;
@@ -14686,6 +14811,10 @@ function beginVoyageAfterCharacter() {
   G.player.riggingHealth = 100;
   G.player.morale = 100;
   trimCrewAndPrisonersToShipLimits();
+  prioritizeWorldGltfForGameplay();
+  try {
+    await preloadShipHullsGltf();
+  } catch (e) {}
   updateChunks();
   spawnNPCs();
   rebuildPlayerShip();
@@ -14733,7 +14862,7 @@ function launchGame() {
     if (r) r.checked = true;
     if (pick) pick.style.display = 'flex';
   } else {
-    beginVoyageAfterCharacter();
+    void beginVoyageAfterCharacter();
   }
 }
 
@@ -14741,7 +14870,7 @@ document.getElementById('mobile-layout-confirm')?.addEventListener('click', () =
   const r = document.querySelector('input[name="mob-scheme"]:checked');
   G.mobileControlScheme = r ? Math.max(0, Math.min(3, parseInt(r.value, 10))) : 0;
   try { localStorage.setItem('pirates_mobile_scheme', String(G.mobileControlScheme)); } catch (e) {}
-  beginVoyageAfterCharacter();
+  void beginVoyageAfterCharacter();
 });
 
 document.getElementById('quest-toggle-btn')?.addEventListener('click', () => {
@@ -14895,7 +15024,6 @@ document.getElementById('settings-scheme-select')?.addEventListener('change', e 
 });
 
 /* ============================== PERSISTENCE ============================== */
-const SAVE_KEY = 'pirates_save_v1';
 
 function getDefaultStartingInventory() {
   return [
@@ -15069,6 +15197,8 @@ function loadProgress() {
     else G.player.morale = 100;
     if (data.riggingHealth != null) G.player.riggingHealth = Math.max(0, Math.min(100, Number(data.riggingHealth)));
     else G.player.riggingHealth = 100;
+    ensurePlayerCrewOrDefault();
+    trimCrewAndPrisonersToShipLimits();
     ensurePlayerInOpenOcean();
     saveProgress();
     return true;
@@ -15192,7 +15322,7 @@ function drawMenuBg() {
   requestAnimationFrame(drawMenuBg);
 }
 
-document.getElementById('start-btn').onclick = () => {
+document.getElementById('start-btn').onclick = async () => {
   startBackgroundMusic();
   if (voyageSaveExistsInStorage()) {
     if (!acquireGameTabLockOrExplain()) {
@@ -15213,6 +15343,12 @@ document.getElementById('start-btn').onclick = () => {
     destroyAmbientWildlife();
     noise = new SimplexNoise(G.worldSeed);
     ensurePlayerInOpenOcean();
+    ensurePlayerCrewOrDefault();
+    trimCrewAndPrisonersToShipLimits();
+    prioritizeWorldGltfForGameplay();
+    try {
+      await preloadShipHullsGltf();
+    } catch (e) {}
     updateChunks();
     spawnNPCs();
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
