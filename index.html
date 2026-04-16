@@ -987,6 +987,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 const SHIP_GLB_PATHS = {
   galleon2: 'assets/3d models/ships/galleon2.glb',
@@ -1044,41 +1045,52 @@ const _worldPlSize = new THREE.Vector3();
 let shipGltfPreloadPromise = null;
 function preloadShipGltfAssets() {
   if (shipGltfPreloadPromise) return shipGltfPreloadPromise;
-  const loader = new GLTFLoader();
-  const shipLoads = Object.keys(SHIP_GLB_PATHS).map(k => new Promise(resolve => {
-    loader.load(
-      SHIP_GLB_PATHS[k],
-      gltf => { shipGltfRoots[k] = gltf.scene; resolve(); },
-      undefined,
-      () => resolve()
-    );
-  }));
-  const worldLoads = Object.keys(WORLD_GLB_PATHS).map(k => new Promise(resolve => {
-    loader.load(
-      WORLD_GLB_PATHS[k],
-      gltf => {
-        worldGltfData[k] = { scene: gltf.scene, animations: gltf.animations || [] };
-        resolve();
-      },
-      undefined,
-      () => resolve()
-    );
-  }));
-  shipGltfPreloadPromise = Promise.all([...shipLoads, ...worldLoads]);
+  shipGltfPreloadPromise = (async () => {
+    await MeshoptDecoder.ready;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    const shipLoads = Object.keys(SHIP_GLB_PATHS).map(k => new Promise(resolve => {
+      loader.load(
+        SHIP_GLB_PATHS[k],
+        gltf => { shipGltfRoots[k] = gltf.scene; resolve(); },
+        undefined,
+        () => resolve()
+      );
+    }));
+    const worldLoads = Object.keys(WORLD_GLB_PATHS).map(k => new Promise(resolve => {
+      loader.load(
+        WORLD_GLB_PATHS[k],
+        gltf => {
+          worldGltfData[k] = { scene: gltf.scene, animations: gltf.animations || [] };
+          resolve();
+        },
+        undefined,
+        () => resolve()
+      );
+    }));
+    await Promise.all([...shipLoads, ...worldLoads]);
+  })();
   return shipGltfPreloadPromise;
 }
 preloadShipGltfAssets();
 
+/** Uniform scale so world-space height ≈ targetH (meters). Does not move the root. */
 function scaleGltfRootToHeight(root, targetH) {
+  root.updateMatrixWorld(true);
   _worldPlBox.setFromObject(root);
   _worldPlSize.subVectors(_worldPlBox.max, _worldPlBox.min);
   const h = Math.max(_worldPlSize.y, 0.01);
-  const s = targetH / h;
-  root.scale.setScalar(s);
+  root.scale.setScalar(targetH / h);
+}
+/**
+ * After scale and rotation are set, place at (wx,wz) so the bottom of the world AABB
+ * touches `surfaceWorldY`. Fixes trees/bushes whose glTF pivot is not at ground level.
+ */
+function anchorGltfBottomAtWorldY(root, surfaceWorldY, wx, wz) {
+  root.position.set(wx, 0, wz);
   root.updateMatrixWorld(true);
   _worldPlBox.setFromObject(root);
-  const dy = -_worldPlBox.min.y;
-  root.position.y += dy;
+  root.position.y = surfaceWorldY - _worldPlBox.min.y;
 }
 function registerTownAnimations(root) {
   const d = root.userData._tpl;
@@ -3428,8 +3440,8 @@ function createPalmTree(x, y, z, rng, yawOverride) {
     const yaw = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
       ? Number(yawOverride)
       : (r() * Math.PI * 2);
-    root.position.set(x, y, z);
     root.rotation.y = yaw;
+    anchorGltfBottomAtWorldY(root, y, x, z);
     return root;
   }
   const g = new THREE.Group();
@@ -3472,8 +3484,8 @@ function createBush(x, y, z, s, rng) {
     const root = tpl.scene.clone(true);
     const th = Math.max(0.28, s * 1.35) * (0.85 + r() * 0.35);
     scaleGltfRootToHeight(root, th);
-    root.position.set(x, y, z);
     root.rotation.y = r() * Math.PI * 2;
+    anchorGltfBottomAtWorldY(root, y, x, z);
     return root;
   }
   const g = new THREE.Group();
@@ -3628,9 +3640,7 @@ function generateCustomMapChunk(cx, cz) {
         const target = isHouse ? 4.2 + er0() * 1.9 : 5.6 + er0() * 2.4;
         root.scale.setScalar(target / foot);
         root.rotation.y = rot;
-        root.updateMatrixWorld(true);
-        _worldPlBox.setFromObject(root);
-        root.position.set(e.x, surf + 0.1 - _worldPlBox.min.y, e.z);
+        anchorGltfBottomAtWorldY(root, surf + 0.12, e.x, e.z);
         root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
         registerTownAnimations(root);
         group.add(root);
@@ -3691,9 +3701,7 @@ function generateCustomMapChunk(cx, cz) {
         const sy = Math.min(sx, sz) * 0.95;
         dRoot.scale.set(sx, sy, sz);
         dRoot.rotation.y = ang;
-        dRoot.updateMatrixWorld(true);
-        _worldPlBox.setFromObject(dRoot);
-        dRoot.position.set(e.x, surf + 0.42 - _worldPlBox.min.y, e.z);
+        anchorGltfBottomAtWorldY(dRoot, surf + 0.4, e.x, e.z);
         dRoot.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
         registerTownAnimations(dRoot);
         group.add(dRoot);
@@ -3955,9 +3963,7 @@ function generateIsland(cx, cz) {
       const sy = Math.min(sx, sz) * 0.95;
       dRoot.scale.set(sx, sy, sz);
       dRoot.rotation.y = dockAngle;
-      dRoot.updateMatrixWorld(true);
-      _worldPlBox.setFromObject(dRoot);
-      dRoot.position.set(dockX, dockCenterY - 0.16 - _worldPlBox.min.y, dockZ);
+      anchorGltfBottomAtWorldY(dRoot, dockCenterY - 0.1, dockX, dockZ);
       dRoot.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
       registerTownAnimations(dRoot);
       group.add(dRoot);
@@ -3988,13 +3994,12 @@ function generateIsland(cx, cz) {
     }
 
     const tryTownSite = (bx, bz, half) => {
-      const gyMax = maxFlatGround(bx, bz, half);
-      const gyMin = Math.min(
-        terrainYWorld(bx - half, bz - half),
-        terrainYWorld(bx + half, bz - half),
-        terrainYWorld(bx - half, bz + half),
-        terrainYWorld(bx + half, bz + half)
-      );
+      const c00 = terrainYWorld(bx - half, bz - half);
+      const c10 = terrainYWorld(bx + half, bz - half);
+      const c01 = terrainYWorld(bx - half, bz + half);
+      const c11 = terrainYWorld(bx + half, bz + half);
+      const gyMax = Math.max(c00, c10, c01, c11);
+      const gyMin = Math.min(c00, c10, c01, c11);
       if (gyMax < PROC_LAND_HT_MIN * 0.92 || gyMin < PROC_LAND_HT_MIN * 0.72) return null;
       if (!dryLandCollisionSampleForMeta(bx, bz, meta0)) return null;
       const cornerE = half * 0.82;
@@ -4002,16 +4007,17 @@ function generateIsland(cx, cz) {
       if (!dryLandCollisionSampleForMeta(bx + cornerE, bz - cornerE, meta0)) return null;
       if (!dryLandCollisionSampleForMeta(bx - cornerE, bz + cornerE, meta0)) return null;
       if (!dryLandCollisionSampleForMeta(bx + cornerE, bz + cornerE, meta0)) return null;
-      return gyMax;
+      return (c00 + c10 + c01 + c11) * 0.25;
     };
     const placeTownGltf = (key, bx, bz, yaw, footMin, footMax) => {
-      const half = 3.4;
-      const gyM = tryTownSite(bx, bz, half);
-      if (gyM == null) return;
+      const half = 4.2;
+      const groundH = tryTownSite(bx, bz, half);
+      if (groundH == null) return;
+      const surfaceY = SEA_LEVEL + groundH + 0.14;
       const tpl = worldGltfData[key];
       if (!tpl || !tpl.scene) {
         const bH = 2.9, bW = 3.2;
-        const baseY = SEA_LEVEL + gyM + 0.06;
+        const baseY = SEA_LEVEL + groundH + 0.06;
         const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: 0xa89070 }));
         bldg.position.set(bx, baseY + bH / 2, bz); bldg.rotation.y = yaw; bldg.castShadow = true; group.add(bldg);
         return;
@@ -4024,10 +4030,7 @@ function generateIsland(cx, cz) {
       const target = footMin + rng() * Math.max(0, footMax - footMin);
       root.scale.setScalar(target / foot);
       root.rotation.y = yaw;
-      root.updateMatrixWorld(true);
-      _worldPlBox.setFromObject(root);
-      const baseY = SEA_LEVEL + gyM + 0.1 - _worldPlBox.min.y;
-      root.position.set(bx, baseY, bz);
+      anchorGltfBottomAtWorldY(root, surfaceY, bx, bz);
       root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
       registerTownAnimations(root);
       group.add(root);
