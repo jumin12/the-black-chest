@@ -8861,6 +8861,42 @@ let middleDown = false, lastMX = 0, lastMY = 0;
 let mobileOrbitTouchId = null, mobileOrbitLX = 0, mobileOrbitLY = 0;
 const CAM_ORBIT_SENS_X = 0.0055;
 const CAM_ORBIT_SENS_Y = 0.0042;
+/** Coalesce orbit deltas to one apply per rAF — raw mousemove/touchmove can fire far above display rate and spike the main thread. */
+let orbitFlushRaf = null;
+const orbitAccum = { pcDX: 0, pcDY: 0, touchDX: 0, touchDY: 0 };
+function flushOrbitCameraAccumulators() {
+  orbitFlushRaf = null;
+  const pdx = orbitAccum.pcDX, pdy = orbitAccum.pcDY;
+  const tdx = orbitAccum.touchDX, tdy = orbitAccum.touchDY;
+  orbitAccum.pcDX = orbitAccum.pcDY = orbitAccum.touchDX = orbitAccum.touchDY = 0;
+  if (pdx || pdy) {
+    G.camera.targetYaw -= pdx * CAM_ORBIT_SENS_X;
+    G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - pdy * CAM_ORBIT_SENS_Y);
+    if (isMobile) G.camera.mobileOrbitFree = true;
+  }
+  if (tdx || tdy) {
+    const sx = CAM_ORBIT_SENS_X * 1.05, sy = CAM_ORBIT_SENS_Y * 1.05;
+    if (G.captainWalk?.active) {
+      G.captainWalk.yaw -= tdx * sx;
+      G.captainWalk.pitch = Math.max(-1.18, Math.min(1.18, G.captainWalk.pitch - tdy * sy));
+    } else {
+      G.camera.targetYaw -= tdx * sx;
+      G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - tdy * sy);
+      G.camera.mobileOrbitFree = true;
+    }
+  }
+}
+function scheduleOrbitCameraFlush() {
+  if (orbitFlushRaf != null) return;
+  orbitFlushRaf = requestAnimationFrame(flushOrbitCameraAccumulators);
+}
+function drainOrbitCameraAccumulatorsSync() {
+  if (orbitFlushRaf != null) {
+    cancelAnimationFrame(orbitFlushRaf);
+    orbitFlushRaf = null;
+  }
+  flushOrbitCameraAccumulators();
+}
 function resetMobileCameraChase() {
   if (!isMobile) return;
   G.camera.mobileOrbitFree = false;
@@ -9715,7 +9751,10 @@ window.addEventListener('mousedown', e => {
   }
 });
 window.addEventListener('mouseup', e => {
-  if (e.button === 1) middleDown = false;
+  if (e.button === 1) {
+    middleDown = false;
+    drainOrbitCameraAccumulatorsSync();
+  }
   if (e.button === 2 && G.captainWalk?.active) G.captainWalk.spyglass = false;
 });
 window.addEventListener('mousemove', e => {
@@ -9728,9 +9767,9 @@ window.addEventListener('mousemove', e => {
   const dx = e.clientX - lastMX, dy = e.clientY - lastMY;
   lastMX = e.clientX;
   lastMY = e.clientY;
-  G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X;
-  G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y);
-  if (isMobile) G.camera.mobileOrbitFree = true;
+  orbitAccum.pcDX += dx;
+  orbitAccum.pcDY += dy;
+  scheduleOrbitCameraFlush();
 });
 window.addEventListener('touchstart', e => {
   if (!isMobile || G.mode !== 'playing' || G.docked || G.playerSinking) return;
@@ -9755,14 +9794,9 @@ window.addEventListener('touchmove', e => {
     const dx = t.clientX - mobileOrbitLX, dy = t.clientY - mobileOrbitLY;
     mobileOrbitLX = t.clientX;
     mobileOrbitLY = t.clientY;
-    if (G.captainWalk?.active) {
-      G.captainWalk.yaw -= dx * CAM_ORBIT_SENS_X * 1.05;
-      G.captainWalk.pitch = Math.max(-1.18, Math.min(1.18, G.captainWalk.pitch - dy * CAM_ORBIT_SENS_Y * 1.05));
-    } else {
-      G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X * 1.05;
-      G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y * 1.05);
-      G.camera.mobileOrbitFree = true;
-    }
+    orbitAccum.touchDX += dx;
+    orbitAccum.touchDY += dy;
+    scheduleOrbitCameraFlush();
     e.preventDefault();
     break;
   }
@@ -9772,6 +9806,7 @@ window.addEventListener('touchend', e => {
   for (let i = 0; i < e.changedTouches.length; i++) {
     if (e.changedTouches[i].identifier === mobileOrbitTouchId) {
       mobileOrbitTouchId = null;
+      drainOrbitCameraAccumulatorsSync();
       break;
     }
   }
@@ -9781,6 +9816,7 @@ window.addEventListener('touchcancel', e => {
   for (let i = 0; i < e.changedTouches.length; i++) {
     if (e.changedTouches[i].identifier === mobileOrbitTouchId) {
       mobileOrbitTouchId = null;
+      drainOrbitCameraAccumulatorsSync();
       break;
     }
   }
@@ -15438,13 +15474,17 @@ if (!hasSave) ensurePlayerInOpenOcean();
     curtain.addEventListener('transitionend', onEnd);
     window.setTimeout(finish, SPLASH_FADE_OUT_MS + 120);
   };
+  const SPLASH_MIN_MS = 5000;
   const run = async () => {
+    const t0 = performance.now();
     try {
       await ensureWorldGltfLoaded();
       refreshWorldMeshesAfterFirstGltfCatalogLoad();
     } catch (e) { /* menu still usable with procedural fallbacks */ }
     nudgePlayerSpawnClearOfShips();
     syncDayNightVisuals(G.player.x, G.player.z);
+    const wait = SPLASH_MIN_MS - (performance.now() - t0);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
     hideSplash();
   };
   run();
