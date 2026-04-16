@@ -672,6 +672,60 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type'
 };
 
+/** Large glTF/audio under `assets/` (served below); must not 404 on Render/static hosts. */
+const ASSET_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.glb': 'model/gltf-binary',
+  '.gltf': 'model/gltf+json',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon'
+};
+
+function resolveAssetsDiskPath(reqUrl) {
+  const q = reqUrl.indexOf('?');
+  const raw = q >= 0 ? reqUrl.slice(0, q) : reqUrl;
+  let pathname;
+  try {
+    pathname = decodeURIComponent(raw);
+  } catch (e) {
+    return null;
+  }
+  if (!pathname.startsWith('/assets/')) return null;
+  const rel = pathname.slice('/assets/'.length);
+  if (!rel || rel.split(/[/\\]/).includes('..')) return null;
+  const rootResolved = path.resolve(path.join(__dirname, 'assets'));
+  const fullResolved = path.resolve(path.join(__dirname, 'assets', rel));
+  if (fullResolved !== rootResolved && !fullResolved.startsWith(rootResolved + path.sep)) return null;
+  return fullResolved;
+}
+
+function serveAssetFile(res, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const ct = ASSET_MIME[ext] || 'application/octet-stream';
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...CORS_HEADERS });
+      res.end('Not found');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': ct,
+      'Content-Length': String(st.size),
+      'Cache-Control': 'public, max-age=86400',
+      ...CORS_HEADERS
+    });
+    fs.createReadStream(filePath).pipe(res);
+  });
+}
+
 function setWorldSeedAndPersist(newSeed) {
   WORLD_SEED = Number(newSeed) >>> 0;
   persistWorldSeedFile();
@@ -831,6 +885,13 @@ const server = http.createServer((req, res) => {
       res.end(data);
     });
     return;
+  }
+  if (req.method === 'GET') {
+    const assetPath = resolveAssetsDiskPath(req.url);
+    if (assetPath) {
+      serveAssetFile(res, assetPath);
+      return;
+    }
   }
   res.writeHead(404, CORS_HEADERS);
   res.end('Not found');
