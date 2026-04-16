@@ -2361,12 +2361,12 @@ class SimplexNoise {
 let noise;
 
 /* ============================= THREE.JS SETUP ============================ */
-/** When true, main view uses WebGPURenderer (three.js r172). Sky/water use MeshBasic/MeshPhysical on WebGPU (GLSL ShaderMaterial is WebGL-only). ?webgpu=0 forces WebGL. */
+/** When true, main view uses WebGPURenderer (three.js r172). Default WebGL keeps full GLSL sea/sky (sun, moon, Gerstner water). Add ?webgpu=1 to try WebGPU (simpler sky/water materials). */
 let useWebGpuBackend = false;
 let renderer;
-const forceWebGl = typeof location !== 'undefined' && new URLSearchParams(location.search).get('webgpu') === '0';
+const tryWebGpuBackend = typeof location !== 'undefined' && new URLSearchParams(location.search).get('webgpu') === '1';
 let _r = null;
-if (!forceWebGl && typeof navigator !== 'undefined' && navigator.gpu) {
+if (tryWebGpuBackend && typeof navigator !== 'undefined' && navigator.gpu) {
   try {
     const TW = await import('three-webgpu');
     _r = new TW.WebGPURenderer({ antialias: true, alpha: false });
@@ -2421,6 +2421,8 @@ scene.add(hemiLight);
 
 /** Full day length (seconds). Sun rises east (+X), arcs through zenith, sets west. */
 const DAY_CYCLE_SECONDS = 600;
+/** Start near solar noon so the first menu/game frames are daytime (p=0.5 in syncDayNightVisuals). */
+G.time = DAY_CYCLE_SECONDS * 0.5;
 const _skySunDir = new THREE.Vector3(0, 1, 0);
 const _skyMoonDir = new THREE.Vector3(-0.3, 0.5, 0.2);
 const _fogColDay = new THREE.Color(0x9ab8d8);
@@ -14675,17 +14677,12 @@ function updatePreviewShip() {
   const rebuild = () => {
     if (previewShip) previewScene.remove(previewShip);
     previewShip = null;
-    let allCrew;
-    try { allCrew = getCrewFromUI(); } catch (e) { allCrew = [{ name: 'Captain', role: 'captain', color: '#8b0000', hat: 'tricorn', outfit: 'coat', parrot: false }]; }
     const shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
     const prevFlagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
     const hullV = normalizePlayerSloopVisual(document.querySelector('input[name="hull-variant"]:checked')?.value);
     const parts = G.player.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
     const st = G.player.shipType || 'sloop';
     previewShip = buildShipMesh(st, parts, prevFlagColor, shipName, { honorPlayerLoadout: true, previewSloopVariant: hullV });
-    buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
-      ...c, health: 100, task: ['helm', 'cannons', 'sails', 'lookout'][i] || 'idle'
-    })), st);
     previewScene.add(previewShip);
   };
   rebuild();
@@ -15474,7 +15471,7 @@ if (!hasSave) ensurePlayerInOpenOcean();
     curtain.addEventListener('transitionend', onEnd);
     window.setTimeout(finish, SPLASH_FADE_OUT_MS + 120);
   };
-  const SPLASH_MIN_MS = 5000;
+  const SPLASH_MIN_MS = 3000;
   const run = async () => {
     const t0 = performance.now();
     try {
