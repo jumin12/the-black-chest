@@ -1084,7 +1084,8 @@ function _ensureGltfFetchWorkerPool() {
   if (_gltfFetchWorkerPool.length || typeof Worker === 'undefined') return;
   try {
     _gltfFetchWorkerBlobUrl = URL.createObjectURL(new Blob([GLTF_FETCH_WORKER_CODE], { type: 'application/javascript' }));
-    const n = Math.min(4, Math.max(2, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
+    const hw = typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 8;
+    const n = Math.min(16, Math.max(8, hw * 2));
     for (let i = 0; i < n; i++) {
       const w = new Worker(_gltfFetchWorkerBlobUrl);
       w.onmessage = _onGltfFetchWorkerMessage;
@@ -1160,53 +1161,86 @@ async function loadOneGltfKey(loader, relativePath, onGltf) {
     });
   }
 }
-function yieldToNextFrame() {
-  return new Promise(r => requestAnimationFrame(() => r()));
-}
+/** Main-menu ocean wildlife (seagulls, fish schools, shark) — visible behind the start screen. */
+const MENU_PRELOAD_WORLD_KEYS = ['seagul1', 'seagul2', 'fish1', 'fish2', 'fish3', 'fish4', 'shark'];
+const MENU_PRELOAD_WORLD_SET = new Set(MENU_PRELOAD_WORLD_KEYS);
+const SLOOP_HULL_KEYS = ['sloop1', 'sloop2', 'sloop3'];
+const GALLEON_HULL_KEYS = ['galleon2', 'galleon3', 'galleon4'];
 
-let shipGltfReadyPromise = null;
+let menuWildlifeGltfReadyPromise = null;
+let characterSloopGltfReadyPromise = null;
+let allShipHullsGltfReadyPromise = null;
 let worldGltfReadyPromise = null;
 let fullGltfCatalogPromise = null;
 
-/** Tier 1: ship hulls only (small set) — character preview / player mesh can appear quickly. */
-function ensureShipGltfLoaded() {
-  if (shipGltfReadyPromise) return shipGltfReadyPromise;
-  shipGltfReadyPromise = (async () => {
+async function loadWorldKeysParallel(loader, keys) {
+  const tasks = keys
+    .filter(k => WORLD_GLB_PATHS[k])
+    .map(k => loadOneGltfKey(loader, WORLD_GLB_PATHS[k], g => {
+      worldGltfData[k] = { scene: g.scene, animations: g.animations || [] };
+    }));
+  await Promise.all(tasks);
+}
+
+async function loadShipKeysParallel(loader, keys) {
+  const tasks = keys
+    .filter(k => SHIP_GLB_PATHS[k])
+    .map(k => loadOneGltfKey(loader, SHIP_GLB_PATHS[k], g => {
+      shipGltfRoots[k] = g.scene;
+    }));
+  await Promise.all(tasks);
+}
+
+/** Tier 1: glTF used on the main menu (birds + fish). */
+function ensureMenuWildlifeGltfLoaded() {
+  if (menuWildlifeGltfReadyPromise) return menuWildlifeGltfReadyPromise;
+  menuWildlifeGltfReadyPromise = (async () => {
     await MeshoptDecoder.ready;
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
-    const keys = Object.keys(SHIP_GLB_PATHS);
-    const BATCH = 2;
-    for (let i = 0; i < keys.length; i += BATCH) {
-      await yieldToNextFrame();
-      const slice = keys.slice(i, i + BATCH);
-      await Promise.all(slice.map(k => loadOneGltfKey(loader, SHIP_GLB_PATHS[k], g => {
-        shipGltfRoots[k] = g.scene;
-      })));
-    }
+    await loadWorldKeysParallel(loader, MENU_PRELOAD_WORLD_KEYS);
   })();
-  return shipGltfReadyPromise;
+  return menuWildlifeGltfReadyPromise;
 }
 
-/** Tier 2: world props — one decode per frame to avoid multi‑second main-thread stalls on modest devices. */
-function ensureWorldGltfLoaded() {
-  if (worldGltfReadyPromise) return worldGltfReadyPromise;
-  worldGltfReadyPromise = ensureShipGltfLoaded().then(async () => {
+/** Tier 2: three sloops — character creator preview (after menu assets). */
+function ensureCharacterSloopGltfLoaded() {
+  if (characterSloopGltfReadyPromise) return characterSloopGltfReadyPromise;
+  characterSloopGltfReadyPromise = ensureMenuWildlifeGltfLoaded().then(async () => {
+    await MeshoptDecoder.ready;
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
-    const keys = Object.keys(WORLD_GLB_PATHS);
-    for (const k of keys) {
-      await yieldToNextFrame();
-      if (worldGltfData[k] && worldGltfData[k].scene) continue;
-      await loadOneGltfKey(loader, WORLD_GLB_PATHS[k], g => {
-        worldGltfData[k] = { scene: g.scene, animations: g.animations || [] };
-      });
-    }
+    await loadShipKeysParallel(loader, SLOOP_HULL_KEYS);
+  });
+  return characterSloopGltfReadyPromise;
+}
+
+/** Tier 3: galleon hulls for NPC ships on the menu / world. */
+function ensureAllShipHullsGltfLoaded() {
+  if (allShipHullsGltfReadyPromise) return allShipHullsGltfReadyPromise;
+  allShipHullsGltfReadyPromise = ensureCharacterSloopGltfLoaded().then(async () => {
+    await MeshoptDecoder.ready;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    await loadShipKeysParallel(loader, GALLEON_HULL_KEYS);
+  });
+  return allShipHullsGltfReadyPromise;
+}
+
+/** Tier 4: remaining world props (islands, docks, trees, …). */
+function ensureWorldGltfLoaded() {
+  if (worldGltfReadyPromise) return worldGltfReadyPromise;
+  worldGltfReadyPromise = ensureAllShipHullsGltfLoaded().then(async () => {
+    await MeshoptDecoder.ready;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    const keys = Object.keys(WORLD_GLB_PATHS).filter(k => !MENU_PRELOAD_WORLD_SET.has(k));
+    await loadWorldKeysParallel(loader, keys);
   });
   return worldGltfReadyPromise;
 }
 
-/** Full catalog (ships then world) + one terrain refresh when world is ready. */
+/** Full catalog + one terrain refresh when the world tier finishes. */
 function preloadAllGltfUnified() {
   if (fullGltfCatalogPromise) return fullGltfCatalogPromise;
   fullGltfCatalogPromise = ensureWorldGltfLoaded().then(() => {
@@ -1215,7 +1249,8 @@ function preloadAllGltfUnified() {
   return fullGltfCatalogPromise;
 }
 
-function preloadShipHullsGltf() { return ensureShipGltfLoaded(); }
+/** Character screen / sloop preview: menu wildlife first, then the three sloops (no wait for galleons or island props). */
+function preloadShipHullsGltf() { return ensureCharacterSloopGltfLoaded(); }
 function preloadShipGltfAssets() { return preloadAllGltfUnified(); }
 function preloadAllGltfAssets() { return preloadAllGltfUnified(); }
 
