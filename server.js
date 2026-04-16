@@ -1581,6 +1581,10 @@ wss.on('connection', (ws, req) => {
           if (msg.id != null) broadcastAll({ type: 'swimmer_collect', id: msg.id });
           break;
         }
+        case 'swimmer_shark': {
+          if (msg.id != null) broadcastAll({ type: 'swimmer_shark', id: msg.id });
+          break;
+        }
         case 'pvp_kill_credit': {
           const killerId = msg.killerId;
           if (!killerId || killerId === id) break;

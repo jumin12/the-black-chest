@@ -2574,11 +2574,6 @@ const waterFS = `
     vec3 Vraw = uCamPos - vWorldPos;
     float vLen = length(Vraw);
     vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0,1.0,0.0);
-    vec2 rip = 0.028 * vec2(
-      sin(dot(vWorldPos.xz, vec2(37.0, 21.2)) + uTime * 6.2),
-      cos(dot(vWorldPos.xz, vec2(-19.4, 44.7)) + uTime * 5.35)
-    );
-    N = normalize(N + vec3(rip.x, 0.0, rip.y));
     vec3 Ls = normalize(uSunDir);
     vec3 Lm = normalize(uMoonDir);
     float NdotV = clamp(dot(N,V), 0.02, 1.0);
@@ -2611,23 +2606,12 @@ const waterFS = `
     vec3 Lblend = normalize(Ls * uDayFactor + Lm * (1.0 - uDayFactor) + vec3(0.0,0.2,0.0));
     float sss = pow(max(dot(V,-Lblend+N*0.4),0.0),2.5)*0.3 * (0.35 + 0.65 * uDayFactor);
     vec3 sub = vec3(0.0,0.45,0.35) * sss;
-    float volScatter = (1.0 - N.y) * (1.0 - NdotV) * 0.14 * uDayFactor;
-    vec3 scatterCol = mix(vec3(0.12,0.22,0.42), vec3(0.35,0.62,0.88), uDayFactor);
-    float foamCrest = smoothstep(0.78, 0.94, N.y);
-    float foamEdge = pow(1.0 - NdotV, 3.3) * 0.62;
-    float f1 = sin(dot(vWorldPos.xz, vec2(12.3, 8.1)) + uTime * 2.15);
-    float f2 = sin(dot(vWorldPos.xz, vec2(-7.2, 15.4)) + uTime * 1.68);
-    float foamHash = f1 * 0.5 + f2 * 0.35 + sin(uTime * 0.85 + vWorldPos.x * 0.08) * 0.15;
-    float foamNoise = smoothstep(0.2, 0.88, foamHash * 0.5 + 0.5);
-    float foamAmt = clamp((foamCrest * 0.72 + foamEdge) * foamNoise * (0.4 + 0.6 * uDayFactor), 0.0, 0.92);
-    vec3 foamCol = vec3(0.93, 0.96, 1.0);
-    vec3 color = diff*(1.0-fresnel)+refl+specC+sub + scatterCol * volScatter;
-    color = mix(color, foamCol, foamAmt);
+    vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
     color = pow(color,vec3(1.0/2.2));
     gl_FragColor = vec4(color,1.0);
   }`;
 
-const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 240, 240);
+const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 200, 200);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
   uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
@@ -3260,7 +3244,7 @@ function clearProceduralDockBerthStyleCache() {
 }
 /** Same rule as `generateIsland` pier choice — not driven by decoration RNG. */
 function proceduralTownDockKey(cx, cz, worldSeedOpt) {
-  return hashChunk(cx + 501, cz + 307, worldSeedOpt) < 0.5 ? 'dock1' : 'dock2';
+  return 'dock1';
 }
 const DOCK_TRIGGER_RADIUS = 24;
 function computeDockBerthSlots(meta) {
@@ -3789,11 +3773,15 @@ function seedDecorativeWildlifeNearPlayer() {
       added++;
     }
   }
-  for (let s = 0; s < 6; s++) {
+  let sk = 0;
+  for (let i = 0; i < 40 && sk < 5 && sharkPodCount() < WILDLIFE_SHARK_POD_CAP; i++) {
     const ang = rng() * Math.PI * 2;
-    const dist = 220 + rng() * 4200;
+    const dist = 220 + rng() * 5200;
     const ox = px + Math.cos(ang) * dist, oz = pz + Math.sin(ang) * dist;
-    if (!isSeaObstructed(ox, oz)) spawnSharkPod(ox, oz, rng);
+    if (!isSeaObstructed(ox, oz)) {
+      spawnSharkPod(ox, oz, rng);
+      sk++;
+    }
   }
 }
 function decoRand(rng) {
@@ -4057,7 +4045,7 @@ function generateCustomMapChunk(cx, cz) {
       }
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
-      const dk = er0() < 0.5 ? 'dock1' : 'dock2';
+      const dk = 'dock1';
       const dTpl = worldGltfData[dk];
       if (dTpl && dTpl.scene) {
         const dRoot = dTpl.scene.clone(true);
@@ -4096,8 +4084,6 @@ function generateCustomMapChunk(cx, cz) {
     } else if (e.type === 'rock') {
       const s = e.scale != null ? Number(e.scale) : 0.8;
       group.add(createRock(e.x, surf + 0.08 + s * 0.35, e.z, s, er));
-    } else if (e.type === 'barrel') {
-      group.add(createBarrel(e.x, surf + 0.02, e.z, er));
     } else if (e.type === 'driftwood') {
       group.add(createDriftwood(e.x, surf + 0.1, e.z, er));
     } else if (e.type === 'gltf') {
@@ -4269,18 +4255,6 @@ function generateIsland(cx, cz) {
     const dy = sampleIslandLandHeight(dx, dz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
     if (dy < 0.08) continue;
     group.add(createDriftwood(worldX + dx, SEA_LEVEL + Math.max(0.12, dy * 0.45) + 0.06, worldZ + dz, rng));
-  }
-
-  const barrelN = Math.floor(2 + h * 5 + (meta0.hasTown ? 5 : 0));
-  for (let bi = 0; bi < barrelN; bi++) {
-    const a = ln.noise2D(bi * 1.1, 70) * Math.PI * 2;
-    const rad = (0.2 + Math.abs(ln.noise2D(bi * 0.5, 71)) * 0.5) * islandRadius;
-    const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
-    const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
-    if (d > 0.88) continue;
-    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
-    if (by < 0.08 || by > islandHeight * 0.42) continue;
-    group.add(createBarrel(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, rng));
   }
 
   if (ln.noise2D(cx, cz) > 0.2) {
@@ -4495,6 +4469,12 @@ function generateIsland(cx, cz) {
     const fz = worldZ + Math.sin(openAngle) * openDist;
     if (!isSeaObstructed(fx, fz)) spawnFish(fx, fz, 4 + Math.floor(rng() * 10), rng);
   }
+  if (sharkPodCount() < WILDLIFE_SHARK_POD_CAP && rng() < 0.4) {
+    const sa = rng() * Math.PI * 2;
+    const sd = islandRadius * 1.05 + rng() * 140;
+    const sx = worldX + Math.cos(sa) * sd, sz = worldZ + Math.sin(sa) * sd;
+    if (!isSeaObstructed(sx, sz)) spawnSharkPod(sx, sz, rng);
+  }
 }
 
 const seagulls = [];
@@ -4574,12 +4554,12 @@ const FISH_SPECIES = [
 const WILDLIFE_FISH_CAP = 2800;
 const WILDLIFE_SEAGULL_CAP = 900;
 const WILDLIFE_PRUNE_DIST = 9200;
-const WILDLIFE_SHARK_POD_CAP = 26;
-/** Hide fish schools farther than this from the camera to cut orbit-camera cost. */
-const FISH_CAMERA_CULL_R = 300;
-const FISH_CAMERA_CULL_R2 = FISH_CAMERA_CULL_R * FISH_CAMERA_CULL_R;
-const SEAGULL_CAMERA_CULL_R = 380;
-const SEAGULL_CAMERA_CULL_R2 = SEAGULL_CAMERA_CULL_R * SEAGULL_CAMERA_CULL_R;
+const WILDLIFE_SHARK_POD_CAP = 36;
+/** Fish and gulls farther than this (horizontal, meters) from the camera are hidden to cut lag when panning. */
+const WILDLIFE_CAMERA_CULL_XZ = 455;
+const WILDLIFE_CAMERA_CULL_XZ_SQ = WILDLIFE_CAMERA_CULL_XZ * WILDLIFE_CAMERA_CULL_XZ;
+/** Thrown/rescue crew floating in the water are removed after this long on the surface (sharks). */
+const SHARK_EAT_CREW_AFTER_FLOAT_SEC = 30;
 
 function removeFishSchoolByLeader(leader) {
   const li = schoolLeaders.indexOf(leader);
@@ -4649,8 +4629,7 @@ function spawnFish(wx, wz, count, rng) {
     turnTimer: 3 + r() * 5, depth
   };
   schoolLeaders.push(leader);
-  const schoolN = count;
-  for (let i = 0; i < schoolN; i++) {
+  for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
     if (tpl && tpl.scene) {
       const fish = tpl.scene.clone(true);
@@ -4689,22 +4668,25 @@ function spawnFish(wx, wz, count, rng) {
   }
 }
 
-/** 1–2 sharks per pod, patrolling until crew are in the water (see updateFish). */
+/** 1–2 sharks per pod; patrol until crew are in the water, then orbit / strike. */
 function spawnSharkPod(wx, wz, rng) {
   if (isSeaObstructed(wx, wz)) return;
   const r = decoRand(rng);
   const tpl = worldGltfData.shark;
-  const schoolN = 1 + (r() < 0.5 ? 1 : 0);
-  const depth = SEA_LEVEL - 0.85 - r() * 1.15;
+  const depth = SEA_LEVEL - 0.85 - r() * 1.2;
+  const spd = 2.1 + r() * 2.2;
   const leader = {
     x: wx, z: wz, dir: r() * Math.PI * 2,
-    speed: 2.6 + r() * 2.4,
-    turnTimer: 2 + r() * 5,
+    speed: spd,
+    baseSharkSpeed: spd,
+    turnTimer: 3 + r() * 5,
     depth,
-    isShark: true,
-    sharkOrbitA: r() * Math.PI * 2
+    isSharkPod: true,
+    orbitPhase: r() * Math.PI * 2,
+    orbitR: 11 + r() * 6
   };
   schoolLeaders.push(leader);
+  const schoolN = r() < 0.5 ? 1 : 2;
   for (let i = 0; i < schoolN; i++) {
     const fg = new THREE.Group();
     if (tpl && tpl.scene) {
@@ -4742,82 +4724,103 @@ function spawnSharkPod(wx, wz, rng) {
   }
 }
 
-function resolveFishLeaderIslandBounce(l, dt) {
-  if (!isSeaObstructed(l.x, l.z)) return;
-  l.dir += Math.PI + (Math.random() - 0.5) * 1.2;
-  l.x -= Math.sin(l.dir) * l.speed * dt * 2.2;
-  l.z -= Math.cos(l.dir) * l.speed * dt * 2.2;
-  for (let g = 0; g < 8 && isSeaObstructed(l.x, l.z); g++) {
-    l.x += Math.sin(l.dir) * 1.8;
-    l.z += Math.cos(l.dir) * 1.8;
-  }
+function sharkPodCount() {
+  let n = 0;
+  for (let i = 0; i < schoolLeaders.length; i++) if (schoolLeaders[i].isSharkPod) n++;
+  return n;
 }
 
-function advanceFishLeaderPatrol(l, dt) {
-  l.turnTimer -= dt;
-  if (l.turnTimer <= 0) { l.dir += (Math.random() - 0.5) * 2; l.turnTimer = 2 + Math.random() * 6; }
-  l.x += Math.sin(l.dir) * l.speed * dt;
-  l.z += Math.cos(l.dir) * l.speed * dt;
-  resolveFishLeaderIslandBounce(l, dt);
+function updateWildlifeCameraCull() {
+  const cx = camera.position.x, cz = camera.position.z;
+  for (let fi = 0; fi < fishSchools.length; fi++) {
+    const f = fishSchools[fi];
+    const dx = f.position.x - cx, dz = f.position.z - cz;
+    f.visible = dx * dx + dz * dz <= WILDLIFE_CAMERA_CULL_XZ_SQ;
+  }
+  for (let gi = 0; gi < seagulls.length; gi++) {
+    const sg = seagulls[gi];
+    const dx = sg.position.x - cx, dz = sg.position.z - cz;
+    sg.visible = dx * dx + dz * dz <= WILDLIFE_CAMERA_CULL_XZ_SQ;
+  }
 }
 
 function updateFish(dt) {
-  const waterSwimmers = [];
+  const sharkLeaders = [];
+  for (let li = 0; li < schoolLeaders.length; li++) {
+    if (schoolLeaders[li].isSharkPod) sharkLeaders.push(schoolLeaders[li]);
+  }
+  const preyInWater = [];
   for (let si = 0; si < G.swimmers.length; si++) {
     const sw = G.swimmers[si];
     const u = sw.userData;
-    const age = (Date.now() - (u.spawnAtMs != null ? u.spawnAtMs : 0)) / 1000;
+    if (!u.crewRestore) continue;
+    const age = (Date.now() - u.spawnAtMs) / 1000;
     const tLand = u.tLand != null ? u.tLand : 0;
-    if (age >= tLand) waterSwimmers.push(sw);
+    if (age < tLand) continue;
+    preyInWater.push({ sw, x: sw.position.x, z: sw.position.z });
   }
-  const sharkLeaders = [];
+  const closestSeekerByPrey = new Map();
+  for (let pi = 0; pi < preyInWater.length; pi++) {
+    const pr = preyInWater[pi];
+    let bestL = null, bestD = 1e18;
+    for (let si = 0; si < sharkLeaders.length; si++) {
+      const l = sharkLeaders[si];
+      const d = Math.hypot(l.x - pr.x, l.z - pr.z);
+      if (d < bestD) { bestD = d; bestL = l; }
+    }
+    if (bestL) closestSeekerByPrey.set(pr.sw, bestL);
+  }
   schoolLeaders.forEach(l => {
-    if (l.isShark) {
-      sharkLeaders.push(l);
-      return;
+    if (l.isSharkPod) {
+      let seekPr = null;
+      for (let pi = 0; pi < preyInWater.length; pi++) {
+        const pr = preyInWater[pi];
+        if (closestSeekerByPrey.get(pr.sw) === l) { seekPr = pr; break; }
+      }
+      if (seekPr) {
+        const dx = seekPr.x - l.x, dz = seekPr.z - l.z;
+        const dist = Math.hypot(dx, dz) || 0.01;
+        l.dir = Math.atan2(dx, dz);
+        const sp = l.baseSharkSpeed != null ? l.baseSharkSpeed : l.speed;
+        l.x += (dx / dist) * sp * 1.42 * dt;
+        l.z += (dz / dist) * sp * 1.42 * dt;
+      } else {
+        let orb = null, od = 1e18;
+        for (let pi = 0; pi < preyInWater.length; pi++) {
+          const pr = preyInWater[pi];
+          const d = Math.hypot(l.x - pr.x, l.z - pr.z);
+          if (d < 215 && d < od) { od = d; orb = pr; }
+        }
+        if (orb) {
+          l.orbitPhase = (l.orbitPhase || 0) + dt * 0.52;
+          const R = l.orbitR != null ? l.orbitR : 13;
+          l.x = orb.x + Math.sin(l.orbitPhase) * R;
+          l.z = orb.z + Math.cos(l.orbitPhase) * R;
+          l.dir = l.orbitPhase + Math.PI * 0.5;
+        } else {
+          l.turnTimer -= dt;
+          if (l.turnTimer <= 0) { l.dir += (Math.random() - 0.5) * 2; l.turnTimer = 2 + Math.random() * 6; }
+          l.x += Math.sin(l.dir) * l.speed * dt;
+          l.z += Math.cos(l.dir) * l.speed * dt;
+        }
+      }
+    } else {
+      l.turnTimer -= dt;
+      if (l.turnTimer <= 0) { l.dir += (Math.random() - 0.5) * 2; l.turnTimer = 2 + Math.random() * 6; }
+      l.x += Math.sin(l.dir) * l.speed * dt;
+      l.z += Math.cos(l.dir) * l.speed * dt;
     }
-    advanceFishLeaderPatrol(l, dt);
-  });
-  for (let li = 0; li < sharkLeaders.length; li++) {
-    const l = sharkLeaders[li];
-    let prey = null, myD = 1e12;
-    for (let wi = 0; wi < waterSwimmers.length; wi++) {
-      const sw = waterSwimmers[wi];
-      const d = Math.hypot(l.x - sw.position.x, l.z - sw.position.z);
-      if (d < myD) { myD = d; prey = sw; }
-    }
-    let chase = false;
-    if (prey && myD < 520) {
-      chase = true;
-      for (let oi = 0; oi < sharkLeaders.length; oi++) {
-        const o = sharkLeaders[oi];
-        if (o === l) continue;
-        const od = Math.hypot(o.x - prey.position.x, o.z - prey.position.z);
-        if (od < myD - 1.05) { chase = false; break; }
+    if (isSeaObstructed(l.x, l.z)) {
+      l.dir += Math.PI + (Math.random() - 0.5) * 1.2;
+      const sp = l.isSharkPod ? (l.baseSharkSpeed != null ? l.baseSharkSpeed : l.speed) : l.speed;
+      l.x -= Math.sin(l.dir) * sp * dt * 2.2;
+      l.z -= Math.cos(l.dir) * sp * dt * 2.2;
+      for (let g = 0; g < 8 && isSeaObstructed(l.x, l.z); g++) {
+        l.x += Math.sin(l.dir) * 1.8;
+        l.z += Math.cos(l.dir) * 1.8;
       }
     }
-    if (prey && myD < 520 && chase) {
-      const dx = prey.position.x - l.x, dz = prey.position.z - l.z;
-      l.dir = Math.atan2(dx, dz);
-      l.speed = Math.min(7.2, l.speed + dt * 1.35);
-      l.x += Math.sin(l.dir) * l.speed * dt;
-      l.z += Math.cos(l.dir) * l.speed * dt;
-    } else if (prey && myD < 520 && !chase) {
-      l.sharkOrbitA = (l.sharkOrbitA || 0) + dt * 0.62;
-      const ox = prey.position.x + Math.cos(l.sharkOrbitA) * 13.5;
-      const oz = prey.position.z + Math.sin(l.sharkOrbitA) * 13.5;
-      const dx = ox - l.x, dz = oz - l.z;
-      l.dir = Math.atan2(dx, dz);
-      l.speed = 2.5 + Math.sin(G.time * 0.7 + li) * 0.35;
-      l.x += Math.sin(l.dir) * l.speed * dt;
-      l.z += Math.cos(l.dir) * l.speed * dt;
-    } else {
-      l.speed = Math.max(2.4, l.speed - dt * 0.75);
-      advanceFishLeaderPatrol(l, dt);
-    }
-    resolveFishLeaderIslandBounce(l, dt);
-  }
-  const camX = camera.position.x, camZ = camera.position.z;
+  });
   fishSchools.forEach(f => {
     const l = f.userData.leader;
     const tx = l.x + f.userData.offsetX, tz = l.z + f.userData.offsetZ;
@@ -4828,16 +4831,12 @@ function updateFish(dt) {
     const fdx = l.x - f.position.x, fdz = l.z - f.position.z;
     const moveLen = Math.sqrt(fdx * fdx + fdz * fdz);
     if (moveLen > 0.05) f.rotation.y = Math.atan2(fdx, fdz);
-    const cdx = f.position.x - camX, cdz = f.position.z - camZ;
-    f.visible = cdx * cdx + cdz * cdz < FISH_CAMERA_CULL_R2;
-    if (!f.visible) return;
-    if (f.userData.mixer) f.userData.mixer.update(dt);
-    else if (f.children[1]) f.children[1].rotation.y = Math.sin(G.time * 8 + f.userData.wiggle) * 0.4;
+    if (f.visible && f.userData.mixer) f.userData.mixer.update(dt);
+    else if (f.visible && f.children[1]) f.children[1].rotation.y = Math.sin(G.time * 8 + f.userData.wiggle) * 0.4;
   });
 }
 
 function updateSeagulls(dt) {
-  const camX = camera.position.x, camZ = camera.position.z;
   seagulls.forEach(sg => {
     sg.userData.phase += sg.userData.speed * dt;
     const p = sg.userData.phase;
@@ -4845,11 +4844,8 @@ function updateSeagulls(dt) {
     sg.position.z = sg.userData.cz + Math.sin(p) * sg.userData.radius;
     sg.position.y = 22 + Math.sin(p * 2) * 4;
     sg.rotation.y = p + Math.PI / 2;
-    const cdx = sg.position.x - camX, cdz = sg.position.z - camZ;
-    sg.visible = cdx * cdx + cdz * cdz < SEAGULL_CAMERA_CULL_R2;
-    if (!sg.visible) return;
-    if (sg.userData.mixer) sg.userData.mixer.update(dt);
-    else if (sg.userData.wingL && sg.userData.wingR) {
+    if (sg.visible && sg.userData.mixer) sg.userData.mixer.update(dt);
+    else if (sg.visible && sg.userData.wingL && sg.userData.wingR) {
       const wingFlap = Math.sin(G.time * 2.6 + sg.userData.phase * 3) * 0.4;
       sg.userData.wingL.rotation.z = wingFlap;
       sg.userData.wingR.rotation.z = -wingFlap;
@@ -7500,9 +7496,11 @@ function updateNPCs(dt) {
         if (npc.sinkTimer > 4) { scene.remove(npc.mesh); npc.mesh = null; npc.health = -999; }
       }
     } else if (npc.mesh) {
-      const wNpc = playerShipWaveAt(npc.x, npc.z);
-      npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + wNpc.waveH, npc.z);
-      npc.mesh.rotation.set(wNpc.wavePitch, npc.rotation, wNpc.waveRoll);
+      const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + npc.z * 0.06) * 0.08;
+      npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + nWH, npc.z);
+      npc.mesh.rotation.y = npc.rotation;
+      npc.mesh.rotation.x = Math.sin(G.time * 0.9 + npc.z * 0.05) * 0.025;
+      npc.mesh.rotation.z = Math.sin(G.time * 0.7 + npc.x * 0.06) * 0.035;
       applyRiggingVisualToGroup(npc.mesh, getNpcRiggingHealth(npc));
       const wakeKey = npc.syncId != null ? `npc${npc.syncId}` : `npci${npcIdx}`;
       let effWakeSpd = npc.speed != null ? npc.speed : 0;
@@ -8937,7 +8935,8 @@ function connectToServer() {
         }
         break;
       }
-      case 'swimmer_collect': {
+      case 'swimmer_collect':
+      case 'swimmer_shark': {
         if (msg.id == null) break;
         for (let si = G.swimmers.length - 1; si >= 0; si--) {
           const sw = G.swimmers[si];
@@ -13551,46 +13550,12 @@ document.getElementById('minimap').addEventListener('wheel', e => {
   mmZoom = Math.max(0.02, Math.min(0.3, mmZoom + e.deltaY * 0.0002)); drawMinimap();
 }, { passive: false });
 
-/** Same Gerstner stack as the water vertex shader — keeps hulls on the animated surface. */
-const OCEAN_GERSTNER_LAYERS = [
-  { s: 0.05, wl: 65, dx: 1, dz: 0.2, sp: 0.6 },
-  { s: 0.03, wl: 40, dx: 0.35, dz: 1, sp: 0.45 },
-  { s: 0.02, wl: 22, dx: -0.55, dz: 0.75, sp: 0.7 },
-  { s: 0.015, wl: 13, dx: 0.8, dz: -0.35, sp: 0.85 },
-  { s: 0.008, wl: 7.5, dx: -0.25, dz: -0.85, sp: 1.1 },
-  { s: 0.005, wl: 4.5, dx: 0.85, dz: 0.45, sp: 1.4 }
-];
-function gerstnerOceanDyLocal(lx, lz, t) {
-  let dy = 0;
-  for (let i = 0; i < OCEAN_GERSTNER_LAYERS.length; i++) {
-    const w = OCEAN_GERSTNER_LAYERS[i];
-    const k = (Math.PI * 2) / w.wl;
-    const c = Math.sqrt(9.8 / k);
-    const a = w.s / k;
-    const len = Math.hypot(w.dx, w.dz) || 1;
-    const nx = w.dx / len, nz = w.dz / len;
-    const f = k * (nx * lx + nz * lz - c * w.sp * t);
-    dy += a * Math.sin(f);
-  }
-  return dy;
-}
-
 /** Match local player ship bob/pitch/roll so remote vessels ride the same waves. */
 function playerShipWaveAt(wx, wz) {
-  const t = G.time;
-  const lx = wx - water.position.x;
-  const lz = wz - water.position.z;
-  const e = 0.95;
-  const y0 = gerstnerOceanDyLocal(lx, lz, t);
-  const yxp = gerstnerOceanDyLocal(lx + e, lz, t);
-  const yzn = gerstnerOceanDyLocal(lx, lz + e, t);
-  const ddx = (yxp - y0) / e;
-  const ddz = (yzn - y0) / e;
-  return {
-    waveH: y0,
-    wavePitch: Math.atan(-ddz) * 0.94,
-    waveRoll: Math.atan(ddx) * 0.94
-  };
+  const waveH = Math.sin(G.time * 0.7 + wx * 0.04) * 0.15 + Math.sin(G.time * 1.1 + wz * 0.06) * 0.1 + Math.sin(G.time * 1.8 + wx * 0.08) * 0.05;
+  const wavePitch = Math.sin(G.time * 0.9 + wz * 0.05) * 0.03 + Math.sin(G.time * 1.5 + wx * 0.07) * 0.015;
+  const waveRoll = Math.sin(G.time * 0.7 + wx * 0.06) * 0.04 + Math.sin(G.time * 1.3 + wz * 0.04) * 0.02;
+  return { waveH, wavePitch, waveRoll };
 }
 
 function spawnShipWakePiece(x, z, rotation, speed) {
@@ -13740,14 +13705,6 @@ function update(dt) {
   if (!G.docked && !G.playerSinking) updateCrewDeckAnimations(dt);
 
   updateChunks();
-  {
-    let wx = G.player.x, wz = G.player.z;
-    if (G.spectate) {
-      const st = resolveSpectateTargetXZR();
-      if (st) { wx = st.x; wz = st.z; }
-    }
-    water.position.set(wx, SEA_LEVEL - 0.5, wz);
-  }
   updateNPCs(dt);
   storyBountyEnsureAcc += dt;
   if (storyBountyEnsureAcc >= 1.35) {
@@ -13758,6 +13715,7 @@ function update(dt) {
   updateTownFlagWindAnimation();
   updateSeagulls(dt);
   updateFish(dt);
+  updateWildlifeCameraCull();
   if (G.townAnimMixers.length) {
     for (let mi = G.townAnimMixers.length - 1; mi >= 0; mi--) {
       const mx = G.townAnimMixers[mi];
@@ -13780,23 +13738,19 @@ function update(dt) {
     }
   }
   oceanSharkSpawnAcc += dt;
-  if (oceanSharkSpawnAcc >= 0.5) {
+  if (sharkPodCount() < WILDLIFE_SHARK_POD_CAP && oceanSharkSpawnAcc >= 0.9) {
     oceanSharkSpawnAcc = 0;
-    const sharkPods = schoolLeaders.filter(l => l.isShark).length;
-    if (sharkPods < WILDLIFE_SHARK_POD_CAP) {
-      for (let k = 0; k < 5; k++) {
-        const ox = G.player.x + (Math.random() - 0.5) * 5400;
-        const oz = G.player.z + (Math.random() - 0.5) * 5400;
-        if (!isSeaObstructed(ox, oz)) {
-          spawnSharkPod(ox, oz, Math.random);
-          break;
-        }
-      }
+    for (let k = 0; k < 4; k++) {
+      const ox = G.player.x + (Math.random() - 0.5) * 5600;
+      const oz = G.player.z + (Math.random() - 0.5) * 5600;
+      if (isSeaObstructed(ox, oz)) continue;
+      spawnSharkPod(ox, oz, Math.random);
     }
   }
 
-  const wPlayer = playerShipWaveAt(G.player.x, G.player.z);
-  const waveH = wPlayer.waveH, wavePitch = wPlayer.wavePitch, waveRoll = wPlayer.waveRoll;
+  const waveH = Math.sin(G.time * 0.7 + G.player.x * 0.04) * 0.15 + Math.sin(G.time * 1.1 + G.player.z * 0.06) * 0.1 + Math.sin(G.time * 1.8 + G.player.x * 0.08) * 0.05;
+  const wavePitch = Math.sin(G.time * 0.9 + G.player.z * 0.05) * 0.03 + Math.sin(G.time * 1.5 + G.player.x * 0.07) * 0.015;
+  const waveRoll = Math.sin(G.time * 0.7 + G.player.x * 0.06) * 0.04 + Math.sin(G.time * 1.3 + G.player.z * 0.04) * 0.02;
   if (G.dockingAnim) {
     G.dockingAnim.timer += dt;
     const t = Math.min(G.dockingAnim.timer / 2.0, 1);
@@ -14220,11 +14174,20 @@ function update(dt) {
       const zL = tz + (sz0 - tz) * ejL;
       sw.position.x = xL + driftX * ta;
       sw.position.z = zL + driftZ * ta;
-      const wdy = gerstnerOceanDyLocal(sw.position.x - water.position.x, sw.position.z - water.position.z, G.time);
-      sw.position.y = SEA_LEVEL + 0.05 + wdy + Math.sin(G.time * 2 + bobPh) * 0.1;
+      sw.position.y = SEA_LEVEL + 0.05 + Math.sin(G.time * 2 + bobPh) * 0.1;
       sw.rotation.x = 0;
     }
     sw.rotation.y = baseRotY + age * 0.5;
+    if (u.crewRestore && age >= tLand) {
+      const floatT = age - tLand;
+      if (floatT >= SHARK_EAT_CREW_AFTER_FLOAT_SEC) {
+        notify(`${u.crewRestore.name} was taken by sharks!`);
+        if (u.netId != null && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'swimmer_shark', id: u.netId }));
+        scene.remove(sw);
+        G.swimmers.splice(i, 1);
+        continue;
+      }
+    }
     u.life = (u.life0 != null ? u.life0 : 60) - age;
     const distToPlayer = Math.hypot(sw.position.x - G.player.x, sw.position.z - G.player.z);
     if (distToPlayer < 6 && !G.playerSinking) {
@@ -14260,16 +14223,6 @@ function update(dt) {
         G.swimmers.splice(i, 1);
       }
       continue;
-    }
-    if (age >= tLand) {
-      const waterAge = age - tLand;
-      if (waterAge > 30) {
-        const lostName = sw.userData.crewRestore ? sw.userData.crewRestore.name : (sw.userData.crewName || 'Sailor');
-        notify(`${lostName} was taken by sharks.`);
-        scene.remove(sw);
-        G.swimmers.splice(i, 1);
-        continue;
-      }
     }
     if (u.life <= 0) {
       scene.remove(sw);
@@ -14431,6 +14384,7 @@ function update(dt) {
     if (!t) endSpectateMode('Spectate target lost.');
     else { camX = t.x; camZ = t.z; }
   }
+  water.position.set(camX, SEA_LEVEL - 0.5, camZ);
   if (G.captainWalk.active) {
     updateCaptainWalk(dt);
   } else {
@@ -14520,11 +14474,10 @@ function warmUpGameView() {
     camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
   }
   syncDayNightVisuals(camX, camZ);
-  const wWu = playerShipWaveAt(G.player.x, G.player.z);
-  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.35 + wWu.waveH, G.player.z);
-  playerShipGroup.rotation.set(wWu.wavePitch, G.player.rotation, wWu.waveRoll);
+  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
+  updateWildlifeCameraCull();
   renderer.render(scene, camera);
 }
 
@@ -15713,11 +15666,12 @@ function menuRender() {
     if (!ws || ws.readyState !== 1) updateNPCs(0.016);
     updateSeagulls(0.016);
     updateFish(0.016);
+    updateWildlifeCameraCull();
     G.npcs.forEach(npc => {
       if (npc.mesh) {
-        const wN = playerShipWaveAt(npc.x, npc.z);
-        npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + wN.waveH, npc.z);
-        npc.mesh.rotation.set(wN.wavePitch, npc.rotation, wN.waveRoll);
+        const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12;
+        npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + nWH, npc.z);
+        npc.mesh.rotation.y = npc.rotation;
       }
     });
     renderer.render(scene, camera);
