@@ -568,6 +568,11 @@ input,textarea{-webkit-user-select:text;user-select:text;}
         <label>Flag</label>
         <div class="color-row" id="flag-colors"></div>
         <canvas id="flag-preview" width="128" height="96" style="width:64px;height:48px;border-radius:3px;margin-top:6px;border:1px solid rgba(140,100,40,0.3);"></canvas>
+        <label style="margin-top:10px;">Sloop hull</label>
+        <div id="player-hull-variant" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#e0d6c2;"><input type="radio" name="hull-variant" value="sloop1" checked style="accent-color:#d4a848;width:16px;height:16px;" /> Sloop I</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#e0d6c2;"><input type="radio" name="hull-variant" value="sloop2" style="accent-color:#d4a848;width:16px;height:16px;" /> Sloop II</label>
+        </div>
       </div>
       <div id="create-preview">
         <div id="preview-3d-wrap">
@@ -978,10 +983,63 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 </div>
 
 <script type="importmap">
-{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js"}}
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}
 </script>
 <script type="module">
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const SHIP_GLB_PATHS = {
+  galleon: 'assets/3d models/ships/galleon1.glb',
+  sloop1: 'assets/3d models/ships/sloop1.glb',
+  sloop2: 'assets/3d models/ships/sloop2.glb',
+  pirate: 'assets/3d models/ships/pirate-sloop1.glb'
+};
+/** Loaded glTF scene roots (cloned per ship); empty until preload completes. */
+const shipGltfRoots = Object.create(null);
+let shipGltfPreloadPromise = null;
+function preloadShipGltfAssets() {
+  if (shipGltfPreloadPromise) return shipGltfPreloadPromise;
+  const loader = new GLTFLoader();
+  const keys = Object.keys(SHIP_GLB_PATHS);
+  shipGltfPreloadPromise = Promise.all(keys.map(k => new Promise(resolve => {
+    loader.load(
+      SHIP_GLB_PATHS[k],
+      gltf => { shipGltfRoots[k] = gltf.scene; resolve(); },
+      undefined,
+      () => resolve()
+    );
+  })));
+  return shipGltfPreloadPromise;
+}
+preloadShipGltfAssets();
+
+const BGM_TRACK_URLS = [
+  'assets/sound/music/track1.mp3',
+  'assets/sound/music/track2.mp3',
+  'assets/sound/music/track3.mp3',
+  'assets/sound/music/track4.mp3',
+  'assets/sound/music/track5.mp3',
+  'assets/sound/music/track6.mp3'
+];
+let bgmAudio = null;
+let bgmTrackIndex = 0;
+function startBackgroundMusic() {
+  if (!BGM_TRACK_URLS.length || G.soundVolume <= 0.02) return;
+  if (!bgmAudio) {
+    bgmAudio = new Audio();
+    bgmAudio.addEventListener('ended', () => {
+      bgmTrackIndex = (bgmTrackIndex + 1) % BGM_TRACK_URLS.length;
+      startBackgroundMusic();
+    });
+  }
+  bgmAudio.src = BGM_TRACK_URLS[bgmTrackIndex % BGM_TRACK_URLS.length];
+  bgmAudio.volume = Math.max(0, Math.min(1, G.soundVolume * 0.5));
+  bgmAudio.play().catch(() => {});
+}
+function syncBackgroundMusicVolume() {
+  if (bgmAudio) bgmAudio.volume = Math.max(0, Math.min(1, G.soundVolume * 0.5));
+}
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const CHUNK_SIZE = 300;
@@ -1171,7 +1229,9 @@ const G = {
     anchored: false,
     shipName: 'The Black Wave',
     flagColor: '#1a1a1a',
-    shipType: 'cutter',
+    shipType: 'sloop',
+    /** Visual glTF variant when `shipType` is sloop: `sloop1` | `sloop2`. */
+    shipVisualVariant: 'sloop1',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     inventory: [
       { id: 'food', name: 'Provisions', icon: 'F', count: 12 },
@@ -1627,19 +1687,19 @@ function spawnStoryBountyNpc() {
   const sq = G.storyQuest;
   if (sq.phase !== 'active' || sq.step >= STORY_SHIP_ORDER.length) return;
   removeStoryBountyFromWorld();
-  const shipType = STORY_SHIP_ORDER[sq.step];
-  const name = STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
+  const gradeType = STORY_SHIP_ORDER[sq.step];
+  const name = STORY_PIRATE_NAMES[gradeType] || 'Notorious Pirate';
   const pt = getStoryBountySpawn(sq);
   let nx = pt.x, nz = pt.z;
   const sr = () => Math.random();
-  const hp = shipType === 'warship' ? 125 : shipType === 'galleon' ? 105 : shipType === 'brigantine' ? 90 : 72;
+  const hp = 62 + sq.step * 15;
   const npc = {
     syncId: STORY_NPC_SYNC_BASE + sq.step,
     x: nx, z: nz,
     rotation: Number.isFinite(pt.rot) ? pt.rot : sr() * Math.PI * 2,
     speed: 0,
     health: hp,
-    type: shipType,
+    type: 'sloop',
     name,
     wanderAngle: sr() * Math.PI * 2, wanderTimer: 4 + sr() * 8,
     underFireTimer: 0, fireJitter: sr(),
@@ -1652,7 +1712,7 @@ function spawnStoryBountyNpc() {
   };
   npc.speed = npcMaxForwardSpeed(npc) * (0.2 + sr() * 0.14);
   npc.flagPosition = pickRandomAiFlagPosition(sr());
-  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name);
+  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { pirateHull: true });
   const npcCrew = [
     { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
     { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
@@ -1663,7 +1723,7 @@ function spawnStoryBountyNpc() {
   scene.add(mesh);
   applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
   G.npcs.push(npc);
-  notify(`Wanted: ${name} — ${SHIP_TYPES[shipType]?.name || shipType} class.`);
+  notify(`Wanted: ${name} — ${SHIP_TYPES[gradeType]?.name || gradeType} class.`);
 }
 
 function onStoryBountySunkByPlayer(npc) {
@@ -4147,7 +4207,8 @@ function otherPlayerShipCacheKey(p) {
         return `${c.name || ''}|${c.role || ''}|${c.color || ''}|${c.hat || ''}|${c.outfit || ''}|${c.task || ''}|${c.parrot ? 1 : 0}|h${hb}`;
       }).join(',')}`
     : '_';
-  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${sp.flag || 'mast'}|${fc}|${crewSeg}`;
+  const sv = p.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1';
+  return `${p.shipType || 'sloop'}|${sv}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${sp.flag || 'mast'}|${fc}|${crewSeg}`;
 }
 
 function refreshOtherPlayerShipCacheKey(p) {
@@ -4200,6 +4261,123 @@ function attachPirateFlagToShip(g, spec, flagColor, flagPlace, mastRigForMastFla
   parent.add(flagRig);
 }
 
+const _gltfBox = new THREE.Box3();
+const _gltfSize = new THREE.Vector3();
+const _gltfCenter = new THREE.Vector3();
+
+function resolveGltfHullKey(type, meshOpts) {
+  meshOpts = meshOpts || {};
+  if (meshOpts.merchantHull) {
+    if (type === 'galleon') return 'galleon';
+    if (type === 'sloop') return meshOpts.traderSloopVariant === 'sloop2' ? 'sloop2' : 'sloop1';
+    return 'sloop1';
+  }
+  if (meshOpts.pirateHull) return 'pirate';
+  if (meshOpts.honorPlayerLoadout) {
+    if (type === 'galleon') return 'galleon';
+    if (type === 'sloop') return (G.player.shipVisualVariant === 'sloop2') ? 'sloop2' : 'sloop1';
+    return null;
+  }
+  if (meshOpts.remoteShipVisualVariant != null) {
+    if (type === 'galleon') return 'galleon';
+    if (type === 'sloop') return meshOpts.remoteShipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1';
+  }
+  if (type === 'galleon') return 'galleon';
+  if (type === 'sloop') return 'sloop1';
+  return null;
+}
+
+function fitGltfHullToSpec(hullRoot, spec) {
+  _gltfBox.setFromObject(hullRoot);
+  _gltfBox.getSize(_gltfSize);
+  const w = Math.max(_gltfSize.x, _gltfSize.z, 0.001);
+  const targetLen = spec.hullLen * 1.05;
+  const s = targetLen / w;
+  hullRoot.scale.setScalar(s);
+  _gltfBox.setFromObject(hullRoot);
+  _gltfBox.getCenter(_gltfCenter);
+  hullRoot.position.sub(_gltfCenter);
+  hullRoot.position.y = -_gltfBox.min.y;
+}
+
+function tintGltfSailsWithFlag(root, flagColor, amount) {
+  if (!flagColor || amount <= 0) return;
+  const fc = new THREE.Color(flagColor);
+  root.traverse(ch => {
+    if (!ch.isMesh || !ch.material) return;
+    const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
+    for (const m of mats) {
+      if (m && m.color) {
+        const b = m.color.clone();
+        b.lerp(fc, amount);
+        m.color.copy(b);
+      }
+    }
+  });
+}
+
+/** Instanced glTF hull: flag, optional name label, cannon tier (procedural) when needed. */
+function buildGltfShipMesh(type, parts, flagColor, shipName, meshOpts, spec, glbKey) {
+  const tmpl = shipGltfRoots[glbKey];
+  if (!tmpl) return null;
+  meshOpts = meshOpts || {};
+  parts = normalizeShipParts(parts);
+  const flagPlace = parts.flag || 'mast';
+  const isMerchantHull = !!meshOpts.merchantHull;
+  const honorPlayerLoadout = !!meshOpts.honorPlayerLoadout;
+  let cannonTier = parts.cannon;
+  if (!isMerchantHull && !honorPlayerLoadout && (!cannonTier || cannonTier === 'none')) {
+    cannonTier = 'light';
+  }
+
+  const g = new THREE.Group();
+  const hullRoot = tmpl.clone(true);
+  hullRoot.traverse(ch => {
+    if (ch.isMesh) {
+      ch.castShadow = true;
+      ch.receiveShadow = true;
+    }
+  });
+  hullRoot.rotation.y = Math.PI;
+  fitGltfHullToSpec(hullRoot, spec);
+  hullRoot.userData.isGltfHull = true;
+  g.add(hullRoot);
+  tintGltfSailsWithFlag(hullRoot, flagColor, isMerchantHull ? 0.18 : 0.14);
+
+  if (cannonTier && cannonTier !== 'none') {
+    let cc = spec.cannonSlots || 2;
+    if (cc < 1) cc = 1;
+    const visualCount = cc === 1 ? 2 : cc;
+    const barrelScale = cc === 1 ? 0.88 : 1;
+    const barrelLen = 1.15 * barrelScale;
+    const cg = new THREE.CylinderGeometry(0.1 * barrelScale, 0.15 * barrelScale, barrelLen, 6); cg.rotateZ(Math.PI / 2);
+    const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
+    for (let c = 0; c < visualCount; c++) {
+      const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
+      const cn = new THREE.Mesh(c === 0 ? cg : cg.clone(), cm);
+      cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * 1.8);
+      cn.castShadow = true;
+      cn.userData.isShipCannon = true;
+      cn.userData.cannonSide = side;
+      cn.userData.cannonIndexOnSide = idx;
+      cn.userData.barrelHalfLen = barrelLen * 0.5;
+      cn.userData.basePos = cn.position.clone();
+      cn.userData.recoilVel = 0;
+      cn.userData.recoilOffset = 0;
+      g.add(cn);
+    }
+  }
+
+  attachPirateFlagToShip(g, spec, flagColor, flagPlace, null);
+  if (shipName) {
+    const swatch = flagColor ? String(flagColor) : '';
+    const label = makeTextSprite(shipName, '#e8dcc8', '', swatch);
+    label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
+    g.add(label);
+  }
+  return g;
+}
+
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   meshOpts = meshOpts || {};
   parts = normalizeShipParts(parts);
@@ -4210,7 +4388,13 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   if (!isMerchantHull && !honorPlayerLoadout && (!cannonTier || cannonTier === 'none')) {
     cannonTier = 'light';
   }
-  const g = new THREE.Group(), spec = SHIP_TYPES[type];
+  const spec = SHIP_TYPES[type] || SHIP_TYPES.sloop;
+  const glbKey = resolveGltfHullKey(type, meshOpts);
+  if (glbKey && shipGltfRoots[glbKey]) {
+    const glbGroup = buildGltfShipMesh(type, parts, flagColor, shipName, meshOpts, spec, glbKey);
+    if (glbGroup) return glbGroup;
+  }
+  const g = new THREE.Group();
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
   else if (parts.hull === 'darkwood') hc = 0x2a1a0a;
@@ -6048,7 +6232,6 @@ function resolvePlayerShipCollisionsAfterNpcs() {
 
 function tradeShipCannonForType(shipType) {
   if (shipType === 'galleon') return 'heavy';
-  if (shipType === 'brigantine') return 'medium';
   return 'light';
 }
 function spawnTradeShips() {
@@ -6074,8 +6257,8 @@ function spawnTradeShips() {
     if (!spawn) continue;
     let nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nx));
     let nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nz));
-    const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
-    const st = shipTypes[Math.floor(sr() * shipTypes.length)];
+    const st = sr() < 0.42 ? 'galleon' : 'sloop';
+    const tradeSloopVariant = st === 'sloop' ? (sr() < 0.5 ? 'sloop1' : 'sloop2') : null;
     for (let trySp = 0; trySp < 12; trySp++) {
       const nr = shipHullRadius(st);
       let clash = false;
@@ -6110,6 +6293,7 @@ function spawnTradeShips() {
       homeCx: home.cx,
       homeCz: home.cz,
       sailPick,
+      tradeSloopVariant,
       sailBonus: sailPick === 'silk' ? 0.3 : 0,
       wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
       riggingHealth: 100
@@ -6121,7 +6305,7 @@ function spawnTradeShips() {
     npc.tradePhase = 'loading_home';
     npc.tradeTimer = 6 + sr() * 14;
     syncTradeShipName(npc, home);
-    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true });
+    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, traderSloopVariant: npc.tradeSloopVariant });
     const npcCrew = [
       { name: 'Merchant', role: 'captain', task: 'helm', color: '#3a3020', hat: 'tricorn' },
       { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4538', hat: 'bandana' },
@@ -6142,11 +6326,10 @@ function spawnNPCs() {
   let nameRngState = npcSeed + 901;
   const nameRng = () => { nameRngState = ((nameRngState * 16807) % 2147483647 + 2147483647) % 2147483647; return nameRngState / 2147483647; };
   const uniqueNames = pickUniqueNPCShipNames(8, nameRng);
-  const typePool = ['cutter','sloop','brigantine','galleon','warship'];
   for (let i = 0; i < 8; i++) {
     let s = npcSeed + i * 997;
     const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
-    const npcType = typePool[Math.floor(sr() * 5)];
+    const npcType = 'sloop';
     let nx = 0, nz = 0;
     let placed = false;
     for (let attempt = 0; attempt < 70; attempt++) {
@@ -6187,7 +6370,7 @@ function spawnNPCs() {
     npc.flagColor = npcFlagColor;
     npc.sailBonus = 0.1;
     npc.speed = npcMaxForwardSpeed(npc) * (0.14 + sr() * 0.1);
-    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name);
+    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name, { pirateHull: true });
     const npcCrew = [
       { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
       { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
@@ -6224,7 +6407,11 @@ function rebuildNPCShipMesh(npc) {
     scene.remove(npc.mesh);
     npc.mesh = null;
   }
-  const mesh = buildShipMesh(npc.type, parts, npc.flagColor, npc.name, { merchantHull: merchant });
+  const mesh = buildShipMesh(npc.type, parts, npc.flagColor, npc.name, {
+    merchantHull: merchant,
+    pirateHull: !merchant && !npc.isTradeShip,
+    traderSloopVariant: merchant ? npc.tradeSloopVariant : undefined
+  });
   buildCrewMeshes(mesh, npcCrew, npc.type);
   npc.mesh = mesh;
   scene.add(mesh);
@@ -7358,6 +7545,7 @@ function syncCaptainNameToServer() {
     name: capName,
     shipName: G.player.shipName,
     shipType: G.player.shipType,
+    shipVisualVariant: G.player.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1',
     shipParts: G.player.shipParts,
     flagColor: G.player.flagColor || '#1a1a1a',
     crew: buildCrewSyncPayload(),
@@ -7600,6 +7788,7 @@ function connectToServer() {
         const p = G.otherPlayers.get(msg.id);
         if (p) {
           p.shipType = msg.shipType;
+          if (msg.shipVisualVariant != null) p.shipVisualVariant = msg.shipVisualVariant;
           p.shipParts = msg.shipParts;
           refreshOtherPlayerShipCacheKey(p);
           if (otherShipGroups.has(msg.id)) {
@@ -7806,15 +7995,15 @@ function connectToServer() {
           let npc = G.npcs.find(n => n.syncId === nd.id);
           if (!npc && nd.id >= STORY_NPC_SYNC_BASE && nd.id < STORY_NPC_SYNC_BASE + STORY_SHIP_ORDER.length) {
             const step = nd.id - STORY_NPC_SYNC_BASE;
-            const shipType = nd.t && SHIP_TYPES[nd.t] ? nd.t : STORY_SHIP_ORDER[step];
-            const name = nd.n || STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
+            const gradeType = nd.t && SHIP_TYPES[nd.t] ? nd.t : STORY_SHIP_ORDER[step];
+            const name = nd.n || STORY_PIRATE_NAMES[gradeType] || 'Notorious Pirate';
             const flagColor = nd.fc || '#5a0808';
             npc = {
               syncId: nd.id,
               x: nd.x, z: nd.z,
               rotation: nd.r,
               health: nd.h,
-              type: shipType,
+              type: 'sloop',
               name,
               flagColor,
               flagPosition: nd.flag === 'mast' || nd.flag === 'side' || nd.flag === 'stern' ? nd.flag : AI_FLAG_POSITIONS[(nd.id | 0) %3],
@@ -7827,7 +8016,7 @@ function connectToServer() {
               syncX: nd.x, syncZ: nd.z, syncR: nd.r,
               riggingHealth: nd.rg != null ? Math.max(0, Math.min(100, nd.rg)) : 100
             };
-            const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name);
+            const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { pirateHull: true });
             const npcCrew = [
               { name: 'Captain', role: 'captain', task: 'helm', color: '#8b0000', hat: 'tricorn' },
               { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4a4a', hat: 'bandana' },
@@ -7840,11 +8029,11 @@ function connectToServer() {
           }
           if (!npc) return;
           if (nd.t && SHIP_TYPES[nd.t] && (
-            nd.t !== npc.type ||
+            (!npc.isStoryBounty && nd.t !== npc.type) ||
             (nd.fc && nd.fc !== npc.flagColor) ||
             (nd.n && nd.n !== npc.name)
           )) {
-            npc.type = nd.t;
+            if (!npc.isStoryBounty) npc.type = nd.t;
             if (nd.n) npc.name = nd.n;
             if (nd.fc) npc.flagColor = nd.fc;
             rebuildNPCShipMesh(npc);
@@ -7951,6 +8140,7 @@ function sendUpdate() {
     riggingHealth: G.player.riggingHealth != null ? G.player.riggingHealth : 100,
     morale: G.player.morale != null ? G.player.morale : 100,
     shipType: G.player.shipType,
+    shipVisualVariant: G.player.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1',
     shipName: G.player.shipName,
     shipParts: { ...G.player.shipParts },
     flagColor: G.player.flagColor || '#1a1a1a',
@@ -9930,7 +10120,8 @@ let cargoPreviewMeshSig = '';
 let cargoInvUiSig = '';
 function getCargoPreviewMeshSig() {
   const c = (G.player.crew || []).map(m => `${m.name}:${m.role}:${m.health}`).join('|');
-  return `${G.player.shipType}|${JSON.stringify(G.player.shipParts)}|${c}|${G.player.flagColor}|${G.player.shipName}`;
+  const sv = G.player.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1';
+  return `${G.player.shipType}|${sv}|${JSON.stringify(G.player.shipParts)}|${c}|${G.player.flagColor}|${G.player.shipName}`;
 }
 function getCargoInventoryUiSig() {
   const slots = (G.player.cargoSlots || []).map(s => (s && s.count > 0) ? `${s.id}:${s.count}` : '').join(',');
@@ -11554,6 +11745,7 @@ window.portBuyShip = function(shipType) {
       ws.send(JSON.stringify({
         type: 'ship_update',
         shipType: G.player.shipType,
+        shipVisualVariant: G.player.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1',
         shipParts: { ...G.player.shipParts }
       }));
     } catch (e) {}
@@ -12774,7 +12966,9 @@ function update(dt) {
       const captainName = networkPlayerCaptainName(p);
       const shipTitle = (p.shipName && String(p.shipName).trim()) ? String(p.shipName).trim() : captainName;
       const visualParts = normalizeShipPartsForRemoteView(p.shipParts);
-      const sm = buildShipMesh(st, visualParts, p.flagColor || p.color || '#4488cc', shipTitle);
+      const sm = buildShipMesh(st, visualParts, p.flagColor || p.color || '#4488cc', shipTitle, {
+        remoteShipVisualVariant: p.shipVisualVariant
+      });
       if (captainName && shipTitle !== captainName) {
         const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, (p.flagColor || p.color || ''));
         const spec = SHIP_TYPES[st];
@@ -13784,6 +13978,11 @@ function buildCreationUI() {
   document.getElementById('cap-parrot').onchange = () => { drawCrewPreview(); updatePreviewShip(); };
   document.getElementById('cap-name').oninput = () => { drawCrewPreview(); updatePreviewShip(); };
   document.getElementById('ship-name-input').oninput = updatePreviewShip;
+  const hullPick = G.player.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1';
+  document.querySelectorAll('input[name="hull-variant"]').forEach(r => {
+    r.checked = r.value === hullPick;
+    r.onchange = () => { updatePreviewShip(); };
+  });
 
   const crewDiv = document.getElementById('crew-editors');
   crewDiv.innerHTML = '';
@@ -14009,7 +14208,8 @@ function beginVoyageAfterCharacter() {
   destroyAmbientWildlife();
   noise = new SimplexNoise(G.worldSeed);
   ensurePlayerInOpenOcean();
-  G.player.shipType = 'cutter';
+  G.player.shipType = 'sloop';
+  G.player.shipVisualVariant = G.player.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1';
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
@@ -14050,6 +14250,8 @@ function beginVoyageAfterCharacter() {
 function launchGame() {
   clearCrewHighlight();
   G.player.shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
+  G.player.shipVisualVariant = document.querySelector('input[name="hull-variant"]:checked')?.value === 'sloop2' ? 'sloop2' : 'sloop1';
+  G.player.shipType = 'sloop';
   G.player.flagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
   const allCrew = getCrewFromUI();
   G.player.crew = allCrew.map((c, i) => ({
@@ -14209,6 +14411,7 @@ document.getElementById('settings-volume')?.addEventListener('input', e => {
   const v = Math.max(0, Math.min(100, parseInt(e.target.value, 10))) / 100;
   G.soundVolume = v;
   if (masterGain) masterGain.gain.value = v;
+  syncBackgroundMusicVolume();
   try { localStorage.setItem('pirates_volume', String(v)); } catch (err) {}
 });
 
@@ -14248,16 +14451,21 @@ function applyDefaultStartingLoadout(opts) {
   let savedCap = null;
   let savedShipName = '';
   let savedShipType = null;
+  let savedShipVisualVariant = null;
   let savedParts = null;
   let savedFlag = null;
   if (keep) {
     savedCap = G.player.crew[0] ? { ...G.player.crew[0] } : null;
     savedShipName = G.player.shipName || '';
     savedShipType = G.player.shipType || null;
+    savedShipVisualVariant = G.player.shipVisualVariant || null;
     savedParts = G.player.shipParts ? { ...normalizeShipParts(G.player.shipParts) } : null;
     savedFlag = G.player.flagColor || null;
   }
-  G.player.shipType = 'cutter';
+  G.player.shipType = 'sloop';
+  if (!G.player.shipVisualVariant || (G.player.shipVisualVariant !== 'sloop1' && G.player.shipVisualVariant !== 'sloop2')) {
+    G.player.shipVisualVariant = 'sloop1';
+  }
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
@@ -14266,6 +14474,7 @@ function applyDefaultStartingLoadout(opts) {
     G.player.crew[0] = { ...G.player.crew[0], ...savedCap, role: 'captain', task: 'helm', health: 100 };
     if (savedShipName) G.player.shipName = savedShipName;
     if (savedShipType) G.player.shipType = savedShipType;
+    if (savedShipVisualVariant === 'sloop1' || savedShipVisualVariant === 'sloop2') G.player.shipVisualVariant = savedShipVisualVariant;
     if (savedParts) G.player.shipParts = savedParts;
     if (savedFlag) G.player.flagColor = savedFlag;
   } else if (G.player.crew[0]) {
@@ -14309,6 +14518,7 @@ function saveProgress() {
       x: G.player.x, z: G.player.z, rotation: G.player.rotation,
       health: G.player.health, shipType: G.player.shipType,
       shipName: G.player.shipName,
+      shipVisualVariant: G.player.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1',
       flagColor: G.player.flagColor,
       shipParts: G.player.shipParts,
       inventory: G.player.inventory,
@@ -14344,6 +14554,7 @@ function loadProgress() {
     if (data.health !== undefined) G.player.health = data.health;
     if (data.shipName) G.player.shipName = data.shipName;
     if (data.shipType) G.player.shipType = data.shipType;
+    G.player.shipVisualVariant = data.shipVisualVariant === 'sloop2' ? 'sloop2' : 'sloop1';
     if (data.shipParts) G.player.shipParts = normalizeShipParts(data.shipParts);
     if (Array.isArray(data.inventory)) {
       G.player.inventory = data.inventory;
@@ -14515,6 +14726,7 @@ function drawMenuBg() {
 }
 
 document.getElementById('start-btn').onclick = () => {
+  startBackgroundMusic();
   if (voyageSaveExistsInStorage()) {
     if (!acquireGameTabLockOrExplain()) {
       showDuplicateSessionOverlay();
@@ -14600,7 +14812,8 @@ function executeStartNewVoyageAfterConfirm() {
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
   G.player.health = 100; G.player.riggingHealth = 100; G.player.morale = 100;
-  G.player.shipName = 'The Black Wave'; G.player.shipType = 'cutter';
+  G.player.shipName = 'The Black Wave'; G.player.shipType = 'sloop';
+  G.player.shipVisualVariant = 'sloop1';
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
@@ -14609,6 +14822,7 @@ function executeStartNewVoyageAfterConfirm() {
   G.completedMissionLog = [];
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('create-screen').style.display = 'block';
+  startBackgroundMusic();
   buildCreationUI();
   updatePiratesPanel();
 }
