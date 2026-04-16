@@ -986,7 +986,6 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 </script>
 <script type="module">
 import * as THREE from 'three';
-import WebGPURenderer from 'three/addons/renderers/webgpu/WebGPURenderer.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
@@ -1020,6 +1019,13 @@ const WORLD_GLB_PATHS = {
   house1: 'assets/3d models/buildings/house1.glb',
   house2: 'assets/3d models/buildings/house2.glb'
 };
+function sanitizeMapEditorGltfKey(k) {
+  const s = String(k || '').trim();
+  if (!s) return '';
+  if (Object.prototype.hasOwnProperty.call(SHIP_GLB_PATHS, s)) return s;
+  if (Object.prototype.hasOwnProperty.call(WORLD_GLB_PATHS, s)) return s;
+  return '';
+}
 const GALLEON_GLTF_KEYS = ['galleon2', 'galleon3', 'galleon4'];
 /** All seven hull visuals: three sloops + four galleons (NPC / pirate random pool). */
 const NPC_HULL_GLTF_KEYS = ['sloop1', 'sloop2', 'sloop3', 'galleon2', 'galleon3', 'galleon4'];
@@ -1044,49 +1050,56 @@ const shipGltfRoots = Object.create(null);
 const worldGltfData = Object.create(null);
 const _worldPlBox = new THREE.Box3();
 const _worldPlSize = new THREE.Vector3();
-let shipGltfPreloadPromise = null;
-let worldGltfPreloadPromise = null;
-let worldGltfPreloadScheduled = false;
+let gltfCatalogReadyPromise = null;
+let didPostGltfTerrainRebuild = false;
 
-/** Player + NPC ship hulls only — small set, needed before sailing / character preview. */
-function preloadShipHullsGltf() {
-  if (shipGltfPreloadPromise) return shipGltfPreloadPromise;
-  shipGltfPreloadPromise = (async () => {
-    await MeshoptDecoder.ready;
-    const loader = new GLTFLoader();
-    loader.setMeshoptDecoder(MeshoptDecoder);
-    const shipLoads = Object.keys(SHIP_GLB_PATHS).map(k => new Promise(resolve => {
-      loader.load(
-        SHIP_GLB_PATHS[k],
-        gltf => { shipGltfRoots[k] = gltf.scene; resolve(); },
-        undefined,
-        () => resolve()
-      );
-    }));
-    await Promise.all(shipLoads);
-  })();
-  return shipGltfPreloadPromise;
+/** Rebuild terrain chunks once the full glTF catalog is available (fixes low-detail islands from early menu init). */
+function refreshWorldMeshesAfterFirstGltfCatalogLoad() {
+  if (didPostGltfTerrainRebuild) return;
+  didPostGltfTerrainRebuild = true;
+  const wasPlaying = G.mode === 'playing';
+  G.chunks.clear();
+  clearProceduralDockBerthStyleCache();
+  islandGroup.clear();
+  G.islands = [];
+  G.townFlagMeshes = [];
+  destroyAmbientWildlife();
+  G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
+  G.npcs = [];
+  updateChunks();
+  spawnNPCs();
+  nudgePlayerSpawnClearOfShips();
+  scatterWindStreaksNearPlayer();
+  seedDecorativeWildlifeNearPlayer();
+  if (wasPlaying) {
+    rebuildPlayerShip();
+    applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth != null ? G.player.riggingHealth : 100);
+    playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.35, G.player.z);
+  }
 }
 
 /**
- * Islands / wildlife / buildings — large; loads after first paint so menus stay responsive.
- * Batched with frame yields to avoid long main-thread decode stalls.
+ * Load every ship + world glTF in parallel. When finished, refresh chunks so procedural/custom islands use real meshes.
  */
-function preloadWorldDecorGltf() {
-  if (worldGltfPreloadPromise) return worldGltfPreloadPromise;
-  worldGltfPreloadPromise = (async () => {
+function preloadAllGltfUnified() {
+  if (gltfCatalogReadyPromise) return gltfCatalogReadyPromise;
+  gltfCatalogReadyPromise = (async () => {
     await MeshoptDecoder.ready;
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
-    const keys = Object.keys(WORLD_GLB_PATHS);
-    const BATCH = 2;
-    for (let i = 0; i < keys.length; i += BATCH) {
-      const slice = keys.slice(i, i + BATCH);
-      await Promise.all(slice.map(k => new Promise(resolve => {
-        if (worldGltfData[k] && worldGltfData[k].scene) {
-          resolve();
-          return;
-        }
+    const tasks = [];
+    for (const k of Object.keys(SHIP_GLB_PATHS)) {
+      tasks.push(new Promise(resolve => {
+        loader.load(
+          SHIP_GLB_PATHS[k],
+          gltf => { shipGltfRoots[k] = gltf.scene; resolve(); },
+          undefined,
+          () => resolve()
+        );
+      }));
+    }
+    for (const k of Object.keys(WORLD_GLB_PATHS)) {
+      tasks.push(new Promise(resolve => {
         loader.load(
           WORLD_GLB_PATHS[k],
           gltf => {
@@ -1096,43 +1109,19 @@ function preloadWorldDecorGltf() {
           undefined,
           () => resolve()
         );
-      })));
-      await new Promise(r => requestAnimationFrame(r));
+      }));
     }
+    await Promise.all(tasks);
+    refreshWorldMeshesAfterFirstGltfCatalogLoad();
   })();
-  return worldGltfPreloadPromise;
+  return gltfCatalogReadyPromise;
 }
 
-function scheduleDeferredWorldGltfPreload() {
-  if (worldGltfPreloadScheduled) return;
-  worldGltfPreloadScheduled = true;
-  const kick = () => { preloadWorldDecorGltf(); };
-  if (typeof requestIdleCallback === 'function') {
-    requestIdleCallback(kick, { timeout: 4000 });
-  } else {
-    setTimeout(kick, 320);
-  }
-}
+function preloadShipHullsGltf() { return preloadAllGltfUnified(); }
+function preloadShipGltfAssets() { return preloadAllGltfUnified(); }
+function preloadAllGltfAssets() { return preloadAllGltfUnified(); }
 
-/** Start loading world glTF immediately when entering play (custom-map props need meshes without waiting for idle). */
-function prioritizeWorldGltfForGameplay() {
-  worldGltfPreloadScheduled = true;
-  preloadWorldDecorGltf();
-}
-
-/** @deprecated Prefer `preloadShipHullsGltf` — this name now resolves when hulls are ready; world loads in background. */
-function preloadShipGltfAssets() {
-  scheduleDeferredWorldGltfPreload();
-  return preloadShipHullsGltf();
-}
-
-function preloadAllGltfAssets() {
-  scheduleDeferredWorldGltfPreload();
-  return Promise.all([preloadShipHullsGltf(), preloadWorldDecorGltf()]);
-}
-
-preloadShipHullsGltf();
-scheduleDeferredWorldGltfPreload();
+preloadAllGltfUnified();
 
 /** Uniform scale so world-space height ≈ targetH (meters). Does not move the root. */
 function scaleGltfRootToHeight(root, targetH) {
@@ -1214,7 +1203,6 @@ const RENDER_DIST = 3;
 function mainCanvasPixelRatio() {
   return Math.min(window.devicePixelRatio || 1, 2);
 }
-const SAVE_KEY = 'pirates_save_v1';
 const ISLAND_CHANCE = 0.25;
 /** Gentler dome than falloff² — smoother procedural islands (matches map-editor). */
 const ISLAND_HEIGHT_FALLOFF_POW = 1.48;
@@ -2150,56 +2138,19 @@ class SimplexNoise {
 let noise;
 
 /* ============================= THREE.JS SETUP ============================ */
-function applyMainRendererSurface(r) {
-  r.setSize(window.innerWidth, window.innerHeight);
-  r.setPixelRatio(mainCanvasPixelRatio());
-  if (r.outputColorSpace !== undefined) r.outputColorSpace = THREE.SRGBColorSpace;
-  r.toneMapping = THREE.ACESFilmicToneMapping;
-  r.toneMappingExposure = 1.1;
-  if (r.shadowMap) {
-    r.shadowMap.enabled = !isMobile;
-    if (!isMobile) r.shadowMap.type = THREE.PCFSoftShadowMap;
-  }
-  r.setClearColor(0x152a45, 1);
-  document.body.prepend(r.domElement);
-  r.domElement.style.touchAction = 'none';
-  r.domElement.tabIndex = 0;
-  r.domElement.style.outline = 'none';
-}
-async function createMainRendererWithRetry() {
-  const p = { antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' };
-  const stripFailed = r => {
-    try {
-      if (r && r.domElement && r.domElement.parentNode) r.domElement.parentNode.removeChild(r.domElement);
-    } catch (e) {}
-    try { if (r && r.dispose) r.dispose(); } catch (e2) {}
-  };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let r = null;
-    try {
-      r = new WebGPURenderer(p);
-      applyMainRendererSurface(r);
-      if (typeof r.init === 'function') await r.init();
-      return r;
-    } catch (e) {
-      stripFailed(r);
-      if (attempt === 0) await new Promise(res => setTimeout(res, 450));
-    }
-  }
-  let r = null;
-  try {
-    r = new WebGPURenderer({ ...p, forceWebGL: true });
-    applyMainRendererSurface(r);
-    if (typeof r.init === 'function') await r.init();
-    return r;
-  } catch (e) {
-    stripFailed(r);
-  }
-  r = new THREE.WebGLRenderer(p);
-  applyMainRendererSurface(r);
-  return r;
-}
-const renderer = await createMainRendererWithRetry();
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(mainCanvasPixelRatio());
+if (renderer.outputColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.shadowMap.enabled = !isMobile;
+if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setClearColor(0x152a45, 1);
+document.body.prepend(renderer.domElement);
+renderer.domElement.style.touchAction = 'none';
+renderer.domElement.tabIndex = 0;
+renderer.domElement.style.outline = 'none';
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
@@ -3732,72 +3683,17 @@ function generateCustomMapChunk(cx, cz) {
     const er0 = decoRand(er);
     if (e.type === 'tree') {
       const yAw = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : undefined;
-      const mkTree = String(e.modelKey || '').trim();
-      const treePool = ['tree1', 'tree2', 'tree3'];
-      const tk = treePool.includes(mkTree) ? mkTree : treePool[Math.floor(er0() * treePool.length)];
-      const tplTree = worldGltfData[tk];
-      if (tplTree && tplTree.scene) {
-        const root = tplTree.scene.clone(true);
-        const th = 4.1 + er0() * 3.4;
-        scaleGltfRootToHeight(root, th);
-        const yaw = yAw != null ? yAw : er0() * Math.PI * 2;
-        root.rotation.y = yaw;
-        anchorGltfBottomAtWorldY(root, surf + 0.08, e.x, e.z);
-        root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
-        group.add(root);
-      } else {
-        group.add(createPalmTree(e.x, surf + 0.08, e.z, er, yAw));
-      }
+      group.add(createPalmTree(e.x, surf + 0.08, e.z, er, yAw));
     }
-    else if (e.type === 'bush') {
-      const mkBush = String(e.modelKey || '').trim();
-      const bushPool = ['bush1', 'bush2'];
-      const bk = bushPool.includes(mkBush) ? mkBush : (bushPool[Math.floor(er0() * bushPool.length)]);
-      const tplB = worldGltfData[bk];
-      if (tplB && tplB.scene) {
-        const root = tplB.scene.clone(true);
-        const th = Math.max(0.28, (0.35 + er0() * 0.35) * 1.35) * (0.85 + er0() * 0.35);
-        scaleGltfRootToHeight(root, th);
-        root.rotation.y = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : er0() * Math.PI * 2;
-        anchorGltfBottomAtWorldY(root, surf + 0.02, e.x, e.z);
-        root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
-        group.add(root);
-      } else {
-        group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + er0() * 0.35, er));
-      }
-    }
-    else if (e.type === 'gltfProp') {
-      const mk = String(e.modelKey || '').trim();
-      const wTpl = worldGltfData[mk];
-      const sc = wTpl && wTpl.scene ? wTpl.scene : (shipGltfRoots[mk] || null);
-      const rot = e.rot != null ? Number(e.rot) : 0;
-      if (sc) {
-        const root = sc.clone(true);
-        root.rotation.y = rot;
-        _worldPlBox.setFromObject(root);
-        _worldPlSize.subVectors(_worldPlBox.max, _worldPlBox.min);
-        const foot = Math.max(_worldPlSize.x, _worldPlSize.z, 0.01);
-        const targetFoot = e.footTarget != null ? Number(e.footTarget) : 5.5 + er0() * 4.5;
-        root.scale.setScalar(targetFoot / foot);
-        anchorGltfBottomAtWorldY(root, surf + 0.12, e.x, e.z);
-        root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
-        if (wTpl && wTpl.animations && wTpl.animations.length) registerTownAnimations(root);
-        group.add(root);
-      }
-    }
+    else if (e.type === 'bush') group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + er0() * 0.35, er));
     else if (e.type === 'building' || e.type === 'house') {
       const rot = e.rot != null ? Number(e.rot) : 0;
-      const mkExplicit = String(e.modelKey || '').trim();
       const modelId = String(e.buildingKind || e.model || '').toLowerCase();
-      let gk = '';
-      if (mkExplicit && worldGltfData[mkExplicit] && worldGltfData[mkExplicit].scene) gk = mkExplicit;
-      if (!gk) {
-        gk = 'house1';
-        if (modelId.includes('tavern')) gk = 'tavern';
-        else if (modelId.includes('church')) gk = 'church1';
-        else if (modelId.includes('gov')) gk = 'govres1';
-        else if (e.type === 'house' || modelId.includes('house')) gk = er0() < 0.5 ? 'house1' : 'house2';
-      }
+      let gk = 'house1';
+      if (modelId.includes('tavern')) gk = 'tavern';
+      else if (modelId.includes('church')) gk = 'church1';
+      else if (modelId.includes('gov')) gk = 'govres1';
+      else if (e.type === 'house' || modelId.includes('house')) gk = er0() < 0.5 ? 'house1' : 'house2';
       const tpl = worldGltfData[gk];
       if (tpl && tpl.scene) {
         const root = tpl.scene.clone(true);
@@ -3857,8 +3753,7 @@ function generateCustomMapChunk(cx, cz) {
       }
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
-      const mkDock = String(e.modelKey || '').trim();
-      const dk = (mkDock === 'dock1' || mkDock === 'dock2') ? mkDock : (er0() < 0.5 ? 'dock1' : 'dock2');
+      const dk = er0() < 0.5 ? 'dock1' : 'dock2';
       const dTpl = worldGltfData[dk];
       if (dTpl && dTpl.scene) {
         const dRoot = dTpl.scene.clone(true);
@@ -3901,6 +3796,29 @@ function generateCustomMapChunk(cx, cz) {
       group.add(createBarrel(e.x, surf + 0.02, e.z, er));
     } else if (e.type === 'driftwood') {
       group.add(createDriftwood(e.x, surf + 0.1, e.z, er));
+    } else if (e.type === 'gltf') {
+      const gk = sanitizeMapEditorGltfKey(e.gltfKey);
+      if (gk) {
+        const wtpl = worldGltfData[gk];
+        let root = null;
+        if (wtpl && wtpl.scene) {
+          root = wtpl.scene.clone(true);
+          root.userData._tpl = wtpl;
+        } else if (shipGltfRoots[gk]) {
+          root = shipGltfRoots[gk].clone(true);
+        }
+        if (root) {
+          root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+          const rot = e.rot != null ? Number(e.rot) : 0;
+          const sc = e.gltfScale != null && Number.isFinite(Number(e.gltfScale)) ? Number(e.gltfScale) : 1;
+          root.scale.setScalar(sc);
+          if (/^sloop|^galleon/.test(gk)) root.rotation.y = rot + Math.PI / 2;
+          else root.rotation.y = rot;
+          anchorGltfBottomAtWorldY(root, surf + 0.12, e.x, e.z);
+          registerTownAnimations(root);
+          group.add(root);
+        }
+      }
     }
   }
   islandGroup.add(group);
@@ -8115,7 +8033,7 @@ function schedulePlayWorldNetFallback() {
 }
 /** Current localStorage voyage (not the `hasSave` snapshot from first paint — fixes Continue after saving mid-session). */
 function voyageSaveExistsInStorage() {
-  try { return !!localStorage.getItem(SAVE_KEY); } catch (e) { return false; }
+  try { return !!localStorage.getItem('pirates_save_v1'); } catch (e) { return false; }
 }
 function connectToServer() {
   if (wsUserBanned) return;
@@ -10965,15 +10883,7 @@ function ensureCargoPreview() {
   if (!container || cargoRenderer) return;
   const h = Math.max(280, container.clientHeight || 340);
   const w = Math.max(200, container.clientWidth || 280);
-  try {
-    const wgr = new WebGPURenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
-    wgr.setPixelRatio(mainCanvasPixelRatio());
-    wgr.toneMapping = THREE.ACESFilmicToneMapping;
-    cargoRenderer = wgr;
-    if (typeof wgr.init === 'function') void wgr.init().catch(() => {});
-  } catch (e) {
-    cargoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
-  }
+  cargoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   cargoRenderer.setSize(w, h);
   cargoRenderer.setPixelRatio(mainCanvasPixelRatio());
   cargoRenderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -11104,15 +11014,7 @@ function ensureYardShipPreview() {
   if (!container || yardShipRenderer) return;
   const h = Math.max(200, container.clientHeight || 260);
   const w = Math.max(200, container.clientWidth || 280);
-  try {
-    const wgr = new WebGPURenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
-    wgr.setPixelRatio(mainCanvasPixelRatio());
-    wgr.toneMapping = THREE.ACESFilmicToneMapping;
-    yardShipRenderer = wgr;
-    if (typeof wgr.init === 'function') void wgr.init().catch(() => {});
-  } catch (e) {
-    yardShipRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
-  }
+  yardShipRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   yardShipRenderer.setSize(w, h);
   yardShipRenderer.setPixelRatio(mainCanvasPixelRatio());
   yardShipRenderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -14396,15 +14298,7 @@ function setup3DPreview() {
   }
 
   if (!previewRenderer) {
-    try {
-      const wgr = new WebGPURenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
-      wgr.setPixelRatio(mainCanvasPixelRatio());
-      wgr.toneMapping = THREE.ACESFilmicToneMapping;
-      previewRenderer = wgr;
-      if (typeof wgr.init === 'function') void wgr.init().catch(() => {});
-    } catch (e) {
-      previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
-    }
+    previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     previewRenderer.setPixelRatio(mainCanvasPixelRatio());
     previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
     container.insertBefore(previewRenderer.domElement, container.firstChild);
@@ -14784,6 +14678,7 @@ async function beginVoyageAfterCharacter() {
     return;
   }
   ensurePlayerCrewOrDefault();
+  try { await preloadAllGltfUnified(); } catch (e) {}
   G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
   G.quests = [];
   G.completedMissionLog = [];
@@ -14811,10 +14706,6 @@ async function beginVoyageAfterCharacter() {
   G.player.riggingHealth = 100;
   G.player.morale = 100;
   trimCrewAndPrisonersToShipLimits();
-  prioritizeWorldGltfForGameplay();
-  try {
-    await preloadShipHullsGltf();
-  } catch (e) {}
   updateChunks();
   spawnNPCs();
   rebuildPlayerShip();
@@ -14862,7 +14753,7 @@ function launchGame() {
     if (r) r.checked = true;
     if (pick) pick.style.display = 'flex';
   } else {
-    void beginVoyageAfterCharacter();
+    beginVoyageAfterCharacter();
   }
 }
 
@@ -14870,7 +14761,7 @@ document.getElementById('mobile-layout-confirm')?.addEventListener('click', () =
   const r = document.querySelector('input[name="mob-scheme"]:checked');
   G.mobileControlScheme = r ? Math.max(0, Math.min(3, parseInt(r.value, 10))) : 0;
   try { localStorage.setItem('pirates_mobile_scheme', String(G.mobileControlScheme)); } catch (e) {}
-  void beginVoyageAfterCharacter();
+  beginVoyageAfterCharacter();
 });
 
 document.getElementById('quest-toggle-btn')?.addEventListener('click', () => {
@@ -15024,6 +14915,7 @@ document.getElementById('settings-scheme-select')?.addEventListener('change', e 
 });
 
 /* ============================== PERSISTENCE ============================== */
+const SAVE_KEY = 'pirates_save_v1';
 
 function getDefaultStartingInventory() {
   return [
@@ -15197,8 +15089,6 @@ function loadProgress() {
     else G.player.morale = 100;
     if (data.riggingHealth != null) G.player.riggingHealth = Math.max(0, Math.min(100, Number(data.riggingHealth)));
     else G.player.riggingHealth = 100;
-    ensurePlayerCrewOrDefault();
-    trimCrewAndPrisonersToShipLimits();
     ensurePlayerInOpenOcean();
     saveProgress();
     return true;
@@ -15329,6 +15219,15 @@ document.getElementById('start-btn').onclick = async () => {
       showDuplicateSessionOverlay();
       return;
     }
+    const startBtn = document.getElementById('start-btn');
+    const prevLabel = startBtn ? startBtn.textContent : '';
+    if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Loading 3D assets…'; }
+    try {
+      try { loadProgress(); } catch (e) {}
+      try { await preloadAllGltfUnified(); } catch (e) {}
+    } finally {
+      if (startBtn) { startBtn.disabled = false; startBtn.textContent = prevLabel; }
+    }
     document.getElementById('create-screen').style.display = 'none';
     G.mode = 'playing';
     G.player.speed = Math.max(G.player.speed, 1);
@@ -15343,16 +15242,11 @@ document.getElementById('start-btn').onclick = async () => {
     destroyAmbientWildlife();
     noise = new SimplexNoise(G.worldSeed);
     ensurePlayerInOpenOcean();
-    ensurePlayerCrewOrDefault();
-    trimCrewAndPrisonersToShipLimits();
-    prioritizeWorldGltfForGameplay();
-    try {
-      await preloadShipHullsGltf();
-    } catch (e) {}
     updateChunks();
     spawnNPCs();
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
     rebuildPlayerShip();
+    applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth != null ? G.player.riggingHealth : 100);
     normalizeInventoryMergeStacks();
     consolidateGoldPurse();
     ensureCargoSlots();
