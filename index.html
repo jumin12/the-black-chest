@@ -1044,7 +1044,11 @@ const worldGltfData = Object.create(null);
 const _worldPlBox = new THREE.Box3();
 const _worldPlSize = new THREE.Vector3();
 let shipGltfPreloadPromise = null;
-function preloadShipGltfAssets() {
+let worldGltfPreloadPromise = null;
+let worldGltfPreloadScheduled = false;
+
+/** Player + NPC ship hulls only — small set, needed before sailing / character preview. */
+function preloadShipHullsGltf() {
   if (shipGltfPreloadPromise) return shipGltfPreloadPromise;
   shipGltfPreloadPromise = (async () => {
     await MeshoptDecoder.ready;
@@ -1058,22 +1062,70 @@ function preloadShipGltfAssets() {
         () => resolve()
       );
     }));
-    const worldLoads = Object.keys(WORLD_GLB_PATHS).map(k => new Promise(resolve => {
-      loader.load(
-        WORLD_GLB_PATHS[k],
-        gltf => {
-          worldGltfData[k] = { scene: gltf.scene, animations: gltf.animations || [] };
-          resolve();
-        },
-        undefined,
-        () => resolve()
-      );
-    }));
-    await Promise.all([...shipLoads, ...worldLoads]);
+    await Promise.all(shipLoads);
   })();
   return shipGltfPreloadPromise;
 }
-preloadShipGltfAssets();
+
+/**
+ * Islands / wildlife / buildings — large; loads after first paint so menus stay responsive.
+ * Batched with frame yields to avoid long main-thread decode stalls.
+ */
+function preloadWorldDecorGltf() {
+  if (worldGltfPreloadPromise) return worldGltfPreloadPromise;
+  worldGltfPreloadPromise = (async () => {
+    await MeshoptDecoder.ready;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    const keys = Object.keys(WORLD_GLB_PATHS);
+    const BATCH = 2;
+    for (let i = 0; i < keys.length; i += BATCH) {
+      const slice = keys.slice(i, i + BATCH);
+      await Promise.all(slice.map(k => new Promise(resolve => {
+        if (worldGltfData[k] && worldGltfData[k].scene) {
+          resolve();
+          return;
+        }
+        loader.load(
+          WORLD_GLB_PATHS[k],
+          gltf => {
+            worldGltfData[k] = { scene: gltf.scene, animations: gltf.animations || [] };
+            resolve();
+          },
+          undefined,
+          () => resolve()
+        );
+      })));
+      await new Promise(r => requestAnimationFrame(r));
+    }
+  })();
+  return worldGltfPreloadPromise;
+}
+
+function scheduleDeferredWorldGltfPreload() {
+  if (worldGltfPreloadScheduled) return;
+  worldGltfPreloadScheduled = true;
+  const kick = () => { preloadWorldDecorGltf(); };
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(kick, { timeout: 4000 });
+  } else {
+    setTimeout(kick, 320);
+  }
+}
+
+/** @deprecated Prefer `preloadShipHullsGltf` — this name now resolves when hulls are ready; world loads in background. */
+function preloadShipGltfAssets() {
+  scheduleDeferredWorldGltfPreload();
+  return preloadShipHullsGltf();
+}
+
+function preloadAllGltfAssets() {
+  scheduleDeferredWorldGltfPreload();
+  return Promise.all([preloadShipHullsGltf(), preloadWorldDecorGltf()]);
+}
+
+preloadShipHullsGltf();
+scheduleDeferredWorldGltfPreload();
 
 /** Uniform scale so world-space height ≈ targetH (meters). Does not move the root. */
 function scaleGltfRootToHeight(root, targetH) {
@@ -14271,7 +14323,7 @@ function updatePreviewShip() {
     previewScene.add(previewShip);
   };
   rebuild();
-  const pr = preloadShipGltfAssets();
+  const pr = preloadShipHullsGltf();
   if (pr && typeof pr.then === 'function') {
     pr.then(() => {
       if (document.getElementById('create-screen') && document.getElementById('create-screen').style.display !== 'none') rebuild();
@@ -14413,7 +14465,7 @@ function buildCreationUI() {
   }
 
   const kickPreview = () => { setup3DPreview(); requestAnimationFrame(renderPreview); };
-  const pr = preloadShipGltfAssets();
+  const pr = preloadShipHullsGltf();
   if (pr && typeof pr.then === 'function') {
     pr.then(kickPreview).catch(kickPreview);
   } else {
