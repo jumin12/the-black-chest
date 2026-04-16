@@ -578,6 +578,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
           <div style="position:absolute;bottom:4px;right:8px;color:rgba(180,140,60,0.3);font-size:9px;pointer-events:none;">Drag to rotate</div>
         </div>
         <div id="create-crew-bar"></div>
+        <canvas id="crew-preview" width="380" height="160" style="width:100%;max-width:400px;height:auto;display:block;margin:8px auto 0;border-radius:6px;background:rgba(8,12,18,0.45);"></canvas>
       </div>
       <div id="create-crew-opts">
         <div id="crew-editors"></div>
@@ -4380,9 +4381,12 @@ function buildGltfShipMesh(type, parts, flagColor, shipName, meshOpts, spec, glb
   fitGltfHullToSpec(hullRoot, spec);
   hullRoot.userData.isGltfHull = true;
   g.add(hullRoot);
+  /** Match procedural deck height in spec space (bbox often includes masts; 0.82×height put crew in the rigging). */
+  const deckTarget = spec.hullH * 0.65;
   _gltfBox.setFromObject(hullRoot);
-  const deckY = Math.max(0.12, _gltfBox.min.y + (_gltfBox.max.y - _gltfBox.min.y) * 0.82);
-  g.userData.gltfDeckLocalY = deckY;
+  const lo = _gltfBox.min.y + 0.04;
+  const hi = _gltfBox.max.y - 0.06;
+  g.userData.gltfDeckLocalY = Math.max(lo, Math.min(hi, deckTarget));
   return g;
 }
 
@@ -13781,6 +13785,7 @@ const OUTFIT_OPTIONS = [
 ];
 
 function makeOptionRow(container, options, selectedId, type) {
+  if (!container) return;
   container.innerHTML = '';
   options.forEach(opt => {
     const btn = document.createElement('div');
@@ -13798,6 +13803,7 @@ function makeOptionRow(container, options, selectedId, type) {
 }
 
 function makeColorRow(container, colors, selectedColor) {
+  if (!container) return;
   container.innerHTML = '';
   colors.forEach(c => {
     const sw = document.createElement('div');
@@ -13811,7 +13817,8 @@ function makeColorRow(container, colors, selectedColor) {
 function drawCrewPreview() {
   const cv = document.getElementById('crew-preview');
   if (!cv) return;
-  const ctx = cv.getContext('2d'), w = 380, h = 160;
+  const ctx = cv.getContext('2d');
+  const w = cv.width || 380, h = cv.height || 160;
   ctx.clearRect(0, 0, w, h);
 
   const allCrew = getCrewFromUI();
@@ -13895,51 +13902,76 @@ function getCrewFromUI() {
 }
 
 let previewRenderer, previewScene, previewCamera, previewShip;
+let preview3DListenersBound = false;
 
 function setup3DPreview() {
   const container = document.getElementById('preview-3d');
   if (!container) return;
-  const h = container.clientHeight || 300;
-  previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  previewRenderer.setSize(container.clientWidth, h);
-  previewRenderer.setPixelRatio(mainCanvasPixelRatio());
-  previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
-  container.insertBefore(previewRenderer.domElement, container.firstChild);
+  const h = Math.max(120, container.clientHeight || 300);
+  const w = Math.max(120, container.clientWidth || 320);
 
-  previewScene = new THREE.Scene();
-  previewScene.add(new THREE.AmbientLight(0x8899bb, 0.9));
-  const pSun = new THREE.DirectionalLight(0xffeedd, 1.6);
-  pSun.position.set(5, 10, 5); previewScene.add(pSun);
-  previewScene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4));
+  if (!previewScene) {
+    previewScene = new THREE.Scene();
+    previewScene.add(new THREE.AmbientLight(0x8899bb, 0.9));
+    const pSun = new THREE.DirectionalLight(0xffeedd, 1.6);
+    pSun.position.set(5, 10, 5);
+    previewScene.add(pSun);
+    previewScene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4));
+    previewCamera = new THREE.PerspectiveCamera(32, w / h, 0.1, 100);
+    previewCamera.position.set(12, 8, 12);
+    previewCamera.lookAt(0, 1, 0);
+  } else {
+    previewCamera.aspect = w / h;
+    previewCamera.updateProjectionMatrix();
+  }
 
-  previewCamera = new THREE.PerspectiveCamera(32, container.clientWidth / h, 0.1, 100);
-  previewCamera.position.set(12, 8, 12);
-  previewCamera.lookAt(0, 1, 0);
+  if (!previewRenderer) {
+    previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    previewRenderer.setPixelRatio(mainCanvasPixelRatio());
+    previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    container.insertBefore(previewRenderer.domElement, container.firstChild);
+  } else if (previewRenderer.domElement.parentNode !== container) {
+    try { previewRenderer.domElement.parentNode?.removeChild(previewRenderer.domElement); } catch (e) {}
+    container.insertBefore(previewRenderer.domElement, container.firstChild);
+  }
+  previewRenderer.setSize(w, h);
 
-  let pdrag = false, plx = 0;
-  container.addEventListener('mousedown', e => { pdrag = true; plx = e.clientX; previewAutoRotate = false; container.style.cursor = 'grabbing'; });
-  window.addEventListener('mousemove', e => { if (pdrag) { previewRotY += (e.clientX - plx) * 0.01; plx = e.clientX; } });
-  window.addEventListener('mouseup', () => { pdrag = false; container.style.cursor = 'grab'; });
-  let ptid = null, ptx = 0;
-  container.addEventListener('touchstart', e => { e.preventDefault(); ptid = e.touches[0].identifier; ptx = e.touches[0].clientX; previewAutoRotate = false; }, { passive: false });
-  container.addEventListener('touchmove', e => { e.preventDefault(); for (const t of e.changedTouches) { if (t.identifier === ptid) { previewRotY += (t.clientX - ptx) * 0.01; ptx = t.clientX; } } }, { passive: false });
-  container.addEventListener('touchend', () => { ptid = null; });
+  if (!preview3DListenersBound) {
+    preview3DListenersBound = true;
+    let pdrag = false, plx = 0;
+    container.addEventListener('mousedown', e => { pdrag = true; plx = e.clientX; previewAutoRotate = false; container.style.cursor = 'grabbing'; });
+    window.addEventListener('mousemove', e => { if (pdrag) { previewRotY += (e.clientX - plx) * 0.01; plx = e.clientX; } });
+    window.addEventListener('mouseup', () => { pdrag = false; container.style.cursor = 'grab'; });
+    let ptid = null, ptx = 0;
+    container.addEventListener('touchstart', e => { e.preventDefault(); ptid = e.touches[0].identifier; ptx = e.touches[0].clientX; previewAutoRotate = false; }, { passive: false });
+    container.addEventListener('touchmove', e => { e.preventDefault(); for (const t of e.changedTouches) { if (t.identifier === ptid) { previewRotY += (t.clientX - ptx) * 0.01; ptx = t.clientX; } } }, { passive: false });
+    container.addEventListener('touchend', () => { ptid = null; });
+  }
 
   updatePreviewShip();
 }
 
 function updatePreviewShip() {
   if (!previewScene) return;
-  if (previewShip) previewScene.remove(previewShip);
-  const allCrew = getCrewFromUI();
-  const shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
-  const prevFlagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
-  const hullV = normalizePlayerSloopVisual(document.querySelector('input[name="hull-variant"]:checked')?.value);
-  previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, prevFlagColor, shipName, { honorPlayerLoadout: true, previewSloopVariant: hullV });
-  buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
-    ...c, health: 100, task: ['helm','cannons','sails','lookout'][i] || 'idle'
-  })), G.player.shipType);
-  previewScene.add(previewShip);
+  const rebuild = () => {
+    if (previewShip) previewScene.remove(previewShip);
+    previewShip = null;
+    let allCrew;
+    try { allCrew = getCrewFromUI(); } catch (e) { allCrew = [{ name: 'Captain', role: 'captain', color: '#8b0000', hat: 'tricorn', outfit: 'coat', parrot: false }]; }
+    const shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
+    const prevFlagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
+    const hullV = normalizePlayerSloopVisual(document.querySelector('input[name="hull-variant"]:checked')?.value);
+    const parts = G.player.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
+    const st = G.player.shipType || 'sloop';
+    previewShip = buildShipMesh(st, parts, prevFlagColor, shipName, { honorPlayerLoadout: true, previewSloopVariant: hullV });
+    buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
+      ...c, health: 100, task: ['helm', 'cannons', 'sails', 'lookout'][i] || 'idle'
+    })), st);
+    previewScene.add(previewShip);
+  };
+  const pr = preloadShipGltfAssets();
+  if (pr && typeof pr.then === 'function') pr.then(rebuild).catch(rebuild);
+  else rebuild();
 }
 
 let previewAutoRotate = true, previewDragX = 0, previewRotY = 0;
@@ -14015,9 +14047,12 @@ function buildCreationUI() {
   makeColorRow(document.getElementById('cap-colors'), CREW_COLORS, '#8b0000');
   makeOptionRow(document.getElementById('cap-hat'), HAT_OPTIONS, 'tricorn', 'hat');
   makeOptionRow(document.getElementById('cap-outfit'), OUTFIT_OPTIONS, 'coat', 'outfit');
-  const FLAG_COLORS = ['#1a1a1a','#8b0000','#1a3a6a','#2a6a2a','#6a2a6a','#d4a848','#aa4400','#336655','#555555','#880044'];
-  makeColorRow(document.getElementById('flag-colors'), FLAG_COLORS, '#1a1a1a');
-  drawFlagPreview();
+  const flagColEl = document.getElementById('flag-colors');
+  if (flagColEl) {
+    const FLAG_COLORS = ['#1a1a1a','#8b0000','#1a3a6a','#2a6a2a','#6a2a6a','#d4a848','#aa4400','#336655','#555555','#880044'];
+    makeColorRow(flagColEl, FLAG_COLORS, '#1a1a1a');
+    if (typeof drawFlagPreview === 'function') drawFlagPreview();
+  }
   document.getElementById('cap-parrot').onchange = () => { drawCrewPreview(); updatePreviewShip(); };
   document.getElementById('cap-name').oninput = () => { drawCrewPreview(); updatePreviewShip(); };
   document.getElementById('ship-name-input').oninput = updatePreviewShip;
@@ -14230,11 +14265,35 @@ document.getElementById('tutorial-skip')?.addEventListener('click', () => {
   restoreMobileGameControls();
 });
 
+function ensurePlayerCrewOrDefault() {
+  const ok = Array.isArray(G.player.crew) && G.player.crew.length >= 2
+    && G.player.crew.some(c => c && c.role === 'captain');
+  if (ok) return;
+  try {
+    const ui = getCrewFromUI();
+    if (ui.length >= 2) {
+      G.player.crew = ui.map((c, i) => ({
+        name: c.name,
+        role: c.role,
+        health: 100,
+        color: c.color,
+        hat: c.hat,
+        outfit: c.outfit,
+        parrot: !!c.parrot,
+        task: ['helm', 'cannons', 'sails', 'lookout'][i] || 'idle'
+      }));
+      return;
+    }
+  } catch (e) {}
+  G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+}
+
 function beginVoyageAfterCharacter() {
   if (!acquireGameTabLockOrExplain()) {
     showDuplicateSessionOverlay();
     return;
   }
+  ensurePlayerCrewOrDefault();
   G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
   G.quests = [];
   G.completedMissionLog = [];
