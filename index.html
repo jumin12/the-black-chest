@@ -28,6 +28,9 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 .quest-toggle-btn{display:none;font-size:9px;font-family:Georgia,serif;padding:4px 10px;border-radius:6px;background:rgba(22,14,8,0.92);border:1px solid rgba(200,140,200,0.5);color:#e8b8d8;cursor:pointer;touch-action:manipulation;white-space:nowrap;line-height:1.2;box-shadow:0 2px 6px rgba(0,0,0,0.25);}
 .quest-toggle-btn[aria-expanded="false"]{opacity:0.82;border-color:rgba(120,90,40,0.45);color:#a09080;}
 #duplicate-session-overlay{display:none;position:fixed;inset:0;z-index:200;flex-direction:column;align-items:center;justify-content:center;padding:max(20px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left));background:rgba(6,4,2,0.94);pointer-events:auto;}
+#boot-load-curtain{position:fixed;inset:0;z-index:150;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:max(20px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left));background:radial-gradient(ellipse 120% 80% at 50% 40%,rgba(10,18,32,0.97),rgba(4,8,14,0.99));pointer-events:auto;}
+#boot-load-curtain .boot-load-title{color:#d4a848;font-family:Georgia,serif;font-size:clamp(17px,4vw,22px);margin:0 0 10px;text-align:center;letter-spacing:0.04em;}
+#boot-load-curtain .boot-load-sub{color:#8a9aac;font-size:13px;line-height:1.55;margin:0;max-width:360px;text-align:center;}
 #duplicate-session-overlay .duplicate-session-panel{max-width:360px;width:100%;background:linear-gradient(180deg,rgba(36,28,18,0.98),rgba(18,12,8,0.99));border:2px solid rgba(180,140,60,0.5);border-radius:12px;padding:22px 20px;text-align:center;font-family:Georgia,serif;box-shadow:0 8px 32px rgba(0,0,0,0.45);}
 #duplicate-session-overlay h3{color:#d4a848;margin:0 0 12px;font-size:18px;}
 #duplicate-session-overlay p{color:#e0d6c2;font-size:14px;line-height:1.55;margin:0 0 18px;}
@@ -500,6 +503,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 </style>
 </head>
 <body>
+<div id="boot-load-curtain" aria-live="polite">
+  <p class="boot-load-title">Loading charts &amp; cargo…</p>
+  <p class="boot-load-sub">3D packs are saved in your browser after the first visit so the next sail is faster. Please wait.</p>
+</div>
 <div id="start-screen">
   <div style="font-size:clamp(50px,12vw,80px);margin-bottom:4px;opacity:0.5;color:#d4a848;text-shadow:0 0 20px rgba(212,168,72,0.2);">&#9760;</div>
   <h1>Pirates of the Procedural Sea</h1>
@@ -1052,15 +1059,31 @@ const _worldPlBox = new THREE.Box3();
 const _worldPlSize = new THREE.Vector3();
 let didPostGltfTerrainRebuild = false;
 
-/** Fetch `.glb` bytes off the main thread (I/O + gzip decode in worker); parsing stays on main (Three.js). */
+/** Bump this string when ship/island GLBs change so stale entries are not reused from the Cache API. */
+const GLB_ASSET_CACHE_NAME = 'pirates-gltf-assets-v2';
+/** Fetch `.glb` bytes off the main thread (Cache API + network in worker); parsing stays on main (Three.js). */
 const GLTF_FETCH_WORKER_CODE = `
 self.onmessage = async function(e) {
   var id = e.data.id;
   var url = e.data.url;
+  var cacheName = e.data.cacheName || 'pirates-gltf-assets-v2';
   try {
-    var res = await fetch(url, { mode: 'cors', credentials: 'same-origin' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var buf = await res.arrayBuffer();
+    var buf;
+    if (typeof caches !== 'undefined') {
+      var cache = await caches.open(cacheName);
+      var req = new Request(url);
+      var res = await cache.match(req);
+      if (!res) {
+        res = await fetch(url, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        try { if (res.status === 200) await cache.put(req, res.clone()); } catch (putErr) {}
+      }
+      buf = await res.arrayBuffer();
+    } else {
+      var res2 = await fetch(url, { credentials: 'same-origin' });
+      if (!res2.ok) throw new Error('HTTP ' + res2.status);
+      buf = await res2.arrayBuffer();
+    }
     self.postMessage({ id: id, ok: true, buffer: buf }, [buf]);
   } catch (err) {
     self.postMessage({ id: id, ok: false, error: err && err.message ? err.message : 'fetch failed' });
@@ -1095,6 +1118,24 @@ function _ensureGltfFetchWorkerPool() {
     /* fall back to main-thread fetch */
   }
 }
+async function fetchGlbArrayBufferMainThreadCached(url) {
+  try {
+    if (typeof caches !== 'undefined') {
+      const req = new Request(url);
+      const c = await caches.open(GLB_ASSET_CACHE_NAME);
+      let res = await c.match(req);
+      if (!res) {
+        res = await fetch(url, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        try { if (res.status === 200) await c.put(req, res.clone()); } catch (e) {}
+      }
+      return res.arrayBuffer();
+    }
+  } catch (e) { /* fall through */ }
+  const r = await fetch(url, { credentials: 'same-origin' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.arrayBuffer();
+}
 function fetchGlbArrayBuffer(relativePath) {
   let url;
   try {
@@ -1104,17 +1145,14 @@ function fetchGlbArrayBuffer(relativePath) {
   }
   _ensureGltfFetchWorkerPool();
   if (!_gltfFetchWorkerPool.length) {
-    return fetch(url, { credentials: 'same-origin' }).then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.arrayBuffer();
-    });
+    return fetchGlbArrayBufferMainThreadCached(url);
   }
   return new Promise((resolve, reject) => {
     const id = ++_gltfFetchMsgId;
     _gltfFetchPending.set(id, { resolve, reject });
     const w = _gltfFetchWorkerPool[_gltfFetchWorkerRR % _gltfFetchWorkerPool.length];
     _gltfFetchWorkerRR++;
-    w.postMessage({ id, url });
+    w.postMessage({ id, url, cacheName: GLB_ASSET_CACHE_NAME });
   });
 }
 function gltfUrlBaseForParse(relativePath) {
@@ -1254,7 +1292,7 @@ function preloadShipHullsGltf() { return ensureCharacterSloopGltfLoaded(); }
 function preloadShipGltfAssets() { return preloadAllGltfUnified(); }
 function preloadAllGltfAssets() { return preloadAllGltfUnified(); }
 
-preloadAllGltfUnified();
+/* First load + menu gate: boot sequence awaits ensureWorldGltfLoaded() then refresh (see completeBootLoad). */
 
 /** Rebuild terrain chunks once the full glTF catalog is available (fixes low-detail islands from early menu init). */
 function refreshWorldMeshesAfterFirstGltfCatalogLoad() {
@@ -2296,6 +2334,7 @@ class SimplexNoise {
 let noise;
 
 /* ============================= THREE.JS SETUP ============================ */
+/* WebGL: sky, water, and combat use custom GLSL; WebGPURenderer would require a full shader port. */
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(mainCanvasPixelRatio());
@@ -15261,10 +15300,21 @@ const hasSave = loadProgress();
 updatePiratesPanel();
 noise = new SimplexNoise(G.worldSeed);
 if (!hasSave) ensurePlayerInOpenOcean();
-updateChunks();
-spawnNPCs();
-nudgePlayerSpawnClearOfShips();
-syncDayNightVisuals(G.player.x, G.player.z);
+
+(function completeBootLoad() {
+  const curtain = document.getElementById('boot-load-curtain');
+  const done = () => { if (curtain) curtain.style.display = 'none'; };
+  const run = async () => {
+    try {
+      await ensureWorldGltfLoaded();
+      refreshWorldMeshesAfterFirstGltfCatalogLoad();
+    } catch (e) { /* menu still usable with procedural fallbacks */ }
+    nudgePlayerSpawnClearOfShips();
+    syncDayNightVisuals(G.player.x, G.player.z);
+    done();
+  };
+  run();
+})();
 
 document.getElementById('ui-layer').style.display = 'none';
 document.getElementById('touch-controls').style.display = 'none';
