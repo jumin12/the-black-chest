@@ -1592,6 +1592,8 @@ const G = {
     shipType: 'sloop',
     /** Visual glTF variant when `shipType` is sloop: `sloop1` | `sloop2` | `sloop3`. */
     shipVisualVariant: 'sloop1',
+    /** Visual glTF when `shipType` is galleon: `galleon2` | `galleon3` | `galleon4`. */
+    galleonVisualVariant: 'galleon2',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     inventory: [
       { id: 'food', name: 'Provisions', icon: 'F', count: 12 },
@@ -2117,20 +2119,18 @@ function normalizePlayerSloopVisual(v) {
   if (s === 'sloop3' || s === 'pirate') return 'sloop3';
   return 'sloop1';
 }
-/** Player-picked galleon glTF when `shipType === 'galleon'`. */
 function normalizePlayerGalleonVisual(v) {
   const s = String(v || '').toLowerCase();
   if (s === 'galleon3') return 'galleon3';
   if (s === 'galleon4') return 'galleon4';
   return 'galleon2';
 }
-function normalizePlayerShipVisualVariant(v, shipType) {
-  const st = normalizePlayerShipType(shipType || 'sloop');
-  if (st === 'galleon') return normalizePlayerGalleonVisual(v);
-  return normalizePlayerSloopVisual(v);
-}
-function serializePlayerShipVisualForNet() {
-  return normalizePlayerShipVisualVariant(G.player.shipVisualVariant, G.player.shipType);
+function firstLoadedPlayerGalleonKey(preferred) {
+  const p = normalizePlayerGalleonVisual(preferred);
+  for (const k of [p, 'galleon2', 'galleon3', 'galleon4']) {
+    if (shipGltfRoots[k]) return k;
+  }
+  return null;
 }
 
 function shipHullRadius(shipType) {
@@ -2215,6 +2215,8 @@ function cannonballStrikeHitRadius(shipType, ammoType, isPellet) {
 
 const SHIP_PURCHASE_PRICE = { sloop: 125, galleon: 395 };
 const SHIP_TRADEIN_HULL_BASE = { sloop: 70, galleon: 200 };
+/** Swap sloop/sloop or galleon/galleon hull model at port (no class change). */
+const HULL_REFIT_GOLD = { sloop: 38, galleon: 68 };
 function computePlayerShipTradeInGold() {
   const st = G.player.shipType;
   const base = SHIP_TRADEIN_HULL_BASE[st] != null ? SHIP_TRADEIN_HULL_BASE[st] : 60;
@@ -2801,6 +2803,75 @@ initWindStreamVisual();
 /* ============================= ISLANDS =================================== */
 const islandGroup = new THREE.Group();
 scene.add(islandGroup);
+/** Islands fade in as you sail near (stays fully visible once revealed). */
+const ISLAND_REVEAL_NEAR_DIST = CHUNK_SIZE * 2.45;
+const ISLAND_REVEAL_FADE_IN_PER_SEC = 0.72;
+function ensureIslandRevealMaterialRefs(group) {
+  if (group.userData._revealMats) return;
+  const mats = [];
+  group.traverse(ch => {
+    if (!ch.isMesh || !ch.material) return;
+    const arr = Array.isArray(ch.material) ? ch.material : [ch.material];
+    for (const m of arr) {
+      if (!m || m.userData._revealRegistered) continue;
+      m.userData._revealRegistered = true;
+      m.userData._revealBaseOpacity = m.opacity != null ? m.opacity : 1;
+      m.userData._revealBaseTransparent = !!m.transparent;
+      mats.push(m);
+    }
+  });
+  group.userData._revealMats = mats;
+}
+function applyIslandRevealOpacity(group, t) {
+  ensureIslandRevealMaterialRefs(group);
+  const mats = group.userData._revealMats;
+  if (!mats || !mats.length) return;
+  const clampT = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < mats.length; i++) {
+    const m = mats[i];
+    const base = m.userData._revealBaseOpacity != null ? m.userData._revealBaseOpacity : 1;
+    m.opacity = base * clampT;
+    m.transparent = clampT < 0.998 || m.userData._revealBaseTransparent;
+    m.needsUpdate = true;
+  }
+}
+function finalizeIslandChunkReveal(group) {
+  if (!group.userData._revealMats) return;
+  const mats = group.userData._revealMats;
+  for (let i = 0; i < mats.length; i++) {
+    const m = mats[i];
+    m.opacity = m.userData._revealBaseOpacity != null ? m.userData._revealBaseOpacity : 1;
+    m.transparent = !!m.userData._revealBaseTransparent;
+    m.needsUpdate = true;
+  }
+  group.userData.revealComplete = true;
+}
+function updateIslandChunkReveal(dt) {
+  if (G.mode !== 'playing' || !islandGroup || !islandGroup.children.length) return;
+  let wx = G.player.x, wz = G.player.z;
+  if (G.spectate) {
+    const t = resolveSpectateTargetXZR();
+    if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) { wx = t.x; wz = t.z; }
+  }
+  const near2 = ISLAND_REVEAL_NEAR_DIST * ISLAND_REVEAL_NEAR_DIST;
+  const ch = islandGroup.children;
+  for (let ci = 0; ci < ch.length; ci++) {
+    const group = ch[ci];
+    if (group.userData.revealComplete) continue;
+    const cwx = group.userData.worldX != null ? group.userData.worldX : 0;
+    const cwz = group.userData.worldZ != null ? group.userData.worldZ : 0;
+    const d2 = (wx - cwx) ** 2 + (wz - cwz) ** 2;
+    let rp = group.userData.revealProgress != null ? group.userData.revealProgress : 0;
+    if (d2 <= near2) rp = Math.min(1, rp + ISLAND_REVEAL_FADE_IN_PER_SEC * dt);
+    group.userData.revealProgress = rp;
+    group.visible = rp > 0.008;
+    if (rp >= 0.999) {
+      finalizeIslandChunkReveal(group);
+    } else {
+      applyIslandRevealOpacity(group, rp);
+    }
+  }
+}
 const matTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
 const matPalm = new THREE.MeshLambertMaterial({ color: 0x4a9e3f });
 const matRock = new THREE.MeshLambertMaterial({ color: 0x7a7a7a });
@@ -3076,6 +3147,10 @@ function placeTownDockSeaward(meta) {
     meta.dockX += dirX * step;
     meta.dockZ += dirZ * step;
     nudge++;
+  }
+  if (!dryLandCollisionSampleForMeta(meta.dockX, meta.dockZ, meta)) {
+    meta.dockX += dirX * Math.max(2.4, R * 0.028);
+    meta.dockZ += dirZ * Math.max(2.4, R * 0.028);
   }
   const ox = meta.dockX - wx0, oz = meta.dockZ - wz0;
   if (Math.abs(ox) + Math.abs(oz) > 0.25) meta.dockAngle = Math.atan2(ox, oz);
@@ -4127,6 +4202,10 @@ function generateCustomMapChunk(cx, cz) {
   }
   islandGroup.add(group);
   G.islands.push(group.userData);
+  group.userData.revealProgress = 0;
+  group.userData.revealComplete = false;
+  applyIslandRevealOpacity(group, 0);
+  group.visible = false;
   const sgN = 2 + Math.floor(rng() * 3);
   spawnSeagulls(cwx, cwz, sgN, rng);
 }
@@ -4328,8 +4407,9 @@ function generateIsland(cx, cz) {
       terrainYWorld(dockX, dockZ)
     );
     const dockGround = dockYLand > 0 ? dockYLand : 0;
-    /** Pier deck at waterline — do not lift to shore height (avoids floating docks above the sea). */
-    const dockCenterY = SEA_LEVEL + 0.48;
+    const dockDeckClear = 0.52;
+    const pierInOpenWater = !dryLandCollisionSampleForMeta(dockX, dockZ, meta0);
+    const dockCenterY = pierInOpenWater ? SEA_LEVEL + 0.42 : SEA_LEVEL + dockGround + dockDeckClear;
     const dockKey = proceduralTownDockKey(cx, cz);
     const dockTpl = worldGltfData[dockKey];
     let dockUsedGltf = false;
@@ -4344,7 +4424,8 @@ function generateIsland(cx, cz) {
       const sy = Math.min(sx, sz) * 0.95;
       dRoot.scale.set(sx, sy, sz);
       dRoot.rotation.y = dockAngle;
-      anchorGltfBottomAtWorldY(dRoot, dockCenterY - 0.02, dockX, dockZ);
+      const gltfAnchorY = pierInOpenWater ? (SEA_LEVEL + 0.04) : (dockCenterY - 0.1);
+      anchorGltfBottomAtWorldY(dRoot, gltfAnchorY, dockX, dockZ);
       dRoot.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
       registerTownAnimations(dRoot);
       group.add(dRoot);
@@ -4354,16 +4435,17 @@ function generateIsland(cx, cz) {
       const dockGeo = new THREE.BoxGeometry(5, 0.4, 14);
       const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
       const dock = new THREE.Mesh(dockGeo, dockMat);
-      dock.position.set(dockX, dockCenterY, dockZ);
+      const boxY = pierInOpenWater ? SEA_LEVEL + 0.26 : dockCenterY;
+      dock.position.set(dockX, boxY, dockZ);
       dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
       group.add(dock);
     }
     group.userData.dockAngle = dockAngle;
 
     if (!dockUsedGltf) {
-      const dockUndersideY = dockCenterY - 0.22;
-      const postH = 6.4;
-      const postTopY = dockUndersideY - 0.04;
+      const dockUndersideY = dockCenterY - 0.2;
+      const postH = 5.8;
+      const postTopY = dockUndersideY - 0.06;
       for (let pi = 0; pi < 8; pi++) {
         const side = pi % 2 === 0 ? 1 : -1;
         const along = (Math.floor(pi / 2) - 1.5) * 4;
@@ -4423,18 +4505,26 @@ function generateIsland(cx, cz) {
       group.add(root);
     };
 
-    const lm = [
-      { key: 'tavern', dist: 12.5, side: -5.3, footMin: 5.5, footMax: 7.5 },
-      { key: 'church1', dist: 17.5, side: 5.5, footMin: 5.8, footMax: 8 },
-      { key: 'govres1', dist: 10.2, side: 8.0, footMin: 5.5, footMax: 7.8 },
-      { key: 'house1', dist: 15.2, side: -7.0, footMin: 4.2, footMax: 6.2 },
-      { key: 'house2', dist: 19.2, side: -6.6, footMin: 4.2, footMax: 6.2 }
+    const townLandmarks = [
+      { key: 'tavern', dist: 13, side: -5.5, footMin: 5.5, footMax: 7.5 },
+      { key: 'church1', dist: 18, side: 5.2, footMin: 5.8, footMax: 8 },
+      { key: 'govres1', dist: 10.5, side: 7.8, footMin: 5.5, footMax: 7.8 },
+      { key: 'house1', dist: 16, side: -7.2, footMin: 4.2, footMax: 6.2 },
+      { key: 'house2', dist: 21, side: -4.5, footMin: 4.2, footMax: 6.2 }
     ];
-    for (const L of lm) {
-      let bx = dockX + ux * L.dist + dockWidX * L.side + (rng() - 0.5) * 2.8;
-      let bz = dockZ + uz * L.dist + dockWidZ * L.side + (rng() - 0.5) * 2.8;
-      const yaw = dockAngle + (rng() - 0.5) * 0.5;
+    for (const L of townLandmarks) {
+      const bx = dockX + ux * L.dist + dockWidX * L.side + (rng() - 0.5) * 3.5;
+      const bz = dockZ + uz * L.dist + dockWidZ * L.side + (rng() - 0.5) * 3.5;
+      const yaw = dockAngle + (rng() - 0.5) * 0.55;
       placeTownGltf(L.key, bx, bz, yaw, L.footMin, L.footMax);
+    }
+    for (let hi = 0; hi < 5; hi++) {
+      const ba = dockAngle + Math.PI + (hi - 2) * 0.32;
+      const bOff = (hi % 2 === 0 ? 1 : -1) * (2.2 + hi * 1.5);
+      const bx = dockX + Math.cos(ba) * (11 + hi * 3.8) + Math.cos(ba + Math.PI / 2) * bOff;
+      const bz = dockZ + Math.sin(ba) * (11 + hi * 3.8) + Math.sin(ba + Math.PI / 2) * bOff;
+      const hk = hi % 2 === 0 ? 'house1' : 'house2';
+      placeTownGltf(hk, bx, bz, dockAngle + (rng() - 0.5) * 0.65, 4.2, 6.2);
     }
 
     const tf = townFaction(meta0) % 4;
@@ -4461,6 +4551,10 @@ function generateIsland(cx, cz) {
 
   islandGroup.add(group);
   G.islands.push(group.userData);
+  group.userData.revealProgress = 0;
+  group.userData.revealComplete = false;
+  applyIslandRevealOpacity(group, 0);
+  group.visible = false;
   const sgN = 3 + Math.floor(rng() * 4) + (meta0.hasTown ? 3 : 0) + Math.min(6, Math.floor(islandRadius / 32));
   spawnSeagulls(worldX, worldZ, sgN, rng);
   for (let fi = 0; fi < 8; fi++) {
@@ -4564,7 +4658,7 @@ const WILDLIFE_SEAGULL_CAP = 900;
 const WILDLIFE_PRUNE_DIST = 9200;
 const WILDLIFE_SHARK_POD_CAP = 36;
 /** Fish and gulls farther than this (horizontal, meters) from the camera are hidden to cut lag when panning. */
-const WILDLIFE_CAMERA_CULL_XZ = 340;
+const WILDLIFE_CAMERA_CULL_XZ = 455;
 const WILDLIFE_CAMERA_CULL_XZ_SQ = WILDLIFE_CAMERA_CULL_XZ * WILDLIFE_CAMERA_CULL_XZ;
 /** Thrown/rescue crew floating in the water are removed after this long on the surface (sharks). */
 const SHARK_EAT_CREW_AFTER_FLOAT_SEC = 30;
@@ -4927,64 +5021,6 @@ function updateChunks() {
       generateIsland(pcx + dx, pcz + dz);
 }
 
-/** Chunk centers fade in as you sail closer (soft “fog of war” instead of a hard pop-in). */
-const ISLAND_REVEAL_INNER = CHUNK_SIZE * 0.72;
-const ISLAND_REVEAL_OUTER = CHUNK_SIZE * 2.55;
-let _islandRevealTick = 0;
-function updateIslandRevealEffect(dt) {
-  if (G.mode !== 'playing' || !islandGroup) return;
-  _islandRevealTick++;
-  let wx = G.player.x, wz = G.player.z;
-  if (G.spectate) {
-    const t = resolveSpectateTargetXZR();
-    if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) { wx = t.x; wz = t.z; }
-  }
-  const span = Math.max(8, ISLAND_REVEAL_OUTER - ISLAND_REVEAL_INNER);
-  const lerpK = Math.min(1, (dt || 0.016) * 2.6);
-  for (let i = 0; i < islandGroup.children.length; i++) {
-    const g = islandGroup.children[i];
-    const ud = g.userData;
-    if (ud.worldX == null || ud.worldZ == null) continue;
-    const d = Math.hypot(wx - ud.worldX, wz - ud.worldZ);
-    let target = 1 - (d - ISLAND_REVEAL_INNER) / span;
-    target = THREE.MathUtils.clamp(target, 0, 1);
-    ud.revealT = ud.revealT == null ? target : ud.revealT + (target - ud.revealT) * lerpK;
-    const a = ud.revealT;
-    const needApply = _islandRevealTick % 2 === 0 || Math.abs(a - (ud._lastRevealApply || 0)) > 0.04 || a <= 0.04 || a >= 0.96;
-    if (!needApply) continue;
-    ud._lastRevealApply = a;
-    g.traverse(obj => {
-      if (obj.isMesh && obj.material) {
-        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-        for (let mi = 0; mi < mats.length; mi++) {
-          const m = mats[mi];
-          if (!m || !m.isMaterial) continue;
-          if (!m.userData._isleRev) {
-            m.userData._isleRev = true;
-            m.userData._op0 = m.opacity != null ? m.opacity : 1;
-            m.userData._tr0 = !!m.transparent;
-            m.userData._dw0 = m.depthWrite !== false;
-          }
-          const op = m.userData._op0 * a;
-          m.transparent = a < 0.995 || m.userData._tr0;
-          m.opacity = op;
-          m.depthWrite = a > 0.92 ? m.userData._dw0 : false;
-          m.needsUpdate = true;
-        }
-      } else if (obj.isSprite && obj.material) {
-        const m = obj.material;
-        if (!m.userData._isleRev) {
-          m.userData._isleRev = true;
-          m.userData._op0 = m.opacity != null ? m.opacity : 1;
-        }
-        m.transparent = true;
-        m.opacity = m.userData._op0 * a;
-        m.depthWrite = a > 0.9;
-      }
-    });
-  }
-}
-
 /* ============================== SHIPS ==================================== */
 const playerShipGroup = new THREE.Group();
 scene.add(playerShipGroup);
@@ -5072,15 +5108,14 @@ function otherPlayerShipCacheKey(p) {
         return `${c.name || ''}|${c.role || ''}|${c.color || ''}|${c.hat || ''}|${c.outfit || ''}|${c.task || ''}|${c.parrot ? 1 : 0}|h${hb}`;
       }).join(',')}`
     : '_';
+  const sv = normalizePlayerSloopVisual(p.shipVisualVariant);
   const st = normalizePlayerShipType(p.shipType || 'sloop');
-  const sv = normalizePlayerShipVisualVariant(p.shipVisualVariant, st);
-  return `${st}|${sv}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${sp.flag || 'mast'}|${fc}|${crewSeg}`;
+  const gv = st === 'galleon' ? normalizePlayerGalleonVisual(p.galleonVisualVariant) : '';
+  return `${st}|${sv}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${sp.flag || 'mast'}|${fc}|${crewSeg}|${gv}`;
 }
 
 function refreshOtherPlayerShipCacheKey(p) {
   if (!p) return;
-  p.shipType = normalizePlayerShipType(p.shipType);
-  p.shipVisualVariant = normalizePlayerShipVisualVariant(p.shipVisualVariant, p.shipType);
   p._netShipCacheKey = otherPlayerShipCacheKey(p);
 }
 
@@ -5154,17 +5189,27 @@ function resolveGltfHullKey(type, meshOpts) {
     return 'sloop3';
   }
   if (meshOpts.honorPlayerLoadout) {
-    if (type === 'galleon') return null;
+    if (type === 'galleon') {
+      const pv = meshOpts.previewGalleonVariant != null
+        ? normalizePlayerGalleonVisual(meshOpts.previewGalleonVariant)
+        : normalizePlayerGalleonVisual(G.player.galleonVisualVariant);
+      const gk = firstLoadedPlayerGalleonKey(pv);
+      if (gk) return gk;
+      const sd = meshOpts.galleonVariantSeed != null ? meshOpts.galleonVariantSeed : (G.myId != null ? G.myId : 0);
+      return galleonGltfKeyFromSeed(sd);
+    }
     if (type === 'sloop') {
       const v = meshOpts.previewSloopVariant != null ? meshOpts.previewSloopVariant : G.player.shipVisualVariant;
       return normalizePlayerSloopVisual(v);
     }
     return null;
   }
-  if (meshOpts.remoteShipVisualVariant != null || meshOpts.remoteGalleonVariantSeed != null) {
+  if (meshOpts.remoteShipVisualVariant != null || meshOpts.remoteGalleonVisualVariant != null || meshOpts.remoteGalleonVariantSeed != null) {
     if (type === 'galleon') {
-      const g = firstLoadedPlayerGalleonKey(meshOpts.remoteShipVisualVariant);
-      if (g) return g;
+      if (meshOpts.remoteGalleonVisualVariant != null && String(meshOpts.remoteGalleonVisualVariant).trim() !== '') {
+        const gv0 = normalizePlayerGalleonVisual(meshOpts.remoteGalleonVisualVariant);
+        if (shipGltfRoots[gv0]) return gv0;
+      }
       return galRemote();
     }
     if (type === 'sloop') return normalizePlayerSloopVisual(meshOpts.remoteShipVisualVariant);
@@ -5177,13 +5222,6 @@ function resolveGltfHullKey(type, meshOpts) {
 function firstLoadedPlayerSloopKey(preferred) {
   const p = normalizePlayerSloopVisual(preferred);
   for (const k of [p, 'sloop1', 'sloop2', 'sloop3']) {
-    if (shipGltfRoots[k]) return k;
-  }
-  return null;
-}
-function firstLoadedPlayerGalleonKey(preferred) {
-  const p = normalizePlayerGalleonVisual(preferred);
-  for (const k of [p, 'galleon2', 'galleon3', 'galleon4']) {
     if (shipGltfRoots[k]) return k;
   }
   return null;
@@ -5256,16 +5294,10 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   }
   const spec = SHIP_TYPES[type] || SHIP_TYPES.sloop;
   const forcePlayerSloopGltf = type === 'sloop' && honorPlayerLoadout && !isMerchantHull && !meshOpts.pirateHull;
-  const forcePlayerGalleonGltf = type === 'galleon' && honorPlayerLoadout && !isMerchantHull && !meshOpts.pirateHull;
   let glbKey = resolveGltfHullKey(type, meshOpts);
   if (forcePlayerSloopGltf) {
     const pref = meshOpts.previewSloopVariant != null ? meshOpts.previewSloopVariant : G.player.shipVisualVariant;
     glbKey = firstLoadedPlayerSloopKey(pref);
-  }
-  if (forcePlayerGalleonGltf) {
-    const pref = meshOpts.previewGalleonVariant != null ? meshOpts.previewGalleonVariant : G.player.shipVisualVariant;
-    glbKey = firstLoadedPlayerGalleonKey(pref);
-    if (!glbKey) glbKey = galleonGltfKeyFromSeed(G.myId != null ? G.myId : 0);
   }
   if (glbKey && shipGltfRoots[glbKey]) {
     const glbGroup = buildGltfShipMesh(type, parts, flagColor, shipName, meshOpts, spec, glbKey);
@@ -8425,7 +8457,8 @@ function syncCaptainNameToServer() {
     name: capName,
     shipName: G.player.shipName,
     shipType: G.player.shipType,
-    shipVisualVariant: serializePlayerShipVisualForNet(),
+    shipVisualVariant: normalizePlayerSloopVisual(G.player.shipVisualVariant),
+    galleonVisualVariant: normalizePlayerGalleonVisual(G.player.galleonVisualVariant),
     shipParts: G.player.shipParts,
     flagColor: G.player.flagColor || '#1a1a1a',
     crew: buildCrewSyncPayload(),
@@ -8674,9 +8707,10 @@ function connectToServer() {
       case 'ship_update': {
         const p = G.otherPlayers.get(msg.id);
         if (p) {
-          if (msg.shipType != null) p.shipType = msg.shipType;
-          if (msg.shipVisualVariant != null) p.shipVisualVariant = normalizePlayerShipVisualVariant(msg.shipVisualVariant, p.shipType);
-          if (msg.shipParts) p.shipParts = msg.shipParts;
+          p.shipType = msg.shipType;
+          if (msg.shipVisualVariant != null) p.shipVisualVariant = normalizePlayerSloopVisual(msg.shipVisualVariant);
+          if (msg.galleonVisualVariant != null) p.galleonVisualVariant = normalizePlayerGalleonVisual(msg.galleonVisualVariant);
+          p.shipParts = msg.shipParts;
           refreshOtherPlayerShipCacheKey(p);
           if (otherShipGroups.has(msg.id)) {
             const og = otherShipGroups.get(msg.id);
@@ -9053,7 +9087,8 @@ function sendUpdate() {
     riggingHealth: G.player.riggingHealth != null ? G.player.riggingHealth : 100,
     morale: G.player.morale != null ? G.player.morale : 100,
     shipType: G.player.shipType,
-    shipVisualVariant: serializePlayerShipVisualForNet(),
+    shipVisualVariant: normalizePlayerSloopVisual(G.player.shipVisualVariant),
+    galleonVisualVariant: normalizePlayerGalleonVisual(G.player.galleonVisualVariant),
     shipName: G.player.shipName,
     shipParts: { ...G.player.shipParts },
     flagColor: G.player.flagColor || '#1a1a1a',
@@ -11069,9 +11104,10 @@ let cargoPreviewMeshSig = '';
 let cargoInvUiSig = '';
 function getCargoPreviewMeshSig() {
   const c = (G.player.crew || []).map(m => `${m.name}:${m.role}:${m.health}`).join('|');
+  const sv = normalizePlayerSloopVisual(G.player.shipVisualVariant);
   const st = normalizePlayerShipType(G.player.shipType || 'sloop');
-  const sv = normalizePlayerShipVisualVariant(G.player.shipVisualVariant, st);
-  return `${st}|${sv}|${JSON.stringify(G.player.shipParts)}|${c}|${G.player.flagColor}|${G.player.shipName}`;
+  const gk = st === 'galleon' ? galleonGltfKeyFromSeed(G.myId != null ? G.myId : 0) : '';
+  return `${st}|${sv}|${JSON.stringify(G.player.shipParts)}|${c}|${G.player.flagColor}|${G.player.shipName}|${gk}`;
 }
 function getCargoInventoryUiSig() {
   const slots = (G.player.cargoSlots || []).map(s => (s && s.count > 0) ? `${s.id}:${s.count}` : '').join(',');
@@ -12484,6 +12520,35 @@ function showPortTab(tab) {
       row.className = 'port-ship-offer';
       row.setAttribute('data-ship', key);
       row.style.cssText = 'padding:10px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.22);border-radius:6px;margin-bottom:8px;';
+      const isCur = key === G.player.shipType;
+      const refitCost = HULL_REFIT_GOLD[key] != null ? HULL_REFIT_GOLD[key] : 40;
+      let actionHtml;
+      if (isCur && (key === 'sloop' || key === 'galleon')) {
+        actionHtml = `<button type="button" class="port-refit-hull-btn" data-ship="${key}" style="background:rgba(45,55,75,0.55);border:1px solid rgba(140,160,200,0.45);color:#b8c8e8;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Refit to selected hull · ${refitCost}g</button>
+          <span style="color:#7a8a68;font-size:10px;">Keeps fittings &amp; crew limits — swaps model only.</span>`;
+      } else if (isCur) {
+        actionHtml = '<span style="color:#88aa88;font-size:11px;">Your current class</span>';
+      } else {
+        actionHtml = `<button type="button" class="port-buy-ship-btn" data-ship="${key}" style="background:rgba(50,40,20,0.55);border:1px solid rgba(180,140,60,0.45);color:#d4a848;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Purchase</button>`;
+      }
+      const sloopPick = (() => {
+        const pv = G.player.shipType === 'sloop' ? normalizePlayerSloopVisual(G.player.shipVisualVariant) : 'sloop1';
+        return `<div class="port-sloop-model-pick" style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(140,100,40,0.15);">
+          <div style="color:#9a9080;font-size:10px;margin-bottom:6px;">Sloop hull model (choose before purchase or refit)</div>
+          <label style="color:#c9a24a;font-size:11px;margin-right:12px;cursor:pointer;"><input type="radio" name="port-yard-sloop" value="sloop1" ${pv === 'sloop1' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Sloop I</label>
+          <label style="color:#c9a24a;font-size:11px;margin-right:12px;cursor:pointer;"><input type="radio" name="port-yard-sloop" value="sloop2" ${pv === 'sloop2' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Sloop II</label>
+          <label style="color:#c9a24a;font-size:11px;cursor:pointer;"><input type="radio" name="port-yard-sloop" value="sloop3" ${pv === 'sloop3' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Sloop III</label>
+        </div>`;
+      })();
+      const galleonPick = (() => {
+        const pg = G.player.shipType === 'galleon' ? normalizePlayerGalleonVisual(G.player.galleonVisualVariant) : 'galleon2';
+        return `<div class="port-galleon-model-pick" style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(140,100,40,0.15);">
+          <div style="color:#9a9080;font-size:10px;margin-bottom:6px;">Galleon hull model</div>
+          <label style="color:#c9a24a;font-size:11px;margin-right:10px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon2" ${pg === 'galleon2' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon II</label>
+          <label style="color:#c9a24a;font-size:11px;margin-right:10px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon3" ${pg === 'galleon3' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon III</label>
+          <label style="color:#c9a24a;font-size:11px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon4" ${pg === 'galleon4' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon IV</label>
+        </div>`;
+      })();
       row.innerHTML = `<div style="color:#e0d6c2;font-size:14px;font-weight:bold;">${spec.name}</div>
         <div style="color:#9a9080;font-size:11px;margin:6px 0;line-height:1.5;">
           Speed ~<strong style="color:#c9a24a;">${spd}</strong> kn (calm baseline) · Crew <strong style="color:#c9a24a;">${spec.maxCrew}</strong>
@@ -12491,27 +12556,11 @@ function showPortTab(tab) {
           · Cargo <strong style="color:#c9a24a;">${spec.cargoSlots}</strong> slots
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <span style="color:#d4a848;font-size:11px;">${price}g · <span style="color:#a89878;">${net}g</span> after trade-in</span>
-          <button type="button" class="port-buy-ship-btn" data-ship="${key}" style="background:rgba(50,40,20,0.55);border:1px solid rgba(180,140,60,0.45);color:#d4a848;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Purchase</button>
+          <span style="color:#d4a848;font-size:11px;">${isCur ? `Refit ${refitCost}g` : `${price}g · <span style="color:#a89878;">${net}g</span> after trade-in`}</span>
+          ${actionHtml}
         </div>
-        ${key === 'sloop' ? (() => {
-          const pv = G.player.shipType === 'sloop' ? normalizePlayerSloopVisual(G.player.shipVisualVariant) : 'sloop1';
-          return `<div class="port-sloop-model-pick" style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(140,100,40,0.15);">
-          <div style="color:#9a9080;font-size:10px;margin-bottom:6px;">Sloop hull model</div>
-          <label style="color:#c9a24a;font-size:11px;margin-right:12px;cursor:pointer;"><input type="radio" name="port-yard-sloop" value="sloop1" ${pv === 'sloop1' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Sloop I</label>
-          <label style="color:#c9a24a;font-size:11px;margin-right:12px;cursor:pointer;"><input type="radio" name="port-yard-sloop" value="sloop2" ${pv === 'sloop2' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Sloop II</label>
-          <label style="color:#c9a24a;font-size:11px;cursor:pointer;"><input type="radio" name="port-yard-sloop" value="sloop3" ${pv === 'sloop3' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Sloop III</label>
-        </div>`;
-        })() : ''}
-        ${key === 'galleon' ? (() => {
-          const gv = G.player.shipType === 'galleon' ? normalizePlayerGalleonVisual(G.player.shipVisualVariant) : 'galleon2';
-          return `<div class="port-galleon-model-pick" style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(140,100,40,0.15);">
-          <div style="color:#9a9080;font-size:10px;margin-bottom:6px;">Galleon hull model</div>
-          <label style="color:#c9a24a;font-size:11px;margin-right:10px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon2" ${gv === 'galleon2' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon II</label>
-          <label style="color:#c9a24a;font-size:11px;margin-right:10px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon3" ${gv === 'galleon3' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon III</label>
-          <label style="color:#c9a24a;font-size:11px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon4" ${gv === 'galleon4' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon IV</label>
-        </div>`;
-        })() : ''}`;
+        ${key === 'sloop' ? sloopPick : ''}
+        ${key === 'galleon' ? galleonPick : ''}`;
       content.appendChild(row);
     });
     content.querySelectorAll('input[name="port-yard-sloop"]').forEach(inp => {
@@ -12522,6 +12571,12 @@ function showPortTab(tab) {
     content.querySelectorAll('input[name="port-yard-galleon"]').forEach(inp => {
       inp.addEventListener('change', () => {
         if (yardShipPreviewType === 'galleon') updateYardShipPreviewForType('galleon');
+      });
+    });
+    content.querySelectorAll('.port-refit-hull-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = btn.getAttribute('data-ship');
+        if (t) window.portRefitHullModel(t);
       });
     });
     content.querySelectorAll('.port-buy-ship-btn').forEach(btn => {
@@ -12712,18 +12767,53 @@ window.portSell = function(id, price) {
   showPortTab('trade');
 };
 
+window.portRefitHullModel = function(shipType) {
+  if (!G.docked) { notify('Dock at a port shipyard first.'); return; }
+  if (!SHIP_TYPES[shipType] || (shipType !== 'sloop' && shipType !== 'galleon')) return;
+  if (G.player.shipType !== shipType) { notify('Refit only swaps the model of your current class.'); return; }
+  if (shipType === 'sloop') {
+    const next = getPortYardSloopVariantPick();
+    if (normalizePlayerSloopVisual(next) === normalizePlayerSloopVisual(G.player.shipVisualVariant)) {
+      notify('Pick a different sloop model first.');
+      return;
+    }
+  } else {
+    const next = getPortYardGalleonVariantPick();
+    if (normalizePlayerGalleonVisual(next) === normalizePlayerGalleonVisual(G.player.galleonVisualVariant)) {
+      notify('Pick a different galleon model first.');
+      return;
+    }
+  }
+  const refit = HULL_REFIT_GOLD[shipType];
+  const gold = G.player.inventory.find(i => i.id === 'gold');
+  if (!gold || gold.count < refit) { notify(`Need ${refit}g for hull refit.`); return; }
+  gold.count -= refit;
+  if (shipType === 'sloop') G.player.shipVisualVariant = getPortYardSloopVariantPick();
+  else G.player.galleonVisualVariant = getPortYardGalleonVariantPick();
+  rebuildPlayerShip();
+  applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth != null ? G.player.riggingHealth : 100);
+  notify(`Shipwright swapped your hull lines (${refit}g).`);
+  saveProgress();
+  if (ws?.readyState === 1) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'ship_update',
+        shipType: G.player.shipType,
+        shipVisualVariant: normalizePlayerSloopVisual(G.player.shipVisualVariant),
+        galleonVisualVariant: normalizePlayerGalleonVisual(G.player.galleonVisualVariant),
+        shipParts: { ...G.player.shipParts }
+      }));
+    } catch (e) {}
+    sendUpdate();
+  }
+  showPortTab('ships');
+  updateShipPanel();
+};
+
 window.portBuyShip = function(shipType) {
   if (!G.docked) { notify('Dock at a port shipyard first.'); return; }
   if (!SHIP_TYPES[shipType]) { notify('Unknown hull class.'); return; }
-  const prevType = G.player.shipType;
-  let pickVar = null;
-  if (shipType === 'sloop') pickVar = getPortYardSloopVariantPick();
-  else if (shipType === 'galleon') pickVar = getPortYardGalleonVariantPick();
-  const curVar = normalizePlayerShipVisualVariant(G.player.shipVisualVariant, G.player.shipType);
-  if (shipType === G.player.shipType && pickVar === curVar) {
-    notify('You already use this hull.');
-    return;
-  }
+  if (shipType === G.player.shipType) { notify('Use “Refit to selected hull” to change model, or buy the other class below.'); return; }
   const specNew = SHIP_TYPES[shipType];
   const price = SHIP_PURCHASE_PRICE[shipType] != null ? SHIP_PURCHASE_PRICE[shipType] : 200;
   const tradeIn = computePlayerShipTradeInGold();
@@ -12736,12 +12826,9 @@ window.portBuyShip = function(shipType) {
   }
   gold.count -= payFromHold;
   G.player.shipType = shipType;
-  if (shipType === 'sloop') G.player.shipVisualVariant = pickVar;
-  else if (shipType === 'galleon') G.player.shipVisualVariant = pickVar;
-  else G.player.shipVisualVariant = 'sloop1';
-  if (prevType !== shipType) {
-    G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
-  }
+  if (shipType === 'sloop') G.player.shipVisualVariant = getPortYardSloopVariantPick();
+  if (shipType === 'galleon') G.player.galleonVisualVariant = getPortYardGalleonVariantPick();
+  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   const mh = G.player.maxHealth != null ? G.player.maxHealth : 100;
   G.player.health = mh;
   G.player.riggingHealth = 100;
@@ -12756,7 +12843,8 @@ window.portBuyShip = function(shipType) {
       ws.send(JSON.stringify({
         type: 'ship_update',
         shipType: G.player.shipType,
-        shipVisualVariant: serializePlayerShipVisualForNet(),
+        shipVisualVariant: normalizePlayerSloopVisual(G.player.shipVisualVariant),
+        galleonVisualVariant: normalizePlayerGalleonVisual(G.player.galleonVisualVariant),
         shipParts: { ...G.player.shipParts }
       }));
     } catch (e) {}
@@ -13828,8 +13916,8 @@ function update(dt) {
   updateTownFlagWindAnimation();
   updateSeagulls(dt);
   updateFish(dt);
-  if ((G._frameIdx = (G._frameIdx || 0) + 1) % 2 === 0) updateWildlifeCameraCull();
-  updateIslandRevealEffect(dt);
+  updateWildlifeCameraCull();
+  updateIslandChunkReveal(dt);
   if (G.townAnimMixers.length) {
     for (let mi = G.townAnimMixers.length - 1; mi >= 0; mi--) {
       const mx = G.townAnimMixers[mi];
@@ -13995,10 +14083,14 @@ function update(dt) {
       const captainName = networkPlayerCaptainName(p);
       const shipTitle = (p.shipName && String(p.shipName).trim()) ? String(p.shipName).trim() : captainName;
       const visualParts = normalizeShipPartsForRemoteView(p.shipParts);
-      const sm = buildShipMesh(st, visualParts, p.flagColor || p.color || '#4488cc', shipTitle, {
-        remoteShipVisualVariant: p.shipVisualVariant,
+      const remoteMesh = {
+        remoteShipVisualVariant: normalizePlayerSloopVisual(p.shipVisualVariant),
         remoteGalleonVariantSeed: id
-      });
+      };
+      if (st === 'galleon' && p.galleonVisualVariant != null && String(p.galleonVisualVariant).trim() !== '') {
+        remoteMesh.remoteGalleonVisualVariant = normalizePlayerGalleonVisual(p.galleonVisualVariant);
+      }
+      const sm = buildShipMesh(st, visualParts, p.flagColor || p.color || '#4488cc', shipTitle, remoteMesh);
       if (captainName && shipTitle !== captainName) {
         const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, (p.flagColor || p.color || ''));
         const spec = SHIP_TYPES[st];
@@ -14591,8 +14683,7 @@ function warmUpGameView() {
   playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
-  if ((G._warmFrame = (G._warmFrame || 0) + 1) % 2 === 0) updateWildlifeCameraCull();
-  updateIslandRevealEffect(0);
+  updateWildlifeCameraCull();
   renderer.render(scene, camera);
 }
 
@@ -15579,8 +15670,8 @@ function applyDefaultStartingLoadout(opts) {
   if (keep && savedCap && String(savedCap.name || '').trim()) {
     G.player.crew[0] = { ...G.player.crew[0], ...savedCap, role: 'captain', task: 'helm', health: 100 };
     if (savedShipName) G.player.shipName = savedShipName;
-    if (savedShipType) G.player.shipType = normalizePlayerShipType(savedShipType);
-    if (savedShipVisualVariant != null) G.player.shipVisualVariant = normalizePlayerShipVisualVariant(savedShipVisualVariant, G.player.shipType);
+    if (savedShipType) G.player.shipType = savedShipType;
+    if (savedShipVisualVariant != null) G.player.shipVisualVariant = normalizePlayerSloopVisual(savedShipVisualVariant);
     if (savedParts) G.player.shipParts = savedParts;
     if (savedFlag) G.player.flagColor = savedFlag;
   } else if (G.player.crew[0]) {
@@ -15624,7 +15715,8 @@ function saveProgress() {
       x: G.player.x, z: G.player.z, rotation: G.player.rotation,
       health: G.player.health, shipType: G.player.shipType,
       shipName: G.player.shipName,
-      shipVisualVariant: serializePlayerShipVisualForNet(),
+      shipVisualVariant: normalizePlayerSloopVisual(G.player.shipVisualVariant),
+      galleonVisualVariant: normalizePlayerGalleonVisual(G.player.galleonVisualVariant),
       flagColor: G.player.flagColor,
       shipParts: G.player.shipParts,
       inventory: G.player.inventory,
@@ -15661,7 +15753,8 @@ function loadProgress() {
     if (data.shipName) G.player.shipName = data.shipName;
     if (data.shipType) G.player.shipType = data.shipType;
     G.player.shipType = normalizePlayerShipType(G.player.shipType);
-    G.player.shipVisualVariant = normalizePlayerShipVisualVariant(data.shipVisualVariant, G.player.shipType);
+    G.player.shipVisualVariant = normalizePlayerSloopVisual(data.shipVisualVariant);
+    if (data.galleonVisualVariant != null) G.player.galleonVisualVariant = normalizePlayerGalleonVisual(data.galleonVisualVariant);
     if (data.shipParts) G.player.shipParts = normalizeShipParts(data.shipParts);
     if (Array.isArray(data.inventory)) {
       G.player.inventory = data.inventory;
@@ -15781,7 +15874,7 @@ function menuRender() {
     if (!ws || ws.readyState !== 1) updateNPCs(0.016);
     updateSeagulls(0.016);
     updateFish(0.016);
-    if ((G._menuFrame = (G._menuFrame || 0) + 1) % 2 === 0) updateWildlifeCameraCull();
+    updateWildlifeCameraCull();
     G.npcs.forEach(npc => {
       if (npc.mesh) {
         const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12;
