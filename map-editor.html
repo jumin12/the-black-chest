@@ -138,6 +138,10 @@
             <button type="button" id="btn-clear-sel">Clear selection</button>
             <button type="button" id="btn-del-ent" class="danger">Delete selected</button>
           </div>
+          <label class="row">3D model override (optional)</label>
+          <select id="editor-gltf-model"></select>
+          <p class="hint" style="margin-top:4px;">Used when placing <strong>tree · bush · building · house · dock</strong>, or with the <strong>glTF asset</strong> tool. “Default” lets the voyage pick variants.</p>
+          <div id="editor-gltf-status" class="hint" style="margin-top:2px;">Loading 3D library…</div>
           <label class="row">Active town (docks &amp; buildings)</label>
           <select id="assign-town"></select>
           <div class="actions" style="flex-direction:row;flex-wrap:wrap;">
@@ -314,6 +318,9 @@
   </script>
   <script type="module">
   import * as THREE from 'three';
+  import WebGPURenderer from 'three/addons/renderers/webgpu/WebGPURenderer.js';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+  import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   import {
     SHIP_TYPES_ME,
@@ -345,6 +352,85 @@
   const EDITOR_WATER_BASE_Y = SEA_LEVEL - 0.92;
   const EDITOR_WAVE_SCALE = 0.42;
   const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
+  const EDITOR_WORLD_GLB_PATHS = {
+    tree1: 'assets/3d models/decorations/tree1.glb',
+    tree2: 'assets/3d models/decorations/tree2.glb',
+    tree3: 'assets/3d models/decorations/tree3.glb',
+    bush1: 'assets/3d models/decorations/bush1.glb',
+    bush2: 'assets/3d models/decorations/bush2.glb',
+    fish1: 'assets/3d models/wildlife/fish1.glb',
+    fish2: 'assets/3d models/wildlife/fish2.glb',
+    fish3: 'assets/3d models/wildlife/fish3.glb',
+    fish4: 'assets/3d models/wildlife/fish4.glb',
+    shark: 'assets/3d models/wildlife/shark.glb',
+    seagul1: 'assets/3d models/wildlife/seagul1.glb',
+    seagul2: 'assets/3d models/wildlife/seagul2.glb',
+    dock1: 'assets/3d models/buildings/dock1.glb',
+    dock2: 'assets/3d models/buildings/dock2.glb',
+    tavern: 'assets/3d models/buildings/tavern.glb',
+    church1: 'assets/3d models/buildings/church1.glb',
+    govres1: 'assets/3d models/buildings/govres1.glb',
+    house1: 'assets/3d models/buildings/house1.glb',
+    house2: 'assets/3d models/buildings/house2.glb'
+  };
+  const EDITOR_SHIP_GLB_PATHS = {
+    galleon2: 'assets/3d models/ships/galleon2.glb',
+    galleon3: 'assets/3d models/ships/galleon3.glb',
+    galleon4: 'assets/3d models/ships/galleon4.glb',
+    sloop1: 'assets/3d models/ships/sloop1.glb',
+    sloop2: 'assets/3d models/ships/sloop2.glb',
+    sloop3: 'assets/3d models/ships/sloop3.glb'
+  };
+  const editorWorldGltfData = Object.create(null);
+  const editorShipGltfRoots = Object.create(null);
+  const _edPlBox = new THREE.Box3();
+  const _edPlSize = new THREE.Vector3();
+  function scaleGltfRootToHeightEd(root, targetH) {
+    root.updateMatrixWorld(true);
+    _edPlBox.setFromObject(root);
+    _edPlSize.subVectors(_edPlBox.max, _edPlBox.min);
+    const h = Math.max(_edPlSize.y, 0.01);
+    root.scale.setScalar(targetH / h);
+  }
+  function anchorGltfBottomAtWorldYEd(root, surfaceWorldY, wx, wz) {
+    root.updateMatrixWorld(true);
+    _edPlBox.setFromObject(root);
+    root.position.set(wx, surfaceWorldY - _edPlBox.min.y, wz);
+    root.updateMatrixWorld(true);
+  }
+  async function preloadEditorGltfAssets() {
+    const st = document.getElementById('editor-gltf-status');
+    try {
+      await MeshoptDecoder.ready;
+      const loader = new GLTFLoader();
+      loader.setMeshoptDecoder(MeshoptDecoder);
+      const loads = [];
+      for (const k of Object.keys(EDITOR_WORLD_GLB_PATHS)) {
+        loads.push(new Promise(resolve => {
+          loader.load(
+            EDITOR_WORLD_GLB_PATHS[k],
+            gltf => { editorWorldGltfData[k] = { scene: gltf.scene, animations: gltf.animations || [] }; resolve(); },
+            undefined,
+            () => resolve()
+          );
+        }));
+      }
+      for (const k of Object.keys(EDITOR_SHIP_GLB_PATHS)) {
+        loads.push(new Promise(resolve => {
+          loader.load(
+            EDITOR_SHIP_GLB_PATHS[k],
+            gltf => { editorShipGltfRoots[k] = gltf.scene; resolve(); },
+            undefined,
+            () => resolve()
+          );
+        }));
+      }
+      await Promise.all(loads);
+      if (st) st.textContent = '3D library ready (' + Object.keys(editorWorldGltfData).length + ' world + ' + Object.keys(editorShipGltfRoots).length + ' ships).';
+    } catch (e) {
+      if (st) st.textContent = '3D library partial — some models may show as placeholders.';
+    }
+  }
   const STORAGE_KEY = 'pirates_custom_map_v1';
   const MAP_LIBRARY_INDEX_KEY = 'pirates_map_library_index_v1';
   const MAP_LIBRARY_DATA_PREFIX = 'pirates_map_saved_v1_';
@@ -524,7 +610,8 @@
     ['dock', 'Dock'],
     ['flagpole', 'Flagpole'],
     ['barrel', 'Barrel'],
-    ['driftwood', 'Driftwood']
+    ['driftwood', 'Driftwood'],
+    ['gltf', 'glTF asset']
   ];
   TOOL_DEFS.forEach(([id, label]) => {
     const b = document.createElement('button');
@@ -538,6 +625,19 @@
     });
     toolsEl.appendChild(b);
   });
+
+  const gltfModelSel = document.getElementById('editor-gltf-model');
+  if (gltfModelSel) {
+    gltfModelSel.innerHTML = '<option value="">Default (auto)</option>';
+    const sortedKeys = [...Object.keys(EDITOR_WORLD_GLB_PATHS), ...Object.keys(EDITOR_SHIP_GLB_PATHS)].sort();
+    for (const k of sortedKeys) {
+      const o = document.createElement('option');
+      o.value = k;
+      o.textContent = k;
+      gltfModelSel.appendChild(o);
+    }
+  }
+  void preloadEditorGltfAssets();
 
   const heights = new Float32Array(GRID_N * GRID_N);
   for (let i = 0; i < heights.length; i++) heights[i] = 0;
@@ -1321,7 +1421,13 @@
 
   const canvas = document.getElementById('viewport');
   canvas.style.touchAction = 'none';
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  let renderer;
+  try {
+    renderer = new WebGPURenderer({ canvas, antialias: true, alpha: false });
+    if (typeof renderer.init === 'function') void renderer.init().catch(() => {});
+  } catch (e) {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.1;
@@ -2451,17 +2557,119 @@
       let m = null;
       if (e.type === 'tree') {
         const yAw = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : undefined;
-        m = createPalmTree(e.x, base + 0.08 + lift, e.z, rng, yAw);
-        m.userData._palmYawStored = m.rotation.y;
+        const mkTr = String(e.modelKey || '').trim();
+        const tPool = ['tree1', 'tree2', 'tree3'];
+        const tk = tPool.includes(mkTr) ? mkTr : tPool[Math.floor(er0() * tPool.length)];
+        const tplT = editorWorldGltfData[tk];
+        if (tplT && tplT.scene) {
+          const root = tplT.scene.clone(true);
+          scaleGltfRootToHeightEd(root, 4.1 + er0() * 3.4);
+          root.rotation.y = yAw != null ? yAw : er0() * Math.PI * 2;
+          anchorGltfBottomAtWorldYEd(root, base + 0.08 + lift, e.x, e.z);
+          root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+          m = root;
+          m.userData._palmYawStored = root.rotation.y;
+        } else {
+          m = createPalmTree(e.x, base + 0.08 + lift, e.z, rng, yAw);
+          m.userData._palmYawStored = m.rotation.y;
+        }
       } else if (e.type === 'bush') {
-        m = createBush(e.x, base + 0.02 + lift, e.z, 0.35 + er0() * 0.35, rng);
+        const mkBu = String(e.modelKey || '').trim();
+        const bPool = ['bush1', 'bush2'];
+        const bk = bPool.includes(mkBu) ? mkBu : bPool[Math.floor(er0() * bPool.length)];
+        const tplB = editorWorldGltfData[bk];
+        if (tplB && tplB.scene) {
+          const root = tplB.scene.clone(true);
+          const th = Math.max(0.28, (0.35 + er0() * 0.35) * 1.35) * (0.85 + er0() * 0.35);
+          scaleGltfRootToHeightEd(root, th);
+          root.rotation.y = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : er0() * Math.PI * 2;
+          anchorGltfBottomAtWorldYEd(root, base + 0.02 + lift, e.x, e.z);
+          root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+          m = root;
+        } else {
+          m = createBush(e.x, base + 0.02 + lift, e.z, 0.35 + er0() * 0.35, rng);
+        }
       } else if (e.type === 'rock') {
         const s = e.scale != null ? e.scale : 0.8;
         m = createRock(e.x, base + 0.08 + lift + s * 0.35, e.z, s, rng);
         if (e.rot != null && Number.isFinite(Number(e.rot))) m.rotation.y = Number(e.rot);
-      } else if (e.type === 'building') m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng, lift, e);
-      else if (e.type === 'house') m = makeHouse(e.x, e.z, rng, lift, e);
-      else if (e.type === 'dock') m = makeDock(e.x, e.z, e.rot || 0, lift);
+      } else if (e.type === 'gltfProp') {
+        const mk = String(e.modelKey || '').trim();
+        const wTpl = editorWorldGltfData[mk];
+        const sc = wTpl && wTpl.scene ? wTpl.scene : (editorShipGltfRoots[mk] || null);
+        if (sc) {
+          const root = sc.clone(true);
+          root.rotation.y = e.rot != null ? Number(e.rot) : 0;
+          _edPlBox.setFromObject(root);
+          _edPlSize.subVectors(_edPlBox.max, _edPlBox.min);
+          const foot = Math.max(_edPlSize.x, _edPlSize.z, 0.01);
+          const targetFoot = e.footTarget != null ? Number(e.footTarget) : 5.5 + er0() * 4.5;
+          root.scale.setScalar(targetFoot / foot);
+          anchorGltfBottomAtWorldYEd(root, base + 0.12 + lift, e.x, e.z);
+          root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+          m = root;
+        }
+      } else if (e.type === 'building') {
+        const mkBd = String(e.modelKey || '').trim();
+        let gk = '';
+        if (mkBd && editorWorldGltfData[mkBd] && editorWorldGltfData[mkBd].scene) gk = mkBd;
+        const tplBd = gk ? editorWorldGltfData[gk] : null;
+        if (tplBd && tplBd.scene) {
+          const root = tplBd.scene.clone(true);
+          _edPlBox.setFromObject(root);
+          _edPlSize.subVectors(_edPlBox.max, _edPlBox.min);
+          const foot = Math.max(_edPlSize.x, _edPlSize.z, 0.01);
+          const isHouse = gk === 'house1' || gk === 'house2';
+          const target = isHouse ? 4.2 + er0() * 1.9 : 5.6 + er0() * 2.4;
+          root.scale.setScalar(target / foot);
+          root.rotation.y = e.rot != null ? e.rot : 0;
+          anchorGltfBottomAtWorldYEd(root, base + 0.12 + lift, e.x, e.z);
+          root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+          m = root;
+        } else {
+          m = makeBuilding(e.x, e.z, e.color != null ? e.color : 0xb0a078, rng, lift, e);
+        }
+      } else if (e.type === 'house') {
+        const mkH = String(e.modelKey || '').trim();
+        let gkH = '';
+        if (mkH && editorWorldGltfData[mkH] && editorWorldGltfData[mkH].scene) gkH = mkH;
+        if (!gkH) gkH = er0() < 0.5 ? 'house1' : 'house2';
+        const tplH = editorWorldGltfData[gkH];
+        if (tplH && tplH.scene) {
+          const root = tplH.scene.clone(true);
+          _edPlBox.setFromObject(root);
+          _edPlSize.subVectors(_edPlBox.max, _edPlBox.min);
+          const foot = Math.max(_edPlSize.x, _edPlSize.z, 0.01);
+          const target = 4.2 + er0() * 1.9;
+          root.scale.setScalar(target / foot);
+          root.rotation.y = e.rot != null ? e.rot : 0;
+          anchorGltfBottomAtWorldYEd(root, base + 0.06 + lift, e.x, e.z);
+          root.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+          m = root;
+        } else {
+          m = makeHouse(e.x, e.z, rng, lift, e);
+        }
+      } else if (e.type === 'dock') {
+        const mkD = String(e.modelKey || '').trim();
+        const dk = (mkD === 'dock1' || mkD === 'dock2') ? mkD : (er0() < 0.5 ? 'dock1' : 'dock2');
+        const tplD = editorWorldGltfData[dk];
+        if (tplD && tplD.scene) {
+          const dRoot = tplD.scene.clone(true);
+          const tW = 5.1, tL = 14.2;
+          _edPlBox.setFromObject(dRoot);
+          _edPlSize.subVectors(_edPlBox.max, _edPlBox.min);
+          const sx = tW / Math.max(_edPlSize.x, 0.01);
+          const sz = tL / Math.max(_edPlSize.z, 0.01);
+          const sy = Math.min(sx, sz) * 0.95;
+          dRoot.scale.set(sx, sy, sz);
+          dRoot.rotation.y = e.rot || 0;
+          const ty = base + 0.45 + lift;
+          anchorGltfBottomAtWorldYEd(dRoot, ty - 0.08, e.x, e.z);
+          dRoot.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
+          m = dRoot;
+        } else {
+          m = makeDock(e.x, e.z, e.rot || 0, lift);
+        }
       else if (e.type === 'flagpole') m = makeFlagpole(e.x, e.z, lift);
       else if (e.type === 'barrel') {
         m = createBarrel(e.x, base + 0.02 + lift, e.z, rng);
@@ -2490,19 +2698,49 @@
     for (const ch of entRoot.children) {
       if (ch.userData.editorEntityId !== ent.id) continue;
       if (ent.type === 'tree') {
-        ch.position.set(ent.x, base + 0.08 + lift, ent.z);
-        ch.rotation.y = (ent.rot != null && Number.isFinite(Number(ent.rot)))
-          ? Number(ent.rot)
-          : (ch.userData._palmYawStored != null ? ch.userData._palmYawStored : ch.rotation.y);
+        if (ent.modelKey && String(ent.modelKey).trim()) {
+          ch.rotation.y = (ent.rot != null && Number.isFinite(Number(ent.rot)))
+            ? Number(ent.rot)
+            : (ch.userData._palmYawStored != null ? ch.userData._palmYawStored : ch.rotation.y);
+          anchorGltfBottomAtWorldYEd(ch, base + 0.08 + lift, ent.x, ent.z);
+        } else {
+          ch.position.set(ent.x, base + 0.08 + lift, ent.z);
+          ch.rotation.y = (ent.rot != null && Number.isFinite(Number(ent.rot)))
+            ? Number(ent.rot)
+            : (ch.userData._palmYawStored != null ? ch.userData._palmYawStored : ch.rotation.y);
+        }
       } else if (ent.type === 'bush') {
-        ch.position.set(ent.x, base + 0.02 + lift, ent.z);
-        ch.rotation.y = ent.rot != null ? Number(ent.rot) : 0;
+        if (ent.modelKey && String(ent.modelKey).trim()) {
+          ch.rotation.y = ent.rot != null ? Number(ent.rot) : 0;
+          anchorGltfBottomAtWorldYEd(ch, base + 0.02 + lift, ent.x, ent.z);
+        } else {
+          ch.position.set(ent.x, base + 0.02 + lift, ent.z);
+          ch.rotation.y = ent.rot != null ? Number(ent.rot) : 0;
+        }
       } else if (ent.type === 'building') {
-        ch.position.set(ent.x, base + lift, ent.z);
+        if (ent.modelKey && String(ent.modelKey).trim()) {
+          ch.rotation.y = ent.rot != null ? ent.rot : 0;
+          anchorGltfBottomAtWorldYEd(ch, base + 0.12 + lift, ent.x, ent.z);
+        } else {
+          ch.position.set(ent.x, base + lift, ent.z);
+        }
       } else if (ent.type === 'house') {
-        ch.position.set(ent.x, base + 0.06 + lift, ent.z);
+        if (ent.modelKey && String(ent.modelKey).trim()) {
+          ch.rotation.y = ent.rot != null ? ent.rot : 0;
+          anchorGltfBottomAtWorldYEd(ch, base + 0.06 + lift, ent.x, ent.z);
+        } else {
+          ch.position.set(ent.x, base + 0.06 + lift, ent.z);
+        }
       } else if (ent.type === 'dock') {
-        ch.position.set(ent.x, base + 0.45 + lift, ent.z);
+        if (ent.modelKey && String(ent.modelKey).trim()) {
+          ch.rotation.y = ent.rot != null ? ent.rot : 0;
+          anchorGltfBottomAtWorldYEd(ch, base + 0.45 + lift - 0.08, ent.x, ent.z);
+        } else {
+          ch.position.set(ent.x, base + 0.45 + lift, ent.z);
+        }
+      } else if (ent.type === 'gltfProp') {
+        ch.rotation.y = ent.rot != null ? Number(ent.rot) : 0;
+        anchorGltfBottomAtWorldYEd(ch, base + 0.12 + lift, ent.x, ent.z);
       } else if (ent.type === 'flagpole') {
         ch.position.set(ent.x, base + lift, ent.z);
       } else if (ent.type === 'rock') {
@@ -2522,7 +2760,7 @@
           ? Number(ent.rot)
           : (ch.userData._driftWoodYawStored != null ? ch.userData._driftWoodYawStored : ch.rotation.y);
       }
-      if (ent.type !== 'tree' && ent.type !== 'bush' && ent.type !== 'driftwood' && ent.type !== 'barrel' && ent.type !== 'rock') {
+      if (ent.type !== 'tree' && ent.type !== 'bush' && ent.type !== 'driftwood' && ent.type !== 'barrel' && ent.type !== 'rock' && ent.type !== 'gltfProp') {
         ch.rotation.y = ent.rot != null ? ent.rot : 0;
       }
       return;
@@ -2635,7 +2873,8 @@
       const tag = tn ? ` [${tn.townName}]` : '';
       const sel = selectedEntIds.has(e.id) ? ' <strong>*</strong>' : '';
       const ly = e.yLift != null ? ` y+${e.yLift.toFixed(1)}` : '';
-      return `<div data-eid="${e.id}" style="cursor:pointer;padding:2px 0;border-bottom:1px solid rgba(80,100,130,0.2);">${e.type} @ ${e.x.toFixed(0)},${e.z.toFixed(0)}${ly}${tag}${sel}</div>`;
+      const mk = e.modelKey ? ` · ${escapeHtmlStr(e.modelKey)}` : '';
+      return `<div data-eid="${e.id}" style="cursor:pointer;padding:2px 0;border-bottom:1px solid rgba(80,100,130,0.2);">${e.type} @ ${e.x.toFixed(0)},${e.z.toFixed(0)}${ly}${mk}${tag}${sel}</div>`;
     }).join('') || (spawnRow ? '' : '<div style="opacity:0.6;">No objects — use tools above.</div>');
     el.querySelectorAll('[data-spawn]').forEach(row => {
       row.addEventListener('click', ev => {
@@ -2723,7 +2962,8 @@
     const n = Math.round((Math.PI * r * r) / (spacing * spacing));
     return Math.max(1, Math.min(cap, n));
   }
-  function appendPlacedEntity(typeStr, wx, wz, tid, rotY) {
+  function appendPlacedEntity(typeStr, wx, wz, tid, rotY, opts) {
+    opts = opts || {};
     const e = {
       id: 'e' + (entSeq++),
       type: typeStr,
@@ -2731,7 +2971,11 @@
       z: wz,
       townId: tid
     };
-    if (['dock', 'building', 'house', 'flagpole'].includes(typeStr)) {
+    if (opts.modelKey) e.modelKey = String(opts.modelKey).trim();
+    if (['dock', 'building', 'house', 'flagpole', 'gltfProp'].includes(typeStr)) {
+      e.rot = rotY != null ? rotY : controls.getAzimuthalAngle();
+    }
+    if (typeStr === 'tree' || typeStr === 'bush' || typeStr === 'rock') {
       e.rot = rotY != null ? rotY : controls.getAzimuthalAngle();
     }
     entities.push(e);
@@ -2752,6 +2996,26 @@
       document.getElementById('status-bar').textContent = 'Player spawn placed — arrows adjust height/yaw; export saves it.';
       return;
     }
+    if (tool === 'gltf') {
+      const mk = gltfModelSel && gltfModelSel.value ? String(gltfModelSel.value).trim() : '';
+      if (!mk) {
+        alert('Choose a 3D model in the list above, then place a glTF asset.');
+        return;
+      }
+      const lim = worldEdgeClamp;
+      selectedSpawnOnly = false;
+      clearEntitySelection();
+      const baseYaw = controls.getAzimuthalAngle();
+      const e = appendPlacedEntity('gltfProp', wx, wz, null, baseYaw, { modelKey: mk });
+      selectedEntIds.add(e.id);
+      selectedEntId = e.id;
+      tool = 'select';
+      toolsEl.querySelectorAll('.tool').forEach(x => x.classList.toggle('sel', x.dataset.tool === tool));
+      syncEntityMeshes();
+      refreshEntityList();
+      document.getElementById('status-bar').textContent = 'Placed glTF asset — drag to move; export includes model key.';
+      return;
+    }
     const needsTown = ['dock', 'house', 'flagpole', 'building'].includes(tool);
     const tid = needsTown ? activePlacementTownId() : null;
     if (needsTown && !tid) {
@@ -2765,6 +3029,8 @@
     selectedSpawnOnly = false;
     clearEntitySelection();
     const baseYaw = controls.getAzimuthalAngle();
+    const pickMk = gltfModelSel && gltfModelSel.value ? String(gltfModelSel.value).trim() : '';
+    const placeOpts = pickMk ? { modelKey: pickMk } : null;
     for (let k = 0; k < n; k++) {
       const ang = rng() * Math.PI * 2;
       const rr = n <= 1 ? 0 : r * Math.sqrt(rng());
@@ -2773,7 +3039,7 @@
       px = Math.max(-lim, Math.min(lim, px));
       pz = Math.max(-lim, Math.min(lim, pz));
       const yawJ = (['dock', 'building', 'house', 'flagpole'].includes(tool) ? 0.12 : 0.9) * (rng() - 0.5);
-      const e = appendPlacedEntity(tool, px, pz, tid, baseYaw + yawJ);
+      const e = appendPlacedEntity(tool, px, pz, tid, baseYaw + yawJ, placeOpts);
       selectedEntIds.add(e.id);
       selectedEntId = e.id;
     }
