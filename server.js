@@ -923,6 +923,24 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'GET' && pathOnly === '/favicon.ico') {
+    const favPath = path.join(__dirname, 'favicon.ico');
+    fs.stat(favPath, (err, st) => {
+      if (!err && st.isFile()) {
+        res.writeHead(200, {
+          'Content-Type': 'image/x-icon',
+          'Content-Length': String(st.size),
+          'Cache-Control': 'public, max-age=604800',
+          ...CORS_HEADERS
+        });
+        fs.createReadStream(favPath).pipe(res);
+        return;
+      }
+      res.writeHead(204, { 'Cache-Control': 'public, max-age=3600', ...CORS_HEADERS });
+      res.end();
+    });
+    return;
+  }
   if (req.method === 'GET') {
     const assetPath = resolveAssetsDiskPath(req.url);
     if (assetPath) {
