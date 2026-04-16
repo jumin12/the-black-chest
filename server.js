@@ -724,7 +724,7 @@ function resolveAssetsDiskPath(reqUrl) {
 }
 
 function assetDeploySelfCheck() {
-  const sampleRel = ['3d models', 'ships', 'pirate-sloop1.glb'];
+  const sampleRel = ['3d models', 'ships', 'sloop3.glb'];
   const sampleAbs = path.join(__dirname, 'assets', ...sampleRel);
   const root = path.join(__dirname, 'assets');
   let sample = { rel: `assets/${sampleRel.join('/')}`, bytes: null, err: null };
