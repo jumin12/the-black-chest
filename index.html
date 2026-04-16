@@ -989,7 +989,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 </div>
 
 <script type="importmap">
-{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js","three-webgpu":"https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/"}}
 </script>
 <script type="module">
 import * as THREE from 'three';
@@ -2334,15 +2334,36 @@ class SimplexNoise {
 let noise;
 
 /* ============================= THREE.JS SETUP ============================ */
-/* WebGL: sky, water, and combat use custom GLSL; WebGPURenderer would require a full shader port. */
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(mainCanvasPixelRatio());
+/** When true, main view uses WebGPURenderer (three.js r172). Sky/water use MeshBasic/MeshPhysical on WebGPU (GLSL ShaderMaterial is WebGL-only). ?webgpu=0 forces WebGL. */
+let useWebGpuBackend = false;
+let renderer;
+const forceWebGl = typeof location !== 'undefined' && new URLSearchParams(location.search).get('webgpu') === '0';
+let _r = null;
+if (!forceWebGl && typeof navigator !== 'undefined' && navigator.gpu) {
+  try {
+    const TW = await import('three-webgpu');
+    _r = new TW.WebGPURenderer({ antialias: true, alpha: false });
+    _r.setPixelRatio(mainCanvasPixelRatio());
+    _r.setSize(window.innerWidth, window.innerHeight);
+    await _r.init();
+    useWebGpuBackend = true;
+  } catch (err) {
+    console.warn('[render] WebGPU unavailable or init failed; using WebGL.', err);
+    _r = null;
+  }
+}
+if (!_r) {
+  _r = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+  _r.setPixelRatio(mainCanvasPixelRatio());
+  _r.setSize(window.innerWidth, window.innerHeight);
+  useWebGpuBackend = false;
+}
+renderer = _r;
 if (renderer.outputColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
 renderer.shadowMap.enabled = !isMobile;
-if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+if (!isMobile) renderer.shadowMap.type = useWebGpuBackend ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
 renderer.setClearColor(0x152a45, 1);
 document.body.prepend(renderer.domElement);
 renderer.domElement.style.touchAction = 'none';
@@ -2570,6 +2591,32 @@ const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
 water.renderOrder = -1;
 scene.add(water);
 
+function applyWebGpuSkyWaterMaterialsIfNeeded() {
+  if (!useWebGpuBackend) return;
+  try {
+    sky.material.dispose();
+    sky.material = new THREE.MeshBasicMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      color: new THREE.Color(0x6a8ec0)
+    });
+    water.material.dispose();
+    water.material = new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(0x0c3450),
+      metalness: 0.06,
+      roughness: 0.14,
+      envMapIntensity: 0.85,
+      clearcoat: 0.65,
+      clearcoatRoughness: 0.22,
+      transparent: false
+    });
+  } catch (e) {
+    console.warn('[render] WebGPU sky/water fallback materials failed', e);
+  }
+}
+applyWebGpuSkyWaterMaterialsIfNeeded();
+
 function syncDayNightVisuals(camX, camZ) {
   const p = (G.time % DAY_CYCLE_SECONDS) / DAY_CYCLE_SECONDS;
   const theta = p * Math.PI * 2 - Math.PI * 0.5;
@@ -2610,15 +2657,30 @@ function syncDayNightVisuals(camX, camZ) {
 
   if (!isMobile) sunLight.castShadow = dayFactor > 0.2;
 
-  skyUniforms.uTime.value = G.time;
-  skyUniforms.uSunDir.value.copy(_skySunDir);
-  skyUniforms.uMoonDir.value.copy(_skyMoonDir);
-  skyUniforms.uDayFactor.value = dayFactor;
-  skyUniforms.uSkyCamPos.value.copy(camera.position);
+  if (useWebGpuBackend && sky.material && sky.material.isMeshBasicMaterial) {
+    const skyCol = new THREE.Color().lerpColors(_fogColNight, _fogColDay, dayFactor);
+    skyCol.multiplyScalar(0.82 + 0.18 * dayFactor);
+    sky.material.color.copy(skyCol);
+  } else {
+    skyUniforms.uTime.value = G.time;
+    skyUniforms.uSunDir.value.copy(_skySunDir);
+    skyUniforms.uMoonDir.value.copy(_skyMoonDir);
+    skyUniforms.uDayFactor.value = dayFactor;
+    skyUniforms.uSkyCamPos.value.copy(camera.position);
+  }
 
-  waterUniforms.uSunDir.value.copy(_skySunDir);
-  waterUniforms.uMoonDir.value.copy(_skyMoonDir);
-  waterUniforms.uDayFactor.value = dayFactor;
+  if (useWebGpuBackend && water.material && water.material.isMeshPhysicalMaterial) {
+    const deep = new THREE.Color(0x061c2a);
+    const shallow = new THREE.Color(0x1a6a72);
+    water.material.color.copy(deep).lerp(shallow, dayFactor * 0.65 + 0.15);
+    water.material.metalness = 0.04 + (1 - dayFactor) * 0.12;
+    water.material.roughness = 0.1 + (1 - dayFactor) * 0.22;
+    water.material.clearcoat = 0.45 + dayFactor * 0.35;
+  } else {
+    waterUniforms.uSunDir.value.copy(_skySunDir);
+    waterUniforms.uMoonDir.value.copy(_skyMoonDir);
+    waterUniforms.uDayFactor.value = dayFactor;
+  }
 
   sky.position.copy(camera.position);
   renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
@@ -7844,6 +7906,8 @@ function removeLootByNetId(netId) {
 /* ============================== NETWORK =================================== */
 let ws = null;
 let wsReconnectTimer = null;
+/** After server maintenance / restart notice, wait until this time (ms) before reconnecting. */
+let wsMaintenanceReconnectAt = 0;
 let wsUserBanned = false;
 let playWorldNetTimeoutId = null;
 let prefetchedServerSeed = null;
@@ -8168,6 +8232,11 @@ function startServerSeedPrefetch() {
   fetch(getHealthUrl(), { cache: 'no-store' })
     .then(r => (r.ok ? r.json() : Promise.reject()))
     .then(j => {
+      if (j && j.acceptingPlayers === false && j.maintenanceMessage) {
+        notify(String(j.maintenanceMessage));
+        const sec = Number(j.reconnectInSec);
+        wsMaintenanceReconnectAt = Date.now() + (Number.isFinite(sec) && sec > 0 ? sec : 20) * 1000;
+      }
       if (j && j.worldMapRevision != null) {
         const wr = Number(j.worldMapRevision) >>> 0;
         if (wr > 0) {
@@ -8251,6 +8320,7 @@ function connectToServer() {
   ws = socket;
   ws.onopen = () => {
     wsUserBanned = false;
+    wsMaintenanceReconnectAt = 0;
     notify('Connected to server');
     flushPendingCaptainCareerDelete();
     const capName = G.player.crew[0]?.name || 'Pirate';
@@ -8518,6 +8588,21 @@ function connectToServer() {
         wsUserBanned = true;
         notify(msg.reason || 'You are banned from this server.');
         break;
+      case 'server_maintenance': {
+        const m = msg.message || 'Server is unavailable right now. Please try again shortly.';
+        notify(m);
+        const secM = Number(msg.reconnectInSec);
+        wsMaintenanceReconnectAt = Date.now() + (Number.isFinite(secM) && secM > 0 ? secM : 20) * 1000;
+        break;
+      }
+      case 'server_shutting_down': {
+        try { flushPendingSaveProgress(); } catch (e) {}
+        try { saveProgress(); } catch (e2) {}
+        notify(msg.message || 'Server is restarting — your progress was saved locally.');
+        const secS = Number(msg.reconnectInSec);
+        wsMaintenanceReconnectAt = Date.now() + (Number.isFinite(secS) && secS > 0 ? secS : 25) * 1000;
+        break;
+      }
       case 'chat_error':
         notify(msg.error || 'Chat not sent.');
         break;
@@ -8699,10 +8784,12 @@ function connectToServer() {
   ws.onerror = () => {};
   ws.onclose = () => {
     if (wsUserBanned) return;
+    const now = Date.now();
+    const delay = Math.max(3000, wsMaintenanceReconnectAt > now ? (wsMaintenanceReconnectAt - now) : 3000);
     wsReconnectTimer = setTimeout(() => {
       wsReconnectTimer = null;
       if (G.mode === 'playing') connectToServer();
-    }, 3000);
+    }, delay);
   };
 }
 function sendUpdate() {
