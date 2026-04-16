@@ -997,7 +997,8 @@ wss.on('connection', (ws, req) => {
     z: Math.sin(spawnAngle) * spawnDist,
     rotation: 0,
     speed: 0,
-    shipType: 'cutter',
+    shipType: 'sloop',
+    shipVisualVariant: 'sloop1',
     shipName: '',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
@@ -1065,6 +1066,10 @@ wss.on('connection', (ws, req) => {
           if (msg.shipType !== undefined && msg.shipType !== null) {
             const st = String(msg.shipType).trim().slice(0, 24);
             if (st) p.shipType = st;
+          }
+          if (msg.shipVisualVariant !== undefined) {
+            const sv = String(msg.shipVisualVariant).trim();
+            p.shipVisualVariant = sv === 'sloop2' ? 'sloop2' : 'sloop1';
           }
           if (msg.shipName !== undefined) p.shipName = String(msg.shipName || '').slice(0, 28);
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
@@ -1163,6 +1168,10 @@ wss.on('connection', (ws, req) => {
             const st = String(msg.shipType).trim().slice(0, 24);
             if (st) p.shipType = st;
           }
+          if (msg.shipVisualVariant !== undefined) {
+            const sv = String(msg.shipVisualVariant).trim();
+            p.shipVisualVariant = sv === 'sloop2' ? 'sloop2' : 'sloop1';
+          }
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
             p.shipParts = {
@@ -1186,8 +1195,18 @@ wss.on('connection', (ws, req) => {
           const p = players.get(id);
           if (!p) break;
           if (msg.shipType) p.shipType = msg.shipType;
+          if (msg.shipVisualVariant !== undefined) {
+            const sv = String(msg.shipVisualVariant).trim();
+            p.shipVisualVariant = sv === 'sloop2' ? 'sloop2' : 'sloop1';
+          }
           if (msg.shipParts) p.shipParts = { ...p.shipParts, ...msg.shipParts };
-          broadcast({ type: 'ship_update', id, shipType: p.shipType, shipParts: p.shipParts }, id);
+          broadcast({
+            type: 'ship_update',
+            id,
+            shipType: p.shipType,
+            shipVisualVariant: p.shipVisualVariant != null ? p.shipVisualVariant : 'sloop1',
+            shipParts: p.shipParts
+          }, id);
           break;
         }
         case 'chat': {
@@ -1681,7 +1700,9 @@ setInterval(() => {
   if (players.size === 0) return;
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
-    name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
+    name: p.name, color: p.color, shipType: p.shipType,
+    shipVisualVariant: p.shipVisualVariant != null ? p.shipVisualVariant : 'sloop1',
+    shipName: p.shipName,
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     crewData: p.crewData,
