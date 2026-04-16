@@ -1050,8 +1050,176 @@ const shipGltfRoots = Object.create(null);
 const worldGltfData = Object.create(null);
 const _worldPlBox = new THREE.Box3();
 const _worldPlSize = new THREE.Vector3();
-let gltfCatalogReadyPromise = null;
 let didPostGltfTerrainRebuild = false;
+
+/** Fetch `.glb` bytes off the main thread (I/O + gzip decode in worker); parsing stays on main (Three.js). */
+const GLTF_FETCH_WORKER_CODE = `
+self.onmessage = async function(e) {
+  var id = e.data.id;
+  var url = e.data.url;
+  try {
+    var res = await fetch(url, { mode: 'cors', credentials: 'same-origin' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var buf = await res.arrayBuffer();
+    self.postMessage({ id: id, ok: true, buffer: buf }, [buf]);
+  } catch (err) {
+    self.postMessage({ id: id, ok: false, error: err && err.message ? err.message : 'fetch failed' });
+  }
+};
+`;
+let _gltfFetchWorkerBlobUrl = null;
+const _gltfFetchWorkerPool = [];
+let _gltfFetchMsgId = 0;
+let _gltfFetchWorkerRR = 0;
+const _gltfFetchPending = new Map();
+function _onGltfFetchWorkerMessage(e) {
+  const d = e.data;
+  const p = _gltfFetchPending.get(d.id);
+  if (!p) return;
+  _gltfFetchPending.delete(d.id);
+  if (d.ok) p.resolve(d.buffer);
+  else p.reject(new Error(d.error || 'fetch failed'));
+}
+function _ensureGltfFetchWorkerPool() {
+  if (_gltfFetchWorkerPool.length || typeof Worker === 'undefined') return;
+  try {
+    _gltfFetchWorkerBlobUrl = URL.createObjectURL(new Blob([GLTF_FETCH_WORKER_CODE], { type: 'application/javascript' }));
+    const n = Math.min(4, Math.max(2, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
+    for (let i = 0; i < n; i++) {
+      const w = new Worker(_gltfFetchWorkerBlobUrl);
+      w.onmessage = _onGltfFetchWorkerMessage;
+      _gltfFetchWorkerPool.push(w);
+    }
+  } catch (e) {
+    /* fall back to main-thread fetch */
+  }
+}
+function fetchGlbArrayBuffer(relativePath) {
+  let url;
+  try {
+    url = new URL(relativePath, location.href).href;
+  } catch (e) {
+    url = relativePath;
+  }
+  _ensureGltfFetchWorkerPool();
+  if (!_gltfFetchWorkerPool.length) {
+    return fetch(url, { credentials: 'same-origin' }).then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const id = ++_gltfFetchMsgId;
+    _gltfFetchPending.set(id, { resolve, reject });
+    const w = _gltfFetchWorkerPool[_gltfFetchWorkerRR % _gltfFetchWorkerPool.length];
+    _gltfFetchWorkerRR++;
+    w.postMessage({ id, url });
+  });
+}
+function gltfUrlBaseForParse(relativePath) {
+  try {
+    return THREE.LoaderUtils.extractUrlBase(new URL(relativePath, location.href).href);
+  } catch (e) {
+    return '';
+  }
+}
+function parseGlbBuffer(loader, relativePath, buffer, onGltf) {
+  const base = gltfUrlBaseForParse(relativePath);
+  return new Promise((resolve, reject) => {
+    try {
+      loader.parse(
+        buffer,
+        base,
+        gltf => {
+          onGltf(gltf);
+          resolve();
+        },
+        err => reject(err || new Error('parse failed'))
+      );
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+/** Worker fetch + parse; falls back to loader.load on failure. */
+async function loadOneGltfKey(loader, relativePath, onGltf) {
+  try {
+    const buf = await fetchGlbArrayBuffer(relativePath);
+    await parseGlbBuffer(loader, relativePath, buf, onGltf);
+  } catch (e) {
+    await new Promise(resolve => {
+      loader.load(
+        relativePath,
+        gltf => {
+          onGltf(gltf);
+          resolve();
+        },
+        undefined,
+        () => resolve()
+      );
+    });
+  }
+}
+function yieldToNextFrame() {
+  return new Promise(r => requestAnimationFrame(() => r()));
+}
+
+let shipGltfReadyPromise = null;
+let worldGltfReadyPromise = null;
+let fullGltfCatalogPromise = null;
+
+/** Tier 1: ship hulls only (small set) — character preview / player mesh can appear quickly. */
+function ensureShipGltfLoaded() {
+  if (shipGltfReadyPromise) return shipGltfReadyPromise;
+  shipGltfReadyPromise = (async () => {
+    await MeshoptDecoder.ready;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    const keys = Object.keys(SHIP_GLB_PATHS);
+    const BATCH = 2;
+    for (let i = 0; i < keys.length; i += BATCH) {
+      await yieldToNextFrame();
+      const slice = keys.slice(i, i + BATCH);
+      await Promise.all(slice.map(k => loadOneGltfKey(loader, SHIP_GLB_PATHS[k], g => {
+        shipGltfRoots[k] = g.scene;
+      })));
+    }
+  })();
+  return shipGltfReadyPromise;
+}
+
+/** Tier 2: world props — one decode per frame to avoid multi‑second main-thread stalls on modest devices. */
+function ensureWorldGltfLoaded() {
+  if (worldGltfReadyPromise) return worldGltfReadyPromise;
+  worldGltfReadyPromise = ensureShipGltfLoaded().then(async () => {
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    const keys = Object.keys(WORLD_GLB_PATHS);
+    for (const k of keys) {
+      await yieldToNextFrame();
+      if (worldGltfData[k] && worldGltfData[k].scene) continue;
+      await loadOneGltfKey(loader, WORLD_GLB_PATHS[k], g => {
+        worldGltfData[k] = { scene: g.scene, animations: g.animations || [] };
+      });
+    }
+  });
+  return worldGltfReadyPromise;
+}
+
+/** Full catalog (ships then world) + one terrain refresh when world is ready. */
+function preloadAllGltfUnified() {
+  if (fullGltfCatalogPromise) return fullGltfCatalogPromise;
+  fullGltfCatalogPromise = ensureWorldGltfLoaded().then(() => {
+    refreshWorldMeshesAfterFirstGltfCatalogLoad();
+  });
+  return fullGltfCatalogPromise;
+}
+
+function preloadShipHullsGltf() { return ensureShipGltfLoaded(); }
+function preloadShipGltfAssets() { return preloadAllGltfUnified(); }
+function preloadAllGltfAssets() { return preloadAllGltfUnified(); }
+
+preloadAllGltfUnified();
 
 /** Rebuild terrain chunks once the full glTF catalog is available (fixes low-detail islands from early menu init). */
 function refreshWorldMeshesAfterFirstGltfCatalogLoad() {
@@ -1077,51 +1245,6 @@ function refreshWorldMeshesAfterFirstGltfCatalogLoad() {
     playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.35, G.player.z);
   }
 }
-
-/**
- * Load every ship + world glTF in parallel. When finished, refresh chunks so procedural/custom islands use real meshes.
- */
-function preloadAllGltfUnified() {
-  if (gltfCatalogReadyPromise) return gltfCatalogReadyPromise;
-  gltfCatalogReadyPromise = (async () => {
-    await MeshoptDecoder.ready;
-    const loader = new GLTFLoader();
-    loader.setMeshoptDecoder(MeshoptDecoder);
-    const tasks = [];
-    for (const k of Object.keys(SHIP_GLB_PATHS)) {
-      tasks.push(new Promise(resolve => {
-        loader.load(
-          SHIP_GLB_PATHS[k],
-          gltf => { shipGltfRoots[k] = gltf.scene; resolve(); },
-          undefined,
-          () => resolve()
-        );
-      }));
-    }
-    for (const k of Object.keys(WORLD_GLB_PATHS)) {
-      tasks.push(new Promise(resolve => {
-        loader.load(
-          WORLD_GLB_PATHS[k],
-          gltf => {
-            worldGltfData[k] = { scene: gltf.scene, animations: gltf.animations || [] };
-            resolve();
-          },
-          undefined,
-          () => resolve()
-        );
-      }));
-    }
-    await Promise.all(tasks);
-    refreshWorldMeshesAfterFirstGltfCatalogLoad();
-  })();
-  return gltfCatalogReadyPromise;
-}
-
-function preloadShipHullsGltf() { return preloadAllGltfUnified(); }
-function preloadShipGltfAssets() { return preloadAllGltfUnified(); }
-function preloadAllGltfAssets() { return preloadAllGltfUnified(); }
-
-preloadAllGltfUnified();
 
 /** Uniform scale so world-space height ≈ targetH (meters). Does not move the root. */
 function scaleGltfRootToHeight(root, targetH) {
