@@ -1199,6 +1199,7 @@ const G = {
   _seaDebrisPurgeAt: null,
   combatPopups3D: [],
   swimmers: [],
+  sharks: [],
   selectedAmmoType: 'ball',
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
   deathSpawnX: null, deathSpawnZ: null, lastBroadsideSide: 1,
@@ -6759,6 +6760,325 @@ function broadcastOrSpawnSeaSwimmers(payloads) {
   }
 }
 
+const SHARK_CIRCLE_SEC = 30;
+const SHARK_ATTACK_SEC = 2.85;
+const SHARK_CHASE_SPEED = 6.8;
+const SHARK_PATROL_SPEED = 2.5;
+const SHARK_ORBIT_RADIUS = 5.4;
+const SHARK_MAX_PER_PREY = 2;
+const SHARK_AMBIENT_CAP = 14;
+const SHARK_ASSIGN_RANGE = 320;
+const SHARK_SPAWN_MIN_R = 48;
+const SHARK_SPAWN_MAX_R = 128;
+const SHARK_PRUNE_DIST = 460;
+
+function disposeSharkGroup(g) {
+  g.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      if (Array.isArray(o.material)) o.material.forEach(m => m.dispose());
+      else o.material.dispose();
+    }
+  });
+}
+
+function createSharkGroup() {
+  const g = new THREE.Group();
+  const matTop = new THREE.MeshLambertMaterial({ color: 0x3a5560 });
+  const matBelly = new THREE.MeshLambertMaterial({ color: 0x6a8a94 });
+  const body = new THREE.Mesh(new THREE.ConeGeometry(0.38, 1.45, 9, 1), matTop);
+  body.rotation.z = Math.PI / 2;
+  body.position.x = 0.18;
+  g.add(body);
+  const belly = new THREE.Mesh(new THREE.ConeGeometry(0.28, 1.05, 8, 1), matBelly);
+  belly.rotation.z = Math.PI / 2;
+  belly.position.set(0.12, -0.12, 0);
+  g.add(belly);
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.62, 6, 1), matTop);
+  tail.rotation.z = -Math.PI / 2;
+  tail.position.set(-0.62, 0.05, 0);
+  g.add(tail);
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.38, 0.42), matTop);
+  fin.position.set(0.05, 0.32, 0);
+  g.add(fin);
+  const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.32, 0.22), matTop);
+  tailFin.position.set(-0.78, 0.12, 0);
+  tailFin.rotation.z = 0.35;
+  g.add(tailFin);
+  g.scale.setScalar(1.35);
+  return g;
+}
+
+function spawnSharkAt(wx, wz) {
+  const sh = createSharkGroup();
+  sh.position.set(wx, SEA_LEVEL - 0.3, wz);
+  sh.userData.phase = 'patrol';
+  sh.userData.patrolAng = Math.random() * Math.PI * 2;
+  sh.userData.patrolTurn = (Math.random() - 0.5) * 0.65;
+  sh.userData.targetSwimmer = null;
+  sh.userData.orbitAngle = 0;
+  sh.userData.orbitPhase = Math.random() * Math.PI * 2;
+  sh.userData.bobSeed = Math.random() * Math.PI * 2;
+  scene.add(sh);
+  G.sharks.push(sh);
+}
+
+function trySpawnAmbientSharks() {
+  if (G.docked || G.playerSinking || G.mode !== 'playing') return;
+  if (G.sharks.length >= SHARK_AMBIENT_CAP) return;
+  const pair = Math.random() < 0.4 && G.sharks.length <= SHARK_AMBIENT_CAP - 2;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = SHARK_SPAWN_MIN_R + Math.random() * (SHARK_SPAWN_MAX_R - SHARK_SPAWN_MIN_R);
+    const sx = G.player.x + Math.cos(ang) * dist;
+    const sz = G.player.z + Math.sin(ang) * dist;
+    if (isSeaObstructed(sx, sz)) continue;
+    if (pair) {
+      const ox = Math.cos(ang + Math.PI / 2) * 2.4;
+      const oz = Math.sin(ang + Math.PI / 2) * 2.4;
+      const sx2 = sx + ox, sz2 = sz + oz;
+      if (isSeaObstructed(sx2, sz2)) continue;
+      spawnSharkAt(sx, sz);
+      spawnSharkAt(sx2, sz2);
+    } else {
+      spawnSharkAt(sx, sz);
+    }
+    break;
+  }
+}
+
+function releaseSharksFromPrey(sw) {
+  if (!sw || !G.sharks) return;
+  for (const sh of G.sharks) {
+    if (sh.userData.targetSwimmer === sw) {
+      sh.userData.targetSwimmer = null;
+      sh.userData.phase = 'patrol';
+    }
+  }
+  if (sw.userData) {
+    sw.userData.sharkCircleDeadline = null;
+    sw.userData.beingEaten = false;
+    sw.userData.sharkEatT = 0;
+  }
+}
+
+function sharksActivelyHuntingCount(sw) {
+  let n = 0;
+  for (const sh of G.sharks) {
+    const p = sh.userData.phase;
+    if (sh.userData.targetSwimmer === sw && (p === 'chase' || p === 'circle' || p === 'attack')) n++;
+  }
+  return n;
+}
+
+function findClosestPatrolShark(tx, tz) {
+  let best = null, bestD = SHARK_ASSIGN_RANGE;
+  for (const sh of G.sharks) {
+    if (sh.userData.phase !== 'patrol' || sh.userData.targetSwimmer) continue;
+    const d = Math.hypot(sh.position.x - tx, sh.position.z - tz);
+    if (d < bestD) {
+      bestD = d;
+      best = sh;
+    }
+  }
+  return best;
+}
+
+function assignSharksToSwimmers() {
+  for (const sw of G.swimmers) {
+    const u = sw.userData;
+    if (!u || u.beingEaten) continue;
+    const age = (Date.now() - (u.spawnAtMs || Date.now())) / 1000;
+    const y0 = u.y0 != null ? u.y0 : SEA_LEVEL + 2;
+    const vy0 = u.vy0 != null ? u.vy0 : 3;
+    const tLand = u.tLand != null ? u.tLand : computeSwimmerLandAge(y0, vy0, SEA_LEVEL + 0.1);
+    if (age < tLand) continue;
+    while (sharksActivelyHuntingCount(sw) < SHARK_MAX_PER_PREY) {
+      const sh = findClosestPatrolShark(sw.position.x, sw.position.z);
+      if (!sh) break;
+      sh.userData.targetSwimmer = sw;
+      sh.userData.phase = 'chase';
+      sh.userData.orbitPhase = Math.random() * Math.PI * 2;
+    }
+  }
+}
+
+function validateSharkTargets() {
+  for (const sh of G.sharks) {
+    const t = sh.userData.targetSwimmer;
+    if (t && G.swimmers.indexOf(t) < 0) {
+      sh.userData.targetSwimmer = null;
+      sh.userData.phase = 'patrol';
+    }
+  }
+}
+
+function pruneDistantSharks() {
+  const px = G.player.x, pz = G.player.z;
+  for (let i = G.sharks.length - 1; i >= 0; i--) {
+    const sh = G.sharks[i];
+    const keep = sh.userData.targetSwimmer && sh.userData.phase !== 'patrol';
+    const d = Math.hypot(sh.position.x - px, sh.position.z - pz);
+    if (!keep && d > SHARK_PRUNE_DIST) {
+      scene.remove(sh);
+      disposeSharkGroup(sh);
+      G.sharks.splice(i, 1);
+    }
+  }
+}
+
+function finishSharkMeal(sw) {
+  if (!sw || !sw.userData || sw.userData.sharkFinished) return;
+  sw.userData.sharkFinished = true;
+  const name = sw.userData.crewRestore
+    ? sw.userData.crewRestore.name
+    : (sw.userData.crewName || 'A castaway');
+  notify(`${name} was dragged under by sharks!`);
+  if (sw.userData.crewRestore) {
+    G.player.morale = Math.max(0, (G.player.morale != null ? G.player.morale : 100) - 7);
+  }
+  const nid = sw.userData.netId;
+  if (nid != null && ws && ws.readyState === 1) {
+    try { ws.send(JSON.stringify({ type: 'swimmer_collect', id: nid })); } catch (e) {}
+  }
+  releaseSharksFromPrey(sw);
+  scene.remove(sw);
+  const si = G.swimmers.indexOf(sw);
+  if (si >= 0) G.swimmers.splice(si, 1);
+}
+
+function updateSharks(dt) {
+  if (G.mode !== 'playing' || !G.sharks) return;
+  if (G._sharkSpawnAcc == null) G._sharkSpawnAcc = 0;
+  G._sharkSpawnAcc += dt;
+  if (G._sharkSpawnAcc >= 2.2) {
+    G._sharkSpawnAcc = 0;
+    trySpawnAmbientSharks();
+  }
+  pruneDistantSharks();
+  validateSharkTargets();
+  assignSharksToSwimmers();
+
+  for (const sw of G.swimmers) {
+    const u = sw.userData;
+    if (!u || u.beingEaten || !u.sharkCircleDeadline) continue;
+    if (G.time >= u.sharkCircleDeadline) {
+      u.beingEaten = true;
+      u.sharkEatT = 0;
+      try { createSplash(sw.position.x, sw.position.z); } catch (e) {}
+      for (const sh of G.sharks) {
+        if (sh.userData.targetSwimmer === sw && sh.userData.phase === 'circle') {
+          sh.userData.phase = 'attack';
+        }
+      }
+      for (const sh of G.sharks) {
+        if (sh.userData.targetSwimmer === sw && sh.userData.phase === 'chase') {
+          sh.userData.phase = 'attack';
+        }
+      }
+    }
+  }
+
+  const eatTicked = new Set();
+  for (const sh of G.sharks) {
+    const u = sh.userData;
+    const py = SEA_LEVEL - 0.28 + Math.sin(G.time * 2.5 + u.bobSeed) * 0.07;
+    if (u.phase === 'patrol') {
+      u.patrolAng += u.patrolTurn * dt * 0.9;
+      u.patrolTurn += (Math.random() - 0.5) * 0.22 * dt;
+      u.patrolTurn = Math.max(-0.95, Math.min(0.95, u.patrolTurn));
+      sh.position.x += Math.cos(u.patrolAng) * SHARK_PATROL_SPEED * dt;
+      sh.position.z += Math.sin(u.patrolAng) * SHARK_PATROL_SPEED * dt;
+      sh.position.x += (G.player.x - sh.position.x) * 0.22 * dt;
+      sh.position.z += (G.player.z - sh.position.z) * 0.22 * dt;
+      if (isSeaObstructed(sh.position.x, sh.position.z)) {
+        u.patrolAng += Math.PI * 0.65;
+      }
+      sh.position.y = py;
+      sh.rotation.y = u.patrolAng;
+      continue;
+    }
+    const sw = u.targetSwimmer;
+    if (!sw || !sw.userData) {
+      u.targetSwimmer = null;
+      u.phase = 'patrol';
+      sh.position.y = py;
+      continue;
+    }
+    const su = sw.userData;
+    if (su.beingEaten) {
+      if (u.phase !== 'attack') u.phase = 'attack';
+    }
+    const tcx = sw.position.x, tcz = sw.position.z;
+    if (u.phase === 'chase') {
+      const dx = tcx - sh.position.x, dz = tcz - sh.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 0.04) {
+        sh.position.x += (dx / d) * SHARK_CHASE_SPEED * dt;
+        sh.position.z += (dz / d) * SHARK_CHASE_SPEED * dt;
+      }
+      sh.rotation.y = Math.atan2(dx, dz);
+      sh.position.y = py;
+      if (d < SHARK_ORBIT_RADIUS + 1.1) {
+        u.phase = 'circle';
+        u.orbitAngle = Math.atan2(sh.position.z - tcz, sh.position.x - tcx);
+        if (su.sharkCircleDeadline == null) su.sharkCircleDeadline = G.time + SHARK_CIRCLE_SEC;
+      }
+      continue;
+    }
+    if (u.phase === 'circle') {
+      if (su.sharkCircleDeadline != null && G.time >= su.sharkCircleDeadline) {
+        continue;
+      }
+      u.orbitAngle += dt * 0.52;
+      const r = SHARK_ORBIT_RADIUS;
+      sh.position.x = tcx + Math.cos(u.orbitAngle + u.orbitPhase) * r;
+      sh.position.z = tcz + Math.sin(u.orbitAngle + u.orbitPhase) * r;
+      sh.rotation.y = Math.atan2(
+        Math.cos(u.orbitAngle + u.orbitPhase),
+        -Math.sin(u.orbitAngle + u.orbitPhase)
+      );
+      sh.position.y = py;
+      continue;
+    }
+    if (u.phase === 'attack') {
+      if (!eatTicked.has(sw)) {
+        su.sharkEatT = (su.sharkEatT || 0) + dt / SHARK_ATTACK_SEC;
+        eatTicked.add(sw);
+      }
+      const t = Math.min(1, su.sharkEatT || 0);
+      const dx = tcx - sh.position.x, dz = tcz - sh.position.z;
+      const d = Math.hypot(dx, dz);
+      const rush = 5.5 * dt * (0.45 + t);
+      if (d > 0.04) {
+        sh.position.x += (dx / d) * rush;
+        sh.position.z += (dz / d) * rush;
+      }
+      sh.rotation.x = -0.15 - t * 0.35;
+      sh.rotation.y = Math.atan2(dx, dz);
+      sh.position.y = py - t * 1.15;
+      let ax = 0, az = 0, nk = 0;
+      for (const sh2 of G.sharks) {
+        if (sh2.userData.targetSwimmer === sw && sh2.userData.phase === 'attack') {
+          ax += sh2.position.x;
+          az += sh2.position.z;
+          nk++;
+        }
+      }
+      if (nk > 0) {
+        ax /= nk;
+        az /= nk;
+        sw.position.x += (ax - sw.position.x) * Math.min(1, 4.2 * dt);
+        sw.position.z += (az - sw.position.z) * Math.min(1, 4.2 * dt);
+      }
+      const bob = Math.sin(G.time * 2 + (su.bobPhase != null ? su.bobPhase : 0)) * 0.08 * (1 - t);
+      sw.position.y = SEA_LEVEL + 0.06 + bob - t * 2.55;
+      sw.rotation.x = -t * 1.05;
+      if (t >= 1) finishSharkMeal(sw);
+    }
+  }
+}
+
 function spawnDamageChunks(wx, wy, wz) {
   for (let i = 0; i < 6; i++) {
     const size = 0.1 + combatFxHash(wx, wy, wz, i, 11, 6) * 0.2;
@@ -7368,6 +7688,10 @@ function destroyAmbientWildlife() {
   fishSchools.forEach(f => { scene.remove(f); });
   fishSchools.length = 0;
   schoolLeaders.length = 0;
+  if (G.sharks && G.sharks.length) {
+    G.sharks.forEach(sh => { scene.remove(sh); disposeSharkGroup(sh); });
+    G.sharks.length = 0;
+  }
 }
 
 function applySharedWorldFromServerSeed(s, opts) {
@@ -13035,6 +13359,7 @@ function update(dt) {
   for (let i = G.swimmers.length - 1; i >= 0; i--) {
     const sw = G.swimmers[i];
     const u = sw.userData;
+    if (u.beingEaten) continue;
     if (u.spawnAtMs == null) u.spawnAtMs = Date.now();
     const age = (Date.now() - u.spawnAtMs) / 1000;
     const sx0 = u.sx != null ? u.sx : sw.position.x;
@@ -13096,16 +13421,20 @@ function update(dt) {
       }
       if (collected) {
         if (sw.userData.netId != null && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'swimmer_collect', id: sw.userData.netId }));
+        releaseSharksFromPrey(sw);
         scene.remove(sw);
         G.swimmers.splice(i, 1);
       }
       continue;
     }
     if (u.life <= 0) {
+      releaseSharksFromPrey(sw);
       scene.remove(sw);
       G.swimmers.splice(i, 1);
     }
   }
+
+  updateSharks(dt);
 
   if (G.player.health <= 0 && !G.playerSinking) {
     bumpNotoriety({ deaths: 1 });
@@ -14187,6 +14516,10 @@ function exitGameToMainMenu() {
   document.getElementById('touch-broadsides-layer').style.display = 'none';
   document.getElementById('controls-help').style.display = 'none';
   restoreMobileGameControls();
+  if (G.sharks && G.sharks.length) {
+    G.sharks.forEach(sh => { scene.remove(sh); disposeSharkGroup(sh); });
+    G.sharks.length = 0;
+  }
   document.getElementById('start-screen').style.display = 'flex';
   refreshMainMenuSavePanel();
   notify('Voyage saved — welcome back at port.');
