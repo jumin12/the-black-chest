@@ -1054,10 +1054,27 @@ function stripIslandTerrainOpenSeaTriangles(geo, waterMask) {
   }
 }
 /**
+ * Same sand tones as `createSandSeabedTexture` (world XZ → matching RGB) so island skirts read as the seabed.
+ */
+function seabedVertRgbFromWorldXZ(wx, wz) {
+  const i = Math.abs((Math.floor(wx * 2.28 + wz * 0.41) % 256 + 256) % 256);
+  const j = Math.abs((Math.floor(wz * 2.28 - wx * 0.37) % 256 + 256) % 256);
+  let h = (i * 374761393 + j * 668265263) >>> 0;
+  h = ((h ^ (h >>> 13)) * 1274126177) >>> 0;
+  const grain = (h & 1023) / 1023;
+  const n = Math.sin(i * 0.09) * 0.11 + Math.sin(j * 0.085) * 0.11 + Math.sin((i + j) * 0.042) * 0.09;
+  const base = 198 + n * 38 + (grain - 0.5) * 14;
+  const R = Math.min(255, base + 22) / 255;
+  const G = Math.min(255, base - 8) / 255;
+  const B = Math.min(255, base - 38) / 255;
+  return [R, G, B];
+}
+/**
  * Sloped, flared “skirt” from the coast boundary down toward the seabed — multi-ring geometry with shared corner verts
  * (no T-junction gaps) and outward flare so it reads as gradual underwater slope, not a sheer wall.
+ * Boundary orientation comes from each triangle’s CCW winding (correct for outer coast and inner water holes).
  */
-function appendIslandSeabedSkirt(geo, skirtBottomY) {
+function appendIslandSeabedSkirt(geo, skirtBottomY, worldOriginX, worldOriginZ) {
   const posAttr = geo.attributes.position;
   const colAttr = geo.attributes.color;
   const idx = geo.getIndex();
@@ -1086,40 +1103,25 @@ function appendIslandSeabedSkirt(geo, skirtBottomY) {
   }
   const ia = idx.array;
   const n = idx.count;
-  const edgeCnt = new Map();
+  const edgeData = new Map();
   for (let f = 0; f < n; f += 3) {
     const i0 = ia[f], i1 = ia[f + 1], i2 = ia[f + 2];
     const pairs = [[i0, i1], [i1, i2], [i2, i0]];
     for (let k = 0; k < 3; k++) {
       const u = pairs[k][0], v = pairs[k][1];
-      const a = Math.min(u, v), b = Math.max(u, v);
-      const key = a + ',' + b;
-      edgeCnt.set(key, (edgeCnt.get(key) || 0) + 1);
+      const a = u < v ? u : v;
+      const b = u < v ? v : u;
+      const key = a + '|' + b;
+      const ex = edgeData.get(key);
+      if (!ex) edgeData.set(key, { c: 1, o0: u, o1: v });
+      else ex.c++;
     }
   }
-  const rawEdges = [];
-  edgeCnt.forEach((cnt, key) => {
-    if (cnt === 1) {
-      const parts = key.split(',');
-      rawEdges.push(+parts[0], +parts[1]);
-    }
-  });
-  if (rawEdges.length < 6) return;
   const oriented = [];
-  for (let e = 0; e < rawEdges.length; e += 2) {
-    let a = rawEdges[e], b = rawEdges[e + 1];
-    const x0 = posAttr.getX(a), z0 = posAttr.getZ(a);
-    const x1 = posAttr.getX(b), z1 = posAttr.getZ(b);
-    const lx = -(z1 - z0), lz = (x1 - x0);
-    const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
-    const inx = cx - mx, inz = cz - mz;
-    if (lx * inx + lz * inz < 0) {
-      const t = a;
-      a = b;
-      b = t;
-    }
-    oriented.push(a, b);
-  }
+  edgeData.forEach((ex) => {
+    if (ex.c === 1) oriented.push(ex.o0, ex.o1);
+  });
+  if (oriented.length < 6) return;
   const outAccX = new Map();
   const outAccZ = new Map();
   let rBound = 0;
@@ -1127,23 +1129,18 @@ function appendIslandSeabedSkirt(geo, skirtBottomY) {
     const i0 = oriented[e], i1 = oriented[e + 1];
     const x0 = posAttr.getX(i0), z0 = posAttr.getZ(i0);
     const x1 = posAttr.getX(i1), z1 = posAttr.getZ(i1);
-    const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
-    let nx = z1 - z0, nz = -(x1 - x0);
+    const dx = x1 - x0, dz = z1 - z0;
+    let nx = dz, nz = -dx;
     const nlen = Math.hypot(nx, nz) || 1;
     nx /= nlen;
     nz /= nlen;
-    const tox = mx - cx, toz = mz - cz;
-    if (nx * tox + nz * toz < 0) {
-      nx = -nx;
-      nz = -nz;
-    }
     outAccX.set(i0, (outAccX.get(i0) || 0) + nx);
     outAccZ.set(i0, (outAccZ.get(i0) || 0) + nz);
     outAccX.set(i1, (outAccX.get(i1) || 0) + nx);
     outAccZ.set(i1, (outAccZ.get(i1) || 0) + nz);
     for (const vi of [i0, i1]) {
-      const dx = posAttr.getX(vi) - cx, dz = posAttr.getZ(vi) - cz;
-      rBound = Math.max(rBound, Math.hypot(dx, dz));
+      const dxv = posAttr.getX(vi) - cx, dzv = posAttr.getZ(vi) - cz;
+      rBound = Math.max(rBound, Math.hypot(dxv, dzv));
     }
   }
   const outX = new Map();
@@ -1163,7 +1160,6 @@ function appendIslandSeabedSkirt(geo, skirtBottomY) {
     cArr.push(colAttr.getX(i), colAttr.getY(i), colAttr.getZ(i));
   }
   const ringMem = new Map();
-  const sandR = 0.62, sandG = 0.52, sandB = 0.38;
   function ringIdx(v, k) {
     const key = v + '|' + k;
     if (ringMem.has(key)) return ringMem.get(key);
@@ -1179,15 +1175,19 @@ function appendIslandSeabedSkirt(geo, skirtBottomY) {
     const nx = x + ox * fl * flareAmt;
     const nz = z + oz * fl * flareAmt;
     const r0 = colAttr.getX(v), g0 = colAttr.getY(v), b0 = colAttr.getZ(v);
-    const rr = r0 + (sandR - r0) * eased;
-    const gg = g0 + (sandG - g0) * eased;
-    const bb = b0 + (sandB - b0) * eased;
+    const wx = worldOriginX + nx;
+    const wz = worldOriginZ + nz;
+    const [sr, sg, sb] = seabedVertRgbFromWorldXZ(wx, wz);
+    const seabedBlend = eased * eased * (3 - 2 * eased);
+    const rr = r0 * (1 - seabedBlend) + sr * seabedBlend;
+    const gg = g0 * (1 - seabedBlend) + sg * seabedBlend;
+    const bb = b0 * (1 - seabedBlend) + sb * seabedBlend;
     const ni = (pArr.length / 3) | 0;
     pArr.push(nx, y, nz);
     cArr.push(
-      Math.max(0, Math.min(1, rr * (0.92 + 0.08 * eased))),
-      Math.max(0, Math.min(1, gg * (0.92 + 0.08 * eased))),
-      Math.max(0, Math.min(1, bb * (0.92 + 0.08 * eased)))
+      Math.max(0, Math.min(1, rr)),
+      Math.max(0, Math.min(1, gg)),
+      Math.max(0, Math.min(1, bb))
     );
     ringMem.set(key, ni);
     return ni;
@@ -2554,8 +2554,8 @@ scene.add(water);
 
 /** Infinite sand floor below the waves (visible through transparent water); follows sea patch center like `water`. */
 const SEABED_VISUAL_Y = -13.5;
-/** Island terrain skirt stops slightly above the seabed mesh to limit z-fighting. */
-const ISLAND_SKIRT_Y = SEABED_VISUAL_Y + 0.1;
+/** Island terrain skirt meets the seabed plane (tiny offset limits z-fighting with the sand mesh). */
+const ISLAND_SKIRT_Y = SEABED_VISUAL_Y + 0.035;
 function createSandSeabedTexture() {
   const c = document.createElement('canvas');
   c.width = c.height = 256;
@@ -3870,11 +3870,11 @@ function generateCustomMapChunk(cx, cz) {
   positions.needsUpdate = true;
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   stripIslandTerrainOpenSeaTriangles(geo, waterMask);
-  appendIslandSeabedSkirt(geo, ISLAND_SKIRT_Y);
-  geo.computeVertexNormals();
-  const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
   const cwx = minWx + CHUNK_SIZE * 0.5;
   const cwz = minWz + CHUNK_SIZE * 0.5;
+  appendIslandSeabedSkirt(geo, ISLAND_SKIRT_Y, cwx, cwz);
+  geo.computeVertexNormals();
+  const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
   terrain.position.set(cwx, SEA_LEVEL, cwz);
   terrain.receiveShadow = true; terrain.castShadow = true; terrain.renderOrder = 1;
 
@@ -4060,10 +4060,10 @@ function generateIsland(cx, cz) {
   positions.needsUpdate = true;
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   stripIslandTerrainOpenSeaTriangles(terrainGeo, waterMask);
-  appendIslandSeabedSkirt(terrainGeo, ISLAND_SKIRT_Y);
+  appendIslandSeabedSkirt(terrainGeo, ISLAND_SKIRT_Y, worldX, worldZ);
   terrainGeo.computeVertexNormals();
 
-  const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
   terrain.receiveShadow = true; terrain.castShadow = true;
   terrain.position.set(worldX, SEA_LEVEL, worldZ);
   terrain.renderOrder = 1;
