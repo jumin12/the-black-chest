@@ -1222,7 +1222,7 @@ const CAM_ZOOM_DECK = 800;
 /** Orbit distance in world units matching the zoom level range above. */
 const CAM_ORBIT_AT_DECK = 12;
 /** Max camera pull-back (smaller = cannot zoom out as far). */
-const CAM_ORBIT_AT_HORIZON = 178;
+const CAM_ORBIT_AT_HORIZON = 218;
 
 function clampCameraZoomLevel(z) {
   return Math.max(CAM_ZOOM_HORIZON, Math.min(CAM_ZOOM_DECK, z));
@@ -1246,7 +1246,7 @@ function zoomLevelFromOrbitDistance(dist) {
 
 const CAM_ZOOM_DEFAULT = clampCameraZoomLevel(Math.round(
   CAM_ZOOM_HORIZON
- + ((CAM_ORBIT_AT_HORIZON - (isMobile ? 150 : 50)) / (CAM_ORBIT_AT_HORIZON - CAM_ORBIT_AT_DECK))
+ + ((CAM_ORBIT_AT_HORIZON - (isMobile ? 188 : 128)) / (CAM_ORBIT_AT_HORIZON - CAM_ORBIT_AT_DECK))
   * (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON)
 ));
 
@@ -1390,8 +1390,8 @@ const G = {
   storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
-    /** ~36° — lower chase angle so the view faces forward along the sea instead of top-down. */
-    angle: Math.PI / 5, targetAngle: Math.PI / 5, yaw: Math.PI, targetYaw: Math.PI,
+    /** ~32° — flatter chase; pairs with look-ahead so the frame follows the course, not the deck. */
+    angle: Math.PI / 5.6, targetAngle: Math.PI / 5.6, yaw: Math.PI, targetYaw: Math.PI,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
     mobileOrbitFree: false
   },
@@ -10520,6 +10520,22 @@ function spectateCameraLookAtY() {
   if (sp && sp.kind === 'dock') return SEA_LEVEL + 12;
   return SEA_LEVEL + 1.35;
 }
+/** Chase cam looks past the ship along its heading so the frame follows the course (not straight down at the deck). */
+function chaseCameraLookAtXYZ(camX, camZ, cDist) {
+  const ox = G.camera.offsetX, oz = G.camera.offsetZ;
+  if (G.spectate) {
+    return { x: camX + ox, y: spectateCameraLookAtY(), z: camZ + oz };
+  }
+  const rot = G.player.rotation || 0;
+  let lx = camX + ox;
+  let lz = camZ + oz;
+  if (!(isMobile && G.camera.mobileOrbitFree)) {
+    const ahead = Math.min(62, Math.max(26, 16 + cDist * 0.2));
+    lx += Math.sin(rot) * ahead;
+    lz += Math.cos(rot) * ahead;
+  }
+  return { x: lx, y: spectateCameraLookAtY(), z: lz };
+}
 function updateSpectateInfoPanel() {
   const el = document.getElementById('spectate-info-panel');
   if (!el || !G.spectate) return;
@@ -14404,7 +14420,8 @@ function update(dt) {
       cDist * Math.sin(cAng),
       camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
     );
-    camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
+    const look = chaseCameraLookAtXYZ(camX, camZ, cDist);
+    camera.lookAt(look.x, look.y, look.z);
   }
 
   syncDayNightVisuals(camX, camZ);
@@ -14476,7 +14493,8 @@ function warmUpGameView() {
       cDist * Math.sin(cAng),
       camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
     );
-    camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
+    const look = chaseCameraLookAtXYZ(camX, camZ, cDist);
+    camera.lookAt(look.x, look.y, look.z);
   }
   syncDayNightVisuals(camX, camZ);
   { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z); }
