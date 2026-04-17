@@ -101,8 +101,6 @@ function readJsonBody(req, limit = 65536) {
 }
 
 const players = new Map();
-/** Monotonic seconds for client wildlife / animation sync (advances at TICK_RATE). */
-let serverWorldTime = 0;
 /** Shared narrative + contracts for all captains on this server (merged from clients, broadcast on change). */
 let worldStoryQuest = {
   phase: 'intro',
@@ -1031,7 +1029,7 @@ wss.on('connection', (ws, req) => {
     dockAngle: null,
     riggingHealth: 100,
     morale: 100,
-    captainWalk: { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main', crewIdx: 0 },
+    deckWalk: null,
     clientIp
   };
 
@@ -1042,7 +1040,6 @@ wss.on('connection', (ws, req) => {
     id,
     seed: WORLD_SEED,
     worldMapRevision: WORLD_MAP_REVISION >>> 0,
-    worldT: serverWorldTime,
     player: playerData,
     players: Array.from(players.values()).filter(p => p.id !== id),
     worldStory: sanitizeWorldStory(worldStoryQuest),
@@ -1097,18 +1094,19 @@ wss.on('connection', (ws, req) => {
             };
           }
           if (msg.crewData && Array.isArray(msg.crewData)) p.crewData = msg.crewData.slice(0, 32);
-          if (msg.captainWalk !== undefined && msg.captainWalk != null && typeof msg.captainWalk === 'object') {
-            const cw = msg.captainWalk;
-            p.captainWalk = {
-              active: !!cw.active,
-              x: Number.isFinite(Number(cw.x)) ? Number(cw.x) : 0,
-              z: Number.isFinite(Number(cw.z)) ? Number(cw.z) : 0,
-              yaw: Number.isFinite(Number(cw.yaw)) ? Number(cw.yaw) : 0,
-              pitch: Math.max(-1.22, Math.min(1.22, Number.isFinite(Number(cw.pitch)) ? Number(cw.pitch) : 0)),
-              airY: Math.max(0, Number.isFinite(Number(cw.airY)) ? Number(cw.airY) : 0),
-              deckTier: cw.deckTier === 'qd' ? 'qd' : 'main',
-              crewIdx: Math.max(0, Math.min(31, Math.floor(Number(cw.crewIdx)) || 0))
-            };
+          if (msg.deckWalk !== undefined) {
+            if (msg.deckWalk && typeof msg.deckWalk === 'object') {
+              p.deckWalk = {
+                active: true,
+                x: Number(msg.deckWalk.x) || 0,
+                z: Number(msg.deckWalk.z) || 0,
+                yaw: Number(msg.deckWalk.yaw) || 0,
+                airY: Math.max(0, Math.min(3.5, Number(msg.deckWalk.airY) || 0)),
+                deckTier: msg.deckWalk.deckTier === 'qd' || msg.deckWalk.tier === 'qd' ? 'qd' : 'main'
+              };
+            } else {
+              p.deckWalk = null;
+            }
           }
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {
@@ -1712,7 +1710,6 @@ wss.on('connection', (ws, req) => {
 });
 
 setInterval(() => {
-  serverWorldTime += 1 / TICK_RATE;
   if (players.size === 0) return;
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
@@ -1726,9 +1723,9 @@ setInterval(() => {
     dockAngle: p.dockAngle != null ? p.dockAngle : null,
     riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
     morale: p.morale != null ? p.morale : 100,
-    captainWalk: p.captainWalk && typeof p.captainWalk === 'object' ? p.captainWalk : { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main', crewIdx: 0 }
+    deckWalk: p.deckWalk || null
   }));
-  broadcast({ type: 'state', players: snapshot, worldT: serverWorldTime });
+  broadcast({ type: 'state', players: snapshot });
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, '0.0.0.0', () => {
