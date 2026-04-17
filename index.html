@@ -2400,9 +2400,15 @@ scene.add(water);
 const SEABED_VISUAL_Y = -13.5;
 /** Minimum Y lift so island underfoot stays slightly above the infinite seabed mesh (avoids z-fighting). */
 const ISLAND_UNDERFOOT_SEABED_MIN_LIFT = 0.12;
+/** Horizontal push for underwater skirt: shallow base + scales with depth so shores taper onto the sand. */
+const ISLAND_SKIRT_OUT_BASE = 1.15;
+const ISLAND_SKIRT_OUT_DEPTH = 0.92;
+const ISLAND_SKIRT_OUT_MAX = 15;
+/** Slight extra drop in Y when skirt pushes out (gentle bevel into the seabed plane). */
+const ISLAND_SKIRT_DROP_PER_OUT = 0.055;
 /**
  * After the top surface is built and open-sea faces stripped, duplicate verts to the seabed and add a bottom cap plus
- * boundary walls so landmasses read as rooted in the floor instead of a floating skin.
+ * sloping boundary skirts (outward-flared) so islands read as gradual shoals, not sheer walls.
  */
 function appendIslandTerrainUnderfoot(geo, waterMask, seaBedYFn) {
   const posAttr = geo.attributes.position;
@@ -2415,6 +2421,59 @@ function appendIslandTerrainUnderfoot(geo, waterMask, seaBedYFn) {
   const n = posAttr.count;
   const oldPos = posAttr.array;
   const oldCol = colAttr.array;
+  const edgeTris = Object.create(null);
+  for (let t = 0; t < triCount; t++) {
+    const o = t * 3, a = ia[o], b = ia[o + 1], c = ia[o + 2];
+    const k0 = a < b ? a + ',' + b : b + ',' + a;
+    const k1 = b < c ? b + ',' + c : c + ',' + b;
+    const k2 = c < a ? c + ',' + a : a + ',' + c;
+    if (!edgeTris[k0]) edgeTris[k0] = [];
+    if (!edgeTris[k1]) edgeTris[k1] = [];
+    if (!edgeTris[k2]) edgeTris[k2] = [];
+    edgeTris[k0].push(c);
+    edgeTris[k1].push(a);
+    edgeTris[k2].push(b);
+  }
+  const accX = new Float32Array(n);
+  const accZ = new Float32Array(n);
+  const accN = new Uint16Array(n);
+  for (const k in edgeTris) {
+    const opp = edgeTris[k];
+    if (opp.length !== 1) continue;
+    const pair = k.split(',');
+    const u = +pair[0], v = +pair[1], c = opp[0];
+    const ax = oldPos[u * 3], az = oldPos[u * 3 + 2];
+    const bx = oldPos[v * 3], bz = oldPos[v * 3 + 2];
+    const cx = oldPos[c * 3], cz = oldPos[c * 3 + 2];
+    const ex = bx - ax, ez = bz - az;
+    const midx = (ax + bx) * 0.5, midz = (az + bz) * 0.5;
+    let nx = -ez, nz = ex;
+    const el = Math.hypot(nx, nz) || 1;
+    nx /= el;
+    nz /= el;
+    if (nx * (cx - midx) + nz * (cz - midz) > 0) {
+      nx = -nx;
+      nz = -nz;
+    }
+    accX[u] += nx;
+    accZ[u] += nz;
+    accN[u]++;
+    accX[v] += nx;
+    accZ[v] += nz;
+    accN[v]++;
+  }
+  const skirtOx = new Float32Array(n);
+  const skirtOz = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!accN[i]) continue;
+    let sx = accX[i], sz = accZ[i];
+    const sl = Math.hypot(sx, sz);
+    if (sl < 1e-5) continue;
+    sx /= sl;
+    sz /= sl;
+    skirtOx[i] = sx;
+    skirtOz[i] = sz;
+  }
   const newPos = new Float32Array(n * 6);
   const newCol = new Float32Array(n * 6);
   newPos.set(oldPos);
@@ -2424,10 +2483,21 @@ function appendIslandTerrainUnderfoot(geo, waterMask, seaBedYFn) {
     const px = oldPos[i * 3], py = oldPos[i * 3 + 1], pz = oldPos[i * 3 + 2];
     let by = seaBedYFn(i, px, pz, py);
     if (by < floorMin) by = floorMin;
+    let spread = 0;
+    if (accN[i]) {
+      const depth = Math.max(0, py - by);
+      spread = Math.min(
+        ISLAND_SKIRT_OUT_MAX,
+        ISLAND_SKIRT_OUT_BASE + Math.sqrt(depth) * ISLAND_SKIRT_OUT_DEPTH
+      );
+    }
+    const ox = skirtOx[i], oz = skirtOz[i];
     const bi = n + i;
-    newPos[bi * 3] = px;
-    newPos[bi * 3 + 1] = by;
-    newPos[bi * 3 + 2] = pz;
+    let byBot = by - spread * ISLAND_SKIRT_DROP_PER_OUT;
+    if (byBot < floorMin) byBot = floorMin;
+    newPos[bi * 3] = px + ox * spread;
+    newPos[bi * 3 + 1] = byBot;
+    newPos[bi * 3 + 2] = pz + oz * spread;
     const dim = waterMask[i] ? 0.74 : 0.64;
     const ri = i * 3, oi = bi * 3;
     newCol[oi] = oldCol[ri] * dim;
@@ -2436,24 +2506,14 @@ function appendIslandTerrainUnderfoot(geo, waterMask, seaBedYFn) {
   }
   geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(newCol, 3));
-  const edgeCount = Object.create(null);
-  for (let t = 0; t < triCount; t++) {
-    const o = t * 3, a = ia[o], b = ia[o + 1], c = ia[o + 2];
-    const e0 = a < b ? a + ',' + b : b + ',' + a;
-    const e1 = b < c ? b + ',' + c : c + ',' + b;
-    const e2 = c < a ? c + ',' + a : a + ',' + c;
-    edgeCount[e0] = (edgeCount[e0] || 0) + 1;
-    edgeCount[e1] = (edgeCount[e1] || 0) + 1;
-    edgeCount[e2] = (edgeCount[e2] || 0) + 1;
-  }
   const newIdx = [];
   for (let i = 0; i < ia.length; i++) newIdx.push(ia[i]);
   for (let t = 0; t < triCount; t++) {
     const o = t * 3, a = ia[o], b = ia[o + 1], c = ia[o + 2];
     newIdx.push(c + n, b + n, a + n);
   }
-  for (const k in edgeCount) {
-    if (edgeCount[k] !== 1) continue;
+  for (const k in edgeTris) {
+    if (edgeTris[k].length !== 1) continue;
     const pair = k.split(',');
     const a = +pair[0], b = +pair[1];
     newIdx.push(a, b, b + n, a, b + n, a + n);
