@@ -2453,19 +2453,24 @@ const waterFS = `
     float forward = max(0.0, ahead);
     float sp = clamp(vm, 0.0, 1.05);
     float halfW = 0.74 + astern * 0.05 + sp * 0.11;
-    float sternCore = exp(-(side*side)/(halfW*halfW));
-    float sternLen = exp(-astern * 0.132) * smoothstep(0.12, 5.4, astern);
-    float sternTwin = 0.88 + 0.12 * exp(-(side*side) / ((halfW * 1.25) * (halfW * 1.25)));
-    float sternTerm = sternCore * sternLen * sp * 0.34 * sternTwin;
+    float off = halfW * 0.66;
+    float sig = halfW * halfW * 0.36;
+    float lL = exp(-((side - off) * (side - off)) / sig);
+    float lR = exp(-((side + off) * (side + off)) / sig);
+    float sternCore = max(lL, lR);
+    float sternFarCenter = exp(-(side*side)/(halfW*halfW*1.75)) * smoothstep(15.0, 28.0, astern) * 0.11;
+    sternCore = max(sternCore, sternFarCenter);
+    float sternLen = exp(-astern * 0.138) * smoothstep(0.55, 6.2, astern);
+    float sternTerm = sternCore * sternLen * sp * 0.33;
     float bowW = 0.5 + sp * 0.24;
     float bowRing = exp(-(side*side)/(bowW*bowW)) * exp(-forward * 0.33);
     float bowFan = smoothstep(0.35, 2.5, forward) * (0.52 + 0.48 * exp(-abs(side)*0.09));
-    float bowTerm = bowRing * bowFan * sp * 0.36;
-    float shoulder = exp(-abs(side)/(0.92 + sp*0.26)) * exp(-pow(abs(ahead + 2.15), 1.25) * 0.072) * smoothstep(0.9, 4.5, astern) * sp * 0.11;
-    float bridge = exp(-(side*side)/((0.68+sp*0.2)*(0.68+sp*0.2))) * exp(-abs(ahead)*0.11) * smoothstep(3.2, 10.0, astern) * (1.0 - smoothstep(0.0, 2.8, forward)) * sp * 0.042;
-    float wake = sternTerm + bowTerm + shoulder + bridge;
-    float hullDeHalo = smoothstep(0.55, 2.85, r);
-    return wake * rFade * hullDeHalo;
+    float bowTerm = bowRing * bowFan * sp * 0.34;
+    float shoulder = exp(-abs(side)/(0.92 + sp*0.26)) * exp(-pow(abs(ahead + 2.35), 1.2) * 0.065) * smoothstep(1.2, 5.2, astern) * smoothstep(0.55, 2.8, abs(side)) * sp * 0.085;
+    float wake = sternTerm + bowTerm + shoulder;
+    float hullDeHalo = smoothstep(1.05, 3.5, r);
+    float keelClear = smoothstep(0.0, 2.55, abs(side) * 1.05 + astern * 0.3 + forward * 0.42);
+    return wake * rFade * hullDeHalo * mix(0.04, 1.0, keelClear);
   }
   float sumShipWakes(vec2 P){
     float s = 0.0;
@@ -2537,7 +2542,7 @@ const waterFS = `
     vec3 foam = vec3(0.88,0.92,0.96) * cap * (0.35 + 0.65*uDayFactor);
     float shipWake = sumShipWakes(vWorldPos.xz);
     float wakeRip = 0.5 + 0.5 * sin(dot(vWorldPos.xz, vec2(0.13, -0.11)) * 3.2 + uTime * 3.5);
-    vec3 wakeFoam = vec3(0.93,0.96,1.0) * shipWake * (0.48 + 0.52 * uDayFactor) * (0.78 + 0.22 * wakeRip);
+    vec3 wakeFoam = vec3(0.93,0.96,1.0) * shipWake * (0.48 + 0.52 * uDayFactor) * (0.88 + 0.12 * wakeRip);
     vec3 colorLin = diff*(1.0-fresnel)+refl+specC+sub+foam*0.55 + wakeFoam * 0.168;
     float waterAlpha = mix(0.52, 0.9, fresnel);
     waterAlpha = clamp(waterAlpha + (NdotV - 0.35) * 0.22, 0.46, 0.93);
@@ -13525,13 +13530,13 @@ function spawnShipWakePiece(x, z, rotation, speed, sideSign, wakeKind) {
     opacity = 0.54;
     sclJ = 0.85;
   } else if (wakeKind === 'beam') {
-    rad = 0.32 + Math.random() * 0.13;
-    along = 0.42;
-    lat = 1.12 * side;
-    life = 1.22;
-    fade0 = 0.7;
-    opacity = 0.56;
-    sclJ = 0.92;
+    rad = 0.3 + Math.random() * 0.11;
+    along = 1.35;
+    lat = (1.38 + Math.random() * 0.12) * side;
+    life = 1.12;
+    fade0 = 0.72;
+    opacity = 0.44;
+    sclJ = 0.88;
   } else {
     rad = 0.4 + Math.random() * 0.18;
     along = 2.38;
