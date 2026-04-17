@@ -1391,6 +1391,8 @@ const G = {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
     /** Lower / nearer the swells than PI/5.6; height is still cDist*sin(angle). */
     angle: Math.PI / 6.1, targetAngle: Math.PI / 6.1, yaw: Math.PI, targetYaw: Math.PI,
+    /** Radians added to chase yaw (`rotation + PI`); Q/E and orbit drag stay put when released. */
+    yawOffset: 0,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
     mobileOrbitFree: false
   },
@@ -8933,7 +8935,18 @@ let middleDown = false, lastMX = 0, lastMY = 0;
 let mobileOrbitTouchId = null, mobileOrbitLX = 0, mobileOrbitLY = 0;
 const CAM_ORBIT_SENS_X = 0.0055;
 const CAM_ORBIT_SENS_Y = 0.0042;
+function wrapAngleRad(a) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+function syncCameraYawOffsetFromTarget() {
+  if (G.spectate || !G.player) return;
+  const base = (G.player.rotation != null ? G.player.rotation : 0) + Math.PI;
+  G.camera.yawOffset = wrapAngleRad(G.camera.targetYaw - base);
+}
 function resetMobileCameraChase() {
+  G.camera.yawOffset = 0;
   if (!isMobile) return;
   G.camera.mobileOrbitFree = false;
   const y = (G.player && G.player.rotation != null ? G.player.rotation : 0) + Math.PI;
@@ -9808,6 +9821,7 @@ window.addEventListener('mousemove', e => {
   lastMY = e.clientY;
   G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X;
   G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y);
+  syncCameraYawOffsetFromTarget();
   if (isMobile) G.camera.mobileOrbitFree = true;
 });
 window.addEventListener('touchstart', e => {
@@ -9839,6 +9853,7 @@ window.addEventListener('touchmove', e => {
     } else {
       G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X * 1.05;
       G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y * 1.05);
+      syncCameraYawOffsetFromTarget();
       G.camera.mobileOrbitFree = true;
     }
     e.preventDefault();
@@ -13696,8 +13711,8 @@ function update(dt) {
   }
 
   if (!G.captainWalk.active) {
-    if (keys['q']) G.camera.targetYaw -= 1.5 * dt;
-    if (keys['e']) G.camera.targetYaw += 1.5 * dt;
+    if (keys['q']) G.camera.yawOffset = wrapAngleRad(G.camera.yawOffset - 1.5 * dt);
+    if (keys['e']) G.camera.yawOffset = wrapAngleRad(G.camera.yawOffset + 1.5 * dt);
   }
   G.camera.yaw += (G.camera.targetYaw - G.camera.yaw) * Math.min(1, 4 * dt);
   G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle);
@@ -14428,8 +14443,8 @@ function update(dt) {
     updateCaptainWalk(dt);
   } else {
     const orbitFree = G.spectate || (isMobile && G.camera.mobileOrbitFree) || middleDown;
-    if (!orbitFree && !(keys['q'] || keys['e'])) {
-      const targetY = G.player.rotation + Math.PI;
+    if (!orbitFree) {
+      const targetY = G.player.rotation + Math.PI + G.camera.yawOffset;
       let camDiff = targetY - G.camera.yaw;
       while (camDiff > Math.PI) camDiff -= Math.PI * 2;
       while (camDiff < -Math.PI) camDiff += Math.PI * 2;
@@ -14506,7 +14521,7 @@ function warmUpGameView() {
     updateCaptainWalk(0);
   } else {
     if (!G.spectate && !(isMobile && G.camera.mobileOrbitFree) && !middleDown) {
-      const y = G.player.rotation + Math.PI;
+      const y = G.player.rotation + Math.PI + G.camera.yawOffset;
       G.camera.yaw = y;
       G.camera.targetYaw = y;
     }
