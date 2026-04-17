@@ -3886,12 +3886,15 @@ function computeDockBerthSlots(meta) {
   const landZ = (meta.worldZ != null ? meta.worldZ : meta.dockZ) - meta.dockZ;
   const dot = widX * landX + widZ * landZ;
   const seaSign = dot >= 0 ? -1 : 1;
-  const seaDepth = 5.85;
+  /** Pier mesh is ~14 long centered on dockX/Z; (longX,longZ) points island→sea — berth at open-water end, not broadside to the wharf. */
+  const seaAlong = 5.85;
+  const lateralFromPier = 1.28;
   const pierDeck = 2.35 * seaSign;
-  return DOCK_BERTH_ALONG.map((along, index) => {
-    const bx = meta.dockX + longX * along + widX * seaDepth * seaSign;
-    const bz = meta.dockZ + longZ * along + widZ * seaDepth * seaSign;
-    const clAL = along - 1.15, clAR = along + 1.15;
+  return DOCK_BERTH_ALONG.map((unusedAlong, index) => {
+    const along = seaAlong + unusedAlong;
+    const bx = meta.dockX + longX * along + widX * lateralFromPier * seaSign;
+    const bz = meta.dockZ + longZ * along + widZ * lateralFromPier * seaSign;
+    const clAL = along - 1.05, clAR = along + 1.05;
     const cleatLX = meta.dockX + longX * clAL + widX * pierDeck;
     const cleatLZ = meta.dockZ + longZ * clAL + widZ * pierDeck;
     const cleatRX = meta.dockX + longX * clAR + widX * pierDeck;
@@ -11036,22 +11039,24 @@ function doFireSide(fireSide) {
   const cosR = Math.cos(rot), sinR = Math.sin(rot);
   const shipY = playerShipGroup.position.y;
   const fallbackY = cannonWorldMuzzleYFromShip(shipY, spec);
+  /** Hull + muzzle tags use opposite ±1 from world broadside dir; keep UI/cooldown `fireSide`, invert for ballistics. */
+  const physSide = -fireSide;
 
-  const broadsideAngle = rot + fireSide * Math.PI / 2;
+  const broadsideAngle = rot + physSide * Math.PI / 2;
   const dirX = Math.sin(broadsideAngle), dirZ = Math.cos(broadsideAngle);
   for (let i = 0; i < perSide; i++) {
     const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
-    const localX = fireSide * (spec.hullW * 0.55 + 0.6);
+    const localX = physSide * (spec.hullW * 0.55 + 0.6);
     const wx0 = G.player.x + localX * cosR + localZ * sinR;
     const wz0 = G.player.z - localX * sinR + localZ * cosR;
     let wx = wx0, wy = fallbackY, wz = wz0;
-    if (getCannonMuzzleWorldPos(playerShipGroup, fireSide, i, _muzzleW)) {
+    if (getCannonMuzzleWorldPos(playerShipGroup, physSide, i, _muzzleW)) {
       wx = _muzzleW.x;
       wy = _muzzleW.y;
       wz = _muzzleW.z;
     }
 
-    kickShipBroadsideCannon(playerShipGroup, fireSide, i);
+    kickShipBroadsideCannon(playerShipGroup, physSide, i);
 
     if (ammoKind === 'grape') {
       const pelletsPerGun = 10;
