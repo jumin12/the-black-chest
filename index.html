@@ -1026,6 +1026,13 @@ const SEABED_VISUAL_Y = -13.5;
 const PROC_SEABED_Y = SEABED_VISUAL_Y + 0.22;
 /** Skirt ring terminates on the sand plane (slightly above to reduce z-fight with the infinite seabed). */
 const ISLAND_SKIRT_Y = SEABED_VISUAL_Y + 0.035;
+/** Shallowest submerged mesh before the surface — stays below typical waves while giving a visible gradual rise. */
+const ISLAND_SUBMERGED_SHELF_CAP = SEA_LEVEL - 1.12;
+function smoothstep01(edge0, edge1, x) {
+  const d = edge1 - edge0;
+  const t = d === 0 ? (x >= edge1 ? 1 : 0) : Math.max(0, Math.min(1, (x - edge0) / d));
+  return t * t * (3 - 2 * t);
+}
 /** Vertex color for submerged “sea” terrain verts — sand/rock so the mass reads grounded on the seabed, not surface water. */
 function rgbIslandTerrainOpenSea(wx, wz, noise2d) {
   const w = noise2d(wx * 0.019, wz * 0.017) * 0.04;
@@ -1081,7 +1088,7 @@ function appendIslandSeabedSkirt(geo, skirtBottomY, worldOriginX, worldOriginZ) 
   const colAttr = geo.attributes.color;
   const idx = geo.getIndex();
   if (!posAttr || !colAttr || !idx) return;
-  const SKIRT_SEGS = 7;
+  const SKIRT_SEGS = 12;
   const nc = posAttr.count;
   let cx = 0, cz = 0, cc = 0;
   const yLandThr = PROC_SEABED_Y + 0.28;
@@ -1153,7 +1160,7 @@ function appendIslandSeabedSkirt(geo, skirtBottomY, worldOriginX, worldOriginZ) 
     outX.set(v, sx / len);
     outZ.set(v, sz / len);
   });
-  const flareAmt = Math.min(17, Math.max(4.2, rBound * 0.19));
+  const flareAmt = Math.min(24, Math.max(5.8, rBound * 0.27));
   const oldV = posAttr.count;
   const pArr = [];
   const cArr = [];
@@ -1167,10 +1174,11 @@ function appendIslandSeabedSkirt(geo, skirtBottomY, worldOriginX, worldOriginZ) 
     if (ringMem.has(key)) return ringMem.get(key);
     const t = k / SKIRT_SEGS;
     const eased = t * t * (3 - 2 * t);
+    const easedDepth = 1 - Math.pow(1 - eased, 1.55);
     const x = posAttr.getX(v);
     const z = posAttr.getZ(v);
     const y0 = posAttr.getY(v);
-    const y = y0 + (skirtBottomY - y0) * eased;
+    const y = y0 + (skirtBottomY - y0) * easedDepth;
     const fl = (1 - Math.cos(eased * Math.PI)) * 0.5;
     const ox = outX.get(v) || 0;
     const oz = outZ.get(v) || 0;
@@ -3848,7 +3856,9 @@ function generateCustomMapChunk(cx, cz) {
     const wx = minWx + CHUNK_SIZE * 0.5 + lx;
     const wz = minWz + CHUNK_SIZE * 0.5 + lz;
     const h = samp(wx, wz);
-    const y = h <= wThr ? PROC_SEABED_Y : h * maxH;
+    const y = h <= wThr
+      ? PROC_SEABED_Y + (ISLAND_SUBMERGED_SHELF_CAP - PROC_SEABED_Y) * smoothstep01(0, wThr * 1.08, h)
+      : h * maxH;
     positions.setY(i, y);
     if (h > wThr) maxChunkH = Math.max(maxChunkH, h * maxH);
     waterMask[i] = h <= wThr ? 1 : 0;
@@ -4020,7 +4030,10 @@ function generateIsland(cx, cz) {
     let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
     const isLand = ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
     if (!isLand) {
-      positions.setY(i, PROC_SEABED_Y);
+      const shelfSpan = ISLAND_SUBMERGED_SHELF_CAP - PROC_SEABED_Y;
+      const hRise = smoothstep01(0, PROC_LAND_HT_MIN * 1.12, ht);
+      const dRise = smoothstep01(PROC_LAND_WARP_MAX + 0.22, PROC_LAND_WARP_MAX - 0.34, warpedDist);
+      positions.setY(i, PROC_SEABED_Y + shelfSpan * hRise * dRise);
     } else {
       ht = Math.max(PROC_LAND_HT_MIN, ht);
       positions.setY(i, ht);
