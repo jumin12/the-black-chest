@@ -2741,135 +2741,6 @@ function updateWindStreamVisual(dt) {
   }
   windParticleGeo.attributes.position.needsUpdate = true;
 }
-
-/** Sid Meier–style wind streaks: slow, pale streamlines along the rails and past sail edges (ship-local, bow → stern). */
-const SHIP_WIND_STREAK_N = 80;
-let playerShipWindStreakLines = null;
-let playerShipWindStreakPos = null;
-let playerShipWindStreakZ = null;
-let playerShipWindStreakX = null;
-let playerShipWindStreakY = null;
-let playerShipWindStreakLen = null;
-/** Per-streak streamline curvature (wraps hull / sail in X as z moves). */
-let playerShipWindStreakFlow = null;
-function disposePlayerShipWindStreaks() {
-  if (!playerShipWindStreakLines) return;
-  try { playerShipGroup.remove(playerShipWindStreakLines); } catch (e) {}
-  try {
-    playerShipWindStreakLines.geometry?.dispose();
-    playerShipWindStreakLines.material?.dispose();
-  } catch (e) {}
-  playerShipWindStreakLines = null;
-  playerShipWindStreakPos = null;
-  playerShipWindStreakZ = null;
-  playerShipWindStreakX = null;
-  playerShipWindStreakY = null;
-  playerShipWindStreakLen = null;
-  playerShipWindStreakFlow = null;
-}
-function _spawnShipWindStreakSlot(i, spec, hw, hl, mH, pos) {
-  const roll = Math.random();
-  let x, y;
-  if (roll < 0.44) {
-    const out = hw * (0.78 + Math.random() * 0.34);
-    x = (Math.random() < 0.5 ? -1 : 1) * out;
-    y = spec.hullH * 0.52 + Math.random() * 1.45;
-  } else if (roll < 0.82) {
-    const side = Math.random() < 0.5 ? -1 : 1;
-    x = side * (hw * 0.34 + Math.random() * hw * 0.52);
-    y = spec.hullH * 0.48 + Math.random() * Math.max(2.2, mH * 0.95);
-  } else {
-    const side = Math.random() < 0.5 ? -1 : 1;
-    x = side * (hw * 0.22 + Math.random() * hw * 0.28);
-    y = spec.hullH * 0.5 + Math.random() * 1.15;
-  }
-  playerShipWindStreakX[i] = x;
-  playerShipWindStreakY[i] = y;
-  playerShipWindStreakLen[i] = 0.75 + Math.random() * 1.65;
-  playerShipWindStreakFlow[i] = (Math.random() - 0.5) * 2.15;
-  playerShipWindStreakZ[i] = -hl * 0.48 + Math.random() * hl * 1.42;
-  const zm = playerShipWindStreakZ[i], hL = playerShipWindStreakLen[i], b = i * 6;
-  const z0 = zm - hL * 0.5, z1 = zm + hL * 0.5;
-  const wrap0 = playerShipWindStreakFlow[i] * hw * 0.2 * Math.sin(((z0 / hl) * 0.85 + 1) * Math.PI);
-  const wrap1 = playerShipWindStreakFlow[i] * hw * 0.2 * Math.sin(((z1 / hl) * 0.85 + 1) * Math.PI);
-  pos[b] = x + wrap0; pos[b + 1] = y; pos[b + 2] = z0;
-  pos[b + 3] = x + wrap1; pos[b + 4] = y; pos[b + 5] = z1;
-}
-function ensurePlayerShipWindStreaks() {
-  disposePlayerShipWindStreaks();
-  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
-  const hw = spec.hullW * 0.5, hl = spec.hullLen * 0.5;
-  const mH = spec.hullLen * 0.7;
-  const n = SHIP_WIND_STREAK_N;
-  const pos = new Float32Array(n * 6);
-  playerShipWindStreakZ = new Float32Array(n);
-  playerShipWindStreakX = new Float32Array(n);
-  playerShipWindStreakY = new Float32Array(n);
-  playerShipWindStreakLen = new Float32Array(n);
-  playerShipWindStreakFlow = new Float32Array(n);
-  for (let i = 0; i < n; i++) _spawnShipWindStreakSlot(i, spec, hw, hl, mH, pos);
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const mat = new THREE.LineBasicMaterial({
-    color: 0xeef8ff,
-    transparent: true,
-    opacity: 0.38,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    fog: true
-  });
-  playerShipWindStreakLines = new THREE.LineSegments(geo, mat);
-  playerShipWindStreakLines.frustumCulled = false;
-  playerShipWindStreakLines.renderOrder = 6;
-  playerShipWindStreakPos = pos;
-  playerShipGroup.add(playerShipWindStreakLines);
-}
-function updatePlayerShipWindStreaks(dt) {
-  if (!playerShipWindStreakLines || !playerShipWindStreakPos || !playerShipWindStreakFlow || G.mode !== 'playing') return;
-  const mat = playerShipWindStreakLines.material;
-  if (G.docked || G.spectate || G.captainWalk?.active || G.playerSinking) {
-    mat.opacity = Math.max(0, mat.opacity - dt * 3);
-    return;
-  }
-  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
-  const hw = spec.hullW * 0.5, hl = spec.hullLen * 0.5;
-  const mH = spec.hullLen * 0.7;
-  const windDot = Math.cos(G.wind.angle - G.player.rotation);
-  const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
-  const along = G.player.speed * windEffect;
-  const absAlong = Math.abs(along);
-  const movingFwd = G.player.speed > 0.07 && absAlong > 0.055;
-  if (!movingFwd) {
-    mat.opacity = Math.max(0, mat.opacity - dt * 2.8);
-    return;
-  }
-  const targetOp = Math.min(0.46, 0.12 + absAlong * 0.085 + Math.min(1, G.player.speed / 4.5) * 0.1);
-  mat.opacity += (targetOp - mat.opacity) * Math.min(1, dt * 3.8);
-  const drift = (1.35 + absAlong * 1.25 + Math.min(0.95, G.player.speed * 0.16)) * 0.38;
-  const n = SHIP_WIND_STREAK_N;
-  const pos = playerShipWindStreakPos;
-  const t = G.time || 0;
-  for (let i = 0; i < n; i++) {
-    playerShipWindStreakZ[i] -= drift * dt;
-    const hL = playerShipWindStreakLen[i];
-    const half = hL * 0.5;
-    if (playerShipWindStreakZ[i] + half < -hl - 0.72) {
-      _spawnShipWindStreakSlot(i, spec, hw, hl, mH, pos);
-      continue;
-    }
-    const x = playerShipWindStreakX[i], y = playerShipWindStreakY[i];
-    const flow = playerShipWindStreakFlow[i];
-    const zm = playerShipWindStreakZ[i];
-    const z0 = zm - half, z1 = zm + half;
-    const wrap0 = flow * hw * 0.2 * Math.sin(((z0 / hl) * 0.85 + 1) * Math.PI);
-    const wrap1 = flow * hw * 0.2 * Math.sin(((z1 / hl) * 0.85 + 1) * Math.PI);
-    const yRip = Math.sin(t * 0.95 + i * 0.41) * 0.022;
-    const b = i * 6;
-    pos[b] = x + wrap0; pos[b + 1] = y + yRip; pos[b + 2] = z0;
-    pos[b + 3] = x + wrap1; pos[b + 4] = y + yRip; pos[b + 5] = z1;
-  }
-  playerShipWindStreakLines.geometry.attributes.position.needsUpdate = true;
-}
 initWindStreamVisual();
 
 /* ============================= ISLANDS =================================== */
@@ -5076,6 +4947,145 @@ function updateChunks() {
 /* ============================== SHIPS ==================================== */
 const playerShipGroup = new THREE.Group();
 scene.add(playerShipGroup);
+
+/** Fine streaks on hull & sails: apparent wind + forward motion (Pirates-style). */
+const PLAYER_SHIP_WIND_STREAM_N = isMobile ? 120 : 220;
+let shipWindStreamGroup = null;
+let shipWindStreamPoints = null;
+let shipWindStreamGeo = null;
+let shipWindStreamLastType = null;
+
+function detachPlayerShipWindStreamForRebuild() {
+  if (shipWindStreamGroup && shipWindStreamGroup.parent) {
+    shipWindStreamGroup.parent.remove(shipWindStreamGroup);
+  }
+  shipWindStreamGroup = null;
+}
+
+function respawnPlayerShipWindParticleLocal(arr, pi, spec) {
+  const ix = pi * 3;
+  const hl = spec.hullLen, hw = spec.hullW, hH = spec.hullH;
+  const roll = Math.random();
+  const side = Math.random() < 0.5 ? -1 : 1;
+  let x, y, z;
+  if (roll < 0.4) {
+    z = (Math.random() - 0.5) * hl * 1.05;
+    x = side * (hw * 0.48 + Math.random() * hw * 0.62);
+    y = hH * 0.35 + Math.random() * hl * 0.52;
+  } else if (roll < 0.68) {
+    z = -hl * (0.32 + Math.random() * 0.22);
+    x = (Math.random() - 0.5) * hw * 1.25;
+    y = hH * 0.22 + Math.random() * hl * 0.38;
+  } else if (roll < 0.88) {
+    z = hl * (0.22 + Math.random() * 0.28);
+    x = (Math.random() - 0.5) * hw * 0.85;
+    y = hH * 0.4 + Math.random() * hl * 0.32;
+  } else {
+    z = (Math.random() - 0.5) * hl * 0.55;
+    x = side * (hw * 0.12 + Math.random() * hw * 0.28);
+    y = hH + hl * (0.32 + Math.random() * 0.45);
+  }
+  arr[ix] = x;
+  arr[ix + 1] = y;
+  arr[ix + 2] = z;
+}
+
+function playerShipWindStreamOutOfBand(x, y, z, spec) {
+  const hl = spec.hullLen, hw = spec.hullW, hH = spec.hullH;
+  return Math.abs(x) > hw * 1.48 || z > hl * 0.72 || z < -hl * 0.65 || y > hH + hl * 0.88 || y < hH * 0.02;
+}
+
+function ensurePlayerShipWindStreamVisual() {
+  if (shipWindStreamGroup && shipWindStreamGroup.parent === playerShipGroup) return;
+  if (!shipWindStreamGeo) {
+    const pos = new Float32Array(PLAYER_SHIP_WIND_STREAM_N * 3);
+    const spec0 = SHIP_TYPES.sloop;
+    for (let pi = 0; pi < PLAYER_SHIP_WIND_STREAM_N; pi++) respawnPlayerShipWindParticleLocal(pos, pi, spec0);
+    shipWindStreamGeo = new THREE.BufferGeometry();
+    shipWindStreamGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  }
+  if (!shipWindStreamPoints) {
+    shipWindStreamPoints = new THREE.Points(shipWindStreamGeo, new THREE.PointsMaterial({
+      color: 0xc4e6ff,
+      size: isMobile ? 0.2 : 0.27,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true
+    }));
+    shipWindStreamPoints.frustumCulled = false;
+    shipWindStreamPoints.renderOrder = 1;
+  }
+  shipWindStreamGroup = new THREE.Group();
+  shipWindStreamGroup.name = 'shipWindStreams';
+  shipWindStreamGroup.add(shipWindStreamPoints);
+  playerShipGroup.add(shipWindStreamGroup);
+}
+
+function updatePlayerShipWindStreamVisual(dt) {
+  if (G.mode !== 'playing' || !G.player) return;
+  ensurePlayerShipWindStreamVisual();
+  if (!shipWindStreamGeo || !shipWindStreamPoints) return;
+  const hide = G.docked || G.playerSinking || G.captainWalk?.active || G.spectate;
+  const eff = Math.abs(computePlayerEffectiveSpeedScalar());
+  const spdAbs = Math.abs(G.player.speed || 0);
+  const moveAmt = Math.min(1, eff / 3.6 + Math.min(1, spdAbs / 4.5) * 0.28);
+  if (hide || moveAmt < 0.075) {
+    shipWindStreamPoints.visible = false;
+    return;
+  }
+  shipWindStreamPoints.visible = true;
+  shipWindStreamPoints.material.opacity = 0.16 + moveAmt * 0.44;
+
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  if (shipWindStreamLastType !== G.player.shipType) {
+    shipWindStreamLastType = G.player.shipType;
+    const arr0 = shipWindStreamGeo.attributes.position.array;
+    for (let pi = 0; pi < PLAYER_SHIP_WIND_STREAM_N; pi++) respawnPlayerShipWindParticleLocal(arr0, pi, spec);
+  }
+
+  const rot = G.player.rotation;
+  const fwdx = Math.sin(rot), fwdz = Math.cos(rot);
+  const rx = Math.cos(rot), rz = -Math.sin(rot);
+  const wdat = getWindAt(G.player.x, G.player.z);
+  const wmag = wdat.speed * 0.58;
+  const wvx = Math.sin(wdat.angle) * wmag;
+  const wvz = Math.cos(wdat.angle) * wmag;
+  const mvx = fwdx * eff, mvz = fwdz * eff;
+  const awx = wvx - mvx * 0.9;
+  const awz = wvz - mvz * 0.9;
+  const alen = Math.hypot(awx, awz) + 0.07;
+  let fX = (awx * rx + awz * rz) / alen;
+  let fZ = (awx * fwdx + awz * fwdz) / alen;
+  const bowTo = 0.26 + moveAmt * 0.58;
+  fX *= (1 - bowTo);
+  fZ = fZ * (1 - bowTo) - bowTo;
+  const flen = Math.hypot(fX, fZ) + 1e-4;
+  fX /= flen;
+  fZ /= flen;
+
+  const advect = dt * (4.8 + moveAmt * 12);
+  const arr = shipWindStreamGeo.attributes.position.array;
+  for (let i = 0; i < arr.length; i += 3) {
+    const pi = i / 3;
+    let x = arr[i], y = arr[i + 1], z = arr[i + 2];
+    const phase = pi * 0.37 + G.time * (2.05 + moveAmt * 1.6);
+    const turb = (0.26 + moveAmt * 0.4) * dt;
+    x += fX * advect + Math.sin(phase) * turb;
+    z += fZ * advect + Math.cos(phase * 0.81) * turb;
+    y += Math.sin(phase * 1.03) * 0.52 * dt + Math.abs(fZ) * advect * 0.07;
+    if (playerShipWindStreamOutOfBand(x, y, z, spec)) {
+      respawnPlayerShipWindParticleLocal(arr, pi, spec);
+    } else {
+      arr[i] = x;
+      arr[i + 1] = y;
+      arr[i + 2] = z;
+    }
+  }
+  shipWindStreamGeo.attributes.position.needsUpdate = true;
+}
+
 const otherShipGroups = new Map();
 
 const BROADSIDE_ANGLE = Math.PI * 0.22;
@@ -6476,7 +6486,7 @@ function disposeObject3DSubtree(root) {
 }
 
 function rebuildPlayerShip() {
-  disposePlayerShipWindStreaks();
+  detachPlayerShipWindStreamForRebuild();
   disposeObject3DSubtree(playerShipGroup);
   while (playerShipGroup.children.length) playerShipGroup.remove(playerShipGroup.children[0]);
   ensurePlayerCrewTasks();
@@ -6488,7 +6498,8 @@ function rebuildPlayerShip() {
   shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', G.player.crew[0]?.name || '', G.player.flagColor || '');
   shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
   playerShipGroup.add(shipNameSprite);
-  ensurePlayerShipWindStreaks();
+  shipWindStreamLastType = null;
+  ensurePlayerShipWindStreamVisual();
   updateCargo3DMesh();
 }
 
@@ -14619,7 +14630,7 @@ function update(dt) {
   updateCannonSmoke(dt);
   updateAllShipCannonRecoil(dt);
   updateWindStreamVisual(dt);
-  updatePlayerShipWindStreaks(dt);
+  updatePlayerShipWindStreamVisual(dt);
   refreshCargoPanelIfOpen();
 }
 
