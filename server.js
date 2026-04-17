@@ -34,6 +34,7 @@ function normalizeServerSloopVariant(sv) {
 }
 function normalizeServerGalleonHull(gk) {
   const s = String(gk == null ? '' : gk).trim().toLowerCase();
+  if (s === 'galleon1') return 'galleon1';
   if (s === 'galleon3') return 'galleon3';
   if (s === 'galleon4') return 'galleon4';
   return 'galleon2';

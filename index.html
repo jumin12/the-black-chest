@@ -1024,6 +1024,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 const SHIP_GLB_PATHS = {
+  galleon1: 'assets/3d models/ships/galleon1.glb',
   galleon2: 'assets/3d models/ships/galleon2.glb',
   galleon3: 'assets/3d models/ships/galleon3.glb',
   galleon4: 'assets/3d models/ships/galleon4.glb',
@@ -1059,9 +1060,9 @@ function sanitizeMapEditorGltfKey(k) {
   if (Object.prototype.hasOwnProperty.call(WORLD_GLB_PATHS, s)) return s;
   return '';
 }
-const GALLEON_GLTF_KEYS = ['galleon2', 'galleon3', 'galleon4'];
-/** All seven hull visuals: three sloops + four galleons (NPC / pirate random pool). */
-const NPC_HULL_GLTF_KEYS = ['sloop1', 'sloop2', 'sloop3', 'galleon2', 'galleon3', 'galleon4'];
+const GALLEON_GLTF_KEYS = ['galleon1', 'galleon2', 'galleon3', 'galleon4'];
+/** All eight hull visuals: three sloops + four galleons (NPC / pirate random pool). */
+const NPC_HULL_GLTF_KEYS = ['sloop1', 'sloop2', 'sloop3', 'galleon1', 'galleon2', 'galleon3', 'galleon4'];
 const VALID_NPC_HULL_GLTF_KEYS = new Set(NPC_HULL_GLTF_KEYS);
 /** Stable glTF key for galleon hulls (new models only). */
 function galleonGltfKeyFromSeed(seed) {
@@ -1086,13 +1087,13 @@ const _worldPlSize = new THREE.Vector3();
 let didPostGltfTerrainRebuild = false;
 
 /** Bump this string when ship/island GLBs change so stale entries are not reused from the Cache API. */
-const GLB_ASSET_CACHE_NAME = 'pirates-gltf-assets-v2';
+const GLB_ASSET_CACHE_NAME = 'pirates-gltf-assets-v3';
 /** Fetch `.glb` bytes off the main thread (Cache API + network in worker); parsing stays on main (Three.js). */
 const GLTF_FETCH_WORKER_CODE = `
 self.onmessage = async function(e) {
   var id = e.data.id;
   var url = e.data.url;
-  var cacheName = e.data.cacheName || 'pirates-gltf-assets-v2';
+  var cacheName = e.data.cacheName || 'pirates-gltf-assets-v3';
   try {
     var buf;
     if (typeof caches !== 'undefined') {
@@ -1229,7 +1230,7 @@ async function loadOneGltfKey(loader, relativePath, onGltf) {
 const MENU_PRELOAD_WORLD_KEYS = ['seagul1', 'seagul2', 'fish1', 'fish2', 'fish3', 'fish4', 'shark'];
 const MENU_PRELOAD_WORLD_SET = new Set(MENU_PRELOAD_WORLD_KEYS);
 const SLOOP_HULL_KEYS = ['sloop1', 'sloop2', 'sloop3'];
-const GALLEON_HULL_KEYS = ['galleon2', 'galleon3', 'galleon4'];
+const GALLEON_HULL_KEYS = ['galleon1', 'galleon2', 'galleon3', 'galleon4'];
 
 let menuWildlifeGltfReadyPromise = null;
 let characterSloopGltfReadyPromise = null;
@@ -1592,7 +1593,7 @@ const G = {
     shipType: 'sloop',
     /** Visual glTF variant when `shipType` is sloop: `sloop1` | `sloop2` | `sloop3`. */
     shipVisualVariant: 'sloop1',
-    /** Visual glTF when `shipType` is galleon: `galleon2` | `galleon3` | `galleon4`. */
+    /** Visual glTF when `shipType` is galleon: `galleon1`–`galleon4`. */
     galleonHullKey: 'galleon2',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     inventory: [
@@ -2121,6 +2122,7 @@ function normalizePlayerSloopVisual(v) {
 }
 function normalizePlayerGalleonVisual(v) {
   const s = String(v || '').toLowerCase();
+  if (s === 'galleon1') return 'galleon1';
   if (s === 'galleon3') return 'galleon3';
   if (s === 'galleon4') return 'galleon4';
   return 'galleon2';
@@ -2419,7 +2421,7 @@ const sunLight = new THREE.DirectionalLight(0xffeedd, 1.6);
 sunLight.position.set(200, 300, 100);
 if (!isMobile) {
   sunLight.castShadow = true;
-  sunLight.shadow.mapSize.set(2048, 2048);
+  sunLight.shadow.mapSize.set(1536, 1536);
   sunLight.shadow.camera.near = 10; sunLight.shadow.camera.far = 600;
   sunLight.shadow.camera.left = -150; sunLight.shadow.camera.right = 150;
   sunLight.shadow.camera.top = 150; sunLight.shadow.camera.bottom = -150;
@@ -3255,9 +3257,38 @@ function clearProceduralDockBerthStyleCache() {
 function proceduralTownDockKey(cx, cz, worldSeedOpt) {
   return 'dock1';
 }
-const DOCK_TRIGGER_RADIUS = 24;
+const DOCK_TRIGGER_RADIUS = 27;
+function resolveIslandMetaForDock(dockX, dockZ) {
+  if (!Number.isFinite(dockX) || !Number.isFinite(dockZ)) return null;
+  let best = null, bd = 18;
+  for (let i = 0; i < G.islands.length; i++) {
+    const isl = G.islands[i];
+    if (!isl || isl.dockX == null || isl.dockZ == null) continue;
+    const d = Math.hypot(isl.dockX - dockX, isl.dockZ - dockZ);
+    if (d < bd) { bd = d; best = isl; }
+  }
+  if (best && bd < 11) return best;
+  if (G.customMap && G.customMap.towns && G.customMap.towns.length) {
+    for (let j = 0; j < G.customMap.towns.length; j++) {
+      const t = G.customMap.towns[j];
+      if (!t || !t.hasTown || t.dockX == null || t.dockZ == null) continue;
+      const d = Math.hypot(t.dockX - dockX, t.dockZ - dockZ);
+      if (d < bd) { bd = d; best = t; }
+    }
+  }
+  return best && bd < 16 ? best : null;
+}
 function computeDockBerthSlots(meta) {
   if (!meta || meta.dockX == null) return [];
+  let dockCleatY = meta.dockCleatY;
+  let dockBerthStyle = meta.dockBerthStyle;
+  if ((dockCleatY == null || !Number.isFinite(dockCleatY)) || dockBerthStyle == null) {
+    const isl = resolveIslandMetaForDock(meta.dockX, meta.dockZ);
+    if (isl) {
+      if ((dockCleatY == null || !Number.isFinite(dockCleatY)) && isl.dockCleatY != null && Number.isFinite(isl.dockCleatY)) dockCleatY = isl.dockCleatY;
+      if (dockBerthStyle == null && isl.dockBerthStyle) dockBerthStyle = isl.dockBerthStyle;
+    }
+  }
   const da = meta.dockAngle || 0;
   const longX = Math.sin(da), longZ = Math.cos(da);
   const widX = Math.cos(da), widZ = -Math.sin(da);
@@ -3265,10 +3296,11 @@ function computeDockBerthSlots(meta) {
   const landZ = (meta.worldZ != null ? meta.worldZ : meta.dockZ) - meta.dockZ;
   const dot = widX * landX + widZ * landZ;
   const seaSign = dot >= 0 ? -1 : 1;
-  const gltfDock = !!(meta && meta.hasTown && meta.dockBerthStyle === 'gltf');
-  const alongOffsets = gltfDock ? [-5.5, 0, 5.5] : DOCK_BERTH_ALONG;
-  const seaDepth = gltfDock ? 6.05 : 5.85;
-  const pierDeck = (gltfDock ? 2.05 : 2.35) * seaSign;
+  const gltfDock = !!(meta && meta.hasTown && dockBerthStyle === 'gltf');
+  const alongOffsets = gltfDock ? [-6, 0, 6] : DOCK_BERTH_ALONG;
+  const seaDepth = gltfDock ? 5.72 : 5.85;
+  const pierDeck = (gltfDock ? 2.22 : 2.35) * seaSign;
+  const cleatY = (dockCleatY != null && Number.isFinite(dockCleatY)) ? dockCleatY : (SEA_LEVEL + 1.08);
   return alongOffsets.map((along, index) => {
     const bx = meta.dockX + longX * along + widX * seaDepth * seaSign;
     const bz = meta.dockZ + longZ * along + widZ * seaDepth * seaSign;
@@ -3277,7 +3309,7 @@ function computeDockBerthSlots(meta) {
     const cleatLZ = meta.dockZ + longZ * clAL + widZ * pierDeck;
     const cleatRX = meta.dockX + longX * clAR + widX * pierDeck;
     const cleatRZ = meta.dockZ + longZ * clAR + widZ * pierDeck;
-    return { x: bx, z: bz, rot: da, index, cleatLX, cleatLZ, cleatRX, cleatRZ, along };
+    return { x: bx, z: bz, rot: da, index, cleatLX, cleatLZ, cleatRX, cleatRZ, cleatLY: cleatY, cleatRY: cleatY, along };
   });
 }
 function distToDockTrigger(meta, wx, wz) {
@@ -4071,12 +4103,19 @@ function generateCustomMapChunk(cx, cz) {
         dRoot.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
         registerTownAnimations(dRoot);
         group.add(dRoot);
+        dRoot.updateMatrixWorld(true);
+        _worldPlBox.setFromObject(dRoot);
+        const _edm = Math.max(0.04, _worldPlBox.max.y - _worldPlBox.min.y);
+        group.userData.dockCleatY = _worldPlBox.min.y + _edm * 0.15;
+        group.userData.dockBerthStyle = 'gltf';
       } else {
         const dock = new THREE.Mesh(new THREE.BoxGeometry(5, 0.45, 14), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
         dock.position.set(e.x, surf + 0.45, e.z);
         dock.rotation.y = ang;
         dock.receiveShadow = true; dock.castShadow = true;
         group.add(dock);
+        group.userData.dockCleatY = surf + 0.45 + 0.22;
+        group.userData.dockBerthStyle = 'box';
       }
     } else if (e.type === 'flagpole') {
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 9, 8), new THREE.MeshLambertMaterial({ color: 0x4a3a28 }));
@@ -4118,6 +4157,24 @@ function generateCustomMapChunk(cx, cz) {
           group.add(root);
         }
       }
+    }
+  }
+  const cmTowns = cm.towns || [];
+  for (let ti = 0; ti < cmTowns.length; ti++) {
+    const tw = cmTowns[ti];
+    if (!tw || tw.dockX == null || tw.dockZ == null) continue;
+    const tdx = Number(tw.dockX), tdz = Number(tw.dockZ);
+    if (tdx >= minWx - pad && tdx <= minWx + CHUNK_SIZE + pad
+      && tdz >= minWz - pad && tdz <= minWz + CHUNK_SIZE + pad) {
+      group.userData.hasTown = true;
+      group.userData.dockX = tw.dockX;
+      group.userData.dockZ = tw.dockZ;
+      group.userData.dockAngle = tw.dockAngle != null ? Number(tw.dockAngle) : 0;
+      group.userData.townName = tw.townName;
+      group.userData.faction = tw.faction;
+      group.userData.worldX = tw.worldX != null ? Number(tw.worldX) : Number(tw.dockX);
+      group.userData.worldZ = tw.worldZ != null ? Number(tw.worldZ) : Number(tw.dockZ);
+      break;
     }
   }
   islandGroup.add(group);
@@ -4346,6 +4403,11 @@ function generateIsland(cx, cz) {
       dRoot.traverse(ch => { if (ch.isMesh) { ch.castShadow = true; ch.receiveShadow = true; } });
       registerTownAnimations(dRoot);
       group.add(dRoot);
+      dRoot.updateMatrixWorld(true);
+      _worldPlBox.setFromObject(dRoot);
+      const dockSpanY = Math.max(0.04, _worldPlBox.max.y - _worldPlBox.min.y);
+      group.userData.dockCleatY = _worldPlBox.min.y + dockSpanY * 0.15;
+      meta0.dockCleatY = group.userData.dockCleatY;
       dockUsedGltf = true;
     }
     if (!dockUsedGltf) {
@@ -4355,6 +4417,8 @@ function generateIsland(cx, cz) {
       dock.position.set(dockX, dockCenterY, dockZ);
       dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
       group.add(dock);
+      group.userData.dockCleatY = dockCenterY + 0.24;
+      meta0.dockCleatY = group.userData.dockCleatY;
     }
     group.userData.dockAngle = dockAngle;
 
@@ -4563,12 +4627,12 @@ const FISH_SPECIES = [
   { color: 0x20b2aa, size: 0.055, len: 0.2, name: 'pilchard' }
 ];
 
-const WILDLIFE_FISH_CAP = 2800;
-const WILDLIFE_SEAGULL_CAP = 900;
+const WILDLIFE_FISH_CAP = 1500;
+const WILDLIFE_SEAGULL_CAP = 400;
 const WILDLIFE_PRUNE_DIST = 9200;
 const WILDLIFE_SHARK_POD_CAP = 36;
 /** Fish and gulls farther than this (horizontal, meters) from the camera are hidden to cut lag when panning. */
-const WILDLIFE_CAMERA_CULL_XZ = 455;
+const WILDLIFE_CAMERA_CULL_XZ = 300;
 const WILDLIFE_CAMERA_CULL_XZ_SQ = WILDLIFE_CAMERA_CULL_XZ * WILDLIFE_CAMERA_CULL_XZ;
 /** Thrown/rescue crew floating in the water are removed after this long on the surface (sharks). */
 const SHARK_EAT_CREW_AFTER_FLOAT_SEC = 30;
@@ -4934,6 +4998,15 @@ function updateChunks() {
 /* ============================== SHIPS ==================================== */
 const playerShipGroup = new THREE.Group();
 scene.add(playerShipGroup);
+function playerDockRopeDeckY() {
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  return playerShipGroup.position.y + Math.min(2.85, spec.hullH * 0.7 + 0.48);
+}
+function remoteDockRopeDeckY(sg, shipType) {
+  const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
+  const yb = sg && sg.position ? sg.position.y : (SEA_LEVEL + 0.35);
+  return yb + Math.min(2.85, spec.hullH * 0.7 + 0.48);
+}
 const otherShipGroups = new Map();
 
 const BROADSIDE_ANGLE = Math.PI * 0.22;
@@ -12200,6 +12273,7 @@ function dockAtPort() {
   G.dockingAnim = {
     timer: 0, targetX, targetZ, targetRot,
     cleatLX: berth.cleatLX, cleatLZ: berth.cleatLZ, cleatRX: berth.cleatRX, cleatRZ: berth.cleatRZ,
+    cleatLY: berth.cleatLY, cleatRY: berth.cleatRY,
     dockX: G.nearDock.dockX, dockZ: G.nearDock.dockZ, phase: 'approach'
   };
   G.sailsFurled = true;
@@ -12213,9 +12287,10 @@ function dockAtPort() {
       const ax = tcx != null ? tcx : G.nearDock.dockX + (ri === 0 ? -2 : 2) * Math.cos(da);
       const az = tcz != null ? tcz : G.nearDock.dockZ + (ri === 0 ? -2 : 2) * Math.sin(da);
       const ropeMat = new THREE.LineBasicMaterial({ color: 0x8a7a5a });
+      const cy = G.dockingAnim && G.dockingAnim.cleatLY != null ? G.dockingAnim.cleatLY : (SEA_LEVEL + 1.05);
       const ropeGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(G.player.x, SEA_LEVEL + 1.5, G.player.z),
-        new THREE.Vector3(ax, SEA_LEVEL + 1, az)
+        new THREE.Vector3(G.player.x, playerDockRopeDeckY(), G.player.z),
+        new THREE.Vector3(ax, cy, az)
       ]);
       const rope = new THREE.Line(ropeGeo, ropeMat);
       scene.add(rope); dockRopes.push(rope);
@@ -12452,9 +12527,10 @@ function showPortTab(tab) {
         </div>`;
         })() : ''}
         ${key === 'galleon' ? (() => {
-          const gv = G.player.shipType === 'galleon' ? normalizePlayerGalleonVisual(G.player.galleonHullKey) : 'galleon2';
+          const gv = G.player.shipType === 'galleon' ? normalizePlayerGalleonVisual(G.player.galleonHullKey) : 'galleon1';
           return `<div class="port-galleon-model-pick" style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(140,100,40,0.15);">
           <div style="color:#9a9080;font-size:10px;margin-bottom:6px;">Galleon hull model</div>
+          <label style="color:#c9a24a;font-size:11px;margin-right:12px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon1" ${gv === 'galleon1' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon I</label>
           <label style="color:#c9a24a;font-size:11px;margin-right:12px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon2" ${gv === 'galleon2' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon II</label>
           <label style="color:#c9a24a;font-size:11px;margin-right:12px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon3" ${gv === 'galleon3' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon III</label>
           <label style="color:#c9a24a;font-size:11px;cursor:pointer;"><input type="radio" name="port-yard-galleon" value="galleon4" ${gv === 'galleon4' ? 'checked' : ''} style="vertical-align:middle;margin-right:4px;"> Galleon IV</label>
@@ -13785,7 +13861,13 @@ function update(dt) {
   if (G.townAnimMixers.length) {
     for (let mi = G.townAnimMixers.length - 1; mi >= 0; mi--) {
       const mx = G.townAnimMixers[mi];
-      if (mx) mx.update(dt);
+      if (!mx) continue;
+      try {
+        const root = mx.getRoot();
+        if (root && root.visible) mx.update(dt);
+      } catch (e) {
+        mx.update(dt);
+      }
     }
   }
   wildlifePruneAcc += dt;
@@ -13796,9 +13878,9 @@ function update(dt) {
   oceanFishSpawnAcc += dt;
   if (fishSchools.length < WILDLIFE_FISH_CAP && oceanFishSpawnAcc >= 0.12) {
     oceanFishSpawnAcc = 0;
-    for (let k = 0; k < 7; k++) {
-      const ox = G.player.x + (Math.random() - 0.5) * 5600;
-      const oz = G.player.z + (Math.random() - 0.5) * 5600;
+    for (let k = 0; k < 4; k++) {
+      const ox = G.player.x + (Math.random() - 0.5) * 4200;
+      const oz = G.player.z + (Math.random() - 0.5) * 4200;
       if (isSeaObstructed(ox, oz)) continue;
       spawnFish(ox, oz, 5 + Math.floor(Math.random() * 11));
     }
@@ -13832,14 +13914,17 @@ function update(dt) {
     }
     const clx0 = G.dockingAnim.cleatLX, clz0 = G.dockingAnim.cleatLZ;
     const clx1 = G.dockingAnim.cleatRX, clz1 = G.dockingAnim.cleatRZ;
+    const cly0 = G.dockingAnim.cleatLY != null ? G.dockingAnim.cleatLY : (SEA_LEVEL + 1.05);
+    const cly1 = G.dockingAnim.cleatRY != null ? G.dockingAnim.cleatRY : cly0;
     dockRopes.forEach((r, ri) => {
       const tcx = ri === 0 ? clx0 : clx1;
       const tcz = ri === 0 ? clz0 : clz1;
       const ax = tcx != null ? tcx : G.dockingAnim.dockX + (ri === 0 ? -2 : 2) * Math.cos(G.nearDock?.dockAngle || 0);
       const az = tcz != null ? tcz : G.dockingAnim.dockZ + (ri === 0 ? -2 : 2) * Math.sin(G.nearDock?.dockAngle || 0);
+      const cleatY = ri === 0 ? cly0 : cly1;
       const pts = [
-        new THREE.Vector3(G.player.x, SEA_LEVEL + 1.5, G.player.z),
-        new THREE.Vector3(ax, SEA_LEVEL + 1, az)
+        new THREE.Vector3(G.player.x, playerDockRopeDeckY(), G.player.z),
+        new THREE.Vector3(ax, cleatY, az)
       ];
       r.geometry.setFromPoints(pts);
     });
@@ -14040,10 +14125,25 @@ function update(dt) {
           remoteDockRopes.set(id, ropes);
         }
         const px = p.x, pz = p.z;
+        const rmeta = resolveIslandMetaForDock(p.dockX, p.dockZ);
+        const rslots = rmeta ? computeDockBerthSlots(rmeta) : null;
+        const rbi = rslots && rslots.length ? nearestBerthIndex(rmeta, px, pz) : 0;
+        const rberth = rslots && rslots[rbi] ? rslots[rbi] : null;
+        const shipT = p.shipType || 'sloop';
         for (let ri = 0; ri < 2; ri++) {
+          let ax, az, ay;
+          if (rberth) {
+            ax = ri === 0 ? rberth.cleatLX : rberth.cleatRX;
+            az = ri === 0 ? rberth.cleatLZ : rberth.cleatRZ;
+            ay = ri === 0 ? rberth.cleatLY : rberth.cleatRY;
+          } else {
+            ax = p.dockX + (ri === 0 ? -2 : 2) * Math.cos(da);
+            az = p.dockZ + (ri === 0 ? -2 : 2) * Math.sin(da);
+            ay = SEA_LEVEL + 1.05;
+          }
           const ngeo = new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(px, SEA_LEVEL + 1.5, pz),
-            new THREE.Vector3(p.dockX + (ri === 0 ? -2 : 2) * Math.cos(da), SEA_LEVEL + 1, p.dockZ + (ri === 0 ? -2 : 2) * Math.sin(da))
+            new THREE.Vector3(px, remoteDockRopeDeckY(sg, shipT), pz),
+            new THREE.Vector3(ax, ay, az)
           ]);
           ropes[ri].geometry.dispose();
           ropes[ri].geometry = ngeo;
