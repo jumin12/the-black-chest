@@ -2861,33 +2861,62 @@ function updatePlayerShipWindStreamVisual(dt) {
   const loc = playerShipWindStreamLocal;
   const t = G.time;
   const wdat = getWindAt(G.player.x, G.player.z);
-  const windShear = Math.sin(wdat.angle - G.player.rotation) * 0.085 * strength;
-  /** Drift only with through-water speed — no floor, so nothing slides when stopped */
-  const driftScale = speedAbs * dt * (0.26 + L * 0.098) * (0.4 + 0.6 * strength);
-  const driftBow = driftScale;
-  const driftSail = driftScale * 1.07;
+  const rot = G.player.rotation;
+  const cr = Math.cos(rot), sr = Math.sin(rot);
+  /** True wind velocity (same convention as global wind streaks: sin/cos of angle). */
+  const Vwx = wdat.speed * Math.sin(wdat.angle);
+  const Vwz = wdat.speed * Math.cos(wdat.angle);
+  const Vsx = spd * sr;
+  const Vsz = spd * cr;
+  /** Apparent wind in world XZ — combines wind + way of ship. */
+  const Vax = Vwx - Vsx;
+  const Vaz = Vwz - Vsz;
+  const vaMag = Math.hypot(Vax, Vaz);
+  const invVa = 1 / Math.max(vaMag, 0.06);
+  const dirWX = Vax * invVa;
+  const dirWZ = Vaz * invVa;
+  /** Apparent wind direction in ship-local XZ (+Z bow, +X starboard). */
+  const dirLX = dirWX * cr - dirWZ * sr;
+  const dirLZ = dirWX * sr + dirWZ * cr;
+  const perpLX = -dirLZ;
+  const perpLZ = dirLX;
+  const vaBoost = 0.48 + 0.52 * Math.min(vaMag / 6.5, 1.45);
+  /** Base advection; scales with speed and with |apparent wind| (light streaks running downwind). */
+  const driftScale = speedAbs * dt * (0.24 + L * 0.095) * (0.38 + 0.62 * strength) * vaBoost;
   playerShipGroup.updateMatrixWorld(true);
   const mw = playerShipGroup.matrixWorld;
-  const sternZ = -L * 0.52;
+  const W = spec.hullW;
+  const lxBound = W * 1.05;
+  const lzMin = -L * 0.58;
+  const lzMax = L * 0.65;
+  const lyMin = spec.hullH * -0.15;
+  const lyMax = spec.hullH + L * 0.95;
   for (let i = 0; i < PLAYER_SHIP_WIND_N; i++) {
     const ix = i * 3;
     let lx = loc[ix], ly = loc[ix + 1], lz = loc[ix + 2];
     const ph = playerShipWindStreamPhase[i];
     const fromSail = playerShipWindStreamSrc[i] === 1;
-    if (lz < sternZ) scatterOnePlayerShipWindStreamParticle(i);
+    if (Math.abs(lx) > lxBound || lz < lzMin || lz > lzMax || ly < lyMin || ly > lyMax) scatterOnePlayerShipWindStreamParticle(i);
     lx = loc[ix]; ly = loc[ix + 1]; lz = loc[ix + 2];
     const wobAmp = (fromSail ? 0.0078 : 0.0098) * (0.22 + 0.78 * strength);
-    const drift = fromSail ? driftSail : driftBow;
+    let drift = driftScale * (fromSail ? 1.08 : 1);
+    const alongPulse = 0.82 + 0.18 * Math.sin(t * 2.5 + ph);
+    drift *= alongPulse;
     lx += Math.sin(t * 1.85 + ph) * wobAmp * dt * 58;
     ly += Math.cos(t * 1.45 + ph * 0.86) * wobAmp * (fromSail ? 0.38 : 0.3) * dt * 58;
-    lz -= drift * (0.88 + 0.12 * Math.sin(t * 2.5 + ph));
-    lx += windShear * drift * 2.8;
+    lx += dirLX * drift;
+    lz += dirLZ * drift;
+    const swirl = Math.sin(t * 2.05 + ph + lz * 0.4) * 0.11 * strength * drift;
+    lx += perpLX * swirl;
+    lz += perpLZ * swirl;
     if (fromSail) {
       const out = Math.sign(lx) || (Math.random() < 0.5 ? -1 : 1);
-      lx += out * drift * 0.14;
-      ly += drift * 0.05 * Math.sin(t * 2.2 + ph);
+      lx += perpLX * out * drift * 0.17;
+      lz += perpLZ * out * drift * 0.17;
+      ly += drift * 0.048 * Math.sin(t * 2.2 + ph);
     } else {
-      if (Math.abs(lx) > 0.04) lx += Math.sign(lx) * drift * 0.1;
+      lx += perpLX * Math.sign(lx || 1) * drift * 0.07;
+      lz += perpLZ * Math.sign(lx || 1) * drift * 0.07;
       lx -= lx * (0.02 + 0.035 * strength) * dt * 6;
     }
     lx += Math.sin(t * 1.9 + lz * 0.55 + ph) * 0.0062 * strength;
