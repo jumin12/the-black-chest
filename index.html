@@ -1053,6 +1053,88 @@ function stripIslandTerrainOpenSeaTriangles(geo, waterMask) {
     geo.computeBoundingSphere();
   }
 }
+/**
+ * Vertical “skirt” from the open boundary of island terrain down to the seabed so land does not look like a floating skin.
+ * Uses mesh boundary edges after open-sea triangles were stripped.
+ */
+function appendIslandSeabedSkirt(geo, skirtBottomY) {
+  const posAttr = geo.attributes.position;
+  const colAttr = geo.attributes.color;
+  const idx = geo.getIndex();
+  if (!posAttr || !colAttr || !idx) return;
+  let cx = 0, cz = 0;
+  const nc = posAttr.count;
+  for (let i = 0; i < nc; i++) {
+    cx += posAttr.getX(i);
+    cz += posAttr.getZ(i);
+  }
+  if (nc) { cx /= nc; cz /= nc; }
+  const ia = idx.array;
+  const n = idx.count;
+  const edgeCnt = new Map();
+  for (let f = 0; f < n; f += 3) {
+    const i0 = ia[f], i1 = ia[f + 1], i2 = ia[f + 2];
+    const pairs = [[i0, i1], [i1, i2], [i2, i0]];
+    for (let k = 0; k < 3; k++) {
+      const u = pairs[k][0], v = pairs[k][1];
+      const a = Math.min(u, v), b = Math.max(u, v);
+      const key = a + ',' + b;
+      edgeCnt.set(key, (edgeCnt.get(key) || 0) + 1);
+    }
+  }
+  const edges = [];
+  edgeCnt.forEach((cnt, key) => {
+    if (cnt === 1) {
+      const parts = key.split(',');
+      edges.push(+parts[0], +parts[1]);
+    }
+  });
+  if (edges.length < 6) return;
+  const oldV = posAttr.count;
+  const pArr = [];
+  const cArr = [];
+  for (let i = 0; i < oldV; i++) {
+    pArr.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+    cArr.push(colAttr.getX(i), colAttr.getY(i), colAttr.getZ(i));
+  }
+  const bottomForTop = new Map();
+  function getBottom(topIdx) {
+    if (bottomForTop.has(topIdx)) return bottomForTop.get(topIdx);
+    const x = posAttr.getX(topIdx);
+    const z = posAttr.getZ(topIdx);
+    const r = colAttr.getX(topIdx), g = colAttr.getY(topIdx), b = colAttr.getZ(topIdx);
+    const br = Math.max(0, Math.min(1, r * 0.52 + 0.13));
+    const bg = Math.max(0, Math.min(1, g * 0.48 + 0.11));
+    const bb = Math.max(0, Math.min(1, b * 0.44 + 0.09));
+    const ni = (pArr.length / 3) | 0;
+    pArr.push(x, skirtBottomY, z);
+    cArr.push(br, bg, bb);
+    bottomForTop.set(topIdx, ni);
+    return ni;
+  }
+  const idxArr = [];
+  for (let f = 0; f < n; f++) idxArr.push(ia[f]);
+  for (let e = 0; e < edges.length; e += 2) {
+    const i0 = edges[e], i1 = edges[e + 1];
+    const x0 = posAttr.getX(i0), z0 = posAttr.getZ(i0);
+    const x1 = posAttr.getX(i1), z1 = posAttr.getZ(i1);
+    const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
+    const inx = cx - mx, inz = cz - mz;
+    const lx = -(z1 - z0), lz = (x1 - x0);
+    const flip = lx * inx + lz * inz < 0;
+    const b0 = getBottom(i0);
+    const b1 = getBottom(i1);
+    if (!flip) {
+      idxArr.push(i0, i1, b1, i0, b1, b0);
+    } else {
+      idxArr.push(i0, b0, b1, i0, b1, i1);
+    }
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pArr), 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(cArr), 3));
+  geo.setIndex(idxArr);
+  geo.computeBoundingSphere();
+}
 /** Large deterministic pool of port-style names (prefix + suffix); avoids repeats from a tiny fixed list. */
 const TOWN_NAME_LEXICON = (() => {
   const p = ['Port','Cape','New','Fort','East','West','North','South','Great','Little','Lost','Fair','Grim','High','Low',"Sailor's","Pirate's","Crow's",'Keel','Black','Red','White','Gold','Silver','Grey','Storm','Salt','Brine','Tide','Wave','Moon','Drift','Wreck','Anchor',"Smuggler's",'Barnacle',"King's","Queen's",'Rum','Dead','Lone','Free','Noble','Wild','Drowned','Hidden','Morrow','Sable','Ashen','Velvet','Iron','Coral','Pearl','Cursed','Blessed','Jolly','Misty','Crimson','Azure','Bitter','Sweet','Broken','Hollow','Proud','Humble','Fallow','Green','Blue','Northern','Southern','Eastern','Western'];
@@ -2398,6 +2480,8 @@ scene.add(water);
 
 /** Infinite sand floor below the waves (visible through transparent water); follows sea patch center like `water`. */
 const SEABED_VISUAL_Y = -13.5;
+/** Island terrain skirt stops slightly above the seabed mesh to limit z-fighting. */
+const ISLAND_SKIRT_Y = SEABED_VISUAL_Y + 0.1;
 function createSandSeabedTexture() {
   const c = document.createElement('canvas');
   c.width = c.height = 256;
@@ -3712,6 +3796,7 @@ function generateCustomMapChunk(cx, cz) {
   positions.needsUpdate = true;
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   stripIslandTerrainOpenSeaTriangles(geo, waterMask);
+  appendIslandSeabedSkirt(geo, ISLAND_SKIRT_Y);
   geo.computeVertexNormals();
   const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
   const cwx = minWx + CHUNK_SIZE * 0.5;
@@ -3901,6 +3986,7 @@ function generateIsland(cx, cz) {
   positions.needsUpdate = true;
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   stripIslandTerrainOpenSeaTriangles(terrainGeo, waterMask);
+  appendIslandSeabedSkirt(terrainGeo, ISLAND_SKIRT_Y);
   terrainGeo.computeVertexNormals();
 
   const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
