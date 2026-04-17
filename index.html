@@ -273,11 +273,15 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 #create-body{display:flex;flex:1;overflow:hidden;min-height:0;}
 #create-opts{width:300px;overflow-y:auto;padding:14px 18px;border-right:2px solid rgba(90,60,40,0.35);flex-shrink:0;background:linear-gradient(175deg,rgba(32,22,14,0.5),rgba(18,12,8,0.65));}
 #create-preview{flex:1;display:flex;flex-direction:column;min-width:0;}
-#preview-3d-wrap{flex:1;position:relative;overflow:hidden;cursor:grab;background:radial-gradient(ellipse 80% 70% at 50% 40%,#1a3048,#0a1620 72%,#050d18);box-shadow:inset 0 0 60px rgba(0,0,0,0.4);}
-#create-crew-bar{display:flex;gap:0;border-top:1px solid rgba(140,100,40,0.2);flex-shrink:0;overflow-x:auto;}
-.crew-tab{flex:1;min-width:0;padding:8px 6px;text-align:center;font-size:10px;color:#8a7a60;cursor:pointer;border-right:1px solid rgba(140,100,40,0.1);transition:all 0.15s;text-transform:uppercase;letter-spacing:1px;font-family:Georgia,serif;}
-.crew-tab:last-child{border-right:none;}
-.crew-tab:hover,.crew-tab.active{color:#d4a848;background:rgba(212,168,72,0.08);}
+#preview-3d-wrap{flex:1;position:relative;overflow:hidden;cursor:grab;background:radial-gradient(ellipse 80% 70% at 50% 42%,#1a3048,#0a1620 72%,#050d18);box-shadow:inset 0 0 60px rgba(0,0,0,0.4);}
+.preview-ship-nameplate{
+  position:absolute;top:0;left:0;right:0;z-index:2;pointer-events:none;
+  padding:10px 12px 8px;
+  text-align:center;font-family:Georgia,serif;font-size:clamp(13px,2.8vw,16px);font-weight:700;
+  letter-spacing:0.06em;color:var(--brass);
+  text-shadow:0 2px 6px rgba(0,0,0,0.75),0 0 18px rgba(201,162,74,0.25);
+  background:linear-gradient(180deg,rgba(8,12,18,0.75),rgba(8,12,18,0));
+}
 #create-crew-opts{width:260px;overflow-y:auto;padding:14px 16px;border-left:2px solid rgba(90,60,40,0.35);flex-shrink:0;background:linear-gradient(175deg,rgba(32,22,14,0.5),rgba(18,12,8,0.65));}
 #create-screen label{display:block;color:#b8a090;font-size:10px;text-transform:uppercase;margin:12px 0 5px;letter-spacing:0.14em;font-family:Georgia,serif;padding-left:10px;border-left:3px solid rgba(201,162,74,0.45);}
 #create-screen input[type="text"]{width:100%;background:rgba(16,10,6,0.92);border:1px solid rgba(120,90,35,0.4);border-radius:6px;padding:9px 11px;color:#e0d6c2;font-size:13px;outline:none;min-height:40px;font-family:Georgia,serif;transition:border-color 0.2s,box-shadow 0.2s;box-shadow:inset 0 2px 6px rgba(0,0,0,0.2);}
@@ -693,10 +697,10 @@ input,textarea{-webkit-user-select:text;user-select:text;}
       </div>
       <div id="create-preview">
         <div id="preview-3d-wrap">
+          <div id="preview-ship-nameplate" class="preview-ship-nameplate" aria-live="polite"></div>
           <div id="preview-3d" style="width:100%;height:100%;"></div>
           <div style="position:absolute;bottom:4px;right:8px;color:rgba(180,140,60,0.3);font-size:9px;pointer-events:none;">Drag to rotate</div>
         </div>
-        <div id="create-crew-bar"></div>
       </div>
       <div id="create-crew-opts">
         <div id="crew-editors"></div>
@@ -1367,8 +1371,8 @@ const G = {
   storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
-    /** ~52° — slightly higher / more downward than π/4 so the bow and sea ahead read clearer. */
-    angle: Math.PI / 3.45, targetAngle: Math.PI / 3.45, yaw: Math.PI, targetYaw: Math.PI,
+    /** ~59° — higher orbit so the camera looks down more; bow and sea ahead stay in view. */
+    angle: Math.PI / 3.05, targetAngle: Math.PI / 3.05, yaw: Math.PI, targetYaw: Math.PI,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
     mobileOrbitFree: false
   },
@@ -2422,14 +2426,15 @@ const waterFS = `
     if(vm < 0.004) return 0.0;
     vec2 F = vel / vm;
     vec2 d = P - u.xy;
-    if(length(d) > 14.0) return 0.0;
+    if(length(d) > 22.0) return 0.0;
     float ahead = dot(d, F);
     float side = dot(d, vec2(-F.y, F.x));
     float astern = max(0.0, -ahead);
     float sp = clamp(vm, 0.0, 1.05);
-    float halfW = 0.72 + astern * 0.035;
-    float sternLen = exp(-astern * 0.24) * smoothstep(0.15, 2.4, astern);
-    return exp(-(side*side)/(halfW*halfW)) * sternLen * sp * 0.22;
+    float halfW = 0.78 + astern * 0.052 + sp * 0.12;
+    float sternLen = exp(-astern * 0.155) * smoothstep(0.06, 4.2, astern);
+    float twin = 0.88 + 0.12 * exp(-(side * side) / ((halfW * 1.15) * (halfW * 1.15)));
+    return exp(-(side*side)/(halfW*halfW)) * sternLen * sp * 0.34 * twin;
   }
   float sumShipWakes(vec2 P){
     float s = 0.0;
@@ -2439,7 +2444,7 @@ const waterFS = `
     s += evalShipWake(uWake3, P);
     s += evalShipWake(uWake4, P);
     s += evalShipWake(uWake5, P);
-    return min(2.2, s);
+    return min(2.85, s);
   }
   float n2(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
   float nSmooth(vec2 p){
@@ -2501,8 +2506,8 @@ const waterFS = `
     vec3 foam = vec3(0.88,0.92,0.96) * cap * (0.35 + 0.65*uDayFactor);
     float shipWake = sumShipWakes(vWorldPos.xz);
     float wakeRip = 0.5 + 0.5 * sin(dot(vWorldPos.xz, vec2(0.13, -0.11)) * 3.2 + uTime * 3.5);
-    vec3 wakeFoam = vec3(0.91,0.94,0.98) * shipWake * (0.42 + 0.58 * uDayFactor) * (0.82 + 0.18 * wakeRip);
-    vec3 colorLin = diff*(1.0-fresnel)+refl+specC+sub+foam*0.55 + wakeFoam * 0.1;
+    vec3 wakeFoam = vec3(0.93,0.96,1.0) * shipWake * (0.48 + 0.52 * uDayFactor) * (0.78 + 0.22 * wakeRip);
+    vec3 colorLin = diff*(1.0-fresnel)+refl+specC+sub+foam*0.55 + wakeFoam * 0.15;
     float waterAlpha = mix(0.52, 0.9, fresnel);
     waterAlpha = clamp(waterAlpha + (NdotV - 0.35) * 0.22, 0.46, 0.93);
     vec3 color = pow(colorLin,vec3(1.0/2.2));
@@ -13403,19 +13408,19 @@ function dampShipWaveTilt(pitch, roll) {
   return { wavePitch: p, waveRoll: r };
 }
 
-const WAKE_TRAIL_MAX = 88;
+const WAKE_TRAIL_MAX = 118;
 let _wakeFoamRadialTex = null;
 function getWakeFoamRadialTexture() {
   if (_wakeFoamRadialTex) return _wakeFoamRadialTex;
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 63);
-  g.addColorStop(0, 'rgba(248,252,255,0.72)');
-  g.addColorStop(0.28, 'rgba(220,234,248,0.38)');
-  g.addColorStop(0.55, 'rgba(200,220,240,0.14)');
-  g.addColorStop(0.78, 'rgba(190,215,235,0.04)');
-  g.addColorStop(1, 'rgba(180,210,230,0)');
+  const g = ctx.createRadialGradient(52, 64, 0, 68, 64, 72);
+  g.addColorStop(0, 'rgba(252,254,255,0.88)');
+  g.addColorStop(0.22, 'rgba(232,242,252,0.52)');
+  g.addColorStop(0.48, 'rgba(210,228,246,0.22)');
+  g.addColorStop(0.72, 'rgba(195,218,238,0.07)');
+  g.addColorStop(1, 'rgba(185,210,230,0)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 128, 128);
   _wakeFoamRadialTex = new THREE.CanvasTexture(c);
@@ -13425,31 +13430,34 @@ function getWakeFoamRadialTexture() {
   return _wakeFoamRadialTex;
 }
 
-function spawnShipWakePiece(x, z, rotation, speed) {
-  if (Math.abs(speed) < 0.38) return;
-  const rad = 0.36 + Math.random() * 0.16;
+function spawnShipWakePiece(x, z, rotation, speed, sideSign) {
+  if (Math.abs(speed) < 0.32) return;
+  const rad = 0.4 + Math.random() * 0.18;
   const wakeGeo = new THREE.CircleGeometry(rad, 36);
   wakeGeo.rotateX(-Math.PI / 2);
   const tex = getWakeFoamRadialTexture();
+  const side = sideSign != null ? sideSign : (Math.random() < 0.5 ? -1 : 1);
+  const lat = 0.62 * side;
+  const stern = 2.35;
   const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({
     map: tex,
     transparent: true,
-    opacity: 0.82,
+    opacity: 0.68,
     depthWrite: false,
     depthTest: true,
     blending: THREE.NormalBlending
   }));
-  const wx = x - Math.sin(rotation) * 2.2 + (Math.random() - 0.5) * 0.55;
-  const wz = z - Math.cos(rotation) * 2.2 + (Math.random() - 0.5) * 0.55;
+  const wx = x - Math.sin(rotation) * stern + Math.cos(rotation) * lat + (Math.random() - 0.5) * 0.42;
+  const wz = z - Math.cos(rotation) * stern - Math.sin(rotation) * lat + (Math.random() - 0.5) * 0.42;
   wake.position.set(wx, worldSeaSurfaceY(wx, wz) + 0.02, wz);
-  wake.rotation.y = rotation + (Math.random() - 0.5) * 0.5;
-  const ex = 0.72 + Math.random() * 0.38;
-  const ez = 0.82 + Math.random() * 0.42;
+  wake.rotation.y = rotation + (Math.random() - 0.5) * 0.35;
+  const ex = 0.92 + Math.random() * 0.48;
+  const ez = 1.05 + Math.random() * 0.55;
   wake.scale.set(ex, 1, ez);
   wake.userData.baseSX = ex;
   wake.userData.baseSZ = ez;
-  wake.userData.life = 1.35;
-  wake.userData.fade0 = 0.82;
+  wake.userData.life = 1.52;
+  wake.userData.fade0 = 0.78;
   scene.add(wake);
   if (!G.wakeTrail) G.wakeTrail = [];
   G.wakeTrail.push(wake);
@@ -13466,7 +13474,7 @@ function spawnShipWakePiece(x, z, rotation, speed) {
 
 function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
   if (!G.wakeSpawnCooldowns) G.wakeSpawnCooldowns = new Map();
-  if (Math.abs(speed) <= 0.42) return;
+  if (Math.abs(speed) <= 0.36) return;
   let t = G.wakeSpawnCooldowns.get(key);
   if (t == null) t = 0;
   t -= dt;
@@ -13474,8 +13482,9 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
     G.wakeSpawnCooldowns.set(key, t);
     return;
   }
-  G.wakeSpawnCooldowns.set(key, 0.22);
-  spawnShipWakePiece(x, z, rotation, speed);
+  G.wakeSpawnCooldowns.set(key, 0.19);
+  spawnShipWakePiece(x, z, rotation, speed, -1);
+  spawnShipWakePiece(x, z, rotation, speed, 1);
 }
 
 /* ============================== GAME LOOP ================================ */
@@ -13652,7 +13661,7 @@ function update(dt) {
     for (let i = G.wakeTrail.length - 1; i >= 0; i--) {
       const w = G.wakeTrail[i];
       w.userData.life -= dt;
-      const life0 = 1.35;
+      const life0 = 1.52;
       const t = Math.max(0, w.userData.life / life0);
       const fade0 = w.userData.fade0 != null ? w.userData.fade0 : 0.82;
       w.material.opacity = Math.max(0, fade0 * t * t * 0.95);
@@ -14704,9 +14713,9 @@ function setup3DPreview() {
   pSun.position.set(5, 10, 5); previewScene.add(pSun);
   previewScene.add(new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4));
 
-  previewCamera = new THREE.PerspectiveCamera(32, container.clientWidth / h, 0.1, 100);
-  previewCamera.position.set(12, 8, 12);
-  previewCamera.lookAt(0, 1, 0);
+  previewCamera = new THREE.PerspectiveCamera(34, container.clientWidth / h, 0.1, 100);
+  previewCamera.position.set(14, 10.5, 14);
+  previewCamera.lookAt(0, 0.15, 0);
 
   let pdrag = false, plx = 0;
   container.addEventListener('mousedown', e => { pdrag = true; plx = e.clientX; previewAutoRotate = false; container.style.cursor = 'grabbing'; });
@@ -14720,6 +14729,13 @@ function setup3DPreview() {
   updatePreviewShip();
 }
 
+function syncPreviewShipNameplate() {
+  const el = document.getElementById('preview-ship-nameplate');
+  if (!el) return;
+  const n = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
+  el.textContent = n;
+}
+
 function updatePreviewShip() {
   if (!previewScene) return;
   if (previewShip) previewScene.remove(previewShip);
@@ -14730,36 +14746,12 @@ function updatePreviewShip() {
   buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
     ...c, health: 100, task: ['helm','cannons','sails','lookout'][i] || 'idle'
   })), G.player.shipType);
+  previewShip.position.y = -0.42;
   previewScene.add(previewShip);
+  syncPreviewShipNameplate();
 }
 
 let previewAutoRotate = true, previewDragX = 0, previewRotY = 0;
-let highlightedCrewIdx = -1;
-const highlightMat = new THREE.MeshBasicMaterial({ color: 0xffdd44, transparent: true, opacity: 0.5 });
-
-function highlightCrewMember(idx) {
-  highlightedCrewIdx = idx;
-  if (!previewShip) return;
-  previewShip.traverse(child => {
-    if (child.userData.isCrew) {
-      const isSelected = child.userData.crewIdx === idx;
-      child.traverse(mesh => {
-        if (mesh.isMesh && mesh.userData._origMat === undefined) mesh.userData._origMat = mesh.material;
-        if (mesh.isMesh) mesh.material = isSelected ? highlightMat : mesh.userData._origMat;
-      });
-      if (isSelected) {
-        if (!child.userData._ring) {
-          const ring = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.45, 16), new THREE.MeshBasicMaterial({ color: 0xffdd44, transparent: true, opacity: 0.6, side: THREE.DoubleSide }));
-          ring.rotation.x = -Math.PI / 2; ring.position.y = 0.02;
-          child.add(ring); child.userData._ring = ring;
-        }
-        child.userData._ring.visible = true;
-      } else if (child.userData._ring) {
-        child.userData._ring.visible = false;
-      }
-    }
-  });
-}
 
 function clearCrewHighlight() {
   if (!previewShip) return;
@@ -14769,7 +14761,6 @@ function clearCrewHighlight() {
       if (child.userData._ring) child.userData._ring.visible = false;
     }
   });
-  highlightedCrewIdx = -1;
 }
 function renderPreview() {
   if (!previewRenderer || !previewScene) return;
@@ -14811,7 +14802,7 @@ function buildCreationUI() {
   drawFlagPreview();
   document.getElementById('cap-parrot').onchange = () => { drawCrewPreview(); updatePreviewShip(); };
   document.getElementById('cap-name').oninput = () => { drawCrewPreview(); updatePreviewShip(); };
-  document.getElementById('ship-name-input').oninput = updatePreviewShip;
+  document.getElementById('ship-name-input').oninput = () => { updatePreviewShip(); };
 
   const crewDiv = document.getElementById('crew-editors');
   crewDiv.innerHTML = '';
@@ -14837,23 +14828,7 @@ function buildCreationUI() {
     div.querySelector('.crew-name').oninput = () => { drawCrewPreview(); updatePreviewShip(); };
   });
   drawCrewPreview();
-
-  const crewBar = document.getElementById('create-crew-bar');
-  if (crewBar) {
-    crewBar.innerHTML = '';
-    const allNames = ['Captain', ...defaultCrew.map(c => c.role)];
-    allNames.forEach((name, idx) => {
-      const tab = document.createElement('div');
-      tab.className = 'crew-tab' + (idx === 0 ? ' active' : '');
-      tab.textContent = name;
-      tab.onclick = () => {
-        crewBar.querySelectorAll('.crew-tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        highlightCrewMember(idx);
-      };
-      crewBar.appendChild(tab);
-    });
-  }
+  syncPreviewShipNameplate();
 
   setup3DPreview();
   requestAnimationFrame(renderPreview);
