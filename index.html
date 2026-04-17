@@ -1005,7 +1005,7 @@ function clampNpcIntoWorldBounds(npc) {
 }
 const RENDER_DIST = 3;
 function mainCanvasPixelRatio() {
-  return Math.min(window.devicePixelRatio || 1, 2);
+  return Math.min(window.devicePixelRatio || 1, isMobile ? 1.2 : 1.65);
 }
 const ISLAND_CHANCE = 0.25;
 /** Gentler dome than falloff² — smoother procedural islands (matches map-editor). */
@@ -1929,7 +1929,7 @@ class SimplexNoise {
 let noise;
 
 /* ============================= THREE.JS SETUP ============================ */
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(mainCanvasPixelRatio());
 if (renderer.outputColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -1956,7 +1956,7 @@ const sunLight = new THREE.DirectionalLight(0xffeedd, 1.6);
 sunLight.position.set(200, 300, 100);
 if (!isMobile) {
   sunLight.castShadow = true;
-  sunLight.shadow.mapSize.set(2048, 2048);
+  sunLight.shadow.mapSize.set(1536, 1536);
   sunLight.shadow.camera.near = 10; sunLight.shadow.camera.far = 600;
   sunLight.shadow.camera.left = -150; sunLight.shadow.camera.right = 150;
   sunLight.shadow.camera.top = 150; sunLight.shadow.camera.bottom = -150;
@@ -2353,7 +2353,8 @@ const waterFS = `
     gl_FragColor = vec4(color, waterAlpha);
   }`;
 
-const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 240, 240);
+const WATER_GRID_SEGS = 96;
+const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, WATER_GRID_SEGS, WATER_GRID_SEGS);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
   uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
@@ -2362,6 +2363,49 @@ const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
 }));
 water.renderOrder = -1;
 scene.add(water);
+
+/** Infinite sand floor below the waves (visible through transparent water); follows sea patch center like `water`. */
+const SEABED_VISUAL_Y = -13.5;
+function createSandSeabedTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(256, 256);
+  const d = img.data;
+  for (let j = 0; j < 256; j++) {
+    for (let i = 0; i < 256; i++) {
+      let h = (i * 374761393 + j * 668265263) >>> 0;
+      h = ((h ^ (h >>> 13)) * 1274126177) >>> 0;
+      const grain = (h & 1023) / 1023;
+      const n = Math.sin(i * 0.09) * 0.11 + Math.sin(j * 0.085) * 0.11 + Math.sin((i + j) * 0.042) * 0.09;
+      const base = 198 + n * 38 + (grain - 0.5) * 14;
+      const idx = (j * 256 + i) << 2;
+      d[idx] = Math.min(255, base + 22);
+      d[idx + 1] = Math.min(255, base - 8);
+      d[idx + 2] = Math.min(255, base - 38);
+      d[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(56, 56);
+  if (tex.colorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+  try {
+    const maxA = renderer.capabilities && typeof renderer.capabilities.getMaxAnisotropy === 'function'
+      ? renderer.capabilities.getMaxAnisotropy() : 1;
+    tex.anisotropy = Math.min(4, maxA);
+  } catch (e) { /* noop */ }
+  return tex;
+}
+const seabedTex = createSandSeabedTexture();
+const seabedGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 32, 32);
+seabedGeom.rotateX(-Math.PI / 2);
+const seabed = new THREE.Mesh(seabedGeom, new THREE.MeshLambertMaterial({ map: seabedTex, color: 0xffffff }));
+seabed.position.set(0, SEABED_VISUAL_Y, 0);
+seabed.renderOrder = -2;
+seabed.receiveShadow = !isMobile;
+scene.add(seabed);
 
 function syncDayNightVisuals(camX, camZ) {
   const p = (G.time % DAY_CYCLE_SECONDS) / DAY_CYCLE_SECONDS;
@@ -13159,6 +13203,7 @@ function dampShipWaveTilt(pitch, roll) {
   return { wavePitch: p, waveRoll: r };
 }
 
+const WAKE_TRAIL_MAX = 88;
 let _wakeFoamRadialTex = null;
 function getWakeFoamRadialTexture() {
   if (_wakeFoamRadialTex) return _wakeFoamRadialTex;
@@ -13208,6 +13253,15 @@ function spawnShipWakePiece(x, z, rotation, speed) {
   scene.add(wake);
   if (!G.wakeTrail) G.wakeTrail = [];
   G.wakeTrail.push(wake);
+  while (G.wakeTrail.length > WAKE_TRAIL_MAX) {
+    const old = G.wakeTrail.shift();
+    if (old) {
+      scene.remove(old);
+      old.material.map = null;
+      old.geometry.dispose();
+      old.material.dispose();
+    }
+  }
 }
 
 function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
@@ -13220,7 +13274,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
     G.wakeSpawnCooldowns.set(key, t);
     return;
   }
-  G.wakeSpawnCooldowns.set(key, 0.17);
+  G.wakeSpawnCooldowns.set(key, 0.22);
   spawnShipWakePiece(x, z, rotation, speed);
 }
 
@@ -14033,6 +14087,7 @@ function update(dt) {
   waterFollowCamX = camX;
   waterFollowCamZ = camZ;
   water.position.set(camX, SEA_LEVEL - 0.5, camZ);
+  seabed.position.set(camX, SEABED_VISUAL_Y, camZ);
   if (G.captainWalk.active) {
     updateCaptainWalk(dt);
   } else {
@@ -14108,6 +14163,7 @@ function warmUpGameView() {
   waterFollowCamX = camX;
   waterFollowCamZ = camZ;
   water.position.set(camX, SEA_LEVEL - 0.5, camZ);
+  seabed.position.set(camX, SEABED_VISUAL_Y, camZ);
   if (G.captainWalk.active) {
     updateCaptainWalk(0);
   } else {
@@ -15191,6 +15247,7 @@ function menuRender() {
   if (G.mode !== 'playing') {
     G.time += 0.016;
     water.position.set(0, SEA_LEVEL - 0.5, 0);
+    seabed.position.set(0, SEABED_VISUAL_Y, 0);
     waterUniforms.uTime.value = G.time;
     const camR = 25;
     camera.position.set(Math.sin(G.time * 0.04) * camR, 15 + Math.sin(G.time * 0.02) * 3, Math.cos(G.time * 0.04) * camR);
