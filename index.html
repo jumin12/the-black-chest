@@ -1237,6 +1237,8 @@ const G = {
     x: 0, z: 0, vx: 0, vz: 0, vy: 0, airY: 0,
     /** `main` = lower deck; `qd` = quarterdeck (stern) after jumping up. */
     deckTier: 'main',
+    /** Crew index driving first-person deck walk when active (captain preferred). */
+    crewIdx: null,
     yaw: 0, pitch: 0,
     spyglass: false,
     savedFov: 50,
@@ -3895,16 +3897,23 @@ const WILDLIFE_PRUNE_DIST = 9200;
 function removeFishSchoolByLeader(leader) {
   const li = schoolLeaders.indexOf(leader);
   if (li >= 0) schoolLeaders.splice(li, 1);
+  const shared = leader && leader._fishSharedMats;
   for (let i = fishSchools.length - 1; i >= 0; i--) {
     const f = fishSchools[i];
     if (f.userData.leader === leader) {
       scene.remove(f);
       f.children.forEach(ch => {
         if (ch.geometry) ch.geometry.dispose();
-        if (ch.material) ch.material.dispose();
+        if (ch.material && !shared) ch.material.dispose();
       });
       fishSchools.splice(i, 1);
     }
+  }
+  if (shared) {
+    if (shared.bodyMat) shared.bodyMat.dispose();
+    if (shared.tailMat) shared.tailMat.dispose();
+    if (shared.finMat) shared.finMat.dispose();
+    leader._fishSharedMats = null;
   }
 }
 
@@ -3946,15 +3955,49 @@ function spawnFish(wx, wz, count, rng) {
   const leader = { x: wx, z: wz, dir: r() * Math.PI * 2, speed: 1.5 + r() * 3, turnTimer: 3 + r() * 5, depth };
   leader._wildKey = (Math.imul(Math.floor(wx * 1000) | 0, 5016571) ^ (Math.floor(wz * 1000) | 0) ^ (G.worldSeed | 0) ^ (schoolLeaders.length * 0x85ebca6b)) >>> 0;
   schoolLeaders.push(leader);
+  const col = new THREE.Color(species.color);
+  const bellyCol = col.clone().offsetHSL(0, -0.08, 0.13);
+  const finCol = col.clone().offsetHSL(0.03, 0.1, -0.12);
+  const bodyMat = new THREE.MeshPhongMaterial({
+    color: col,
+    emissive: col.clone().multiplyScalar(0.2),
+    emissiveIntensity: 0.48,
+    shininess: 42,
+    specular: new THREE.Color(0x35556a)
+  });
+  const tailMat = new THREE.MeshPhongMaterial({
+    color: bellyCol,
+    emissive: bellyCol.clone().multiplyScalar(0.18),
+    emissiveIntensity: 0.4,
+    shininess: 28,
+    specular: new THREE.Color(0x2a4455),
+    side: THREE.DoubleSide
+  });
+  const finMat = new THREE.MeshPhongMaterial({
+    color: finCol,
+    emissive: finCol.clone().multiplyScalar(0.16),
+    emissiveIntensity: 0.36,
+    shininess: 34,
+    specular: new THREE.Color(0x2a3d4d)
+  });
+  leader._fishSharedMats = { bodyMat, tailMat, finMat };
+  const s = species.size;
+  const len = species.len;
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 5), new THREE.MeshBasicMaterial({ color: species.color }));
-    body.rotation.x = Math.PI / 2; fg.add(body);
-    const tail = new THREE.Mesh(new THREE.PlaneGeometry(species.size * 1.2, species.size), new THREE.MeshBasicMaterial({ color: species.color, side: THREE.DoubleSide }));
-    tail.position.set(0, 0, -species.len * 0.55); fg.add(tail);
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(s * 0.9, s * 0.28, len * 0.94, 9, 1), bodyMat);
+    body.rotation.x = Math.PI / 2;
+    body.position.z = len * 0.03;
+    fg.add(body);
+    const tail = new THREE.Mesh(new THREE.ConeGeometry(s * 0.52, len * 0.42, 7, 1), tailMat);
+    tail.rotation.x = -Math.PI / 2;
+    tail.position.set(0, 0, -len * 0.52);
+    fg.add(tail);
     if (species.name === 'dolphin' || species.name === 'shark') {
-      const fin = new THREE.Mesh(new THREE.ConeGeometry(species.size * 0.4, species.size * 1.5, 3), new THREE.MeshBasicMaterial({ color: species.color }));
-      fin.position.set(0, species.size * 0.7, -species.len * 0.1); fg.add(fin);
+      const fin = new THREE.Mesh(new THREE.ConeGeometry(s * 0.42, s * 1.48, 5, 1), finMat);
+      fin.position.set(0, s * 0.74, -len * 0.09);
+      fin.rotation.x = 0.38;
+      fg.add(fin);
     }
     fg.position.set(wx + (r() - 0.5) * 3, depth, wz + (r() - 0.5) * 3);
     fg.userData.leader = leader;
@@ -4757,17 +4800,45 @@ function canUseCaptainWalk() {
   return G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0 && !fullmapOpen;
 }
 
+function pickDeckWalkCrewIndex() {
+  const crew = G.player.crew || [];
+  const cap = crew.findIndex(c => c && c.role === 'captain');
+  if (cap >= 0) return cap;
+  const prefer = ['helm', 'sails', 'cannons', 'lookout', 'clean'];
+  for (const task of prefer) {
+    const ix = crew.findIndex(c => c && c.role !== 'prisoner' && c.task === task);
+    if (ix >= 0) return ix;
+  }
+  const any = crew.findIndex(c => c && c.role !== 'prisoner');
+  return any >= 0 ? any : 0;
+}
+
+function getDeckWalkSpawnForCrewIdx(crewIdx) {
+  const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
+  const def = { x: 0, z: -spec.hullLen * 0.06, yaw: Math.PI };
+  const ship = playerShipGroup && playerShipGroup.children[0];
+  if (!ship || crewIdx == null || crewIdx < 0) return def;
+  let bp = null;
+  ship.children.forEach(ch => {
+    if (bp) return;
+    if (ch.userData && ch.userData.isCrew && ch.userData.crewIdx === crewIdx && ch.userData.basePos) bp = ch.userData.basePos;
+  });
+  if (!bp) return def;
+  return { x: bp.x, z: bp.z, yaw: Math.PI };
+}
+
 function setCaptainWalkActive(on) {
   const cw = G.captainWalk;
   const btn = document.getElementById('btn-deck-walk');
   if (on) {
     if (!canUseCaptainWalk()) return;
-    const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
     cw.active = true;
-    cw.x = 0;
-    cw.z = -spec.hullLen * 0.06;
+    cw.crewIdx = pickDeckWalkCrewIndex();
+    const sp = getDeckWalkSpawnForCrewIdx(cw.crewIdx);
+    cw.x = sp.x;
+    cw.z = sp.z;
     /** π: ship +Z is bow; default camera −Z looks toward stern without this offset. */
-    cw.yaw = Math.PI;
+    cw.yaw = sp.yaw;
     cw.pitch = 0;
     cw.vy = 0;
     cw.airY = 0;
@@ -4780,11 +4851,14 @@ function setCaptainWalkActive(on) {
     if (!isMobile) {
       try { renderer.domElement.requestPointerLock(); } catch (e) {}
     }
+    const mem = G.player.crew && G.player.crew[cw.crewIdx];
+    const who = mem ? (mem.name || (mem.role === 'captain' ? 'Captain' : 'Crew')) : 'Deck';
     notify(isMobile
-      ? 'Captain on deck — drag to look; tap spyglass on the right to toggle. Double-tap sea to jump.'
-      : 'Captain on deck — move to look; hold right mouse for spyglass. Space / double-tap to jump.');
+      ? `${who} on deck — drag to look; tap spyglass on the right to toggle. Double-tap sea to jump.`
+      : `${who} on deck — move to look; hold right mouse for spyglass. Space / double-tap to jump.`);
   } else {
     cw.active = false;
+    cw.crewIdx = null;
     cw.spyglass = false;
     cw.vy = 0;
     cw.airY = 0;
@@ -4918,14 +4992,14 @@ function syncCaptainFigureOnDeck() {
   if (!cw.active) return;
   const ship = playerShipGroup.children[0];
   if (!ship) return;
-  const capIdx = G.player.crew.findIndex(c => c && c.role === 'captain');
-  if (capIdx < 0) return;
+  const walkIdx = cw.crewIdx != null ? cw.crewIdx : pickDeckWalkCrewIndex();
+  if (!G.player.crew || !G.player.crew[walkIdx]) return;
   const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
   const deckY = captainWalkDeckBaseY(spec);
   const qdBoost = cw.deckTier === 'qd' ? captainQuarterdeckBoostY(spec) : 0;
   const figY = deckY + qdBoost + cw.airY + 0.04;
   ship.children.forEach(ch => {
-    if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx !== capIdx) return;
+    if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx !== walkIdx) return;
     ch.position.set(cw.x, figY, cw.z);
     ch.rotation.x = cw.airY > 0.04 ? -0.12 : 0;
     ch.rotation.z = 0;
@@ -4955,12 +5029,13 @@ function updateCrewDeckAnimations(dt) {
   G._crewGunBlendSm += (gunTgt - G._crewGunBlendSm) * Math.min(1, 6 * dt);
   const gunRun = G._crewGunBlendSm * G._crewGunBlendSm * (3 - 2 * G._crewGunBlendSm);
   const reefWork = G._reefAgainstWindSm || 0;
+  const walkIdx = G.captainWalk.active && G.captainWalk.crewIdx != null ? G.captainWalk.crewIdx : -1;
 
   ship.children.forEach(ch => {
     if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx == null) return;
     const member = G.player.crew[ch.userData.crewIdx];
     if (!member) return;
-    if (G.captainWalk.active && member.role === 'captain') return;
+    if (walkIdx >= 0 && ch.userData.crewIdx === walkIdx) return;
     const b = ch.userData.basePos;
     const k = ch.userData.animKey || 0;
     if (!ch.userData.crewSm) ch.userData.crewSm = { x: ch.position.x, y: ch.position.y, z: ch.position.z, ry: 0 };
@@ -5143,7 +5218,16 @@ function updateRemoteCrewDeckAnimations(dt, shipGroup, p, shipType) {
     const member = manifest[ch.userData.crewIdx];
     if (!member || member.role === 'prisoner') return;
     const b = ch.userData.basePos;
-    if (member.role === 'captain' && p.captainWalk && p.captainWalk.active) {
+    let wix = -1;
+    if (p.captainWalk && p.captainWalk.active) {
+      if (p.captainWalk.crewIdx != null) {
+        wix = Math.max(0, Math.min(manifest.length - 1, p.captainWalk.crewIdx | 0));
+      } else {
+        const cap = manifest.findIndex(m => m && m.role === 'captain');
+        wix = cap >= 0 ? cap : 0;
+      }
+    }
+    if (wix >= 0 && ch.userData.crewIdx === wix) {
       const cw = p.captainWalk;
       const deckY = captainWalkDeckBaseY(spec);
       const qdBoost = cw.deckTier === 'qd' ? captainQuarterdeckBoostY(spec) : 0;
@@ -6803,11 +6887,14 @@ const SHARK_CHASE_SPEED = 6.8;
 const SHARK_PATROL_SPEED = 2.5;
 const SHARK_ORBIT_RADIUS = 5.4;
 const SHARK_MAX_PER_PREY = 2;
+const SHARK_GLOBAL_HUNT_MAX = 12;
 const SHARK_AMBIENT_CAP = 14;
-const SHARK_ASSIGN_RANGE = 320;
+const SHARK_ASSIGN_RANGE = 185;
 const SHARK_SPAWN_MIN_R = 48;
 const SHARK_SPAWN_MAX_R = 128;
 const SHARK_PRUNE_DIST = 460;
+/** Attack progress 0–1 at which splash FX runs (after “grab”, not at phase start). */
+const SHARK_GRAB_SPLASH_AT = 0.24;
 
 function disposeSharkGroup(g) {
   g.traverse(o => {
@@ -6821,28 +6908,65 @@ function disposeSharkGroup(g) {
 
 function createSharkGroup() {
   const g = new THREE.Group();
-  const matTop = new THREE.MeshLambertMaterial({ color: 0x3a5560 });
-  const matBelly = new THREE.MeshLambertMaterial({ color: 0x6a8a94 });
-  const body = new THREE.Mesh(new THREE.ConeGeometry(0.38, 1.45, 9, 1), matTop);
+  const matTop = new THREE.MeshStandardMaterial({
+    color: 0x355a64,
+    roughness: 0.45,
+    metalness: 0.12,
+    flatShading: true
+  });
+  const matBelly = new THREE.MeshStandardMaterial({
+    color: 0x9bb8c4,
+    roughness: 0.52,
+    metalness: 0.04,
+    flatShading: true
+  });
+  const matDark = new THREE.MeshStandardMaterial({
+    color: 0x243d44,
+    roughness: 0.5,
+    metalness: 0.08,
+    flatShading: true
+  });
+  const body = new THREE.Mesh(new THREE.ConeGeometry(0.44, 1.72, 11, 2), matTop);
   body.rotation.z = Math.PI / 2;
-  body.position.x = 0.18;
+  body.position.x = 0.2;
+  body.scale.set(1.02, 1, 1.08);
   g.add(body);
-  const belly = new THREE.Mesh(new THREE.ConeGeometry(0.28, 1.05, 8, 1), matBelly);
+  const belly = new THREE.Mesh(new THREE.ConeGeometry(0.33, 1.28, 9, 2), matBelly);
   belly.rotation.z = Math.PI / 2;
-  belly.position.set(0.12, -0.12, 0);
+  belly.position.set(0.12, -0.15, 0);
   g.add(belly);
-  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.62, 6, 1), matTop);
+  const snout = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.52, 8, 1), matDark);
+  snout.rotation.z = Math.PI / 2;
+  snout.position.set(1.02, -0.04, 0);
+  g.add(snout);
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.78, 8, 1), matTop);
   tail.rotation.z = -Math.PI / 2;
-  tail.position.set(-0.62, 0.05, 0);
+  tail.position.set(-0.78, 0.06, 0);
   g.add(tail);
-  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.38, 0.42), matTop);
-  fin.position.set(0.05, 0.32, 0);
-  g.add(fin);
-  const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.32, 0.22), matTop);
-  tailFin.position.set(-0.78, 0.12, 0);
-  tailFin.rotation.z = 0.35;
+  const dorsal = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.14, 0.52, 6, 1), matDark);
+  dorsal.rotation.z = Math.PI / 2;
+  dorsal.rotation.x = 0.25;
+  dorsal.position.set(0.02, 0.38, 0);
+  g.add(dorsal);
+  const pecL = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.06, 0.28), matDark);
+  pecL.position.set(0.38, -0.16, 0.34);
+  pecL.rotation.set(0.2, 0, 0.55);
+  g.add(pecL);
+  const pecR = pecL.clone();
+  pecR.position.set(0.38, -0.16, -0.34);
+  pecR.rotation.set(-0.2, 0, -0.55);
+  g.add(pecR);
+  const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.48, 0.26), matDark);
+  tailFin.position.set(-1.02, 0.08, 0);
+  tailFin.rotation.z = 0.42;
   g.add(tailFin);
-  g.scale.setScalar(1.35);
+  const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 5), matDark);
+  eyeL.position.set(0.82, 0.08, 0.11);
+  g.add(eyeL);
+  const eyeR = eyeL.clone();
+  eyeR.position.set(0.82, 0.08, -0.11);
+  g.add(eyeR);
+  g.scale.setScalar(1.38);
   return g;
 }
 
@@ -6860,6 +6984,8 @@ function spawnSharkAt(wx, wz) {
   sh.userData.orbitAngle = 0;
   sh.userData.orbitPhase = wildlifeHash01(sk, t0, 713) * Math.PI * 2;
   sh.userData.bobSeed = wildlifeHash01(sk, 0, 714) * Math.PI * 2;
+  sh.userData.homeX = wx;
+  sh.userData.homeZ = wz;
   scene.add(sh);
   G.sharks.push(sh);
 }
@@ -6867,17 +6993,28 @@ function spawnSharkAt(wx, wz) {
 function trySpawnAmbientSharks() {
   if (G.docked || G.playerSinking || G.mode !== 'playing') return;
   if (G.sharks.length >= SHARK_AMBIENT_CAP) return;
+  const slot = G.sharks.length;
   const t = (Math.floor(syncedWorldTime() * 10) ^ (G.worldSeed | 0)) >>> 0;
-  const pair = wildlifeHash01(t, G.sharks.length, 800) < 0.4 && G.sharks.length <= SHARK_AMBIENT_CAP - 2;
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const ang = wildlifeHash01(t, attempt, 801) * Math.PI * 2;
-    const dist = SHARK_SPAWN_MIN_R + wildlifeHash01(t, attempt, 802) * (SHARK_SPAWN_MAX_R - SHARK_SPAWN_MIN_R);
-    const sx = G.player.x + Math.cos(ang) * dist;
-    const sz = G.player.z + Math.sin(ang) * dist;
-    if (isSeaObstructed(sx, sz)) continue;
+  const pair = wildlifeHash01(t, slot, 800) < 0.4 && G.sharks.length <= SHARK_AMBIENT_CAP - 2;
+  const maxR = Math.min(WORLD_EDGE_CLAMP * 1.12, 7200);
+  const minR = 150;
+  for (let attempt = 0; attempt < 52; attempt++) {
+    const baseAng = wildlifeHash01(t, slot * 131 + attempt, 801) * Math.PI * 2;
+    const dist = minR + wildlifeHash01(t, slot * 131 + attempt, 802) * (maxR - minR);
+    let ang = baseAng;
+    let sx = Math.cos(ang) * dist;
+    let sz = Math.sin(ang) * dist;
+    let ok = !isSeaObstructed(sx, sz);
+    for (let j = 1; j < 14 && !ok; j++) {
+      ang = baseAng + j * 0.48;
+      sx = Math.cos(ang) * dist;
+      sz = Math.sin(ang) * dist;
+      ok = !isSeaObstructed(sx, sz);
+    }
+    if (!ok) continue;
     if (pair) {
-      const ox = Math.cos(ang + Math.PI / 2) * 2.4;
-      const oz = Math.sin(ang + Math.PI / 2) * 2.4;
+      const ox = Math.cos(ang + Math.PI / 2) * 2.65;
+      const oz = Math.sin(ang + Math.PI / 2) * 2.65;
       const sx2 = sx + ox, sz2 = sz + oz;
       if (isSeaObstructed(sx2, sz2)) continue;
       spawnSharkAt(sx, sz);
@@ -6901,6 +7038,7 @@ function releaseSharksFromPrey(sw) {
     sw.userData.sharkCircleDeadline = null;
     sw.userData.beingEaten = false;
     sw.userData.sharkEatT = 0;
+    sw.userData.sharkGrabSplashed = false;
   }
 }
 
@@ -6926,6 +7064,15 @@ function findClosestPatrolShark(tx, tz) {
   return best;
 }
 
+function countGlobalHuntingSharks() {
+  let n = 0;
+  for (const sh of G.sharks) {
+    const ph = sh.userData.phase;
+    if (ph === 'chase' || ph === 'circle' || ph === 'attack') n++;
+  }
+  return n;
+}
+
 function assignSharksToSwimmers() {
   for (const sw of G.swimmers) {
     const u = sw.userData;
@@ -6936,6 +7083,7 @@ function assignSharksToSwimmers() {
     const tLand = u.tLand != null ? u.tLand : computeSwimmerLandAge(y0, vy0, SEA_LEVEL + 0.1);
     if (age < tLand) continue;
     while (sharksActivelyHuntingCount(sw) < SHARK_MAX_PER_PREY) {
+      if (sharksActivelyHuntingCount(sw) === 0 && countGlobalHuntingSharks() >= SHARK_GLOBAL_HUNT_MAX) break;
       const sh = findClosestPatrolShark(sw.position.x, sw.position.z);
       if (!sh) break;
       sh.userData.targetSwimmer = sw;
@@ -7009,7 +7157,6 @@ function updateSharks(dt) {
     if (netT >= u.sharkCircleDeadline) {
       u.beingEaten = true;
       u.sharkEatT = 0;
-      try { createSplash(sw.position.x, sw.position.z); } catch (e) {}
       for (const sh of G.sharks) {
         if (sh.userData.targetSwimmer === sw && sh.userData.phase === 'circle') {
           sh.userData.phase = 'attack';
@@ -7033,10 +7180,19 @@ function updateSharks(dt) {
       const wtb = Math.floor(netT * 30);
       u.patrolTurn += (wildlifeHash01(sk, wtb, 920) - 0.5) * 0.22 * dt;
       u.patrolTurn = Math.max(-0.95, Math.min(0.95, u.patrolTurn));
-      sh.position.x += Math.cos(u.patrolAng) * SHARK_PATROL_SPEED * dt;
-      sh.position.z += Math.sin(u.patrolAng) * SHARK_PATROL_SPEED * dt;
-      sh.position.x += (G.player.x - sh.position.x) * 0.22 * dt;
-      sh.position.z += (G.player.z - sh.position.z) * 0.22 * dt;
+      const hx = u.homeX != null ? u.homeX : sh.position.x;
+      const hz = u.homeZ != null ? u.homeZ : sh.position.z;
+      const hdx = hx - sh.position.x, hdz = hz - sh.position.z;
+      const hdist = Math.hypot(hdx, hdz);
+      const patrolStep = SHARK_PATROL_SPEED * dt;
+      if (hdist > 95) {
+        const inv = 1 / Math.max(0.08, hdist);
+        sh.position.x += hdx * inv * patrolStep * 0.88;
+        sh.position.z += hdz * inv * patrolStep * 0.88;
+      } else {
+        sh.position.x += Math.cos(u.patrolAng) * patrolStep * 0.74;
+        sh.position.z += Math.sin(u.patrolAng) * patrolStep * 0.74;
+      }
       if (isSeaObstructed(sh.position.x, sh.position.z)) {
         u.patrolAng += Math.PI * 0.65;
       }
@@ -7093,6 +7249,10 @@ function updateSharks(dt) {
         eatTicked.add(sw);
       }
       const t = Math.min(1, su.sharkEatT || 0);
+      if (su.sharkGrabSplashed !== true && t >= SHARK_GRAB_SPLASH_AT) {
+        su.sharkGrabSplashed = true;
+        try { createSplash(sw.position.x, sw.position.z); } catch (e) {}
+      }
       const dx = tcx - sh.position.x, dz = tcz - sh.position.z;
       const d = Math.hypot(dx, dz);
       const rush = 5.5 * dt * (0.45 + t);
@@ -7731,7 +7891,16 @@ function syncCaptainNameToServer() {
 function destroyAmbientWildlife() {
   seagulls.forEach(sg => { scene.remove(sg); });
   seagulls.length = 0;
-  fishSchools.forEach(f => { scene.remove(f); });
+  const leaders = [];
+  const seen = new Set();
+  for (let i = 0; i < fishSchools.length; i++) {
+    const L = fishSchools[i].userData && fishSchools[i].userData.leader;
+    if (L && !seen.has(L)) {
+      seen.add(L);
+      leaders.push(L);
+    }
+  }
+  leaders.forEach(removeFishSchoolByLeader);
   fishSchools.length = 0;
   schoolLeaders.length = 0;
   if (G.sharks && G.sharks.length) {
@@ -8315,8 +8484,9 @@ function sendUpdate() {
   const captainWalk = cw && cw.active ? {
     active: true,
     x: cw.x, z: cw.z, yaw: cw.yaw, pitch: cw.pitch, airY: cw.airY != null ? cw.airY : 0,
-    deckTier: cw.deckTier === 'qd' ? 'qd' : 'main'
-  } : { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main' };
+    deckTier: cw.deckTier === 'qd' ? 'qd' : 'main',
+    crewIdx: cw.crewIdx != null ? cw.crewIdx : 0
+  } : { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main', crewIdx: 0 };
   const payload = {
     type: 'update',
     x: G.player.x, z: G.player.z, rotation: G.player.rotation, speed: G.player.speed, health: G.player.health,
