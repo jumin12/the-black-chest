@@ -2742,32 +2742,60 @@ function updateWindStreamVisual(dt) {
   windParticleGeo.attributes.position.needsUpdate = true;
 }
 
-/** Very subtle slipstream around hull & sails (ship-local, world positions) — visible mainly when making way. */
+/** Sid Meier's Pirates–style slipstream: pale streaks only off the bow and sail cloth (ship-local → world). */
 let playerShipWindStreamPts, playerShipWindStreamGeo, playerShipWindStreamMat;
 let playerShipWindStreamLocal;
 let playerShipWindStreamPhase;
+/** 0 = bow / forecastle only, 1 = jib or square sail sheet */
+let playerShipWindStreamSrc;
 const PLAYER_SHIP_WIND_N = 96;
 const _pswV = new THREE.Vector3();
 function scatterOnePlayerShipWindStreamParticle(i) {
-  if (!playerShipWindStreamLocal || !G.player) return;
+  if (!playerShipWindStreamLocal || !G.player || !playerShipWindStreamSrc) return;
   const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
   const L = spec.hullLen, W = spec.hullW, H = spec.hullH;
-  const r = Math.random();
   const ix = i * 3;
   const arr = playerShipWindStreamLocal;
-  if (r < 0.36) {
-    arr[ix] = (Math.random() - 0.5) * W * 1.02;
-    arr[ix + 1] = H * (0.1 + Math.random() * 0.62);
-    arr[ix + 2] = L * (0.18 + Math.random() * 0.36);
-  } else if (r < 0.64) {
-    const side = Math.random() < 0.5 ? -1 : 1;
-    arr[ix] = side * (W * 0.38 + Math.random() * W * 0.16);
-    arr[ix + 1] = H * (0.06 + Math.random() * 0.42);
-    arr[ix + 2] = (Math.random() - 0.5) * L * 0.92;
+  const masts = Math.max(0, spec.masts | 0);
+  const sailShare = masts > 0 ? 0.52 : 0.28;
+  if (Math.random() < sailShare) {
+    playerShipWindStreamSrc[i] = 1;
+    if (Math.random() < 0.4) {
+      const fmH = L * 0.45;
+      const foreZ = L * 0.35;
+      const jW = W * 0.5, jH = fmH * 0.5;
+      const side = Math.random() < 0.5 ? -1 : 1;
+      arr[ix] = side * (jW * 0.15 + Math.random() * jW * 0.95);
+      arr[ix + 1] = H * 0.5 + fmH * (0.22 + Math.random() * 0.75);
+      arr[ix + 2] = foreZ + 0.04 + Math.random() * L * 0.14;
+    } else if (masts > 0) {
+      const mi = (Math.random() * masts) | 0;
+      const mH = L * 0.7, mZ = (mi - (masts - 1) / 2) * (L * 0.3);
+      const sW = W * 1.2, sH = mH * 0.55;
+      const yardY = H * 0.6 + mH;
+      const sailCY = yardY - sH * 0.48;
+      const side = Math.random() < 0.5 ? -1 : 1;
+      arr[ix] = side * (sW * 0.34 + Math.random() * sW * 0.32);
+      arr[ix + 1] = sailCY + (Math.random() - 0.5) * sH * 0.9;
+      arr[ix + 2] = mZ + 0.04 + (Math.random() - 0.5) * L * 0.05;
+    } else {
+      playerShipWindStreamSrc[i] = 0;
+      const stem = Math.random() < 0.5 ? -1 : 1;
+      arr[ix] = stem * (W * (0.2 + Math.random() * 0.18));
+      arr[ix + 1] = H * (0.1 + Math.random() * 0.38);
+      arr[ix + 2] = L * (0.38 + Math.random() * 0.2);
+    }
   } else {
-    arr[ix] = (Math.random() - 0.5) * W * 0.32;
-    arr[ix + 1] = H * 0.62 + Math.random() * L * 0.52;
-    arr[ix + 2] = L * (-0.12 + Math.random() * 0.38);
+    playerShipWindStreamSrc[i] = 0;
+    const stem = Math.random() < 0.5 ? -1 : 1;
+    if (Math.random() < 0.68) {
+      arr[ix] = stem * (W * (0.2 + Math.random() * 0.2));
+      arr[ix + 1] = H * (0.08 + Math.random() * 0.36);
+    } else {
+      arr[ix] = (Math.random() - 0.5) * W * 0.12;
+      arr[ix + 1] = H * (0.12 + Math.random() * 0.28);
+    }
+    arr[ix + 2] = L * (0.34 + Math.random() * 0.24);
   }
 }
 function respawnAllPlayerShipWindStreamParticles() {
@@ -2778,6 +2806,7 @@ function initPlayerShipWindStreamVisual() {
   const pos = new Float32Array(PLAYER_SHIP_WIND_N * 3);
   playerShipWindStreamLocal = new Float32Array(PLAYER_SHIP_WIND_N * 3);
   playerShipWindStreamPhase = new Float32Array(PLAYER_SHIP_WIND_N);
+  playerShipWindStreamSrc = new Uint8Array(PLAYER_SHIP_WIND_N);
   for (let i = 0; i < PLAYER_SHIP_WIND_N; i++) {
     playerShipWindStreamPhase[i] = Math.random() * Math.PI * 2;
     scatterOnePlayerShipWindStreamParticle(i);
@@ -2785,10 +2814,10 @@ function initPlayerShipWindStreamVisual() {
   playerShipWindStreamGeo = new THREE.BufferGeometry();
   playerShipWindStreamGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   playerShipWindStreamMat = new THREE.PointsMaterial({
-    color: 0xc5dff5,
-    size: 0.078,
+    color: 0xedf6ff,
+    size: 0.068,
     transparent: true,
-    opacity: 0.085,
+    opacity: 0.078,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     sizeAttenuation: true
@@ -2799,24 +2828,44 @@ function initPlayerShipWindStreamVisual() {
   scene.add(playerShipWindStreamPts);
 }
 function updatePlayerShipWindStreamVisual(dt) {
-  if (!playerShipWindStreamGeo || !playerShipWindStreamMat || !G.player) return;
+  if (!playerShipWindStreamGeo || !playerShipWindStreamMat || !playerShipWindStreamPts || !G.player) return;
   const hide = G.mode !== 'playing' || G.docked || G.captainWalk?.active || G.playerSinking || G.spectate;
   const spd = G.player.speed || 0;
   const speedAbs = Math.abs(spd);
-  let speedF = THREE.MathUtils.smoothstep(speedAbs, 0.07, 4.8);
-  if (spd < -0.06) speedF *= 0.38;
   if (hide) {
     playerShipWindStreamMat.opacity = 0;
+    playerShipWindStreamPts.visible = false;
+    G._playerShipWindWasMoving = false;
     return;
   }
-  playerShipWindStreamMat.opacity = 0.038 + 0.045 * speedF;
-  playerShipWindStreamMat.size = 0.062 + 0.022 * speedF;
+  /** No streaks at anchor / hove to; then faint → stronger with speed (linear-ish ramp) */
+  if (speedAbs < 0.075) {
+    playerShipWindStreamMat.opacity = 0;
+    playerShipWindStreamPts.visible = false;
+    G._playerShipWindWasMoving = false;
+    return;
+  }
+  const moveF = THREE.MathUtils.smoothstep(speedAbs, 0.075, 5.2);
+  const astern = spd < -0.05 ? 0.42 : 1;
+  const strength = (moveF * (0.35 + 0.65 * moveF)) * astern;
+  playerShipWindStreamPts.visible = true;
+  if (!G._playerShipWindWasMoving) {
+    respawnAllPlayerShipWindStreamParticles();
+    G._playerShipWindWasMoving = true;
+  }
+  playerShipWindStreamMat.opacity = 0.014 + 0.1 * strength;
+  playerShipWindStreamMat.size = 0.046 + 0.036 * strength;
   const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
   const L = spec.hullLen;
   const arr = playerShipWindStreamGeo.attributes.position.array;
   const loc = playerShipWindStreamLocal;
   const t = G.time;
-  const drift = Math.max(0.12, speedAbs) * dt * (0.22 + L * 0.085);
+  const wdat = getWindAt(G.player.x, G.player.z);
+  const windShear = Math.sin(wdat.angle - G.player.rotation) * 0.085 * strength;
+  /** Drift only with through-water speed — no floor, so nothing slides when stopped */
+  const driftScale = speedAbs * dt * (0.26 + L * 0.098) * (0.4 + 0.6 * strength);
+  const driftBow = driftScale;
+  const driftSail = driftScale * 1.07;
   playerShipGroup.updateMatrixWorld(true);
   const mw = playerShipGroup.matrixWorld;
   const sternZ = -L * 0.52;
@@ -2824,14 +2873,24 @@ function updatePlayerShipWindStreamVisual(dt) {
     const ix = i * 3;
     let lx = loc[ix], ly = loc[ix + 1], lz = loc[ix + 2];
     const ph = playerShipWindStreamPhase[i];
+    const fromSail = playerShipWindStreamSrc[i] === 1;
     if (lz < sternZ) scatterOnePlayerShipWindStreamParticle(i);
     lx = loc[ix]; ly = loc[ix + 1]; lz = loc[ix + 2];
-    const wob = speedF * 0.012;
-    lx += Math.sin(t * 2.05 + ph) * wob * dt * 60;
-    ly += Math.cos(t * 1.65 + ph * 0.88) * wob * 0.45 * dt * 60;
-    lz -= drift * (0.78 + 0.22 * Math.sin(t * 2.8 + ph));
-    lx -= lx * (0.035 + 0.05 * speedF) * dt * 8;
-    lx += Math.sin(t * 2.15 + lz * 0.65 + ph) * 0.008 * speedF;
+    const wobAmp = (fromSail ? 0.0078 : 0.0098) * (0.22 + 0.78 * strength);
+    const drift = fromSail ? driftSail : driftBow;
+    lx += Math.sin(t * 1.85 + ph) * wobAmp * dt * 58;
+    ly += Math.cos(t * 1.45 + ph * 0.86) * wobAmp * (fromSail ? 0.38 : 0.3) * dt * 58;
+    lz -= drift * (0.88 + 0.12 * Math.sin(t * 2.5 + ph));
+    lx += windShear * drift * 2.8;
+    if (fromSail) {
+      const out = Math.sign(lx) || (Math.random() < 0.5 ? -1 : 1);
+      lx += out * drift * 0.14;
+      ly += drift * 0.05 * Math.sin(t * 2.2 + ph);
+    } else {
+      if (Math.abs(lx) > 0.04) lx += Math.sign(lx) * drift * 0.1;
+      lx -= lx * (0.02 + 0.035 * strength) * dt * 6;
+    }
+    lx += Math.sin(t * 1.9 + lz * 0.55 + ph) * 0.0062 * strength;
     loc[ix] = lx;
     loc[ix + 1] = ly;
     loc[ix + 2] = lz;
