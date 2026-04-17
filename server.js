@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
+/** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
+const SERVER_WORLD_T0_MS = Date.now();
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
 const TICK_RATE = 45;
 /** Optional directory for persistent JSON (e.g. Docker volume). Defaults next to server.js. */
@@ -1425,7 +1427,14 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'swimmer_collect': {
-          if (msg.id != null) broadcastAll({ type: 'swimmer_collect', id: msg.id });
+          if (msg.id != null) {
+            broadcastAll({
+              type: 'swimmer_collect',
+              id: msg.id,
+              rescueEscort: !!msg.rescueEscort,
+              rescuerPlayerId: msg.rescuerPlayerId != null ? Number(msg.rescuerPlayerId) : null
+            });
+          }
           break;
         }
         case 'pvp_kill_credit': {
@@ -1725,7 +1734,7 @@ setInterval(() => {
     morale: p.morale != null ? p.morale : 100,
     deckWalk: p.deckWalk || null
   }));
-  broadcast({ type: 'state', players: snapshot });
+  broadcast({ type: 'state', players: snapshot, worldT: (Date.now() - SERVER_WORLD_T0_MS) / 1000 });
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, '0.0.0.0', () => {
