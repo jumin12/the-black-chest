@@ -1243,8 +1243,24 @@ const G = {
     lastMobileTapT: 0
   },
   /** True while coasting to a stop before `player.anchored` becomes true. */
-  anchorDropping: false
+  anchorDropping: false,
+  /** Server monotonic time (seconds) for synced wildlife / deck animations when online. */
+  netWorldT: null
 };
+
+/** Shared animation clock: server `worldT` when connected, else local `G.time`. */
+function syncedWorldTime() {
+  return G.netWorldT != null ? G.netWorldT : G.time;
+}
+/** Deterministic 0..1 for wildlife (key + integer time bucket + salt). */
+function wildlifeHash01(key, tInt, salt) {
+  const k = Number(key) >>> 0;
+  const ti = Math.imul(Number(tInt) | 0, 2654435761) >>> 0;
+  const s = Math.imul(Number(salt) | 0, 374761393) >>> 0;
+  let h = (k ^ ti ^ s) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
+  return (h >>> 0) / 4294967296;
+}
 
 try {
   const _pv = localStorage.getItem('pirates_volume');
@@ -3928,6 +3944,7 @@ function spawnFish(wx, wz, count, rng) {
   const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
   const depth = SEA_LEVEL - 0.05 - r() * 0.15;
   const leader = { x: wx, z: wz, dir: r() * Math.PI * 2, speed: 1.5 + r() * 3, turnTimer: 3 + r() * 5, depth };
+  leader._wildKey = (Math.imul(Math.floor(wx * 1000) | 0, 5016571) ^ (Math.floor(wz * 1000) | 0) ^ (G.worldSeed | 0) ^ (schoolLeaders.length * 0x85ebca6b)) >>> 0;
   schoolLeaders.push(leader);
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
@@ -3949,13 +3966,19 @@ function spawnFish(wx, wz, count, rng) {
 }
 
 function updateFish(dt) {
-  schoolLeaders.forEach(l => {
+  const wt = syncedWorldTime();
+  const wtInt = Math.floor(wt * 12);
+  schoolLeaders.forEach((l, li) => {
+    const wk = l._wildKey != null ? l._wildKey : ((li + 1) * 0x9e3779b1 ^ (G.worldSeed | 0)) >>> 0;
     l.turnTimer -= dt;
-    if (l.turnTimer <= 0) { l.dir += (Math.random() - 0.5) * 2; l.turnTimer = 2 + Math.random() * 6; }
+    if (l.turnTimer <= 0) {
+      l.dir += (wildlifeHash01(wk, wtInt, 41) - 0.5) * 2;
+      l.turnTimer = 2 + wildlifeHash01(wk, wtInt, 42) * 6;
+    }
     l.x += Math.sin(l.dir) * l.speed * dt;
     l.z += Math.cos(l.dir) * l.speed * dt;
     if (isSeaObstructed(l.x, l.z)) {
-      l.dir += Math.PI + (Math.random() - 0.5) * 1.2;
+      l.dir += Math.PI + (wildlifeHash01(wk, wtInt, 43) - 0.5) * 1.2;
       l.x -= Math.sin(l.dir) * l.speed * dt * 2.2;
       l.z -= Math.cos(l.dir) * l.speed * dt * 2.2;
       for (let g = 0; g < 8 && isSeaObstructed(l.x, l.z); g++) {
@@ -3969,16 +3992,17 @@ function updateFish(dt) {
     const tx = l.x + f.userData.offsetX, tz = l.z + f.userData.offsetZ;
     f.position.x += (tx - f.position.x) * 2 * dt;
     f.position.z += (tz - f.position.z) * 2 * dt;
-    f.position.y = l.depth + Math.sin(G.time * 3 + f.userData.wiggle) * 0.08;
+    f.position.y = l.depth + Math.sin(wt * 3 + f.userData.wiggle) * 0.08;
     f.userData.wiggle += dt * 5;
     const fdx = l.x - f.position.x, fdz = l.z - f.position.z;
     const moveLen = Math.sqrt(fdx * fdx + fdz * fdz);
     if (moveLen > 0.05) f.rotation.y = Math.atan2(fdx, fdz);
-    f.children[1].rotation.y = Math.sin(G.time * 8 + f.userData.wiggle) * 0.4;
+    f.children[1].rotation.y = Math.sin(wt * 8 + f.userData.wiggle) * 0.4;
   });
 }
 
 function updateSeagulls(dt) {
+  const wt = syncedWorldTime();
   seagulls.forEach(sg => {
     sg.userData.phase += sg.userData.speed * dt;
     const p = sg.userData.phase;
@@ -3986,7 +4010,7 @@ function updateSeagulls(dt) {
     sg.position.z = sg.userData.cz + Math.sin(p) * sg.userData.radius;
     sg.position.y = 22 + Math.sin(p * 2) * 4;
     sg.rotation.y = p + Math.PI / 2;
-    const wingFlap = Math.sin(G.time * 2.6 + sg.userData.phase * 3) * 0.4;
+    const wingFlap = Math.sin(wt * 2.6 + sg.userData.phase * 3) * 0.4;
     sg.userData.wingL.rotation.z = wingFlap;
     sg.userData.wingR.rotation.z = -wingFlap;
   });
@@ -5055,6 +5079,7 @@ function applySailCanvasWindMesh(mesh, baseArr, furl, windPushZ, windBillowScale
 }
 
 function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
+  const wt = syncedWorldTime();
   const wHere = getWindAt(wx, wz);
   const relWind = wHere.angle - rotation;
   const windPushZ = Math.cos(relWind);
@@ -5070,12 +5095,12 @@ function animateRemoteShipSails(shipGroup, wx, wz, rotation, speed, dt) {
       if (!child.userData.windYawOnParent) child.rotation.y = ra;
       const base = child.userData.basePositions;
       const windBillowScale = windStr * (0.35 + seaSpd * 0.55);
-      applySailCanvasWindMesh(child, base, 0, windPushZ, windBillowScale, G.time, false);
+      applySailCanvasWindMesh(child, base, 0, windPushZ, windBillowScale, wt, false);
     }
     if (child.userData && child.userData.isFlagHinge) {
       const rw = wHere.angle - rotation;
-      child.rotation.y = Math.sin(G.time * 2.7 + wx * 0.01 + rw * 1.1) * 0.42 + Math.sin(rw) * 0.14;
-      child.rotation.z = Math.sin(G.time * 3.05 + wx * 0.02) * 0.07;
+      child.rotation.y = Math.sin(wt * 2.7 + wx * 0.01 + rw * 1.1) * 0.42 + Math.sin(rw) * 0.14;
+      child.rotation.z = Math.sin(wt * 3.05 + wx * 0.02) * 0.07;
     }
   });
   shipGroup.traverse(child => {
@@ -5090,7 +5115,7 @@ function updateRemoteCrewDeckAnimations(dt, shipGroup, p, shipType) {
   const manifest = shipGroup.userData.crewManifest;
   if (!manifest || !manifest.length) return;
   const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
-  const t = G.time;
+  const t = syncedWorldTime();
   const seaLean = Math.min(1, Math.abs(p.speed || 0) / 11);
   const ampBase = 0.78 + (1 - seaLean) * 0.22;
   if (shipGroup.userData._lastRemoteYaw == null) shipGroup.userData._lastRemoteYaw = p.rotation || 0;
@@ -5118,6 +5143,18 @@ function updateRemoteCrewDeckAnimations(dt, shipGroup, p, shipType) {
     const member = manifest[ch.userData.crewIdx];
     if (!member || member.role === 'prisoner') return;
     const b = ch.userData.basePos;
+    if (member.role === 'captain' && p.captainWalk && p.captainWalk.active) {
+      const cw = p.captainWalk;
+      const deckY = captainWalkDeckBaseY(spec);
+      const qdBoost = cw.deckTier === 'qd' ? captainQuarterdeckBoostY(spec) : 0;
+      const ay = cw.airY != null ? cw.airY : 0;
+      const figY = deckY + qdBoost + ay + 0.04;
+      ch.position.set(cw.x != null ? cw.x : b.x, figY, cw.z != null ? cw.z : b.z);
+      ch.rotation.x = ay > 0.04 ? -0.12 : 0;
+      ch.rotation.z = 0;
+      ch.rotation.y = cw.yaw != null ? cw.yaw : 0;
+      return;
+    }
     const k = ch.userData.animKey || 0;
     if (!ch.userData.crewSm) ch.userData.crewSm = { x: ch.position.x, y: ch.position.y, z: ch.position.z, ry: 0 };
     const sm = ch.userData.crewSm;
@@ -6810,15 +6847,19 @@ function createSharkGroup() {
 }
 
 function spawnSharkAt(wx, wz) {
+  const idx = G.sharks.length;
+  const sk = (Math.imul(idx + 1, 2654435761) ^ (G.worldSeed | 0) ^ Math.floor(wx * 100) ^ Math.floor(wz * 100)) >>> 0;
   const sh = createSharkGroup();
   sh.position.set(wx, SEA_LEVEL - 0.3, wz);
   sh.userData.phase = 'patrol';
-  sh.userData.patrolAng = Math.random() * Math.PI * 2;
-  sh.userData.patrolTurn = (Math.random() - 0.5) * 0.65;
+  sh.userData._sharkKey = sk;
+  const t0 = Math.floor(syncedWorldTime() * 8);
+  sh.userData.patrolAng = wildlifeHash01(sk, t0, 711) * Math.PI * 2;
+  sh.userData.patrolTurn = (wildlifeHash01(sk, t0, 712) - 0.5) * 0.65;
   sh.userData.targetSwimmer = null;
   sh.userData.orbitAngle = 0;
-  sh.userData.orbitPhase = Math.random() * Math.PI * 2;
-  sh.userData.bobSeed = Math.random() * Math.PI * 2;
+  sh.userData.orbitPhase = wildlifeHash01(sk, t0, 713) * Math.PI * 2;
+  sh.userData.bobSeed = wildlifeHash01(sk, 0, 714) * Math.PI * 2;
   scene.add(sh);
   G.sharks.push(sh);
 }
@@ -6826,10 +6867,11 @@ function spawnSharkAt(wx, wz) {
 function trySpawnAmbientSharks() {
   if (G.docked || G.playerSinking || G.mode !== 'playing') return;
   if (G.sharks.length >= SHARK_AMBIENT_CAP) return;
-  const pair = Math.random() < 0.4 && G.sharks.length <= SHARK_AMBIENT_CAP - 2;
+  const t = (Math.floor(syncedWorldTime() * 10) ^ (G.worldSeed | 0)) >>> 0;
+  const pair = wildlifeHash01(t, G.sharks.length, 800) < 0.4 && G.sharks.length <= SHARK_AMBIENT_CAP - 2;
   for (let attempt = 0; attempt < 40; attempt++) {
-    const ang = Math.random() * Math.PI * 2;
-    const dist = SHARK_SPAWN_MIN_R + Math.random() * (SHARK_SPAWN_MAX_R - SHARK_SPAWN_MIN_R);
+    const ang = wildlifeHash01(t, attempt, 801) * Math.PI * 2;
+    const dist = SHARK_SPAWN_MIN_R + wildlifeHash01(t, attempt, 802) * (SHARK_SPAWN_MAX_R - SHARK_SPAWN_MIN_R);
     const sx = G.player.x + Math.cos(ang) * dist;
     const sz = G.player.z + Math.sin(ang) * dist;
     if (isSeaObstructed(sx, sz)) continue;
@@ -6898,7 +6940,8 @@ function assignSharksToSwimmers() {
       if (!sh) break;
       sh.userData.targetSwimmer = sw;
       sh.userData.phase = 'chase';
-      sh.userData.orbitPhase = Math.random() * Math.PI * 2;
+      const swHash = (Math.floor(sw.position.x * 10) ^ Math.floor(sw.position.z * 10) ^ (G.worldSeed | 0)) >>> 0;
+      sh.userData.orbitPhase = wildlifeHash01(swHash, Math.floor(syncedWorldTime() * 20), 910) * Math.PI * 2;
     }
   }
 }
@@ -6959,10 +7002,11 @@ function updateSharks(dt) {
   validateSharkTargets();
   assignSharksToSwimmers();
 
+  const netT = syncedWorldTime();
   for (const sw of G.swimmers) {
     const u = sw.userData;
     if (!u || u.beingEaten || !u.sharkCircleDeadline) continue;
-    if (G.time >= u.sharkCircleDeadline) {
+    if (netT >= u.sharkCircleDeadline) {
       u.beingEaten = true;
       u.sharkEatT = 0;
       try { createSplash(sw.position.x, sw.position.z); } catch (e) {}
@@ -6982,10 +7026,12 @@ function updateSharks(dt) {
   const eatTicked = new Set();
   for (const sh of G.sharks) {
     const u = sh.userData;
-    const py = SEA_LEVEL - 0.28 + Math.sin(G.time * 2.5 + u.bobSeed) * 0.07;
+    const py = SEA_LEVEL - 0.28 + Math.sin(netT * 2.5 + u.bobSeed) * 0.07;
     if (u.phase === 'patrol') {
       u.patrolAng += u.patrolTurn * dt * 0.9;
-      u.patrolTurn += (Math.random() - 0.5) * 0.22 * dt;
+      const sk = u._sharkKey != null ? u._sharkKey : 0;
+      const wtb = Math.floor(netT * 30);
+      u.patrolTurn += (wildlifeHash01(sk, wtb, 920) - 0.5) * 0.22 * dt;
       u.patrolTurn = Math.max(-0.95, Math.min(0.95, u.patrolTurn));
       sh.position.x += Math.cos(u.patrolAng) * SHARK_PATROL_SPEED * dt;
       sh.position.z += Math.sin(u.patrolAng) * SHARK_PATROL_SPEED * dt;
@@ -7022,12 +7068,12 @@ function updateSharks(dt) {
       if (d < SHARK_ORBIT_RADIUS + 1.1) {
         u.phase = 'circle';
         u.orbitAngle = Math.atan2(sh.position.z - tcz, sh.position.x - tcx);
-        if (su.sharkCircleDeadline == null) su.sharkCircleDeadline = G.time + SHARK_CIRCLE_SEC;
+        if (su.sharkCircleDeadline == null) su.sharkCircleDeadline = netT + SHARK_CIRCLE_SEC;
       }
       continue;
     }
     if (u.phase === 'circle') {
-      if (su.sharkCircleDeadline != null && G.time >= su.sharkCircleDeadline) {
+      if (su.sharkCircleDeadline != null && netT >= su.sharkCircleDeadline) {
         continue;
       }
       u.orbitAngle += dt * 0.52;
@@ -7071,7 +7117,7 @@ function updateSharks(dt) {
         sw.position.x += (ax - sw.position.x) * Math.min(1, 4.2 * dt);
         sw.position.z += (az - sw.position.z) * Math.min(1, 4.2 * dt);
       }
-      const bob = Math.sin(G.time * 2 + (su.bobPhase != null ? su.bobPhase : 0)) * 0.08 * (1 - t);
+      const bob = Math.sin(netT * 2 + (su.bobPhase != null ? su.bobPhase : 0)) * 0.08 * (1 - t);
       sw.position.y = SEA_LEVEL + 0.06 + bob - t * 2.55;
       sw.rotation.x = -t * 1.05;
       if (t >= 1) finishSharkMeal(sw);
@@ -7874,6 +7920,7 @@ function connectToServer() {
         tryOfferLeaderboardSeedToServer();
         if (msg.worldStory) applyIncomingWorldStory(msg.worldStory);
         if (msg.worldQuests && Array.isArray(msg.worldQuests) && msg.worldQuests.length) applyIncomingWorldQuests(msg.worldQuests);
+        if (msg.worldT != null && Number.isFinite(Number(msg.worldT))) G.netWorldT = Number(msg.worldT);
         break;
       case 'player_join':
         G.otherPlayers.set(msg.player.id, msg.player);
@@ -7908,6 +7955,7 @@ function connectToServer() {
         break;
       }
       case 'state':
+        if (msg.worldT != null && Number.isFinite(Number(msg.worldT))) G.netWorldT = Number(msg.worldT);
         msg.players.forEach(p => {
           if (p.id === G.myId) return;
           const ex = G.otherPlayers.get(p.id);
@@ -8253,6 +8301,7 @@ function connectToServer() {
    };
   ws.onerror = () => {};
   ws.onclose = () => {
+    G.netWorldT = null;
     if (wsUserBanned) return;
     wsReconnectTimer = setTimeout(() => {
       wsReconnectTimer = null;
@@ -8262,6 +8311,12 @@ function connectToServer() {
 }
 function sendUpdate() {
   if (!ws || ws.readyState !== 1) return;
+  const cw = G.captainWalk;
+  const captainWalk = cw && cw.active ? {
+    active: true,
+    x: cw.x, z: cw.z, yaw: cw.yaw, pitch: cw.pitch, airY: cw.airY != null ? cw.airY : 0,
+    deckTier: cw.deckTier === 'qd' ? 'qd' : 'main'
+  } : { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main' };
   const payload = {
     type: 'update',
     x: G.player.x, z: G.player.z, rotation: G.player.rotation, speed: G.player.speed, health: G.player.health,
@@ -8275,7 +8330,8 @@ function sendUpdate() {
     shipName: G.player.shipName,
     shipParts: { ...G.player.shipParts },
     flagColor: G.player.flagColor || '#1a1a1a',
-    crewData: buildCrewSyncPayload()
+    crewData: buildCrewSyncPayload(),
+    captainWalk
   };
   ws.send(JSON.stringify(payload));
 }
@@ -12954,11 +13010,12 @@ function update(dt) {
   oceanFishSpawnAcc += dt;
   if (fishSchools.length < WILDLIFE_FISH_CAP && oceanFishSpawnAcc >= 0.12) {
     oceanFishSpawnAcc = 0;
+    const wtick = Math.floor(syncedWorldTime() * 8.333) ^ (G.worldSeed | 0);
     for (let k = 0; k < 7; k++) {
-      const ox = G.player.x + (Math.random() - 0.5) * 5600;
-      const oz = G.player.z + (Math.random() - 0.5) * 5600;
+      const ox = G.player.x + (wildlifeHash01(wtick, k, 501) - 0.5) * 5600;
+      const oz = G.player.z + (wildlifeHash01(wtick, k, 502) - 0.5) * 5600;
       if (isSeaObstructed(ox, oz)) continue;
-      spawnFish(ox, oz, 5 + Math.floor(Math.random() * 11));
+      spawnFish(ox, oz, 5 + Math.floor(wildlifeHash01(wtick, k, 503) * 11));
     }
   }
 
