@@ -1934,7 +1934,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(mainCanvasPixelRatio());
 if (renderer.outputColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
+renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = !isMobile;
 if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.setClearColor(0x152a45, 1);
@@ -1944,11 +1944,12 @@ renderer.domElement.tabIndex = 0;
 renderer.domElement.style.outline = 'none';
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
+scene.fog = new THREE.FogExp2(0x7a9ec8, 0.00165);
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 8000);
 /** Sky is a sphere centered on the camera; radius must be < camera.far or the dome is clipped (black sky). */
 const SKY_RADIUS = camera.far * 0.9;
 const WATER_PLANE_SIZE = Math.max(CHUNK_SIZE * (RENDER_DIST * 2 + 1), camera.far * 2.75);
+const WATER_PLANE_SEG = isMobile ? 128 : 224;
 
 const ambientLight = new THREE.AmbientLight(0x7799bb, 0.7);
 scene.add(ambientLight);
@@ -1962,7 +1963,7 @@ if (!isMobile) {
   sunLight.shadow.camera.top = 150; sunLight.shadow.camera.bottom = -150;
 }
 scene.add(sunLight);
-const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x3a6b35, 0.4);
+const hemiLight = new THREE.HemisphereLight(0x8ec5eb, 0x355a30, 0.48);
 scene.add(hemiLight);
 
 /** Full day length (seconds). Sun rises east (+X), arcs through zenith, sets west. */
@@ -2092,74 +2093,119 @@ const waterUniforms = {
   uCamPos: { value: new THREE.Vector3() }
 };
 const waterVS = `
-  uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
-  vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
-    float k=6.2831853/wl; float c=sqrt(9.8/k); float a=s/k; vec2 dn=normalize(d);
-    float f=k*(dot(dn,p.xz)-c*sp*uTime);
-    return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
+  uniform float uTime;
+  varying vec3 vWorldPos;
+  varying vec3 vNormal;
+  varying vec3 vFoamHint;
+  vec3 gerstner(vec3 p, float steep, float wavelength, vec2 dir, float timeScale) {
+    float k = 6.2831853 / wavelength;
+    float c = sqrt(9.8 / k);
+    float a = steep / k;
+    vec2 d = normalize(dir);
+    float phase = k * (dot(d, p.xz) - c * timeScale * uTime);
+    return vec3(d.x * a * cos(phase), a * sin(phase), d.y * a * cos(phase));
   }
-  void main(){
-    vec3 pos=position;
-    pos += gw(pos,0.05,65.0,vec2(1,.2),0.6) + gw(pos,0.03,40.0,vec2(.35,1),.45)
-         + gw(pos,0.02,22.0,vec2(-.55,.75),0.7) + gw(pos,0.015,13.0,vec2(.8,-.35),0.85)
-         + gw(pos,0.008,7.5,vec2(-.25,-.85),1.1) + gw(pos,0.005,4.5,vec2(.85,.45),1.4);
-    vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
-    float e=0.5; vec3 pX=position+vec3(e,0,0); vec3 pZ=position+vec3(0,0,e);
-    pX += gw(pX,.05,65.,vec2(1,.2),.6) + gw(pX,.03,40.,vec2(.35,1),.45) + gw(pX,.02,22.,vec2(-.55,.75),.7) + gw(pX,.015,13.,vec2(.8,-.35),.85);
-    pZ += gw(pZ,.05,65.,vec2(1,.2),.6) + gw(pZ,.03,40.,vec2(.35,1),.45) + gw(pZ,.02,22.,vec2(-.55,.75),.7) + gw(pZ,.015,13.,vec2(.8,-.35),.85);
-    vNormal = normalize(cross(pZ-pos, pX-pos));
-    gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
+  vec3 waveDisp(vec3 p) {
+    return gerstner(p, 0.055, 72.0, vec2(1.0, 0.22), 0.58)
+         + gerstner(p, 0.038, 44.0, vec2(0.32, 0.94), 0.44)
+         + gerstner(p, 0.026, 24.0, vec2(-0.58, 0.78), 0.68)
+         + gerstner(p, 0.018, 14.0, vec2(0.82, -0.38), 0.82)
+         + gerstner(p, 0.011, 8.2, vec2(-0.28, -0.88), 1.05)
+         + gerstner(p, 0.007, 4.8, vec2(0.88, 0.42), 1.32);
+  }
+  void main() {
+    float e = 0.55;
+    vec3 disp = waveDisp(position);
+    vec3 pos = position + disp;
+    vec3 px = position + vec3(e, 0.0, 0.0) + waveDisp(position + vec3(e, 0.0, 0.0));
+    vec3 pz = position + vec3(0.0, 0.0, e) + waveDisp(position + vec3(0.0, 0.0, e));
+    vec3 n = normalize(cross(pz - pos, px - pos));
+    vNormal = n;
+    vFoamHint = vec3(max(disp.y, 0.0), 1.0 - n.y, length(disp.xz));
+    vWorldPos = (modelMatrix * vec4(pos, 1.0)).xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   }`;
 const waterFS = `
-  uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uDayFactor; uniform vec3 uCamPos;
-  varying vec3 vWorldPos; varying vec3 vNormal;
-  void main(){
-    vec3 N=normalize(vNormal);
+  precision highp float;
+  uniform float uTime;
+  uniform vec3 uSunDir;
+  uniform vec3 uMoonDir;
+  uniform float uDayFactor;
+  uniform vec3 uCamPos;
+  varying vec3 vWorldPos;
+  varying vec3 vNormal;
+  varying vec3 vFoamHint;
+  void main() {
+    vec3 N0 = normalize(vNormal);
+    vec2 wxz = vWorldPos.xz;
+    float ripT = uTime * 1.15;
+    float r1 = sin(wxz.x * 0.31 + wxz.y * 0.27 + ripT * 0.9);
+    float r2 = cos(wxz.x * 0.19 - wxz.y * 0.41 + ripT * 0.7);
+    float r3 = sin((wxz.x + wxz.y) * 0.52 + ripT * 1.1);
+    vec3 N = normalize(N0 + vec3(r1 * 0.11 + r3 * 0.04, r2 * 0.06, r2 * 0.1 - r1 * 0.05) * (0.65 + 0.35 * uDayFactor));
     vec3 Vraw = uCamPos - vWorldPos;
     float vLen = length(Vraw);
-    vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0,1.0,0.0);
+    vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0, 1.0, 0.0);
+    float NdotV = clamp(dot(N, V), 0.001, 1.0);
+    float F0 = 0.028;
+    float fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+    fresnel = mix(fresnel * 0.82, fresnel, uDayFactor * 0.35 + 0.65);
     vec3 Ls = normalize(uSunDir);
     vec3 Lm = normalize(uMoonDir);
-    float NdotV = clamp(dot(N,V), 0.02, 1.0);
-    float fresnel = pow(1.0 - NdotV, 4.0); fresnel = mix(0.03,0.65,fresnel);
-    vec3 deepBlue = vec3(0.02,0.08,0.18);
-    vec3 midOcean = vec3(0.04,0.18,0.32);
-    vec3 shallow = vec3(0.05,0.38,0.38);
-    vec3 nearSurf = vec3(0.08,0.50,0.45);
-    float depthFactor = smoothstep(-0.3,0.3,vWorldPos.y);
-    vec3 wc = mix(deepBlue, mix(midOcean, mix(shallow, nearSurf, depthFactor), depthFactor*0.7), 0.5+fresnel*0.5);
-    wc = mix(wc * vec3(0.55,0.62,0.95), wc, uDayFactor);
-    float NdLs = max(dot(N,Ls),0.0);
-    float NdLm = max(dot(N,Lm),0.0);
-    float diffSun = 0.35 + 0.65 * NdLs;
-    float diffMoon = 0.22 + 0.48 * NdLm;
-    vec3 diff = wc * mix(diffMoon, diffSun, uDayFactor);
+    float distH = length(wxz - uCamPos.xz);
+    float horizonBlend = 1.0 - exp(-distH * 0.00011);
+    float aerial = exp(-distH * 0.000045);
+    vec3 deepA = vec3(0.015, 0.06, 0.14);
+    vec3 deepB = vec3(0.02, 0.11, 0.22);
+    vec3 mid = vec3(0.04, 0.22, 0.34);
+    vec3 shallow = vec3(0.06, 0.42, 0.48);
+    vec3 litShallow = vec3(0.1, 0.58, 0.52);
+    vec3 wc = mix(litShallow, shallow, horizonBlend * 0.55);
+    wc = mix(mid, wc, smoothstep(0.0, 0.85, aerial));
+    wc = mix(deepB, wc, 0.55 + fresnel * 0.35);
+    wc = mix(deepA, wc, 0.72);
+    wc *= mix(vec3(0.52, 0.62, 0.88), vec3(1.0), uDayFactor * 0.88 + 0.12);
+    float NdLs = max(dot(N, Ls), 0.0);
+    float NdLm = max(dot(N, Lm), 0.0);
+    float diffSun = 0.28 + 0.72 * NdLs;
+    float diffMoon = 0.18 + 0.52 * NdLm;
+    vec3 diffBody = wc * mix(diffMoon, diffSun, uDayFactor);
     vec3 reflDir = reflect(-V, N);
+    float skyH = reflDir.y * 0.5 + 0.5;
+    vec3 skyRefD = mix(vec3(0.42, 0.62, 0.92), vec3(0.58, 0.78, 1.0), pow(skyH, 0.85));
+    vec3 skyRefN = mix(vec3(0.06, 0.1, 0.22), vec3(0.12, 0.16, 0.32), skyH);
+    vec3 skyRef = mix(skyRefN, skyRefD, uDayFactor);
     float sunRefl = max(dot(reflDir, Ls), 0.0);
     float moonRefl = max(dot(reflDir, Lm), 0.0);
-    float sunGlint = pow(sunRefl, 800.0) * 0.6 * uDayFactor;
-    float moonGlint = pow(moonRefl, 220.0) * 0.22 * (1.0 - uDayFactor);
-    float distFromCam = length(vWorldPos.xz - uCamPos.xz);
-    float falloff = exp(-distFromCam * distFromCam * 0.00001);
-    vec3 specC = vec3(1.0,0.97,0.90) * sunGlint * falloff;
-    specC += vec3(0.78,0.82,1.0) * moonGlint * falloff;
-    vec3 Rv=reflect(-V,N); float er=pow(max(Rv.y*0.5+0.5,0.0),0.4);
-    vec3 reflDay = mix(vec3(0.45,0.65,0.85),vec3(0.15,0.30,0.55),er);
-    vec3 reflNight = mix(vec3(0.12,0.18,0.38),vec3(0.05,0.08,0.22),er);
-    vec3 refl = mix(reflNight, reflDay, uDayFactor) * fresnel;
-    vec3 Lblend = normalize(Ls * uDayFactor + Lm * (1.0 - uDayFactor) + vec3(0.0,0.2,0.0));
-    float sss = pow(max(dot(V,-Lblend+N*0.4),0.0),2.5)*0.3 * (0.35 + 0.65 * uDayFactor);
-    vec3 sub = vec3(0.0,0.45,0.35) * sss;
-    vec3 color = diff*(1.0-fresnel)+refl+specC+sub;
-    color = pow(color,vec3(1.0/2.2));
-    gl_FragColor = vec4(color,1.0);
+    float glintTight = pow(sunRefl, 520.0) * 0.85 * uDayFactor;
+    float glintBroad = pow(sunRefl, 48.0) * 0.12 * uDayFactor;
+    float moonGlint = pow(moonRefl, 180.0) * 0.2 * (1.0 - uDayFactor);
+    float specFall = exp(-distH * distH * 7.5e-6);
+    vec3 specC = vec3(1.0, 0.96, 0.88) * (glintTight + glintBroad) * specFall;
+    specC += vec3(0.75, 0.82, 1.0) * moonGlint * specFall;
+    vec3 refl = skyRef * fresnel * (0.92 + 0.08 * aerial);
+    vec3 Lblend = normalize(Ls * uDayFactor + Lm * (1.0 - uDayFactor) + vec3(0.0, 0.25, 0.0));
+    float sss = pow(max(dot(V, -Lblend + N * 0.45), 0.0), 3.0) * 0.38 * (0.3 + 0.7 * uDayFactor);
+    vec3 sub = vec3(0.05, 0.52, 0.42) * sss;
+    float foamAmt = vFoamHint.x * 9.0 + vFoamHint.y * 2.4 + vFoamHint.z * 0.12;
+    foamAmt += (r1 + r2) * 0.08 * (1.0 - NdotV);
+    float foam = smoothstep(0.35, 1.25, foamAmt) * (0.35 + 0.65 * uDayFactor);
+    foam *= (0.55 + 0.45 * aerial);
+    vec3 foamCol = vec3(0.93, 0.98, 1.0);
+    float sparkle = pow(max(r3 * 0.5 + 0.5, 0.0), 12.0) * fresnel * uDayFactor * 0.35;
+    vec3 color = mix(diffBody, foamCol, foam * 0.88);
+    color = color * (1.0 - fresnel * 0.35) + refl;
+    color += specC + sub + vec3(sparkle);
+    color = pow(color, vec3(1.0 / 2.2));
+    gl_FragColor = vec4(color, 1.0);
   }`;
 
-const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 200, 200);
+const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, WATER_PLANE_SEG, WATER_PLANE_SEG);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
   uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
-  transparent: false, depthWrite: true, side: THREE.FrontSide
+  transparent: false, depthWrite: true, side: THREE.FrontSide,
+  polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
 }));
 water.renderOrder = -1;
 scene.add(water);
@@ -2200,7 +2246,7 @@ function syncDayNightVisuals(camX, camZ) {
   hemiLight.intensity = 0.2 + dayFactor * 0.42;
 
   scene.fog.color.lerpColors(_fogColDay, _fogColNight, 1 - dayFactor);
-  scene.fog.density = 0.00135 + (1 - dayFactor) * 0.00055;
+  scene.fog.density = 0.00118 + (1 - dayFactor) * 0.00052;
 
   if (!isMobile) sunLight.castShadow = dayFactor > 0.2;
 
@@ -2215,7 +2261,7 @@ function syncDayNightVisuals(camX, camZ) {
   waterUniforms.uDayFactor.value = dayFactor;
 
   sky.position.copy(camera.position);
-  renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
+  renderer.toneMappingExposure = 0.9 + dayFactor * 0.32;
 }
 
 let windParticles, windParticleGeo;
@@ -3434,7 +3480,7 @@ function generateCustomMapChunk(cx, cz) {
   positions.needsUpdate = true;
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
-  const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  const terrain = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 6, specular: 0x1a1a1a }));
   const cwx = minWx + CHUNK_SIZE * 0.5;
   const cwz = minWz + CHUNK_SIZE * 0.5;
   terrain.position.set(cwx, SEA_LEVEL, cwz);
@@ -3621,7 +3667,7 @@ function generateIsland(cx, cz) {
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   terrainGeo.computeVertexNormals();
 
-  const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 8, specular: 0x151820 }));
   terrain.receiveShadow = true; terrain.castShadow = true;
   terrain.position.set(worldX, SEA_LEVEL, worldZ);
   terrain.renderOrder = 1;
