@@ -2741,7 +2741,107 @@ function updateWindStreamVisual(dt) {
   }
   windParticleGeo.attributes.position.needsUpdate = true;
 }
+
+/** Fine streaks at the bow that rush astern when under way (sense of forward motion + wind). */
+let playerFwdWindPts, playerFwdWindGeo;
+let _playerFwdWindPrimed = false;
+const PLAYER_FWD_WIND_N = 118;
+function spawnPlayerFwdWindStreak(arr, i, px, pz, rot, spec) {
+  const hullLen = spec.hullLen, hullW = spec.hullW, hullH = spec.hullH;
+  const fx = Math.sin(rot), fz = Math.cos(rot);
+  const rx = Math.cos(rot), rz = -Math.sin(rot);
+  const along = hullLen * (0.06 + Math.random() * 0.44);
+  const side = (Math.random() - 0.5) * (hullW * 1.05 + 1.05);
+  const wx = px + fx * along + rx * side + (Math.random() - 0.5) * 0.45;
+  const wz = pz + fz * along + rz * side + (Math.random() - 0.5) * 0.45;
+  const sea = worldSeaSurfaceY(wx, wz);
+  arr[i] = wx;
+  arr[i + 1] = sea + SHIP_FREEBOARD + hullH * (0.36 + Math.random() * 0.44);
+  arr[i + 2] = wz;
+}
+function initPlayerFwdWindStreamVisual() {
+  const pos = new Float32Array(PLAYER_FWD_WIND_N * 3);
+  playerFwdWindGeo = new THREE.BufferGeometry();
+  playerFwdWindGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  playerFwdWindPts = new THREE.Points(playerFwdWindGeo, new THREE.PointsMaterial({
+    color: 0xc8eeff,
+    size: 0.24,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true
+  }));
+  playerFwdWindPts.frustumCulled = false;
+  scene.add(playerFwdWindPts);
+}
+function updatePlayerFwdWindStreamVisual(dt) {
+  if (!playerFwdWindPts || !playerFwdWindGeo || G.mode !== 'playing') return;
+  if (G.spectate || G.docked || G.captainWalk?.active || G.playerSinking || G.player.health <= 0 || G.player.anchored) {
+    playerFwdWindPts.material.opacity = 0;
+    _playerFwdWindPrimed = false;
+    return;
+  }
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  const px = G.player.x, pz = G.player.z, rot = G.player.rotation || 0;
+  const fx = Math.sin(rot), fz = Math.cos(rot);
+  const rx = Math.cos(rot), rz = -Math.sin(rot);
+  const windDot = Math.cos(G.wind.angle - rot);
+  const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
+  const rigPct = (G.player.riggingHealth != null ? G.player.riggingHealth : 100) / 100;
+  const rigF = Math.max(0.12, Math.pow(Math.max(0.05, rigPct), 1.35));
+  const morF = (G.player.morale != null ? G.player.morale : 100) < 32 ? 0.9 : 1;
+  const effectiveSpeed = G.player.speed * windEffect * rigF * morF;
+  const forward = G.player.speed > 0.055;
+  const show = forward && Math.abs(effectiveSpeed) > 0.035;
+  const mat = playerFwdWindPts.material;
+  if (!show) {
+    mat.opacity = 0;
+    _playerFwdWindPrimed = false;
+    return;
+  }
+  if (!_playerFwdWindPrimed) {
+    const arr0 = playerFwdWindGeo.attributes.position.array;
+    for (let i = 0; i < arr0.length; i += 3) spawnPlayerFwdWindStreak(arr0, i, px, pz, rot, spec);
+    playerFwdWindGeo.attributes.position.needsUpdate = true;
+    _playerFwdWindPrimed = true;
+  }
+  const streakBoost = 3.05 + Math.min(2.2, Math.abs(effectiveSpeed) * 0.2);
+  mat.opacity = Math.min(0.44, 0.1 + Math.abs(effectiveSpeed) * 0.032 + G.wind.speed * 0.016);
+
+  const arr = playerFwdWindGeo.attributes.position.array;
+  const hullLen = spec.hullLen, hullW = spec.hullW;
+  for (let i = 0; i < arr.length; i += 3) {
+    let wx = arr[i], wy = arr[i + 1], wz = arr[i + 2];
+    const wdat = getWindAt(wx, wz);
+    const wAx = Math.sin(wdat.angle), wAz = Math.cos(wdat.angle);
+    const slip = streakBoost * Math.abs(effectiveSpeed);
+    let vx = -fx * slip + wAx * wdat.speed * 0.11;
+    let vz = -fz * slip + wAz * wdat.speed * 0.11;
+    const lug = Math.sin(G.time * 2.05 + i * 0.13) * 0.55;
+    vx += rx * lug;
+    vz += rz * lug;
+    wx += vx * dt;
+    wz += vz * dt;
+    wy += Math.sin(G.time * 1.48 + i * 0.07) * 0.38 * dt;
+
+    const rdx = wx - px, rdz = wz - pz;
+    const along = rdx * fx + rdz * fz;
+    const side = Math.abs(rdx * rx + rdz * rz);
+    const sea = worldSeaSurfaceY(wx, wz);
+    const maxSide = hullW * 1.75 + 15 + Math.abs(effectiveSpeed) * 0.8;
+    if (along < -hullLen * 0.34 || side > maxSide || wy < sea - 0.5 || wy > sea + 24) {
+      spawnPlayerFwdWindStreak(arr, i, px, pz, rot, spec);
+    } else {
+      arr[i] = wx;
+      arr[i + 1] = wy;
+      arr[i + 2] = wz;
+    }
+  }
+  playerFwdWindGeo.attributes.position.needsUpdate = true;
+}
 initWindStreamVisual();
+initPlayerFwdWindStreamVisual();
 
 /* ============================= ISLANDS =================================== */
 const islandGroup = new THREE.Group();
@@ -14488,6 +14588,7 @@ function update(dt) {
   updateCannonSmoke(dt);
   updateAllShipCannonRecoil(dt);
   updateWindStreamVisual(dt);
+  updatePlayerFwdWindStreamVisual(dt);
   refreshCargoPanelIfOpen();
 }
 
