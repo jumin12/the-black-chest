@@ -26,20 +26,6 @@ let leaderboardClientSeeded = false;
 const DEFAULT_WORLD_SEED = 42;
 let WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
 
-function normalizeServerSloopVariant(sv) {
-  const s = String(sv == null ? '' : sv).trim().toLowerCase();
-  if (s === 'sloop2') return 'sloop2';
-  if (s === 'sloop3' || s === 'pirate') return 'sloop3';
-  return 'sloop1';
-}
-function normalizeServerGalleonHull(gk) {
-  const s = String(gk == null ? '' : gk).trim().toLowerCase();
-  if (s === 'galleon1') return 'galleon1';
-  if (s === 'galleon3') return 'galleon3';
-  if (s === 'galleon4') return 'galleon4';
-  return 'galleon2';
-}
-
 /**
  * Navigator unlock password: prefer `NAVIGATOR_ADMIN_PASSWORD` (hosting secret / env).
  * Otherwise read the first non-comment line from `navigator_admin.secret` next to this file,
@@ -137,8 +123,6 @@ const CHAT_HISTORY_MAX = 200;
 const chatHistory = [];
 
 const BANS_FILE = path.join(DATA_DIR, 'bans.json');
-/** If this file exists (optional body = message), new WebSocket joins are rejected until it is removed. */
-const MAINTENANCE_FLAG_FILE = path.join(DATA_DIR, 'maintenance.flag');
 let leaderboardHistory = [];
 /** Max rows kept after merge/sort (large enough for full roster; still bounded for memory). */
 const LEADERBOARD_CAP = 2000;
@@ -146,37 +130,6 @@ const LEADERBOARD_CAP = 2000;
 let bannedIps = new Set();
 /** @type {Set<number>} */
 const mutedPlayerIds = new Set();
-
-let isShuttingDown = false;
-let _maintMsgCache = { at: 0, msg: null };
-const MAINT_MSG_CACHE_MS = 400;
-function peekMaintenanceJoinBlockMessage() {
-  if (isShuttingDown) {
-    return process.env.SHUTDOWN_JOIN_MESSAGE && String(process.env.SHUTDOWN_JOIN_MESSAGE).trim()
-      ? String(process.env.SHUTDOWN_JOIN_MESSAGE).trim()
-      : 'The server is restarting. Please wait a moment and try again.';
-  }
-  const envM = process.env.MAINTENANCE_MESSAGE;
-  if (envM != null && String(envM).trim() !== '') return String(envM).trim();
-  const now = Date.now();
-  if (_maintMsgCache.at > 0 && now - _maintMsgCache.at < MAINT_MSG_CACHE_MS) return _maintMsgCache.msg;
-  _maintMsgCache.at = now;
-  try {
-    if (!fs.existsSync(MAINTENANCE_FLAG_FILE)) {
-      _maintMsgCache.at = now;
-      _maintMsgCache.msg = null;
-      return null;
-    }
-    const text = fs.readFileSync(MAINTENANCE_FLAG_FILE, 'utf8').trim();
-    _maintMsgCache.at = now;
-    _maintMsgCache.msg = text || 'The server is temporarily closed for maintenance. Please try again shortly.';
-    return _maintMsgCache.msg;
-  } catch (e) {
-    _maintMsgCache.at = now;
-    _maintMsgCache.msg = null;
-    return null;
-  }
-}
 
 function normalizeLbEntry(e) {
   if (!e || typeof e !== 'object') {
@@ -704,105 +657,20 @@ function persistLeaderboardShutdown() {
 function persistCaptainAccountsShutdown() {
   flushCaptainAccountsIfDirty();
 }
+process.on('SIGINT', () => {
+  persistLeaderboardShutdown();
+  persistCaptainAccountsShutdown();
+});
+process.on('SIGTERM', () => {
+  persistLeaderboardShutdown();
+  persistCaptainAccountsShutdown();
+});
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type'
 };
-
-/** Large glTF/audio under `assets/` (served below); must not 404 on Render/static hosts. */
-const ASSET_MIME = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.glb': 'model/gltf-binary',
-  '.gltf': 'model/gltf+json',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.ogg': 'audio/ogg',
-  '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon'
-};
-
-/** Path only (no query), for rare clients that send an absolute request-target. */
-function requestPathOnly(reqUrl) {
-  if (!reqUrl || typeof reqUrl !== 'string') return '';
-  let s = reqUrl;
-  const q = s.indexOf('?');
-  if (q >= 0) s = s.slice(0, q);
-  if (s.startsWith('http://') || s.startsWith('https://')) {
-    try {
-      return new URL(s).pathname || '';
-    } catch (e) {
-      return '';
-    }
-  }
-  return s.startsWith('/') ? s : `/${s}`;
-}
-
-function resolveAssetsDiskPath(reqUrl) {
-  const rawPath = requestPathOnly(reqUrl);
-  let pathname;
-  try {
-    pathname = decodeURIComponent(rawPath);
-  } catch (e) {
-    return null;
-  }
-  pathname = pathname.replace(/\+/g, ' ');
-  if (!pathname.startsWith('/assets/')) return null;
-  const rel = pathname.slice('/assets/'.length);
-  if (!rel || rel.split(/[/\\]/).includes('..')) return null;
-  const rootResolved = path.resolve(path.join(__dirname, 'assets'));
-  const fullResolved = path.resolve(path.join(__dirname, 'assets', rel));
-  if (fullResolved !== rootResolved && !fullResolved.startsWith(rootResolved + path.sep)) return null;
-  return fullResolved;
-}
-
-function assetDeploySelfCheck() {
-  const sampleRel = ['3d models', 'ships', 'sloop3.glb'];
-  const sampleAbs = path.join(__dirname, 'assets', ...sampleRel);
-  const root = path.join(__dirname, 'assets');
-  let sample = { rel: `assets/${sampleRel.join('/')}`, bytes: null, err: null };
-  try {
-    const st = fs.statSync(sampleAbs);
-    sample.bytes = st.isFile() ? st.size : -1;
-  } catch (e) {
-    sample.err = e && e.code ? e.code : String(e);
-  }
-  return {
-    assetsRoot: root,
-    assetsRootExists: fs.existsSync(root),
-    sampleGlb: sample,
-    renderGitCommit: process.env.RENDER_GIT_COMMIT || null
-  };
-}
-
-const ASSET_LONG_CACHE_EXT = new Set(['.glb', '.gltf', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp3', '.wav', '.ogg', '.ico', '.svg']);
-function serveAssetFile(res, filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  const ct = ASSET_MIME[ext] || 'application/octet-stream';
-  const cacheCtrl = ASSET_LONG_CACHE_EXT.has(ext)
-    ? 'public, max-age=31536000, immutable'
-    : 'public, max-age=86400';
-  fs.stat(filePath, (err, st) => {
-    if (err || !st.isFile()) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...CORS_HEADERS });
-      res.end('Not found');
-      return;
-    }
-    res.writeHead(200, {
-      'Content-Type': ct,
-      'Content-Length': String(st.size),
-      'Cache-Control': cacheCtrl,
-      ...CORS_HEADERS
-    });
-    fs.createReadStream(filePath).pipe(res);
-  });
-}
 
 function setWorldSeedAndPersist(newSeed) {
   WORLD_SEED = Number(newSeed) >>> 0;
@@ -928,29 +796,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (requestPathOnly(req.url) === '/health') {
-    const maint = peekMaintenanceJoinBlockMessage();
-    const accepting = !maint;
-    const maintReconnect = maint
-      ? Math.max(5, Math.min(120, Number(process.env.MAINTENANCE_RECONNECT_SEC) || 20))
-      : null;
+  if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({
-      status: isShuttingDown ? 'draining' : (maint ? 'maintenance' : 'ok'),
-      acceptingPlayers: accepting,
-      maintenanceMessage: maint || null,
-      reconnectInSec: maintReconnect,
+      status: 'ok',
       players: players.size,
       seed: WORLD_SEED,
       worldMapRevision: WORLD_MAP_REVISION >>> 0,
-      navigatorAuthConfigured: !!(NAVIGATOR_ADMIN_PASSWORD && String(NAVIGATOR_ADMIN_PASSWORD).length > 0),
-      assets: assetDeploySelfCheck()
+      navigatorAuthConfigured: !!(NAVIGATOR_ADMIN_PASSWORD && String(NAVIGATOR_ADMIN_PASSWORD).length > 0)
     }));
     return;
   }
 
-  const pathOnly = requestPathOnly(req.url);
-  if (pathOnly === '/' || pathOnly === '/index.html') {
+  if (req.url === '/' || req.url === '/index.html' || req.url.startsWith('/index.html?')) {
     fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
@@ -958,7 +816,7 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (pathOnly === '/map-editor.html') {
+  if (req.url === '/map-editor.html' || req.url.startsWith('/map-editor.html?')) {
     fs.readFile(path.join(__dirname, 'map-editor.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
@@ -966,38 +824,13 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (pathOnly === '/editor-ship-builders.js') {
+  if (req.url === '/editor-ship-builders.js' || req.url.startsWith('/editor-ship-builders.js?')) {
     fs.readFile(path.join(__dirname, 'editor-ship-builders.js'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', ...CORS_HEADERS });
       res.end(data);
     });
     return;
-  }
-  if (req.method === 'GET' && pathOnly === '/favicon.ico') {
-    const favPath = path.join(__dirname, 'favicon.ico');
-    fs.stat(favPath, (err, st) => {
-      if (!err && st.isFile()) {
-        res.writeHead(200, {
-          'Content-Type': 'image/x-icon',
-          'Content-Length': String(st.size),
-          'Cache-Control': 'public, max-age=604800',
-          ...CORS_HEADERS
-        });
-        fs.createReadStream(favPath).pipe(res);
-        return;
-      }
-      res.writeHead(204, { 'Cache-Control': 'public, max-age=3600', ...CORS_HEADERS });
-      res.end();
-    });
-    return;
-  }
-  if (req.method === 'GET') {
-    const assetPath = resolveAssetsDiskPath(req.url);
-    if (assetPath) {
-      serveAssetFile(res, assetPath);
-      return;
-    }
   }
   res.writeHead(404, CORS_HEADERS);
   res.end('Not found');
@@ -1152,19 +985,6 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  const joinBlock = peekMaintenanceJoinBlockMessage();
-  if (joinBlock) {
-    try {
-      ws.send(JSON.stringify({
-        type: 'server_maintenance',
-        message: joinBlock,
-        reconnectInSec: Math.max(5, Math.min(120, Number(process.env.MAINTENANCE_RECONNECT_SEC) || 20))
-      }));
-    } catch (e) {}
-    try { ws.close(1000, 'maintenance'); } catch (e2) {}
-    return;
-  }
-
   const id = nextId++;
   ws.playerId = id;
 
@@ -1177,9 +997,7 @@ wss.on('connection', (ws, req) => {
     z: Math.sin(spawnAngle) * spawnDist,
     rotation: 0,
     speed: 0,
-    shipType: 'sloop',
-    shipVisualVariant: 'sloop1',
-    galleonHullKey: 'galleon2',
+    shipType: 'cutter',
     shipName: '',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
@@ -1247,12 +1065,6 @@ wss.on('connection', (ws, req) => {
           if (msg.shipType !== undefined && msg.shipType !== null) {
             const st = String(msg.shipType).trim().slice(0, 24);
             if (st) p.shipType = st;
-          }
-          if (msg.shipVisualVariant !== undefined) {
-            p.shipVisualVariant = normalizeServerSloopVariant(msg.shipVisualVariant);
-          }
-          if (msg.galleonHullKey !== undefined) {
-            p.galleonHullKey = normalizeServerGalleonHull(msg.galleonHullKey);
           }
           if (msg.shipName !== undefined) p.shipName = String(msg.shipName || '').slice(0, 28);
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
@@ -1351,12 +1163,6 @@ wss.on('connection', (ws, req) => {
             const st = String(msg.shipType).trim().slice(0, 24);
             if (st) p.shipType = st;
           }
-          if (msg.shipVisualVariant !== undefined) {
-            p.shipVisualVariant = normalizeServerSloopVariant(msg.shipVisualVariant);
-          }
-          if (msg.galleonHullKey !== undefined) {
-            p.galleonHullKey = normalizeServerGalleonHull(msg.galleonHullKey);
-          }
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
             p.shipParts = {
@@ -1380,21 +1186,8 @@ wss.on('connection', (ws, req) => {
           const p = players.get(id);
           if (!p) break;
           if (msg.shipType) p.shipType = msg.shipType;
-          if (msg.shipVisualVariant !== undefined) {
-            p.shipVisualVariant = normalizeServerSloopVariant(msg.shipVisualVariant);
-          }
-          if (msg.galleonHullKey !== undefined) {
-            p.galleonHullKey = normalizeServerGalleonHull(msg.galleonHullKey);
-          }
           if (msg.shipParts) p.shipParts = { ...p.shipParts, ...msg.shipParts };
-          broadcast({
-            type: 'ship_update',
-            id,
-            shipType: p.shipType,
-            shipVisualVariant: p.shipVisualVariant != null ? p.shipVisualVariant : 'sloop1',
-            galleonHullKey: normalizeServerGalleonHull(p.galleonHullKey),
-            shipParts: p.shipParts
-          }, id);
+          broadcast({ type: 'ship_update', id, shipType: p.shipType, shipParts: p.shipParts }, id);
           break;
         }
         case 'chat': {
@@ -1601,10 +1394,6 @@ wss.on('connection', (ws, req) => {
         }
         case 'swimmer_collect': {
           if (msg.id != null) broadcastAll({ type: 'swimmer_collect', id: msg.id });
-          break;
-        }
-        case 'swimmer_shark': {
-          if (msg.id != null) broadcastAll({ type: 'swimmer_shark', id: msg.id });
           break;
         }
         case 'pvp_kill_credit': {
@@ -1892,10 +1681,7 @@ setInterval(() => {
   if (players.size === 0) return;
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
-    name: p.name, color: p.color, shipType: p.shipType,
-    shipVisualVariant: p.shipVisualVariant != null ? p.shipVisualVariant : 'sloop1',
-    galleonHullKey: normalizeServerGalleonHull(p.galleonHullKey),
-    shipName: p.shipName,
+    name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     crewData: p.crewData,
@@ -1909,45 +1695,6 @@ setInterval(() => {
   broadcast({ type: 'state', players: snapshot });
 }, 1000 / TICK_RATE);
 
-function gracefulShutdown(signal) {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  _maintMsgCache.at = 0;
-  const graceMs = Math.max(500, Math.min(60000, Number(process.env.SHUTDOWN_GRACE_MS) || 3500));
-  const msg = process.env.SHUTDOWN_CLIENT_MESSAGE && String(process.env.SHUTDOWN_CLIENT_MESSAGE).trim()
-    ? String(process.env.SHUTDOWN_CLIENT_MESSAGE).trim()
-    : 'The server is restarting. Your voyage is saved on this device — you can rejoin in a moment.';
-  const reconnectSec = Math.max(8, Math.min(120, Math.ceil(graceMs / 1000) + 8));
-  console.log(`[playground] ${signal || 'shutdown'}: notifying clients, saving, closing in ${graceMs}ms`);
-  try {
-    broadcastAll({
-      type: 'server_shutting_down',
-      message: msg,
-      reconnectInSec: reconnectSec
-    });
-  } catch (e) {}
-  try { persistWorldMapToDisk(); } catch (e) {}
-  persistLeaderboardShutdown();
-  persistCaptainAccountsShutdown();
-  try { saveBans(); } catch (e) {}
-  setTimeout(() => {
-    try {
-      wss.clients.forEach(client => {
-        try { client.close(1001, 'Server restart'); } catch (e) {}
-      });
-    } catch (e) {}
-    try {
-      server.close(() => process.exit(0));
-    } catch (e) {
-      process.exit(0);
-    }
-    setTimeout(() => process.exit(0), 4000).unref();
-  }, graceMs);
-}
-
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Pirate game server running on port ${PORT}`);
   console.log(`World seed: ${WORLD_SEED}`);
@@ -1955,5 +1702,4 @@ server.listen(PORT, '0.0.0.0', () => {
     ? `password configured (${NAVIGATOR_ADMIN_PASSWORD_SOURCE === 'env' ? 'NAVIGATOR_ADMIN_PASSWORD' : 'navigator_admin.secret'})`
     : 'NOT SET — set NAVIGATOR_ADMIN_PASSWORD or add navigator_admin.secret beside server.js for F3';
   console.log(`Navigator admin: ${navMsg}`);
-  console.log('[playground] Maintenance: set MAINTENANCE_MESSAGE or create', MAINTENANCE_FLAG_FILE, 'to block joins; SIGTERM/SIGINT triggers graceful save + client kick.');
 });
