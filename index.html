@@ -13816,6 +13816,50 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
   spawnShipWakePiece(x, z, rotation, speed, 1, 'stern');
 }
 
+/**
+ * Predicts other captains' motion between ~45Hz state snapshots (same formula as local sail physics)
+ * and softly pulls toward authoritative x/z/yaw so visuals stay smooth under jitter or packet bunching.
+ */
+function advanceRemoteShipNetSmooth(sg, p, dt) {
+  let ns = sg.userData.netSmooth;
+  const authR = p.rotation || 0;
+  if (!ns || !Number.isFinite(ns.x) || !Number.isFinite(ns.z) || !Number.isFinite(ns.ry)) {
+    ns = { x: p.x, z: p.z, ry: authR };
+    sg.userData.netSmooth = ns;
+  }
+  if (p.docked) {
+    ns.x = p.x;
+    ns.z = p.z;
+    ns.ry = authR;
+    return ns;
+  }
+  const err = Math.hypot(p.x - ns.x, p.z - ns.z);
+  if (err > 85) {
+    ns.x = p.x;
+    ns.z = p.z;
+    ns.ry = authR;
+    return ns;
+  }
+  const wHere = getWindAt(ns.x, ns.z);
+  const windDot = Math.cos(wHere.angle - ns.ry);
+  const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
+  const rigPct = (p.riggingHealth != null ? p.riggingHealth : 100) / 100;
+  const rigF = Math.max(0.12, Math.pow(Math.max(0.05, rigPct), 1.35));
+  const morF = (p.morale != null ? p.morale : 100) < 32 ? 0.9 : 1;
+  const effSpd = (p.speed || 0) * windEffect * rigF * morF;
+  ns.x += Math.sin(ns.ry) * effSpd * dt;
+  ns.z += Math.cos(ns.ry) * effSpd * dt;
+  const pull = Math.min(1, (err > 2.5 ? 14 : 9) * dt);
+  ns.x += (p.x - ns.x) * pull;
+  ns.z += (p.z - ns.z) * pull;
+  let dYaw = authR - ns.ry;
+  while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+  while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+  const yawRate = err > 4 ? 22 : 16;
+  ns.ry += dYaw * Math.min(1, yawRate * dt);
+  return ns;
+}
+
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE for smooth remote motion. */
 const NET_SYNC_HZ = 45;
@@ -14085,9 +14129,14 @@ function update(dt) {
     const cacheKey = p._netShipCacheKey != null ? p._netShipCacheKey : otherPlayerShipCacheKey(p);
     if (!otherShipGroups.has(id) || otherShipGroups.get(id).userData.cacheKey !== cacheKey) {
       let preservedSinking = null;
+      let carriedNetSmooth = null;
       if (otherShipGroups.has(id)) {
         const oldSg = otherShipGroups.get(id);
         if (oldSg.userData.sinking) preservedSinking = { sinkY: oldSg.userData.sinkY };
+        else if (oldSg.userData.netSmooth && Number.isFinite(oldSg.userData.netSmooth.x)) {
+          const cns = oldSg.userData.netSmooth;
+          carriedNetSmooth = { x: cns.x, z: cns.z, ry: cns.ry };
+        }
         disposeObject3DSubtree(oldSg);
         scene.remove(oldSg);
         otherShipGroups.delete(id);
@@ -14126,6 +14175,7 @@ function update(dt) {
       sm.userData.cacheKey = cacheKey;
       sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = shipTitle;
+      sm.userData.netSmooth = carriedNetSmooth || { x: p.x, z: p.z, ry: p.rotation || 0 };
       const w0 = playerShipWaveAt(p.x, p.z, p.rotation || 0);
       const w0d = dampShipWaveTilt(w0.wavePitch, w0.waveRoll);
       sm.position.set(p.x, worldSeaSurfaceY(p.x, p.z) + SHIP_FREEBOARD, p.z);
@@ -14154,24 +14204,17 @@ function update(dt) {
         otherShipGroups.delete(id);
       }
     } else {
-      const w = playerShipWaveAt(p.x, p.z, p.rotation || 0);
+      const ns = advanceRemoteShipNetSmooth(sg, p, dt);
+      const w = playerShipWaveAt(ns.x, ns.z, ns.ry);
       const wd = dampShipWaveTilt(w.wavePitch, w.waveRoll);
-      const posAlpha = Math.min(1, 28 * dt);
-      sg.position.lerp(new THREE.Vector3(p.x, worldSeaSurfaceY(p.x, p.z) + SHIP_FREEBOARD, p.z), posAlpha);
-      const targetYaw = p.rotation || 0;
-      let ry = sg.rotation.y;
-      let dYaw = targetYaw - ry;
-      while (dYaw > Math.PI) dYaw -= Math.PI * 2;
-      while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-      ry += dYaw * Math.min(1, 22 * dt);
-      sg.rotation.y = ry;
-      sg.rotation.x = wd.wavePitch;
-      sg.rotation.z = wd.waveRoll;
-      animateRemoteShipSails(sg, p.x, p.z, p.rotation || 0, p.speed || 0, dt);
+      const sy = worldSeaSurfaceY(ns.x, ns.z) + SHIP_FREEBOARD;
+      sg.position.set(ns.x, sy, ns.z);
+      sg.rotation.set(wd.wavePitch, ns.ry, wd.waveRoll);
+      animateRemoteShipSails(sg, ns.x, ns.z, ns.ry, p.speed || 0, dt);
       updateRemoteCrewDeckAnimations(dt, sg, p, p.shipType || 'sloop');
       applyRiggingVisualToGroup(sg, p.riggingHealth != null ? p.riggingHealth : 100);
       if (!p.docked) {
-        tickShipWakeSpawner(`p${id}`, p.x, p.z, p.rotation || 0, p.speed || 0, dt);
+        tickShipWakeSpawner(`p${id}`, ns.x, ns.z, ns.ry, p.speed || 0, dt);
       }
       if (p.docked && p.dockX != null && p.dockZ != null) {
         const da = p.dockAngle || 0;
