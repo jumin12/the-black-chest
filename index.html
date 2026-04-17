@@ -2084,143 +2084,151 @@ const sky = new THREE.Mesh(
 scene.add(sky);
 
 /* =============================== WATER =================================== */
-/** Stylized tropical ocean: bright cyan/teal, glossy fresnel + broad sun sheen (arcade sailing reference). */
 const waterUniforms = {
   uTime: { value: 0 },
   uSunDir: { value: _skySunDir.clone() },
   uMoonDir: { value: _skyMoonDir.clone() },
   uDayFactor: { value: 1 },
-  uCamPos: { value: new THREE.Vector3() },
-  uWindDir: { value: new THREE.Vector2(1, 0) },
-  uWindStrength: { value: 0.6 }
+  uCamPos: { value: new THREE.Vector3() }
 };
+/** Vertical sea displacement — must match `waterVS` Gerstner + chop (ships/fish use this). */
+function seaSurfaceHeight(wx, wz, t) {
+  const time = t != null ? t : G.time;
+  function gwY(px, pz, steep, wl, dx, dz, spd) {
+    const k = (Math.PI * 2) / wl;
+    const c = Math.sqrt(9.8 / k);
+    const a = steep / k;
+    const len = Math.hypot(dx, dz) || 1;
+    const nx = dx / len;
+    const nz = dz / len;
+    const f = k * (nx * px + nz * pz - c * spd * time);
+    return a * Math.sin(f);
+  }
+  let y = 0;
+  y += gwY(wx, wz, 0.055, 62, 1, 0.22, 0.58);
+  y += gwY(wx, wz, 0.036, 36, 0.41, 0.97, 0.5);
+  y += gwY(wx, wz, 0.024, 20, -0.58, 0.76, 0.72);
+  y += gwY(wx, wz, 0.017, 12, 0.84, -0.38, 0.88);
+  y += gwY(wx, wz, 0.011, 7.2, -0.28, -0.86, 1.12);
+  y += gwY(wx, wz, 0.008, 4.8, 0.88, 0.44, 1.42);
+  y += gwY(wx, wz, 0.032, 48, -0.72, 0.62, 0.52);
+  y += gwY(wx, wz, 0.021, 28, 0.55, -0.82, 0.68);
+  y += gwY(wx, wz, 0.014, 9, -0.9, 0.35, 0.92);
+  y += gwY(wx, wz, 0.01, 5.5, 0.33, 0.94, 1.35);
+  y += 0.019 * Math.sin(wx * 0.103 + wz * 0.071 + time * 1.37) * Math.cos(wz * 0.127 - wx * 0.089 - time * 1.08);
+  y += 0.015 * Math.sin(wx * 0.151 + time * 1.9) * Math.sin(wz * 0.163 + time * 1.43);
+  y += 0.012 * Math.cos((wx * 0.087 - wz * 0.112) * 2.15 + time * 0.97 + Math.sin(wz * 0.05 + wx * 0.031));
+  return y;
+}
 const waterVS = `
-  uniform float uTime;
-  uniform vec2 uWindDir;
-  uniform float uWindStrength;
-  varying vec3 vWorldPos;
-  varying vec3 vNormal;
-  varying float vWaveH;
-  const float PI = 3.14159265359;
-  vec3 gW(vec3 p, float steepness, float wavelength, vec2 dir, float speedK) {
-    float k = 2.0 * PI / max(wavelength, 0.5);
-    float c = sqrt(9.81 / k);
-    vec2 d = normalize(dir);
-    float a = steepness / k;
-    float ph = k * (dot(d, p.xz) - c * speedK * uTime);
-    float s = sin(ph);
-    float co = cos(ph);
-    return vec3(d.x * a * co, a * s, d.y * a * co);
+  uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
+  vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
+    float k=6.2831853/wl; float c=sqrt(9.8/k); float a=s/k; vec2 dn=normalize(d);
+    float f=k*(dot(dn,p.xz)-c*sp*uTime);
+    return vec3(dn.x*a*cos(f), a*sin(f), dn.y*a*cos(f));
   }
-  vec3 wavesAt(vec3 p) {
-    vec3 acc = vec3(0.0);
-    vec2 W = normalize(uWindDir + vec2(0.06, 0.04));
-    vec2 Wp = vec2(-W.y, W.x);
-    float ws = clamp(uWindStrength, 0.15, 1.85);
-    acc += gW(p, 0.048, 88.0, W, 0.46);
-    acc += gW(p, 0.036, 58.0, Wp, 0.52);
-    acc += gW(p, 0.026, 40.0, normalize(W * 0.72 + Wp * 0.68), 0.46);
-    acc += gW(p, 0.02, 26.0, vec2(1.0, 0.22), 0.58);
-    acc += gW(p, 0.016, 17.0, vec2(-0.52, 0.80), 0.66);
-    acc += gW(p, 0.012, 11.5, vec2(0.74, -0.46), 0.74);
-    acc += gW(p, 0.009, 7.5, vec2(-0.32, -0.86), 0.85);
-    acc += gW(p, 0.0065, 5.0, vec2(0.82, 0.40), 0.98);
-    acc += gW(p, 0.017 * ws, 6.2, W, 1.12);
-    acc += gW(p, 0.011 * ws, 4.0, normalize(W + Wp * 0.58), 1.26);
-    acc += gW(p, 0.0075 * ws, 2.7, Wp, 1.4);
-    return acc;
+  float seaChop(vec2 xz){
+    float t=uTime;
+    return 0.019*sin(xz.x*0.103+xz.y*0.071+t*1.37)*cos(xz.y*0.127-xz.x*0.089-t*1.08)
+         + 0.015*sin(xz.x*0.151+t*1.9)*sin(xz.y*0.163+t*1.43)
+         + 0.012*cos((xz.x*0.087-xz.y*0.112)*2.15+t*0.97+sin(xz.y*0.05+xz.x*0.031));
   }
-  void main() {
-    vec3 base = position;
-    vec3 disp = wavesAt(base);
-    vec3 pos = base + disp;
-    vWaveH = disp.y;
-    float e = 0.48;
-    vec3 hx = base + vec3(e, 0.0, 0.0) + wavesAt(base + vec3(e, 0.0, 0.0));
-    vec3 hz = base + vec3(0.0, 0.0, e) + wavesAt(base + vec3(0.0, 0.0, e));
-    vec3 h0 = pos;
-    vNormal = normalize(cross(hz - h0, hx - h0));
-    vNormal = normalize(mat3(modelMatrix) * vNormal);
-    vWorldPos = (modelMatrix * vec4(pos, 1.0)).xyz;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  vec3 displaceSea(vec3 base){
+    vec3 p = base;
+    p += gw(p,0.055,62.0,vec2(1.0,0.22),0.58);
+    p += gw(p,0.036,36.0,vec2(0.41,0.97),0.5);
+    p += gw(p,0.024,20.0,vec2(-0.58,0.76),0.72);
+    p += gw(p,0.017,12.0,vec2(0.84,-0.38),0.88);
+    p += gw(p,0.011,7.2,vec2(-0.28,-0.86),1.12);
+    p += gw(p,0.008,4.8,vec2(0.88,0.44),1.42);
+    p += gw(p,0.032,48.0,vec2(-0.72,0.62),0.52);
+    p += gw(p,0.021,28.0,vec2(0.55,-0.82),0.68);
+    p += gw(p,0.014,9.0,vec2(-0.9,0.35),0.92);
+    p += gw(p,0.01,5.5,vec2(0.33,0.94),1.35);
+    p.y += seaChop(p.xz);
+    return p;
+  }
+  void main(){
+    vec3 pos = displaceSea(position);
+    vWorldPos = (modelMatrix*vec4(pos,1.0)).xyz;
+    float e = 0.42;
+    vec3 pX = displaceSea(position + vec3(e,0,0));
+    vec3 pZ = displaceSea(position + vec3(0,0,e));
+    vNormal = normalize(cross(pZ - pos, pX - pos));
+    gl_Position = projectionMatrix*modelViewMatrix*vec4(pos,1.0);
   }`;
 const waterFS = `
-  uniform float uTime;
-  uniform vec3 uSunDir;
-  uniform vec3 uMoonDir;
-  uniform float uDayFactor;
-  uniform vec3 uCamPos;
-  varying vec3 vWorldPos;
-  varying vec3 vNormal;
-  varying float vWaveH;
-  void main() {
-    vec3 N = normalize(vNormal);
+  uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uDayFactor; uniform vec3 uCamPos;
+  varying vec3 vWorldPos; varying vec3 vNormal;
+  float n2(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+  float nSmooth(vec2 p){
+    vec2 i=floor(p), f=fract(p);
+    float a=n2(i), b=n2(i+vec2(1,0)), c=n2(i+vec2(0,1)), d=n2(i+vec2(1,1));
+    vec2 u=f*f*(3.0-2.0*f);
+    return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);
+  }
+  float fbm2(vec2 p){
+    float v=0., a=0.55; mat2 m=mat2(1.6,1.2,-1.2,1.6);
+    for(int i=0;i<5;i++){ v+=a*nSmooth(p); p=m*p; a*=0.52; }
+    return v;
+  }
+  void main(){
+    vec3 N0 = normalize(vNormal);
+    vec2 chap = vWorldPos.xz * 0.14 + uTime * vec2(0.13,-0.09);
+    float chop = fbm2(chap) + 0.5 * fbm2(chap * 2.3 - uTime * 0.15);
+    vec2 gn = vec2(
+      fbm2(chap + vec2(0.07,0)) - fbm2(chap - vec2(0.07,0)),
+      fbm2(chap + vec2(0,0.07)) - fbm2(chap - vec2(0,0.07))
+    );
+    vec3 N = normalize(N0 + vec3(gn.x * 0.55, 0.0, gn.y * 0.55));
     vec3 Vraw = uCamPos - vWorldPos;
     float vLen = length(Vraw);
-    vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0, 1.0, 0.0);
+    vec3 V = vLen > 1e-5 ? Vraw / vLen : vec3(0.0,1.0,0.0);
     vec3 Ls = normalize(uSunDir);
     vec3 Lm = normalize(uMoonDir);
-    float NdotV = clamp(dot(N, V), 0.012, 1.0);
-    float fTerm = 1.0 - NdotV;
-    float fTerm2 = fTerm * fTerm;
-    float fTerm4 = fTerm2 * fTerm2;
-    float fresnel = mix(0.04, 0.82, fTerm4);
-    vec3 deepC = vec3(0.02, 0.12, 0.28);
-    vec3 midC = vec3(0.06, 0.38, 0.48);
-    vec3 shalC = vec3(0.14, 0.62, 0.58);
-    vec3 surfC = vec3(0.28, 0.78, 0.72);
-    float depthF = smoothstep(-0.9, 0.5, vWorldPos.y);
-    vec3 wc = mix(deepC, midC, 0.38 + fresnel * 0.52);
-    wc = mix(wc, shalC, depthF * 0.68);
-    wc = mix(wc, surfC, depthF * depthF * 0.45);
-    wc = mix(wc * vec3(0.58, 0.68, 0.96), wc, uDayFactor);
-    float NdLs = max(dot(N, Ls), 0.0);
-    float NdLm = max(dot(N, Lm), 0.0);
-    float diffSun = 0.48 + 0.52 * NdLs;
-    float diffMoon = 0.28 + 0.48 * NdLm;
+    float NdotV = clamp(dot(N,V), 0.02, 1.0);
+    float fresnel = pow(1.0 - NdotV, 3.6); fresnel = mix(0.025,0.72,fresnel);
+    vec3 deepBlue = vec3(0.015,0.065,0.16);
+    vec3 midOcean = vec3(0.03,0.16,0.30);
+    vec3 shallow = vec3(0.04,0.34,0.36);
+    vec3 nearSurf = vec3(0.06,0.48,0.42);
+    float depthFactor = smoothstep(-0.35,0.35,vWorldPos.y);
+    vec3 wc = mix(deepBlue, mix(midOcean, mix(shallow, nearSurf, depthFactor), depthFactor*0.72), 0.48+fresnel*0.52);
+    wc = mix(wc * vec3(0.52,0.58,0.92), wc, uDayFactor);
+    float NdLs = max(dot(N,Ls),0.0);
+    float NdLm = max(dot(N,Lm),0.0);
+    float diffSun = 0.32 + 0.68 * NdLs;
+    float diffMoon = 0.2 + 0.5 * NdLm;
     vec3 diff = wc * mix(diffMoon, diffSun, uDayFactor);
     vec3 reflDir = reflect(-V, N);
     float sunRefl = max(dot(reflDir, Ls), 0.0);
     float moonRefl = max(dot(reflDir, Lm), 0.0);
-    float sunGlint = pow(sunRefl, 380.0) * 1.05 * uDayFactor;
-    float sunGlintWide = pow(sunRefl, 28.0) * 0.14 * uDayFactor * (0.35 + fresnel * 0.65);
-    float sunSheen = pow(sunRefl, 12.0) * 0.06 * uDayFactor * NdLs;
-    float moonGlint = pow(moonRefl, 180.0) * 0.26 * (1.0 - uDayFactor);
+    float sunGlint = pow(sunRefl, 520.0) * 0.72 * uDayFactor;
+    float moonGlint = pow(moonRefl, 200.0) * 0.24 * (1.0 - uDayFactor);
     float distFromCam = length(vWorldPos.xz - uCamPos.xz);
-    float falloff = exp(-distFromCam * distFromCam * 0.000007);
-    vec3 specC = vec3(1.0, 0.98, 0.92) * (sunGlint + sunGlintWide + sunSheen) * falloff;
-    specC += vec3(0.78, 0.85, 1.0) * moonGlint * falloff;
-    vec2 spUV = vWorldPos.xz * 0.1 + uTime * vec2(0.045, 0.032);
-    float spW = sin(spUV.x * 16.0 + uTime * 2.9) * sin(spUV.y * 14.0 - uTime * 2.35);
-    float sparkles = pow(max(0.0, spW), 12.0) * NdLs * uDayFactor * (0.28 + fresnel * 0.72) * falloff;
-    specC += vec3(1.0, 0.99, 0.95) * sparkles * 2.45;
-    vec3 Rv = reflect(-V, N);
-    float er = pow(max(Rv.y * 0.5 + 0.5, 0.0), 0.32);
-    vec3 reflDay = mix(vec3(0.58, 0.82, 0.98), vec3(0.22, 0.48, 0.78), er);
-    vec3 reflNight = mix(vec3(0.14, 0.22, 0.42), vec3(0.06, 0.1, 0.24), er);
-    vec3 refl = mix(reflNight, reflDay, uDayFactor) * fresnel * 1.08;
-    vec3 Lblend = normalize(Ls * uDayFactor + Lm * (1.0 - uDayFactor) + vec3(0.0, 0.24, 0.0));
-    float sss = pow(max(dot(V, -Lblend + N * 0.45), 0.0), 2.0) * 0.42 * (0.42 + 0.58 * uDayFactor);
-    vec3 sub = vec3(0.08, 0.58, 0.48) * sss;
-    float steep = 1.0 - clamp(N.y, 0.0, 1.0);
-    float crestFoam = smoothstep(0.02, 0.11, vWaveH) * smoothstep(0.18, 0.88, steep);
-    float fBreak = sin(vWorldPos.x * 0.12 + uTime * 1.2) * sin(vWorldPos.z * 0.1 - uTime * 1.0);
-    crestFoam *= 0.45 + 0.55 * smoothstep(-0.35, 0.75, fBreak);
-    crestFoam = clamp(crestFoam * (0.45 + 0.5 * uDayFactor), 0.0, 1.0);
-    vec3 foamCol = vec3(0.93, 0.97, 1.0);
-    vec3 color = diff * (1.0 - fresnel * 0.88) + refl + specC + sub;
-    color = mix(color, foamCol, crestFoam * 0.5);
-    float vivid = uDayFactor * 0.12;
-    color = mix(color, color * vec3(0.92, 1.06, 1.04), vivid);
-    color = pow(color, vec3(1.0 / 2.15));
-    gl_FragColor = vec4(color, 1.0);
+    float falloff = exp(-distFromCam * distFromCam * 0.0000085);
+    vec3 specC = vec3(1.0,0.96,0.88) * sunGlint * falloff;
+    specC += vec3(0.76,0.82,1.0) * moonGlint * falloff;
+    vec3 Rv=reflect(-V,N); float er=pow(max(Rv.y*0.5+0.5,0.0),0.38);
+    vec3 reflDay = mix(vec3(0.42,0.62,0.82),vec3(0.12,0.28,0.52),er);
+    vec3 reflNight = mix(vec3(0.1,0.16,0.36),vec3(0.04,0.07,0.2),er);
+    vec3 refl = mix(reflNight, reflDay, uDayFactor) * fresnel;
+    vec3 Lblend = normalize(Ls * uDayFactor + Lm * (1.0 - uDayFactor) + vec3(0.0,0.22,0.0));
+    float sss = pow(max(dot(V,-Lblend+N*0.42),0.0),2.4)*0.34 * (0.38 + 0.62 * uDayFactor);
+    vec3 sub = vec3(0.0,0.42,0.38) * sss;
+    float cap = smoothstep(0.42,0.78,1.0-N0.y) * smoothstep(0.25,0.95,chop);
+    vec3 foam = vec3(0.88,0.92,0.96) * cap * (0.35 + 0.65*uDayFactor);
+    vec3 color = diff*(1.0-fresnel)+refl+specC+sub+foam*0.55;
+    color = pow(color,vec3(1.0/2.2));
+    gl_FragColor = vec4(color,1.0);
   }`;
 
-const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 260, 260);
+const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 240, 240);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
   uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
-  transparent: false, depthWrite: true, side: THREE.FrontSide
+  transparent: false, depthWrite: true, side: THREE.FrontSide,
+  polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
 }));
 water.renderOrder = -1;
 scene.add(water);
@@ -2277,13 +2285,6 @@ function syncDayNightVisuals(camX, camZ) {
 
   sky.position.copy(camera.position);
   renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
-}
-
-function syncWaterWindUniforms() {
-  const ang = G.wind && Number.isFinite(G.wind.angle) ? G.wind.angle : 0;
-  waterUniforms.uWindDir.value.set(Math.cos(ang), Math.sin(ang));
-  const sp = G.wind && Number.isFinite(G.wind.speed) ? G.wind.speed : 6;
-  waterUniforms.uWindStrength.value = THREE.MathUtils.clamp(sp / 15, 0.2, 1.4);
 }
 
 let windParticles, windParticleGeo;
@@ -4039,15 +4040,19 @@ function updateAmbientSharkPairs(dt) {
     const a1 = pair.ph0 + t * spdEff;
     const a2 = pair.ph0 + t * spdEff + Math.PI * 0.71;
     const wob = Math.sin(t * 1.85 + pair.cx * 0.009) * 0.13;
+    const ax = pair.cx + Math.cos(a1) * pair.rad;
+    const az = pair.cz + Math.sin(a1) * pair.rad;
+    const bx = pair.cx + Math.cos(a2) * pair.rad * 0.9;
+    const bz = pair.cz + Math.sin(a2) * pair.rad * 0.9;
     pair.mA.position.set(
-      pair.cx + Math.cos(a1) * pair.rad,
-      pair.depth + wob,
-      pair.cz + Math.sin(a1) * pair.rad
+      ax,
+      seaSurfaceHeight(ax, az, G.time) + (pair.depth - SEA_LEVEL) + wob,
+      az
     );
     pair.mB.position.set(
-      pair.cx + Math.cos(a2) * pair.rad * 0.9,
-      pair.depth - wob * 0.65,
-      pair.cz + Math.sin(a2) * pair.rad * 0.9
+      bx,
+      seaSurfaceHeight(bx, bz, G.time) + (pair.depth - SEA_LEVEL) - wob * 0.65,
+      bz
     );
     const vxa = -Math.sin(a1);
     const vza = Math.cos(a1);
@@ -4100,7 +4105,7 @@ function updateRescueSharkEscorts() {
     const pose = getRescueEscortBoatPose(e.playerId);
     if (!pose) continue;
     const { x, z, yaw } = pose;
-    const depth = SEA_LEVEL - 0.52;
+    const sub = SEA_LEVEL - 0.52;
     const astern = 12;
     const side = 4.2;
     const bx = x - Math.sin(yaw) * astern;
@@ -4109,16 +4114,12 @@ function updateRescueSharkEscorts() {
     const bob = Math.sin(t * 2.2 + ph) * 0.14;
     const jA = Math.sin(t * 0.95 + ph * 0.5) * 0.7;
     const jB = Math.cos(t * 0.88 + ph) * 0.65;
-    e.mA.position.set(
-      bx + Math.cos(yaw) * side + Math.cos(yaw + Math.PI * 0.5) * jA,
-      depth + bob,
-      bz - Math.sin(yaw) * side - Math.sin(yaw + Math.PI * 0.5) * jA
-    );
-    e.mB.position.set(
-      bx - Math.cos(yaw) * side + Math.cos(yaw + Math.PI * 0.5) * jB,
-      depth - bob * 0.7,
-      bz + Math.sin(yaw) * side - Math.sin(yaw + Math.PI * 0.5) * jB
-    );
+    const ax = bx + Math.cos(yaw) * side + Math.cos(yaw + Math.PI * 0.5) * jA;
+    const az = bz - Math.sin(yaw) * side - Math.sin(yaw + Math.PI * 0.5) * jA;
+    const bx2 = bx - Math.cos(yaw) * side + Math.cos(yaw + Math.PI * 0.5) * jB;
+    const bz2 = bz + Math.sin(yaw) * side - Math.sin(yaw + Math.PI * 0.5) * jB;
+    e.mA.position.set(ax, seaSurfaceHeight(ax, az, G.time) + (sub - SEA_LEVEL) + bob, az);
+    e.mB.position.set(bx2, seaSurfaceHeight(bx2, bz2, G.time) + (sub - SEA_LEVEL) - bob * 0.7, bz2);
     const hx = x - e.mA.position.x;
     const hz = z - e.mA.position.z;
     e.mA.rotation.y = Math.atan2(hx, hz);
@@ -4209,7 +4210,8 @@ function updateSwimmerPredatorMeshes(sw, swx, swy, swz, tw) {
       px = swx;
       pz = swz;
     }
-    mesh.position.set(px, depth + Math.sin(getWildlifeWorldTime() * 2.2 + phOff) * 0.12, pz);
+    const bob = Math.sin(getWildlifeWorldTime() * 2.2 + phOff) * 0.12;
+    mesh.position.set(px, seaSurfaceHeight(px, pz, G.time) + (depth - SEA_LEVEL) + bob, pz);
     let headYaw = mesh.rotation.y;
     if (tw < APP) {
       const rdx = swx - px;
@@ -4426,7 +4428,8 @@ function updateFish(dt) {
     const tz = l.z + f.userData.offsetZ;
     f.position.x = tx;
     f.position.z = tz;
-    f.position.y = l.depth + Math.sin(t * 3 + f.userData.wiggle) * 0.08;
+    const surf = seaSurfaceHeight(f.position.x, f.position.z, G.time);
+    f.position.y = surf + (l.depth - SEA_LEVEL) + Math.sin(t * 3 + f.userData.wiggle) * 0.08;
     const a = t * l.wA + l.phA;
     const b = t * l.wB + l.phB;
     const vx = Math.cos(a) * l.wA * l.amp + Math.cos(b * 1.17) * l.wB * 1.17 * l.amp * 0.38;
@@ -7012,11 +7015,11 @@ function updateNPCs(dt) {
         if (npc.sinkTimer > 4) { scene.remove(npc.mesh); npc.mesh = null; npc.health = -999; }
       }
     } else if (npc.mesh) {
-      const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12 + Math.sin(G.time * 1.1 + npc.z * 0.06) * 0.08;
-      npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + nWH, npc.z);
+      const nw = playerShipWaveAt(npc.x, npc.z, npc.rotation);
+      npc.mesh.position.set(npc.x, SEA_LEVEL + 0.28 + nw.waveH, npc.z);
       npc.mesh.rotation.y = npc.rotation;
-      npc.mesh.rotation.x = Math.sin(G.time * 0.9 + npc.z * 0.05) * 0.025;
-      npc.mesh.rotation.z = Math.sin(G.time * 0.7 + npc.x * 0.06) * 0.035;
+      npc.mesh.rotation.x = nw.wavePitch;
+      npc.mesh.rotation.z = nw.waveRoll;
       applyRiggingVisualToGroup(npc.mesh, getNpcRiggingHealth(npc));
       const wakeKey = npc.syncId != null ? `npc${npc.syncId}` : `npci${npcIdx}`;
       let effWakeSpd = npc.speed != null ? npc.speed : 0;
@@ -9138,7 +9141,8 @@ function adminTeleportToNetworkPlayer(pid) {
   G.player.z = chosen.z;
   G.player.rotation = Math.atan2(p.x - G.player.x, p.z - G.player.z);
   G.player.speed = 0;
-  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
+  const _tw = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation);
+  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + _tw.waveH, G.player.z);
   if (ws && ws.readyState === 1) sendUpdate();
   notify(`Moved within range of ${p.name || 'captain'}'s ship.`);
 }
@@ -12996,23 +13000,30 @@ document.getElementById('minimap').addEventListener('wheel', e => {
   mmZoom = Math.max(0.02, Math.min(0.3, mmZoom + e.deltaY * 0.0002)); drawMinimap();
 }, { passive: false });
 
-/** Match local player ship bob/pitch/roll so remote vessels ride the same waves. */
-function playerShipWaveAt(wx, wz) {
-  const waveH = Math.sin(G.time * 0.7 + wx * 0.04) * 0.15 + Math.sin(G.time * 1.1 + wz * 0.06) * 0.1 + Math.sin(G.time * 1.8 + wx * 0.08) * 0.05;
-  const wavePitch = Math.sin(G.time * 0.9 + wz * 0.05) * 0.03 + Math.sin(G.time * 1.5 + wx * 0.07) * 0.015;
-  const waveRoll = Math.sin(G.time * 0.7 + wx * 0.06) * 0.04 + Math.sin(G.time * 1.3 + wz * 0.04) * 0.02;
-  return { waveH, wavePitch, waveRoll };
+/** Match shader sea surface; pitch/roll follow wave slope along ship heading. */
+function playerShipWaveAt(wx, wz, yaw) {
+  const t = G.time;
+  const y0 = seaSurfaceHeight(wx, wz, t);
+  const e = 0.55;
+  const yr = yaw != null ? yaw : 0;
+  const fx = Math.sin(yr);
+  const fz = Math.cos(yr);
+  const rx = -fz;
+  const rz = fx;
+  const yF = seaSurfaceHeight(wx + fx * e, wz + fz * e, t);
+  const yR = seaSurfaceHeight(wx + rx * e, wz + rz * e, t);
+  const wavePitch = Math.atan2(yF - y0, e);
+  const waveRoll = Math.atan2(yR - y0, e);
+  return { waveH: y0, wavePitch, waveRoll };
 }
 
 function spawnShipWakePiece(x, z, rotation, speed) {
   const wakeGeo = new THREE.PlaneGeometry(0.8, 0.8);
   wakeGeo.rotateX(-Math.PI / 2);
   const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({ color: 0xccddee, transparent: true, opacity: 0.3, depthWrite: false }));
-  wake.position.set(
-    x - Math.sin(rotation) * 3 + (Math.random() - 0.5) * 1,
-    SEA_LEVEL + 0.05,
-    z - Math.cos(rotation) * 3 + (Math.random() - 0.5) * 1
-  );
+  const wx = x - Math.sin(rotation) * 3 + (Math.random() - 0.5) * 1;
+  const wz = z - Math.cos(rotation) * 3 + (Math.random() - 0.5) * 1;
+  wake.position.set(wx, SEA_LEVEL + 0.04 + seaSurfaceHeight(wx, wz, G.time), wz);
   wake.userData.life = 2.0;
   scene.add(wake);
   if (!G.wakeTrail) G.wakeTrail = [];
@@ -13169,9 +13180,7 @@ function update(dt) {
     pruneWildlifeAwayFromPlayer();
   }
 
-  const waveH = Math.sin(G.time * 0.7 + G.player.x * 0.04) * 0.15 + Math.sin(G.time * 1.1 + G.player.z * 0.06) * 0.1 + Math.sin(G.time * 1.8 + G.player.x * 0.08) * 0.05;
-  const wavePitch = Math.sin(G.time * 0.9 + G.player.z * 0.05) * 0.03 + Math.sin(G.time * 1.5 + G.player.x * 0.07) * 0.015;
-  const waveRoll = Math.sin(G.time * 0.7 + G.player.x * 0.06) * 0.04 + Math.sin(G.time * 1.3 + G.player.z * 0.04) * 0.02;
+  const shipWaves = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation);
   if (G.dockingAnim) {
     G.dockingAnim.timer += dt;
     const t = Math.min(G.dockingAnim.timer / 2.0, 1);
@@ -13200,8 +13209,8 @@ function update(dt) {
     });
   }
   if (!G.playerSinking) {
-    playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.35 + waveH, G.player.z);
-    playerShipGroup.rotation.set(wavePitch, G.player.rotation, waveRoll);
+    playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + shipWaves.waveH, G.player.z);
+    playerShipGroup.rotation.set(shipWaves.wavePitch, G.player.rotation, shipWaves.waveRoll);
   }
 
   if (!G.playerSinking) {
@@ -13332,8 +13341,8 @@ function update(dt) {
       sm.userData.cacheKey = cacheKey;
       sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = shipTitle;
-      const w0 = playerShipWaveAt(p.x, p.z);
-      sm.position.set(p.x, SEA_LEVEL + 0.35 + w0.waveH, p.z);
+      const w0 = playerShipWaveAt(p.x, p.z, p.rotation || 0);
+      sm.position.set(p.x, SEA_LEVEL + 0.28 + w0.waveH, p.z);
       sm.rotation.set(w0.wavePitch, p.rotation || 0, w0.waveRoll);
       if (preservedSinking) {
         sm.userData.sinking = true;
@@ -13359,9 +13368,9 @@ function update(dt) {
         otherShipGroups.delete(id);
       }
     } else {
-      const w = playerShipWaveAt(p.x, p.z);
+      const w = playerShipWaveAt(p.x, p.z, p.rotation || 0);
       const posAlpha = Math.min(1, 28 * dt);
-      sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.35 + w.waveH, p.z), posAlpha);
+      sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.28 + w.waveH, p.z), posAlpha);
       const targetYaw = p.rotation || 0;
       let ry = sg.rotation.y;
       let dYaw = targetYaw - ry;
@@ -13885,7 +13894,6 @@ function update(dt) {
 function render() {
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
-  syncWaterWindUniforms();
   renderer.render(scene, camera);
   renderCargoPreviewIfOpen();
   renderYardShipPreviewIfOpen();
@@ -13916,10 +13924,9 @@ function warmUpGameView() {
     camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
   }
   syncDayNightVisuals(camX, camZ);
-  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
+  { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + _w.waveH, G.player.z); }
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
-  syncWaterWindUniforms();
   renderer.render(scene, camera);
 }
 
@@ -14587,7 +14594,7 @@ function beginVoyageAfterCharacter() {
   rebuildPlayerShip();
   applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
   reconcileSlotsWithInventory();
-  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
+  { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + _w.waveH, G.player.z); }
   document.getElementById('create-screen').style.display = 'none';
   document.getElementById('mobile-layout-picker').style.display = 'none';
   revealGameHudAfterFirstStableFrame(() => {
@@ -14988,7 +14995,6 @@ function menuRender() {
     camera.position.set(Math.sin(G.time * 0.04) * camR, 15 + Math.sin(G.time * 0.02) * 3, Math.cos(G.time * 0.04) * camR);
     camera.lookAt(0, 1, 0);
     waterUniforms.uCamPos.value.copy(camera.position);
-    syncWaterWindUniforms();
     syncDayNightVisuals(0, 0);
     if (!ws || ws.readyState !== 1) updateNPCs(0.016);
     updateSeagulls(0.016);
@@ -15099,7 +15105,7 @@ document.getElementById('start-btn').onclick = () => {
     ensurePlayerInOpenOcean();
     updateChunks();
     spawnNPCs();
-    playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.4, G.player.z);
+    { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + _w.waveH, G.player.z); }
     rebuildPlayerShip();
     normalizeInventoryMergeStacks();
     consolidateGoldPurse();
