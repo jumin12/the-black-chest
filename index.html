@@ -1054,21 +1054,36 @@ function stripIslandTerrainOpenSeaTriangles(geo, waterMask) {
   }
 }
 /**
- * Vertical “skirt” from the open boundary of island terrain down to the seabed so land does not look like a floating skin.
- * Uses mesh boundary edges after open-sea triangles were stripped.
+ * Sloped, flared “skirt” from the coast boundary down toward the seabed — multi-ring geometry with shared corner verts
+ * (no T-junction gaps) and outward flare so it reads as gradual underwater slope, not a sheer wall.
  */
 function appendIslandSeabedSkirt(geo, skirtBottomY) {
   const posAttr = geo.attributes.position;
   const colAttr = geo.attributes.color;
   const idx = geo.getIndex();
   if (!posAttr || !colAttr || !idx) return;
-  let cx = 0, cz = 0;
+  const SKIRT_SEGS = 7;
   const nc = posAttr.count;
+  let cx = 0, cz = 0, cc = 0;
+  const yLandThr = PROC_SEABED_Y + 0.28;
   for (let i = 0; i < nc; i++) {
-    cx += posAttr.getX(i);
-    cz += posAttr.getZ(i);
+    if (posAttr.getY(i) > yLandThr) {
+      cx += posAttr.getX(i);
+      cz += posAttr.getZ(i);
+      cc++;
+    }
   }
-  if (nc) { cx /= nc; cz /= nc; }
+  if (cc) {
+    cx /= cc;
+    cz /= cc;
+  } else {
+    for (let i = 0; i < nc; i++) {
+      cx += posAttr.getX(i);
+      cz += posAttr.getZ(i);
+    }
+    cx /= Math.max(1, nc);
+    cz /= Math.max(1, nc);
+  }
   const ia = idx.array;
   const n = idx.count;
   const edgeCnt = new Map();
@@ -1082,14 +1097,64 @@ function appendIslandSeabedSkirt(geo, skirtBottomY) {
       edgeCnt.set(key, (edgeCnt.get(key) || 0) + 1);
     }
   }
-  const edges = [];
+  const rawEdges = [];
   edgeCnt.forEach((cnt, key) => {
     if (cnt === 1) {
       const parts = key.split(',');
-      edges.push(+parts[0], +parts[1]);
+      rawEdges.push(+parts[0], +parts[1]);
     }
   });
-  if (edges.length < 6) return;
+  if (rawEdges.length < 6) return;
+  const oriented = [];
+  for (let e = 0; e < rawEdges.length; e += 2) {
+    let a = rawEdges[e], b = rawEdges[e + 1];
+    const x0 = posAttr.getX(a), z0 = posAttr.getZ(a);
+    const x1 = posAttr.getX(b), z1 = posAttr.getZ(b);
+    const lx = -(z1 - z0), lz = (x1 - x0);
+    const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
+    const inx = cx - mx, inz = cz - mz;
+    if (lx * inx + lz * inz < 0) {
+      const t = a;
+      a = b;
+      b = t;
+    }
+    oriented.push(a, b);
+  }
+  const outAccX = new Map();
+  const outAccZ = new Map();
+  let rBound = 0;
+  for (let e = 0; e < oriented.length; e += 2) {
+    const i0 = oriented[e], i1 = oriented[e + 1];
+    const x0 = posAttr.getX(i0), z0 = posAttr.getZ(i0);
+    const x1 = posAttr.getX(i1), z1 = posAttr.getZ(i1);
+    const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
+    let nx = z1 - z0, nz = -(x1 - x0);
+    const nlen = Math.hypot(nx, nz) || 1;
+    nx /= nlen;
+    nz /= nlen;
+    const tox = mx - cx, toz = mz - cz;
+    if (nx * tox + nz * toz < 0) {
+      nx = -nx;
+      nz = -nz;
+    }
+    outAccX.set(i0, (outAccX.get(i0) || 0) + nx);
+    outAccZ.set(i0, (outAccZ.get(i0) || 0) + nz);
+    outAccX.set(i1, (outAccX.get(i1) || 0) + nx);
+    outAccZ.set(i1, (outAccZ.get(i1) || 0) + nz);
+    for (const vi of [i0, i1]) {
+      const dx = posAttr.getX(vi) - cx, dz = posAttr.getZ(vi) - cz;
+      rBound = Math.max(rBound, Math.hypot(dx, dz));
+    }
+  }
+  const outX = new Map();
+  const outZ = new Map();
+  outAccX.forEach((sx, v) => {
+    const sz = outAccZ.get(v) || 0;
+    const len = Math.hypot(sx, sz) || 1;
+    outX.set(v, sx / len);
+    outZ.set(v, sz / len);
+  });
+  const flareAmt = Math.min(17, Math.max(4.2, rBound * 0.19));
   const oldV = posAttr.count;
   const pArr = [];
   const cArr = [];
@@ -1097,37 +1162,46 @@ function appendIslandSeabedSkirt(geo, skirtBottomY) {
     pArr.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
     cArr.push(colAttr.getX(i), colAttr.getY(i), colAttr.getZ(i));
   }
-  const bottomForTop = new Map();
-  function getBottom(topIdx) {
-    if (bottomForTop.has(topIdx)) return bottomForTop.get(topIdx);
-    const x = posAttr.getX(topIdx);
-    const z = posAttr.getZ(topIdx);
-    const r = colAttr.getX(topIdx), g = colAttr.getY(topIdx), b = colAttr.getZ(topIdx);
-    const br = Math.max(0, Math.min(1, r * 0.52 + 0.13));
-    const bg = Math.max(0, Math.min(1, g * 0.48 + 0.11));
-    const bb = Math.max(0, Math.min(1, b * 0.44 + 0.09));
+  const ringMem = new Map();
+  const sandR = 0.62, sandG = 0.52, sandB = 0.38;
+  function ringIdx(v, k) {
+    const key = v + '|' + k;
+    if (ringMem.has(key)) return ringMem.get(key);
+    const t = k / SKIRT_SEGS;
+    const eased = t * t * (3 - 2 * t);
+    const x = posAttr.getX(v);
+    const z = posAttr.getZ(v);
+    const y0 = posAttr.getY(v);
+    const y = y0 + (skirtBottomY - y0) * eased;
+    const fl = (1 - Math.cos(eased * Math.PI)) * 0.5;
+    const ox = outX.get(v) || 0;
+    const oz = outZ.get(v) || 0;
+    const nx = x + ox * fl * flareAmt;
+    const nz = z + oz * fl * flareAmt;
+    const r0 = colAttr.getX(v), g0 = colAttr.getY(v), b0 = colAttr.getZ(v);
+    const rr = r0 + (sandR - r0) * eased;
+    const gg = g0 + (sandG - g0) * eased;
+    const bb = b0 + (sandB - b0) * eased;
     const ni = (pArr.length / 3) | 0;
-    pArr.push(x, skirtBottomY, z);
-    cArr.push(br, bg, bb);
-    bottomForTop.set(topIdx, ni);
+    pArr.push(nx, y, nz);
+    cArr.push(
+      Math.max(0, Math.min(1, rr * (0.92 + 0.08 * eased))),
+      Math.max(0, Math.min(1, gg * (0.92 + 0.08 * eased))),
+      Math.max(0, Math.min(1, bb * (0.92 + 0.08 * eased)))
+    );
+    ringMem.set(key, ni);
     return ni;
   }
   const idxArr = [];
   for (let f = 0; f < n; f++) idxArr.push(ia[f]);
-  for (let e = 0; e < edges.length; e += 2) {
-    const i0 = edges[e], i1 = edges[e + 1];
-    const x0 = posAttr.getX(i0), z0 = posAttr.getZ(i0);
-    const x1 = posAttr.getX(i1), z1 = posAttr.getZ(i1);
-    const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
-    const inx = cx - mx, inz = cz - mz;
-    const lx = -(z1 - z0), lz = (x1 - x0);
-    const flip = lx * inx + lz * inz < 0;
-    const b0 = getBottom(i0);
-    const b1 = getBottom(i1);
-    if (!flip) {
-      idxArr.push(i0, i1, b1, i0, b1, b0);
-    } else {
-      idxArr.push(i0, b0, b1, i0, b1, i1);
+  for (let e = 0; e < oriented.length; e += 2) {
+    const i0 = oriented[e], i1 = oriented[e + 1];
+    for (let k = 1; k <= SKIRT_SEGS; k++) {
+      const top0 = k === 1 ? i0 : ringIdx(i0, k - 1);
+      const top1 = k === 1 ? i1 : ringIdx(i1, k - 1);
+      const bot0 = ringIdx(i0, k);
+      const bot1 = ringIdx(i1, k);
+      idxArr.push(top0, top1, bot1, top0, bot1, bot0);
     }
   }
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pArr), 3));
