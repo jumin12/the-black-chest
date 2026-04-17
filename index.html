@@ -1223,6 +1223,8 @@ const CAM_ZOOM_DECK = 800;
 const CAM_ORBIT_AT_DECK = 12;
 /** Max camera pull-back (smaller = cannot zoom out as far). */
 const CAM_ORBIT_AT_HORIZON = 218;
+/** How much of orbit distance sits astern in XZ — slightly >0.5 keeps the hull nearer frame center at max zoom. */
+const CHASE_CAM_XZ_FRAC = 0.535;
 
 function clampCameraZoomLevel(z) {
   return Math.max(CAM_ZOOM_HORIZON, Math.min(CAM_ZOOM_DECK, z));
@@ -1244,11 +1246,8 @@ function zoomLevelFromOrbitDistance(dist) {
   return clampCameraZoomLevel(CAM_ZOOM_HORIZON + t * (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON));
 }
 
-const CAM_ZOOM_DEFAULT = clampCameraZoomLevel(Math.round(
-  CAM_ZOOM_HORIZON
- + ((CAM_ORBIT_AT_HORIZON - (isMobile ? 188 : 128)) / (CAM_ORBIT_AT_HORIZON - CAM_ORBIT_AT_DECK))
-  * (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON)
-));
+/** Start fully zoomed out (widest orbit / horizon framing). */
+const CAM_ZOOM_DEFAULT = CAM_ZOOM_HORIZON;
 
 /** Must match server `DEFAULT_WORLD_SEED` and `world_seed.json` — stable offline / pre-sync fallback so the archipelago never drifts between sessions. */
 const CANONICAL_DEFAULT_WORLD_SEED = 42;
@@ -10520,21 +10519,28 @@ function spectateCameraLookAtY() {
   if (sp && sp.kind === 'dock') return SEA_LEVEL + 12;
   return SEA_LEVEL + 1.35;
 }
-/** Chase cam looks past the ship along its heading so the frame follows the course (not straight down at the deck). */
+/** Chase cam: look at deck height slightly toward the bow so the ship stays centered and the view faces forward. */
 function chaseCameraLookAtXYZ(camX, camZ, cDist) {
   const ox = G.camera.offsetX, oz = G.camera.offsetZ;
   if (G.spectate) {
     return { x: camX + ox, y: spectateCameraLookAtY(), z: camZ + oz };
   }
   const rot = G.player.rotation || 0;
+  const sr = Math.sin(rot), cr = Math.cos(rot);
   let lx = camX + ox;
   let lz = camZ + oz;
-  if (!(isMobile && G.camera.mobileOrbitFree)) {
-    const ahead = Math.min(62, Math.max(26, 16 + cDist * 0.2));
-    lx += Math.sin(rot) * ahead;
-    lz += Math.cos(rot) * ahead;
+  let ly;
+  if (isMobile && G.camera.mobileOrbitFree) {
+    ly = spectateCameraLookAtY();
+  } else {
+    const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
+    const ahead = Math.min(15, Math.max(3.8, spec.hullLen * 0.36));
+    lx += sr * ahead;
+    lz += cr * ahead;
+    const sea = worldSeaSurfaceY(camX + ox, camZ + oz);
+    ly = sea + SHIP_FREEBOARD + spec.hullH * 0.62 + spec.hullLen * 0.06;
   }
-  return { x: lx, y: spectateCameraLookAtY(), z: lz };
+  return { x: lx, y: ly, z: lz };
 }
 function updateSpectateInfoPanel() {
   const el = document.getElementById('spectate-info-panel');
@@ -14406,7 +14412,8 @@ function update(dt) {
   if (G.captainWalk.active) {
     updateCaptainWalk(dt);
   } else {
-    if (isMobile && !G.spectate && !G.camera.mobileOrbitFree) {
+    const orbitFree = G.spectate || (isMobile && G.camera.mobileOrbitFree) || middleDown;
+    if (!orbitFree && !(keys['q'] || keys['e'])) {
       const targetY = G.player.rotation + Math.PI;
       let camDiff = targetY - G.camera.yaw;
       while (camDiff > Math.PI) camDiff -= Math.PI * 2;
@@ -14416,9 +14423,9 @@ function update(dt) {
     }
     const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
     camera.position.set(
-      camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
+      camX + G.camera.offsetX + Math.sin(cYaw) * cDist * CHASE_CAM_XZ_FRAC,
       cDist * Math.sin(cAng),
-      camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
+      camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * CHASE_CAM_XZ_FRAC
     );
     const look = chaseCameraLookAtXYZ(camX, camZ, cDist);
     camera.lookAt(look.x, look.y, look.z);
@@ -14483,15 +14490,16 @@ function warmUpGameView() {
   if (G.captainWalk.active) {
     updateCaptainWalk(0);
   } else {
-    if (isMobile && !G.spectate && !G.camera.mobileOrbitFree) {
-      G.camera.yaw = G.player.rotation + Math.PI;
-      G.camera.targetYaw = G.camera.yaw;
+    if (!G.spectate && !(isMobile && G.camera.mobileOrbitFree) && !middleDown) {
+      const y = G.player.rotation + Math.PI;
+      G.camera.yaw = y;
+      G.camera.targetYaw = y;
     }
     const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
     camera.position.set(
-      camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
+      camX + G.camera.offsetX + Math.sin(cYaw) * cDist * CHASE_CAM_XZ_FRAC,
       cDist * Math.sin(cAng),
-      camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
+      camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * CHASE_CAM_XZ_FRAC
     );
     const look = chaseCameraLookAtXYZ(camX, camZ, cDist);
     camera.lookAt(look.x, look.y, look.z);
