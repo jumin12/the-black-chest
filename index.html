@@ -2173,6 +2173,13 @@ function seaSurfaceHeight(wx, wz, t) {
   y += 0.012 * Math.cos((wx * 0.087 - wz * 0.112) * 2.15 + time * 0.97 + Math.sin(wz * 0.05 + wx * 0.031));
   return y;
 }
+/** Matches `water` mesh `position.y` before Gerstner displacement — use this + waves so hulls sit in the water. */
+const WATER_SURFACE_BASE = SEA_LEVEL - 0.5;
+/** Ship group origin slightly above the rendered surface so the hull intersects the wave (meters). */
+const SHIP_FREEBOARD = 0.09;
+function worldSeaSurfaceY(wx, wz, t) {
+  return WATER_SURFACE_BASE + seaSurfaceHeight(wx, wz, t != null ? t : G.time);
+}
 const waterVS = `
   uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormal;
   vec3 gw(vec3 p, float s, float wl, vec2 d, float sp){
@@ -2220,19 +2227,24 @@ const waterFS = `
     if(vm < 0.002) return 0.0;
     vec2 F = vel / vm;
     vec2 d = P - u.xy;
+    float dist = length(d);
+    float hullFall = smoothstep(58.0, 92.0, dist);
     float ahead = dot(d, F);
     float side = dot(d, vec2(-F.y, F.x));
     float astern = max(0.0, -ahead);
+    float asternF = min(astern, 36.0);
     float sp = clamp(vm * 1.12, 0.0, 1.3);
-    float halfW = 1.65 + astern * 0.1;
-    float center = exp(-(side*side)/(halfW*halfW)) * smoothstep(0.6, 3.8, astern) * exp(-astern * 0.013) * sp;
+    float halfW = 1.25 + asternF * 0.048;
+    float sternLen = exp(-asternF * 0.072) * smoothstep(0.45, 3.2, asternF);
+    float center = exp(-(side*side)/(halfW*halfW)) * sternLen * sp;
     const float kelvin = 0.353;
-    float offV = abs(abs(side) - astern * kelvin);
-    float vArm = smoothstep(4.5, 24.0, astern) * exp(-offV * offV / (5.5 + astern * 0.07)) * exp(-astern * 0.015) * sp * 0.62;
+    float offV = abs(abs(side) - asternF * kelvin);
+    float vArm = smoothstep(2.8, 14.0, asternF) * exp(-offV * offV / (3.8 + asternF * 0.045)) * exp(-asternF * 0.085) * sp * 0.52;
     float bowA = max(0.0, ahead);
-    float bow = exp(-side*side/11.0) * smoothstep(0.4, 7.0, bowA) * exp(-bowA * 0.11) * sp * 0.36;
-    float churn = 0.22 * sp * exp(-(d.x*d.x + d.y*d.y) / (18.0 + astern * 0.35)) * smoothstep(0.0, 2.5, astern + bowA);
-    return min(1.45, center * 1.05 + vArm + bow + churn);
+    float bow = exp(-side*side/7.2) * smoothstep(0.32, 4.2, bowA) * exp(-bowA * 0.22) * sp * 0.34;
+    float churn = 0.18 * sp * exp(-(d.x*d.x + d.y*d.y) / (9.5 + asternF * 0.2)) * smoothstep(0.0, 1.8, astern + bowA);
+    float w = min(1.28, center * 0.98 + vArm + bow + churn);
+    return w * (1.0 - hullFall);
   }
   float sumShipWakes(vec2 P){
     float s = 0.0;
@@ -4103,7 +4115,7 @@ function spawnAmbientSharkPair(wx, wz, rng) {
   const rad = 36 + r() * 64;
   const spd = 0.034 + r() * 0.048;
   const ph0 = r() * Math.PI * 2;
-  const depth = SEA_LEVEL - 0.62;
+  const floatOffset = -0.12;
   const mA = makePredatorSharkMesh(1.02 + r() * 0.2);
   const mB = makePredatorSharkMesh(0.86 + r() * 0.16);
   mA.userData.swimPhase = swimmerStreamHash(wx, wz, 401) * Math.PI * 2;
@@ -4112,7 +4124,7 @@ function spawnAmbientSharkPair(wx, wz, rng) {
   scene.add(mB);
   const pruneKey = wildlifePruneKey(cx, cz, 0x3a11);
   const orbitT0 = getWildlifeWorldTime();
-  ambientSharkPairs.push({ cx, cz, rad, spd, ph0, depth, mA, mB, pruneKey, orbitT0 });
+  ambientSharkPairs.push({ cx, cz, rad, spd, ph0, floatOffset, mA, mB, pruneKey, orbitT0 });
 }
 function smoothstep01(u) {
   const x = Math.max(0, Math.min(1, u));
@@ -4133,12 +4145,12 @@ function updateAmbientSharkPairs(dt) {
     const bz = pair.cz + Math.sin(a2) * pair.rad * 0.9;
     pair.mA.position.set(
       ax,
-      seaSurfaceHeight(ax, az, G.time) + (pair.depth - SEA_LEVEL) + wob,
+      worldSeaSurfaceY(ax, az) + pair.floatOffset + wob,
       az
     );
     pair.mB.position.set(
       bx,
-      seaSurfaceHeight(bx, bz, G.time) + (pair.depth - SEA_LEVEL) - wob * 0.65,
+      worldSeaSurfaceY(bx, bz) + pair.floatOffset - wob * 0.65,
       bz
     );
     const vxa = -Math.sin(a1);
@@ -4192,7 +4204,7 @@ function updateRescueSharkEscorts() {
     const pose = getRescueEscortBoatPose(e.playerId);
     if (!pose) continue;
     const { x, z, yaw } = pose;
-    const sub = SEA_LEVEL - 0.52;
+    const escortFloat = -0.02;
     const astern = 12;
     const side = 4.2;
     const bx = x - Math.sin(yaw) * astern;
@@ -4205,8 +4217,8 @@ function updateRescueSharkEscorts() {
     const az = bz - Math.sin(yaw) * side - Math.sin(yaw + Math.PI * 0.5) * jA;
     const bx2 = bx - Math.cos(yaw) * side + Math.cos(yaw + Math.PI * 0.5) * jB;
     const bz2 = bz + Math.sin(yaw) * side - Math.sin(yaw + Math.PI * 0.5) * jB;
-    e.mA.position.set(ax, seaSurfaceHeight(ax, az, G.time) + (sub - SEA_LEVEL) + bob, az);
-    e.mB.position.set(bx2, seaSurfaceHeight(bx2, bz2, G.time) + (sub - SEA_LEVEL) - bob * 0.7, bz2);
+    e.mA.position.set(ax, worldSeaSurfaceY(ax, az) + escortFloat + bob, az);
+    e.mB.position.set(bx2, worldSeaSurfaceY(bx2, bz2) + escortFloat - bob * 0.7, bz2);
     const hx = x - e.mA.position.x;
     const hz = z - e.mA.position.z;
     e.mA.rotation.y = Math.atan2(hx, hz);
@@ -4251,7 +4263,7 @@ function updateSwimmerPredatorMeshes(sw, swx, swy, swz, tw) {
   const ATK = SWIMMER_PREDATOR_ATTACK_SEC;
   const R_ORB = 4.35;
   const R_START = 22;
-  const depth = SEA_LEVEL - 0.55;
+  const predFloat = -0.05;
   for (let mi = 0; mi < meshes.length; mi++) {
     const mesh = meshes[mi];
     const phOff = mesh.userData.phaseOff || 0;
@@ -4298,7 +4310,7 @@ function updateSwimmerPredatorMeshes(sw, swx, swy, swz, tw) {
       pz = swz;
     }
     const bob = Math.sin(getWildlifeWorldTime() * 2.2 + phOff) * 0.12;
-    mesh.position.set(px, seaSurfaceHeight(px, pz, G.time) + (depth - SEA_LEVEL) + bob, pz);
+    mesh.position.set(px, worldSeaSurfaceY(px, pz) + predFloat + bob, pz);
     let headYaw = mesh.rotation.y;
     if (tw < APP) {
       const rdx = swx - px;
@@ -4441,7 +4453,7 @@ function spawnFish(wx, wz, count, rng) {
   if (count <= 0 || isSeaObstructed(wx, wz)) return;
   const r = decoRand(rng);
   const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
-  const depth = SEA_LEVEL - 0.05 - r() * 0.15;
+  const floatOffset = -0.045 - r() * 0.11;
   const h = (salt) => swimmerStreamHash(wx, wz, salt);
   const leader = {
     anchorX: wx,
@@ -4451,7 +4463,7 @@ function spawnFish(wx, wz, count, rng) {
     amp: 26 + h(503) * 92,
     wA: 0.088 + h(504) * 0.072,
     wB: 0.068 + h(505) * 0.058,
-    depth,
+    floatOffset,
     pruneKey: wildlifePruneKey(wx, wz, 0x71ad),
     x: wx,
     z: wz
@@ -4515,8 +4527,7 @@ function updateFish(dt) {
     const tz = l.z + f.userData.offsetZ;
     f.position.x = tx;
     f.position.z = tz;
-    const surf = seaSurfaceHeight(f.position.x, f.position.z, G.time);
-    f.position.y = surf + (l.depth - SEA_LEVEL) + Math.sin(t * 3 + f.userData.wiggle) * 0.08;
+    f.position.y = worldSeaSurfaceY(f.position.x, f.position.z) + l.floatOffset + Math.sin(t * 3 + f.userData.wiggle) * 0.08;
     const a = t * l.wA + l.phA;
     const b = t * l.wB + l.phB;
     const vx = Math.cos(a) * l.wA * l.amp + Math.cos(b * 1.17) * l.wB * 1.17 * l.amp * 0.38;
@@ -6868,7 +6879,7 @@ function npcFireBroadsideAtPlayer(npc) {
   if (side === 0) return;
 
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
-  const npcShipY = npc.mesh?.position.y || SEA_LEVEL + 0.5;
+  const npcShipY = npc.mesh?.position.y || worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
   const fallbackY = cannonWorldMuzzleYFromShip(npcShipY, npcSpec);
   const aimDx0 = px - npc.x, aimDz0 = pz - npc.z;
   const aimLen0 = Math.hypot(aimDx0, aimDz0) || 1;
@@ -7103,7 +7114,7 @@ function updateNPCs(dt) {
       }
     } else if (npc.mesh) {
       const nw = playerShipWaveAt(npc.x, npc.z, npc.rotation);
-      npc.mesh.position.set(npc.x, SEA_LEVEL + 0.28 + nw.waveH, npc.z);
+      npc.mesh.position.set(npc.x, worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD, npc.z);
       npc.mesh.rotation.y = npc.rotation;
       npc.mesh.rotation.x = nw.wavePitch;
       npc.mesh.rotation.z = nw.waveRoll;
@@ -9218,7 +9229,7 @@ function adminTeleportToNetworkPlayer(pid) {
   G.player.rotation = Math.atan2(p.x - G.player.x, p.z - G.player.z);
   G.player.speed = 0;
   const _tw = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation);
-  playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + _tw.waveH, G.player.z);
+  playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z);
   if (ws && ws.readyState === 1) sendUpdate();
   notify(`Moved within range of ${p.name || 'captain'}'s ship.`);
 }
@@ -13257,7 +13268,7 @@ function update(dt) {
     });
   }
   if (!G.playerSinking) {
-    playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + shipWaves.waveH, G.player.z);
+    playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z);
     playerShipGroup.rotation.set(shipWaves.wavePitch, G.player.rotation, shipWaves.waveRoll);
   }
 
@@ -13387,7 +13398,7 @@ function update(dt) {
       sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = shipTitle;
       const w0 = playerShipWaveAt(p.x, p.z, p.rotation || 0);
-      sm.position.set(p.x, SEA_LEVEL + 0.28 + w0.waveH, p.z);
+      sm.position.set(p.x, worldSeaSurfaceY(p.x, p.z) + SHIP_FREEBOARD, p.z);
       sm.rotation.set(w0.wavePitch, p.rotation || 0, w0.waveRoll);
       if (preservedSinking) {
         sm.userData.sinking = true;
@@ -13415,7 +13426,7 @@ function update(dt) {
     } else {
       const w = playerShipWaveAt(p.x, p.z, p.rotation || 0);
       const posAlpha = Math.min(1, 28 * dt);
-      sg.position.lerp(new THREE.Vector3(p.x, SEA_LEVEL + 0.28 + w.waveH, p.z), posAlpha);
+      sg.position.lerp(new THREE.Vector3(p.x, worldSeaSurfaceY(p.x, p.z) + SHIP_FREEBOARD, p.z), posAlpha);
       const targetYaw = p.rotation || 0;
       let ry = sg.rotation.y;
       let dYaw = targetYaw - ry;
@@ -13971,7 +13982,7 @@ function warmUpGameView() {
     camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
   }
   syncDayNightVisuals(camX, camZ);
-  { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + _w.waveH, G.player.z); }
+  { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z); }
   updateWaterWakeUniforms(camX, camZ);
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
@@ -14642,7 +14653,7 @@ function beginVoyageAfterCharacter() {
   rebuildPlayerShip();
   applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
   reconcileSlotsWithInventory();
-  { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + _w.waveH, G.player.z); }
+  { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z); }
   document.getElementById('create-screen').style.display = 'none';
   document.getElementById('mobile-layout-picker').style.display = 'none';
   revealGameHudAfterFirstStableFrame(() => {
@@ -15053,7 +15064,7 @@ function menuRender() {
     G.npcs.forEach(npc => {
       if (npc.mesh) {
         const nWH = Math.sin(G.time * 0.7 + npc.x * 0.04) * 0.12;
-        npc.mesh.position.set(npc.x, SEA_LEVEL + 0.35 + nWH, npc.z);
+        npc.mesh.position.set(npc.x, WATER_SURFACE_BASE + nWH + SHIP_FREEBOARD + 0.06, npc.z);
         npc.mesh.rotation.y = npc.rotation;
       }
     });
@@ -15156,7 +15167,7 @@ document.getElementById('start-btn').onclick = () => {
     ensurePlayerInOpenOcean();
     updateChunks();
     spawnNPCs();
-    { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, SEA_LEVEL + 0.28 + _w.waveH, G.player.z); }
+    { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z); }
     rebuildPlayerShip();
     normalizeInventoryMergeStacks();
     consolidateGoldPurse();
