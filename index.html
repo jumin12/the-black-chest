@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <!-- Inline icon avoids failed /favicon.svg fetches when a host SPA rule serves index.html or during cold starts (e.g. Render). -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%231a140c'/%3E%3Cpath fill='%2312100c' d='M6 5h20l-.5 22H6.5L6 5z'/%3E%3Cpath fill='%230d0b08' d='M6 5l3 2 14 .5 3-1.5-.5 21-2.5-1.5H8.5L6 24.5 6 5z'/%3E%3Cg fill='%23e8e0d4'%3E%3Cellipse cx='16' cy='14.5' rx='5.2' ry='6.2'/%3E%3Ccircle cx='13.2' cy='13.2' r='1.5' fill='%231a140c'/%3E%3Ccircle cx='18.8' cy='13.2' r='1.5' fill='%231a140c'/%3E%3Cpath fill='none' stroke='%231a140c' stroke-width='1.3' stroke-linecap='round' d='M12.5 17.5q3.5 2.2 7 0'/%3E%3C/g%3E%3Cpath stroke='%23e8e0d4' stroke-width='2.4' stroke-linecap='round' d='M9.5 23.5l13-9M9.5 14.5l13 9'/%3E%3C/svg%3E" type="image/svg+xml">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%23141210'/%3E%3Cpath stroke='%23ddd8ce' stroke-width='2.3' stroke-linecap='round' d='M7.5 23.5L24.5 6.5M7.5 6.5l17 17'/%3E%3Cellipse cx='16' cy='14' rx='5.5' ry='6' fill='%23ddd8ce'/%3E%3Crect x='12.5' y='17.8' width='7' height='2' rx='0.35' fill='%23141210'/%3E%3Ccircle cx='13.5' cy='12.6' r='1.3' fill='%23141210'/%3E%3Ccircle cx='18.5' cy='12.6' r='1.3' fill='%23141210'/%3E%3C/svg%3E" type="image/svg+xml">
 <link rel="alternate icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/favicon.svg">
 <title>Pirates of the Procedural Sea</title>
@@ -1233,10 +1233,6 @@ const CAM_ANGLE_MAX = Math.PI / 2 - 0.04;
 function clampCameraAngle(a) {
   return Math.max(CAM_ANGLE_MIN, Math.min(CAM_ANGLE_MAX, a));
 }
-/** Horizontal offset scale: camera sits farther astern (over-the-shoulder). */
-const CAM_CHASE_BACK_FACTOR = 0.58;
-/** lookAt point is shifted along the bow so the view opens up ahead of the ship. */
-const CAM_CHASE_LOOKAHEAD = 26;
 function orbitDistanceFromZoomLevel(zoomLevel) {
   const z = clampCameraZoomLevel(zoomLevel);
   const t = (z - CAM_ZOOM_HORIZON) / (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON);
@@ -1250,7 +1246,7 @@ function zoomLevelFromOrbitDistance(dist) {
 
 const CAM_ZOOM_DEFAULT = clampCameraZoomLevel(Math.round(
   CAM_ZOOM_HORIZON
- + ((CAM_ORBIT_AT_HORIZON - (isMobile ? 132 : 86)) / (CAM_ORBIT_AT_HORIZON - CAM_ORBIT_AT_DECK))
+ + ((CAM_ORBIT_AT_HORIZON - (isMobile ? 150 : 50)) / (CAM_ORBIT_AT_HORIZON - CAM_ORBIT_AT_DECK))
   * (CAM_ZOOM_DECK - CAM_ZOOM_HORIZON)
 ));
 
@@ -1394,8 +1390,8 @@ const G = {
   storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
-    /** ~52° — pulled back & slightly lower pitch for an over-the-shoulder chase toward the bow. */
-    angle: Math.PI / 3.45, targetAngle: Math.PI / 3.45, yaw: Math.PI, targetYaw: Math.PI,
+    /** ~36° — lower chase angle so the view faces forward along the sea instead of top-down. */
+    angle: Math.PI / 5, targetAngle: Math.PI / 5, yaw: Math.PI, targetYaw: Math.PI,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
     mobileOrbitFree: false
   },
@@ -10524,25 +10520,6 @@ function spectateCameraLookAtY() {
   if (sp && sp.kind === 'dock') return SEA_LEVEL + 12;
   return SEA_LEVEL + 1.35;
 }
-/** Chase / spectate (non-dock): look slightly above the water ahead of the ship for a forward-facing frame. */
-function chaseCameraLookAtY() {
-  if (G.spectate && G.spectate.kind === 'dock') return spectateCameraLookAtY();
-  return SEA_LEVEL + 2.15;
-}
-function chaseCameraLookAtXZ(camX, camZ) {
-  if (G.spectate && G.spectate.kind === 'dock') {
-    return { x: camX, z: camZ };
-  }
-  let rot = G.player.rotation;
-  if (G.spectate) {
-    const t = resolveSpectateTargetXZR();
-    if (t && Number.isFinite(t.r)) rot = t.r;
-  }
-  return {
-    x: camX + Math.sin(rot) * CAM_CHASE_LOOKAHEAD,
-    z: camZ + Math.cos(rot) * CAM_CHASE_LOOKAHEAD
-  };
-}
 function updateSpectateInfoPanel() {
   const el = document.getElementById('spectate-info-panel');
   if (!el || !G.spectate) return;
@@ -14422,14 +14399,12 @@ function update(dt) {
       G.camera.targetYaw = G.camera.yaw;
     }
     const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
-    const back = cDist * CAM_CHASE_BACK_FACTOR;
     camera.position.set(
-      camX + G.camera.offsetX + Math.sin(cYaw) * back,
+      camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
       cDist * Math.sin(cAng),
-      camZ + G.camera.offsetZ + Math.cos(cYaw) * back
+      camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
     );
-    const lk = chaseCameraLookAtXZ(camX, camZ);
-    camera.lookAt(lk.x + G.camera.offsetX, chaseCameraLookAtY(), lk.z + G.camera.offsetZ);
+    camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
   }
 
   syncDayNightVisuals(camX, camZ);
@@ -14496,14 +14471,12 @@ function warmUpGameView() {
       G.camera.targetYaw = G.camera.yaw;
     }
     const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
-    const back = cDist * CAM_CHASE_BACK_FACTOR;
     camera.position.set(
-      camX + G.camera.offsetX + Math.sin(cYaw) * back,
+      camX + G.camera.offsetX + Math.sin(cYaw) * cDist * 0.5,
       cDist * Math.sin(cAng),
-      camZ + G.camera.offsetZ + Math.cos(cYaw) * back
+      camZ + G.camera.offsetZ + Math.cos(cYaw) * cDist * 0.5
     );
-    const lk = chaseCameraLookAtXZ(camX, camZ);
-    camera.lookAt(lk.x + G.camera.offsetX, chaseCameraLookAtY(), lk.z + G.camera.offsetZ);
+    camera.lookAt(camX + G.camera.offsetX, spectateCameraLookAtY(), camZ + G.camera.offsetZ);
   }
   syncDayNightVisuals(camX, camZ);
   { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z); }
