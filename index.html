@@ -2269,7 +2269,8 @@ const waterUniforms = {
   uDayFactor: { value: 1 },
   uCamPos: { value: new THREE.Vector3() }
 };
-const WAKE_UNIFORM_SLOTS = 6;
+const WAKE_UNIFORM_SLOTS = 16;
+const PLAYER_GPU_WAKE_TRAIL_MAX = 8;
 const _waterWakeVecs = [];
 for (let wi = 0; wi < WAKE_UNIFORM_SLOTS; wi++) {
   const v = new THREE.Vector4(0, 0, 0, 0);
@@ -2278,21 +2279,62 @@ for (let wi = 0; wi < WAKE_UNIFORM_SLOTS; wi++) {
 }
 /** World XZ center the infinite water plane follows (must match `water.position` for wake culling). */
 let waterFollowCamX = 0, waterFollowCamZ = 0;
-/** Pack moving ships for water fragment: xy = world XZ, zw = sin(yaw)·q, cos(yaw)·q (q = speed factor). */
+function clearPlayerGpuWakeTrail() {
+  G.playerGpuWakeTrail = [];
+  G._playerGpuWakeAcc = 0;
+  G._playerGpuWakeIdleT = 0;
+}
+/** Sample past positions so GPU foam is anchored in the world instead of sliding with the hull. */
+function recordPlayerGpuWakeTrail(dt) {
+  if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) {
+    if (G.docked || G.playerSinking) clearPlayerGpuWakeTrail();
+    return;
+  }
+  const spd = Math.abs(G.player.speed);
+  if (spd < 0.2) {
+    G._playerGpuWakeIdleT = (G._playerGpuWakeIdleT || 0) + dt;
+    if (G._playerGpuWakeIdleT > 0.5) clearPlayerGpuWakeTrail();
+    return;
+  }
+  G._playerGpuWakeIdleT = 0;
+  G._playerGpuWakeAcc = (G._playerGpuWakeAcc || 0) + dt;
+  const interval = 0.065;
+  if (G._playerGpuWakeAcc < interval) return;
+  G._playerGpuWakeAcc = 0;
+  if (!G.playerGpuWakeTrail) G.playerGpuWakeTrail = [];
+  const last = G.playerGpuWakeTrail[G.playerGpuWakeTrail.length - 1];
+  if (last) {
+    const dx = G.player.x - last.x, dz = G.player.z - last.z;
+    if (dx * dx + dz * dz < 0.14) return;
+  }
+  G.playerGpuWakeTrail.push({
+    x: G.player.x, z: G.player.z, yaw: G.player.rotation, speed: G.player.speed
+  });
+  while (G.playerGpuWakeTrail.length > PLAYER_GPU_WAKE_TRAIL_MAX) G.playerGpuWakeTrail.shift();
+}
+/** Pack wake sources for water fragment: xy = world XZ (past samples for player), zw = sin(yaw)·q, cos(yaw)·q. */
 function updateWaterWakeUniforms(camX, camZ) {
   for (let i = 0; i < WAKE_UNIFORM_SLOTS; i++) _waterWakeVecs[i].set(0, 0, 0, 0);
   let n = 0;
-  const pushWake = (x, z, yaw, speed) => {
+  const pushWake = (x, z, yaw, speed, strScale = 1) => {
     if (n >= WAKE_UNIFORM_SLOTS) return;
-    const sp = Math.min(1.28, Math.max(0, Math.abs(speed)) / 6.2);
-    if (sp < 0.035) return;
+    const sp = Math.min(1.28, Math.max(0, Math.abs(speed)) / 6.2) * strScale;
+    if (sp < 0.028) return;
     const sy = Math.sin(yaw || 0);
     const cy = Math.cos(yaw || 0);
     _waterWakeVecs[n].set(x, z, sy * sp, cy * sp);
     n++;
   };
   if (G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0 && !G.docked) {
-    pushWake(G.player.x, G.player.z, G.player.rotation, G.player.speed);
+    const tr = G.playerGpuWakeTrail;
+    if (tr && tr.length) {
+      const u = tr.length - 1;
+      for (let i = 0; i < tr.length && n < WAKE_UNIFORM_SLOTS; i++) {
+        const s = tr[i];
+        const fade = u < 1 ? 1 : 0.36 + 0.64 * (i / u);
+        pushWake(s.x, s.z, s.yaw, s.speed, fade);
+      }
+    }
   }
   if (G.mode === 'playing' && G.otherPlayers && G.otherPlayers.size) {
     const near = [];
@@ -2312,11 +2354,17 @@ function updateWaterWakeUniforms(camX, camZ) {
     }
   }
   if (G.mode === 'playing' && G.npcs && G.npcs.length) {
-    for (let i = 0; i < G.npcs.length && n < WAKE_UNIFORM_SLOTS; i++) {
+    const nearN = [];
+    for (let i = 0; i < G.npcs.length; i++) {
       const npc = G.npcs[i];
       if (npc.sinking || npc.health < -100) continue;
       const d2 = (npc.x - camX) ** 2 + (npc.z - camZ) ** 2;
-      if (d2 > 400 * 400) continue;
+      if (d2 > 420 * 420) continue;
+      nearN.push({ npc, d2 });
+    }
+    nearN.sort((a, b) => a.d2 - b.d2);
+    for (let i = 0; i < nearN.length && n < WAKE_UNIFORM_SLOTS; i++) {
+      const npc = nearN[i].npc;
       const spd = npc.speed != null ? npc.speed : 1.1;
       pushWake(npc.x, npc.z, npc.rotation, spd);
     }
@@ -2437,6 +2485,8 @@ const waterVS = `
 const waterFS = `
   uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoonDir; uniform float uDayFactor; uniform vec3 uCamPos;
   uniform vec4 uWake0; uniform vec4 uWake1; uniform vec4 uWake2; uniform vec4 uWake3; uniform vec4 uWake4; uniform vec4 uWake5;
+  uniform vec4 uWake6; uniform vec4 uWake7; uniform vec4 uWake8; uniform vec4 uWake9; uniform vec4 uWake10; uniform vec4 uWake11;
+  uniform vec4 uWake12; uniform vec4 uWake13; uniform vec4 uWake14; uniform vec4 uWake15;
   varying vec3 vWorldPos; varying vec3 vNormal;
   float evalShipWake(vec4 u, vec2 P){
     vec2 vel = u.zw;
@@ -2474,12 +2524,10 @@ const waterFS = `
   }
   float sumShipWakes(vec2 P){
     float s = 0.0;
-    s += evalShipWake(uWake0, P);
-    s += evalShipWake(uWake1, P);
-    s += evalShipWake(uWake2, P);
-    s += evalShipWake(uWake3, P);
-    s += evalShipWake(uWake4, P);
-    s += evalShipWake(uWake5, P);
+    s += evalShipWake(uWake0, P); s += evalShipWake(uWake1, P); s += evalShipWake(uWake2, P); s += evalShipWake(uWake3, P);
+    s += evalShipWake(uWake4, P); s += evalShipWake(uWake5, P); s += evalShipWake(uWake6, P); s += evalShipWake(uWake7, P);
+    s += evalShipWake(uWake8, P); s += evalShipWake(uWake9, P); s += evalShipWake(uWake10, P); s += evalShipWake(uWake11, P);
+    s += evalShipWake(uWake12, P); s += evalShipWake(uWake13, P); s += evalShipWake(uWake14, P); s += evalShipWake(uWake15, P);
     return s / (1.0 + s * 0.48);
   }
   float n2(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
@@ -10597,6 +10645,7 @@ function beginSpectate(spec) {
   if (dm) { dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); }
   mobileOrbitTouchId = null;
   resetMobileCameraChase();
+  clearPlayerGpuWakeTrail();
   G.spectate = spec;
   const hud = document.getElementById('spectate-hud');
   if (hud) hud.style.display = 'block';
@@ -12064,6 +12113,7 @@ function dockAtPort() {
   G.player.dockBerthIndex = berthIdx;
   G.docked = true; G.player.anchored = true; G.player.speed = 0;
   G.anchorDropping = false;
+  clearPlayerGpuWakeTrail();
   resetMobileCameraChase();
   syncAnchorToolbarButton();
   syncAnchorStatusHud();
@@ -13493,7 +13543,7 @@ function dampShipWaveTilt(pitch, roll) {
   return { wavePitch: p, waveRoll: r };
 }
 
-const WAKE_TRAIL_MAX = 132;
+const WAKE_TRAIL_MAX = 168;
 let _wakeFoamRadialTex = null;
 function getWakeFoamRadialTexture() {
   if (_wakeFoamRadialTex) return _wakeFoamRadialTex;
@@ -13541,9 +13591,9 @@ function spawnShipWakePiece(x, z, rotation, speed, sideSign, wakeKind) {
     rad = 0.4 + Math.random() * 0.18;
     along = 2.38;
     lat = 0.62 * side;
-    life = 1.58;
-    fade0 = 0.78;
-    opacity = 0.68;
+    life = 1.78;
+    fade0 = 0.76;
+    opacity = 0.64;
     sclJ = 1;
   }
   const wakeGeo = new THREE.CircleGeometry(rad, 36);
@@ -13568,6 +13618,7 @@ function spawnShipWakePiece(x, z, rotation, speed, sideSign, wakeKind) {
   wake.userData.baseSX = ex;
   wake.userData.baseSZ = ez;
   wake.userData.life = life;
+  wake.userData.lifeMax = life;
   wake.userData.fade0 = fade0;
   scene.add(wake);
   if (!G.wakeTrail) G.wakeTrail = [];
@@ -13593,7 +13644,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
     G.wakeSpawnCooldowns.set(key, t);
     return;
   }
-  G.wakeSpawnCooldowns.set(key, 0.19);
+  G.wakeSpawnCooldowns.set(key, 0.168);
   spawnShipWakePiece(x, z, rotation, speed, -1, 'stern');
   spawnShipWakePiece(x, z, rotation, speed, 1, 'stern');
   spawnShipWakePiece(x, z, rotation, speed, -1, 'bow');
@@ -13688,6 +13739,8 @@ function update(dt) {
     pushPlayerOutOfShipOverlaps();
   }
 
+  if (G.mode === 'playing') recordPlayerGpuWakeTrail(dt);
+
   if (!G.captainWalk.active) {
     if (keys['q']) G.camera.targetYaw -= 1.5 * dt;
     if (keys['e']) G.camera.targetYaw += 1.5 * dt;
@@ -13781,7 +13834,7 @@ function update(dt) {
     for (let i = G.wakeTrail.length - 1; i >= 0; i--) {
       const w = G.wakeTrail[i];
       w.userData.life -= dt;
-      const life0 = 1.52;
+      const life0 = w.userData.lifeMax != null ? w.userData.lifeMax : 1.52;
       const t = Math.max(0, w.userData.life / life0);
       const fade0 = w.userData.fade0 != null ? w.userData.fade0 : 0.82;
       w.material.opacity = Math.max(0, fade0 * t * t * 0.95);
