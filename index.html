@@ -1033,6 +1033,26 @@ function rgbIslandTerrainOpenSea(wx, wz, noise2d) {
     Math.max(0, Math.min(1, 0.42 + w * 0.52))
   ];
 }
+/**
+ * Remove triangles that lie entirely in “open sea” verts. Those faces sit shallow under the water shader and read as a
+ * chunk-sized tint; deleting them lets the same seabed show through as in open ocean (land/coast triangles stay).
+ */
+function stripIslandTerrainOpenSeaTriangles(geo, waterMask) {
+  const idx = geo.getIndex();
+  if (!idx) return;
+  const ia = idx.array;
+  const n = idx.count;
+  const out = [];
+  for (let f = 0; f < n; f += 3) {
+    const a = ia[f], b = ia[f + 1], c = ia[f + 2];
+    if (waterMask[a] && waterMask[b] && waterMask[c]) continue;
+    out.push(a, b, c);
+  }
+  if (out.length >= 3) {
+    geo.setIndex(out);
+    geo.computeBoundingSphere();
+  }
+}
 /** Large deterministic pool of port-style names (prefix + suffix); avoids repeats from a tiny fixed list. */
 const TOWN_NAME_LEXICON = (() => {
   const p = ['Port','Cape','New','Fort','East','West','North','South','Great','Little','Lost','Fair','Grim','High','Low',"Sailor's","Pirate's","Crow's",'Keel','Black','Red','White','Gold','Silver','Grey','Storm','Salt','Brine','Tide','Wave','Moon','Drift','Wreck','Anchor',"Smuggler's",'Barnacle',"King's","Queen's",'Rum','Dead','Lone','Free','Noble','Wild','Drowned','Hidden','Morrow','Sable','Ashen','Velvet','Iron','Coral','Pearl','Cursed','Blessed','Jolly','Misty','Crimson','Azure','Bitter','Sweet','Broken','Hollow','Proud','Humble','Fallow','Green','Blue','Northern','Southern','Eastern','Western'];
@@ -3664,6 +3684,7 @@ function generateCustomMapChunk(cx, cz) {
   geo.rotateX(-Math.PI / 2);
   const positions = geo.attributes.position;
   const colors = new Float32Array(positions.count * 3);
+  const waterMask = new Uint8Array(positions.count);
   let maxChunkH = 4;
   for (let i = 0; i < positions.count; i++) {
     const lx = positions.getX(i), lz = positions.getZ(i);
@@ -3673,6 +3694,7 @@ function generateCustomMapChunk(cx, cz) {
     const y = h <= wThr ? -2 - (wThr - h) * 3 : h * maxH;
     positions.setY(i, y);
     if (h > wThr) maxChunkH = Math.max(maxChunkH, h * maxH);
+    waterMask[i] = h <= wThr ? 1 : 0;
     let r, g, b;
     if (h <= wThr) {
       [r, g, b] = rgbIslandTerrainOpenSea(wx, wz, (ax, az) => noise.noise2D(ax, az));
@@ -3689,6 +3711,7 @@ function generateCustomMapChunk(cx, cz) {
   }
   positions.needsUpdate = true;
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  stripIslandTerrainOpenSeaTriangles(geo, waterMask);
   geo.computeVertexNormals();
   const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
   const cwx = minWx + CHUNK_SIZE * 0.5;
@@ -3820,6 +3843,7 @@ function generateIsland(cx, cz) {
   terrainGeo.rotateX(-Math.PI / 2);
   const positions = terrainGeo.attributes.position;
   const colors = new Float32Array(positions.count * 3);
+  const waterMask = new Uint8Array(positions.count);
 
   const islandNoise = new SimplexNoise(cx * 777 + cz * 333);
   for (let i = 0; i < positions.count; i++) {
@@ -3843,6 +3867,7 @@ function generateIsland(cx, cz) {
       ht = Math.max(PROC_LAND_HT_MIN, ht);
       positions.setY(i, ht);
     }
+    waterMask[i] = !isLand ? 1 : 0;
 
     const nh = Math.max(0, ht) / islandHeight;
     const slope = dist > 0.01 ? Math.max(0, ht) / (dist * islandRadius) : 0;
@@ -3875,6 +3900,7 @@ function generateIsland(cx, cz) {
   }
   positions.needsUpdate = true;
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  stripIslandTerrainOpenSeaTriangles(terrainGeo, waterMask);
   terrainGeo.computeVertexNormals();
 
   const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
