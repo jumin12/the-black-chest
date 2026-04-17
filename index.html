@@ -2346,16 +2346,18 @@ const waterFS = `
     float shipWake = sumShipWakes(vWorldPos.xz);
     float wakeRip = 0.5 + 0.5 * sin(dot(vWorldPos.xz, vec2(0.13, -0.11)) * 3.2 + uTime * 3.5);
     vec3 wakeFoam = vec3(0.91,0.94,0.98) * shipWake * (0.42 + 0.58 * uDayFactor) * (0.82 + 0.18 * wakeRip);
-    vec3 color = diff*(1.0-fresnel)+refl+specC+sub+foam*0.55 + wakeFoam * 0.06;
-    color = pow(color,vec3(1.0/2.2));
-    gl_FragColor = vec4(color,1.0);
+    vec3 colorLin = diff*(1.0-fresnel)+refl+specC+sub+foam*0.55 + wakeFoam * 0.1;
+    float waterAlpha = mix(0.52, 0.9, fresnel);
+    waterAlpha = clamp(waterAlpha + (NdotV - 0.35) * 0.22, 0.46, 0.93);
+    vec3 color = pow(colorLin,vec3(1.0/2.2));
+    gl_FragColor = vec4(color, waterAlpha);
   }`;
 
 const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 240, 240);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
   uniforms: waterUniforms, vertexShader: waterVS, fragmentShader: waterFS,
-  transparent: false, depthWrite: true, side: THREE.FrontSide,
+  transparent: true, depthWrite: false, side: THREE.FrontSide,
   polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
 }));
 water.renderOrder = -1;
@@ -13157,15 +13159,52 @@ function dampShipWaveTilt(pitch, roll) {
   return { wavePitch: p, waveRoll: r };
 }
 
+let _wakeFoamRadialTex = null;
+function getWakeFoamRadialTexture() {
+  if (_wakeFoamRadialTex) return _wakeFoamRadialTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 63);
+  g.addColorStop(0, 'rgba(248,252,255,0.72)');
+  g.addColorStop(0.28, 'rgba(220,234,248,0.38)');
+  g.addColorStop(0.55, 'rgba(200,220,240,0.14)');
+  g.addColorStop(0.78, 'rgba(190,215,235,0.04)');
+  g.addColorStop(1, 'rgba(180,210,230,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  _wakeFoamRadialTex = new THREE.CanvasTexture(c);
+  _wakeFoamRadialTex.wrapS = THREE.ClampToEdgeWrapping;
+  _wakeFoamRadialTex.wrapT = THREE.ClampToEdgeWrapping;
+  if (_wakeFoamRadialTex.colorSpace !== undefined) _wakeFoamRadialTex.colorSpace = THREE.SRGBColorSpace;
+  return _wakeFoamRadialTex;
+}
+
 function spawnShipWakePiece(x, z, rotation, speed) {
   if (Math.abs(speed) < 0.38) return;
-  const wakeGeo = new THREE.PlaneGeometry(0.5, 0.5);
+  const rad = 0.36 + Math.random() * 0.16;
+  const wakeGeo = new THREE.CircleGeometry(rad, 36);
   wakeGeo.rotateX(-Math.PI / 2);
-  const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({ color: 0xc8dae8, transparent: true, opacity: 0.2, depthWrite: false }));
-  const wx = x - Math.sin(rotation) * 2.35 + (Math.random() - 0.5) * 0.65;
-  const wz = z - Math.cos(rotation) * 2.35 + (Math.random() - 0.5) * 0.65;
-  wake.position.set(wx, worldSeaSurfaceY(wx, wz) + 0.025, wz);
-  wake.userData.life = 1.2;
+  const tex = getWakeFoamRadialTexture();
+  const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    opacity: 0.82,
+    depthWrite: false,
+    depthTest: true,
+    blending: THREE.NormalBlending
+  }));
+  const wx = x - Math.sin(rotation) * 2.2 + (Math.random() - 0.5) * 0.55;
+  const wz = z - Math.cos(rotation) * 2.2 + (Math.random() - 0.5) * 0.55;
+  wake.position.set(wx, worldSeaSurfaceY(wx, wz) + 0.02, wz);
+  wake.rotation.y = rotation + (Math.random() - 0.5) * 0.5;
+  const ex = 0.72 + Math.random() * 0.38;
+  const ez = 0.82 + Math.random() * 0.42;
+  wake.scale.set(ex, 1, ez);
+  wake.userData.baseSX = ex;
+  wake.userData.baseSZ = ez;
+  wake.userData.life = 1.35;
+  wake.userData.fade0 = 0.82;
   scene.add(wake);
   if (!G.wakeTrail) G.wakeTrail = [];
   G.wakeTrail.push(wake);
@@ -13181,7 +13220,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
     G.wakeSpawnCooldowns.set(key, t);
     return;
   }
-  G.wakeSpawnCooldowns.set(key, 0.2);
+  G.wakeSpawnCooldowns.set(key, 0.17);
   spawnShipWakePiece(x, z, rotation, speed);
 }
 
@@ -13359,11 +13398,24 @@ function update(dt) {
     for (let i = G.wakeTrail.length - 1; i >= 0; i--) {
       const w = G.wakeTrail[i];
       w.userData.life -= dt;
-      w.material.opacity = w.userData.life * 0.11;
-      w.scale.setScalar(1 + (1.2 - w.userData.life) * 0.9);
+      const life0 = 1.35;
+      const t = Math.max(0, w.userData.life / life0);
+      const fade0 = w.userData.fade0 != null ? w.userData.fade0 : 0.82;
+      w.material.opacity = Math.max(0, fade0 * t * t * 0.95);
+      const age = life0 - w.userData.life;
+      const g = 1 + age * 0.62;
+      const bsx = w.userData.baseSX != null ? w.userData.baseSX : 1;
+      const bsz = w.userData.baseSZ != null ? w.userData.baseSZ : 1;
+      w.scale.set(bsx * g, 1, bsz * g);
       const wpx = w.position.x, wpz = w.position.z;
-      w.position.y = worldSeaSurfaceY(wpx, wpz) + 0.025;
-      if (w.userData.life <= 0) { scene.remove(w); w.geometry.dispose(); w.material.dispose(); G.wakeTrail.splice(i, 1); }
+      w.position.y = worldSeaSurfaceY(wpx, wpz) + 0.02;
+      if (w.userData.life <= 0) {
+        scene.remove(w);
+        w.material.map = null;
+        w.geometry.dispose();
+        w.material.dispose();
+        G.wakeTrail.splice(i, 1);
+      }
     }
   }
 
