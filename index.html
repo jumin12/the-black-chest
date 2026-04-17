@@ -1052,7 +1052,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     <kbd>W</kbd><kbd>S</kbd> Sail &nbsp; <kbd>A</kbd><kbd>D</kbd> Turn<br>
     <kbd>Z</kbd> Fire Port &nbsp; <kbd>X</kbd> Fire Starboard &nbsp; <kbd>Space</kbd> Fire Both — choose shot type under the top bar (round / grape / chain)<br>
     <span style="color:#a89878;">PC: click the sea view to the left or right of your ship to fire that broadside (not on HUD)</span><br>
-    <kbd>Q</kbd><kbd>E</kbd> Rotate camera &nbsp; <strong>Middle mouse drag</strong> orbit (yaw &amp; pitch) &nbsp; <kbd>Scroll</kbd> horizon ↔ deck &nbsp; <kbd>M</kbd> map &nbsp; <kbd>F3</kbd> debug &nbsp; <kbd>Esc</kbd> settings / close panels<br>
+    <kbd>Q</kbd><kbd>E</kbd> Rotate camera (holds offset until <kbd>Home</kbd> or port) &nbsp; <strong>Middle mouse drag</strong> orbit (yaw &amp; pitch) &nbsp; <kbd>Scroll</kbd> horizon ↔ deck &nbsp; <kbd>M</kbd> map &nbsp; <kbd>F3</kbd> debug &nbsp; <kbd>Esc</kbd> settings / close panels<br>
     <span style="color:#a89878;">Deck walk (compass toolbar): WASD / arrows move, mouse looks (pointer lock), <strong>right-click</strong> spyglass (telescope overlay), <kbd>Space</kbd> jump. Mobile: joystick walk, <strong>tap spyglass button</strong> on the right to toggle, double-tap open sea to jump.</span><br>
     <kbd>B</kbd> Ship &nbsp; <kbd>I</kbd> Cargo hold &nbsp; <kbd>C</kbd> Crew &nbsp; <kbd>T</kbd> Chat
   </div>
@@ -1391,10 +1391,10 @@ const G = {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
     /** Lower / nearer the swells than PI/5.6; height is still cDist*sin(angle). */
     angle: Math.PI / 6.1, targetAngle: Math.PI / 6.1, yaw: Math.PI, targetYaw: Math.PI,
-    /** Radians added to chase yaw (`rotation + PI`); Q/E and orbit drag stay put when released. */
-    yawOffset: 0,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
-    mobileOrbitFree: false
+    mobileOrbitFree: false,
+    /** PC: Q/E or middle-mouse orbit — keep yaw until resetChaseCameraBehindShip (dock, leave port, spectate, touch zoom). */
+    pcOrbitFree: false
   },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
@@ -8935,23 +8935,15 @@ let middleDown = false, lastMX = 0, lastMY = 0;
 let mobileOrbitTouchId = null, mobileOrbitLX = 0, mobileOrbitLY = 0;
 const CAM_ORBIT_SENS_X = 0.0055;
 const CAM_ORBIT_SENS_Y = 0.0042;
-function wrapAngleRad(a) {
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
-  return a;
-}
-function syncCameraYawOffsetFromTarget() {
-  if (G.spectate || !G.player) return;
-  const base = (G.player.rotation != null ? G.player.rotation : 0) + Math.PI;
-  G.camera.yawOffset = wrapAngleRad(G.camera.targetYaw - base);
-}
-function resetMobileCameraChase() {
-  G.camera.yawOffset = 0;
-  if (!isMobile) return;
+function resetChaseCameraBehindShip() {
   G.camera.mobileOrbitFree = false;
+  G.camera.pcOrbitFree = false;
   const y = (G.player && G.player.rotation != null ? G.player.rotation : 0) + Math.PI;
   G.camera.yaw = y;
   G.camera.targetYaw = y;
+}
+function resetMobileCameraChase() {
+  resetChaseCameraBehindShip();
 }
 function collectMobileOrbitExcludeRects() {
   const ids = [
@@ -9034,6 +9026,10 @@ window.addEventListener('keydown', e => {
   if (k === 'v') doAnchor();
   if (k === 'e' && G.nearDock && !G.docked && !G.spectate) dockAtPort();
   if (k === 'm') toggleFullmap();
+  if (e.key === 'Home' && G.mode === 'playing' && !G.spectate && !G.captainWalk?.active && !G.docked) {
+    e.preventDefault();
+    resetChaseCameraBehindShip();
+  }
   if (e.key === 'F3') {
     e.preventDefault();
     const dm = document.getElementById('debug-modal-root');
@@ -9821,8 +9817,8 @@ window.addEventListener('mousemove', e => {
   lastMY = e.clientY;
   G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X;
   G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y);
-  syncCameraYawOffsetFromTarget();
   if (isMobile) G.camera.mobileOrbitFree = true;
+  else G.camera.pcOrbitFree = true;
 });
 window.addEventListener('touchstart', e => {
   if (!isMobile || G.mode !== 'playing' || G.docked || G.playerSinking) return;
@@ -9853,7 +9849,6 @@ window.addEventListener('touchmove', e => {
     } else {
       G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X * 1.05;
       G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y * 1.05);
-      syncCameraYawOffsetFromTarget();
       G.camera.mobileOrbitFree = true;
     }
     e.preventDefault();
@@ -10567,7 +10562,7 @@ function chaseCameraLookAtXYZ(camX, camZ, cDist) {
   let lx = camX + ox;
   let lz = camZ + oz;
   let ly;
-  if (isMobile && G.camera.mobileOrbitFree) {
+  if ((isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree) {
     ly = spectateCameraLookAtY();
   } else {
     const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
@@ -13711,8 +13706,8 @@ function update(dt) {
   }
 
   if (!G.captainWalk.active) {
-    if (keys['q']) G.camera.yawOffset = wrapAngleRad(G.camera.yawOffset - 1.5 * dt);
-    if (keys['e']) G.camera.yawOffset = wrapAngleRad(G.camera.yawOffset + 1.5 * dt);
+    if (keys['q']) { G.camera.targetYaw -= 1.5 * dt; G.camera.pcOrbitFree = true; }
+    if (keys['e']) { G.camera.targetYaw += 1.5 * dt; G.camera.pcOrbitFree = true; }
   }
   G.camera.yaw += (G.camera.targetYaw - G.camera.yaw) * Math.min(1, 4 * dt);
   G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle);
@@ -14442,9 +14437,9 @@ function update(dt) {
   if (G.captainWalk.active) {
     updateCaptainWalk(dt);
   } else {
-    const orbitFree = G.spectate || (isMobile && G.camera.mobileOrbitFree) || middleDown;
+    const orbitFree = G.spectate || (isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree || middleDown;
     if (!orbitFree) {
-      const targetY = G.player.rotation + Math.PI + G.camera.yawOffset;
+      const targetY = G.player.rotation + Math.PI;
       let camDiff = targetY - G.camera.yaw;
       while (camDiff > Math.PI) camDiff -= Math.PI * 2;
       while (camDiff < -Math.PI) camDiff += Math.PI * 2;
@@ -14520,8 +14515,8 @@ function warmUpGameView() {
   if (G.captainWalk.active) {
     updateCaptainWalk(0);
   } else {
-    if (!G.spectate && !(isMobile && G.camera.mobileOrbitFree) && !middleDown) {
-      const y = G.player.rotation + Math.PI + G.camera.yawOffset;
+    if (!G.spectate && !(isMobile && G.camera.mobileOrbitFree) && !G.camera.pcOrbitFree && !middleDown) {
+      const y = G.player.rotation + Math.PI;
       G.camera.yaw = y;
       G.camera.targetYaw = y;
     }
