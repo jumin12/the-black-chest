@@ -808,6 +808,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  const reqPath = String(req.url || '').split('?')[0];
+  if (req.method === 'GET' && reqPath === '/favicon.ico') {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+      + '<rect width="32" height="32" rx="5" fill="#1a140c"/>'
+      + '<path fill="#d4a848" d="M16 5l2.2 7.2H26l-5.8 4.4L22.4 26 16 21.7 9.6 26l2.2-9.4L6 12.2h7.8L16 5z"/>'
+      + '</svg>'
+    );
+    res.writeHead(200, {
+      'Content-Type': 'image/svg+xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=86400',
+      ...CORS_HEADERS
+    });
+    res.end(svg);
+    return;
+  }
+
   if (req.url === '/' || req.url === '/index.html' || req.url.startsWith('/index.html?')) {
     fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
