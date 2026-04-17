@@ -2270,7 +2270,6 @@ const waterUniforms = {
   uCamPos: { value: new THREE.Vector3() }
 };
 const WAKE_UNIFORM_SLOTS = 16;
-const PLAYER_GPU_WAKE_TRAIL_MAX = 8;
 const _waterWakeVecs = [];
 for (let wi = 0; wi < WAKE_UNIFORM_SLOTS; wi++) {
   const v = new THREE.Vector4(0, 0, 0, 0);
@@ -2279,40 +2278,14 @@ for (let wi = 0; wi < WAKE_UNIFORM_SLOTS; wi++) {
 }
 /** World XZ center the infinite water plane follows (must match `water.position` for wake culling). */
 let waterFollowCamX = 0, waterFollowCamZ = 0;
-function clearPlayerGpuWakeTrail() {
-  G.playerGpuWakeTrail = [];
-  G._playerGpuWakeAcc = 0;
-  G._playerGpuWakeIdleT = 0;
+/** Stern-centered wake source (avoids long course-aligned tail from midship + history samples). */
+function wakeSourceBehindShip(wx, wz, yaw, shipKey) {
+  const spec = SHIP_TYPES[shipKey] || SHIP_TYPES.sloop;
+  const back = Math.max(1.05, spec.hullLen * 0.44);
+  const sy = Math.sin(yaw || 0), cy = Math.cos(yaw || 0);
+  return { x: wx - sy * back, z: wz - cy * back };
 }
-/** Sample past positions so GPU foam is anchored in the world instead of sliding with the hull. */
-function recordPlayerGpuWakeTrail(dt) {
-  if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) {
-    if (G.docked || G.playerSinking) clearPlayerGpuWakeTrail();
-    return;
-  }
-  const spd = Math.abs(G.player.speed);
-  if (spd < 0.2) {
-    G._playerGpuWakeIdleT = (G._playerGpuWakeIdleT || 0) + dt;
-    if (G._playerGpuWakeIdleT > 0.5) clearPlayerGpuWakeTrail();
-    return;
-  }
-  G._playerGpuWakeIdleT = 0;
-  G._playerGpuWakeAcc = (G._playerGpuWakeAcc || 0) + dt;
-  const interval = 0.065;
-  if (G._playerGpuWakeAcc < interval) return;
-  G._playerGpuWakeAcc = 0;
-  if (!G.playerGpuWakeTrail) G.playerGpuWakeTrail = [];
-  const last = G.playerGpuWakeTrail[G.playerGpuWakeTrail.length - 1];
-  if (last) {
-    const dx = G.player.x - last.x, dz = G.player.z - last.z;
-    if (dx * dx + dz * dz < 0.14) return;
-  }
-  G.playerGpuWakeTrail.push({
-    x: G.player.x, z: G.player.z, yaw: G.player.rotation, speed: G.player.speed
-  });
-  while (G.playerGpuWakeTrail.length > PLAYER_GPU_WAKE_TRAIL_MAX) G.playerGpuWakeTrail.shift();
-}
-/** Pack wake sources for water fragment: xy = world XZ (past samples for player), zw = sin(yaw)·q, cos(yaw)·q. */
+/** Pack wake sources: xy = world XZ at stern, zw = sin(yaw)·q, cos(yaw)·q. */
 function updateWaterWakeUniforms(camX, camZ) {
   for (let i = 0; i < WAKE_UNIFORM_SLOTS; i++) _waterWakeVecs[i].set(0, 0, 0, 0);
   let n = 0;
@@ -2326,15 +2299,8 @@ function updateWaterWakeUniforms(camX, camZ) {
     n++;
   };
   if (G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0 && !G.docked) {
-    const tr = G.playerGpuWakeTrail;
-    if (tr && tr.length) {
-      const u = tr.length - 1;
-      for (let i = 0; i < tr.length && n < WAKE_UNIFORM_SLOTS; i++) {
-        const s = tr[i];
-        const fade = u < 1 ? 1 : 0.36 + 0.64 * (i / u);
-        pushWake(s.x, s.z, s.yaw, s.speed, fade);
-      }
-    }
+    const st = wakeSourceBehindShip(G.player.x, G.player.z, G.player.rotation, G.player.shipType || 'sloop');
+    pushWake(st.x, st.z, G.player.rotation, G.player.speed);
   }
   if (G.mode === 'playing' && G.otherPlayers && G.otherPlayers.size) {
     const near = [];
@@ -2350,7 +2316,8 @@ function updateWaterWakeUniforms(camX, camZ) {
     near.sort((a, b) => a.d2 - b.d2);
     for (let i = 0; i < near.length && n < WAKE_UNIFORM_SLOTS; i++) {
       const p = near[i].p;
-      pushWake(p.x, p.z, p.rotation || 0, p.speed || 0);
+      const st = wakeSourceBehindShip(p.x, p.z, p.rotation || 0, p.shipType || 'sloop');
+      pushWake(st.x, st.z, p.rotation || 0, p.speed || 0);
     }
   }
   if (G.mode === 'playing' && G.npcs && G.npcs.length) {
@@ -2366,7 +2333,8 @@ function updateWaterWakeUniforms(camX, camZ) {
     for (let i = 0; i < nearN.length && n < WAKE_UNIFORM_SLOTS; i++) {
       const npc = nearN[i].npc;
       const spd = npc.speed != null ? npc.speed : 1.1;
-      pushWake(npc.x, npc.z, npc.rotation, spd);
+      const st = wakeSourceBehindShip(npc.x, npc.z, npc.rotation, npc.type || 'sloop');
+      pushWake(st.x, st.z, npc.rotation, spd);
     }
   }
 }
@@ -2495,32 +2463,26 @@ const waterFS = `
     vec2 F = vel / vm;
     vec2 d = P - u.xy;
     float r = length(d);
-    float rFade = 1.0 - smoothstep(23.5, 31.0, r);
+    float rFade = 1.0 - smoothstep(5.8, 10.5, r);
     if(rFade <= 0.001) return 0.0;
     float ahead = dot(d, F);
     float side = dot(d, vec2(-F.y, F.x));
     float astern = max(0.0, -ahead);
     float forward = max(0.0, ahead);
     float sp = clamp(vm, 0.0, 1.05);
-    float halfW = 0.74 + astern * 0.05 + sp * 0.11;
-    float off = halfW * 0.66;
-    float sig = halfW * halfW * 0.36;
+    float halfW = 0.62 + astern * 0.038 + sp * 0.09;
+    float off = halfW * 0.64;
+    float sig = halfW * halfW * 0.38;
     float lL = exp(-((side - off) * (side - off)) / sig);
     float lR = exp(-((side + off) * (side + off)) / sig);
     float sternCore = max(lL, lR);
-    float sternFarCenter = exp(-(side*side)/(halfW*halfW*1.75)) * smoothstep(15.0, 28.0, astern) * 0.11;
-    sternCore = max(sternCore, sternFarCenter);
-    float sternLen = exp(-astern * 0.138) * smoothstep(0.55, 6.2, astern);
-    float sternTerm = sternCore * sternLen * sp * 0.33;
-    float bowW = 0.5 + sp * 0.24;
-    float bowRing = exp(-(side*side)/(bowW*bowW)) * exp(-forward * 0.33);
-    float bowFan = smoothstep(0.35, 2.5, forward) * (0.52 + 0.48 * exp(-abs(side)*0.09));
-    float bowTerm = bowRing * bowFan * sp * 0.34;
-    float shoulder = exp(-abs(side)/(0.92 + sp*0.26)) * exp(-pow(abs(ahead + 2.35), 1.2) * 0.065) * smoothstep(1.2, 5.2, astern) * smoothstep(0.55, 2.8, abs(side)) * sp * 0.085;
-    float wake = sternTerm + bowTerm + shoulder;
-    float hullDeHalo = smoothstep(1.05, 3.5, r);
-    float keelClear = smoothstep(0.0, 2.55, abs(side) * 1.05 + astern * 0.3 + forward * 0.42);
-    return wake * rFade * hullDeHalo * mix(0.04, 1.0, keelClear);
+    float sternLen = exp(-astern * 0.52) * smoothstep(0.18, 2.85, astern) * (1.0 - smoothstep(4.6, 7.2, astern));
+    float sternTerm = sternCore * sternLen * sp * 0.36;
+    float churn = exp(-(side*side + forward*forward * 1.15)/(halfW*halfW*0.55)) * exp(-forward * 0.55) * smoothstep(0.0, 1.35, forward) * sp * 0.22;
+    float wake = sternTerm + churn;
+    float hullDeHalo = smoothstep(0.45, 2.65, r);
+    float keelClear = smoothstep(0.0, 2.15, abs(side) * 1.08 + astern * 0.28 + forward * 0.38);
+    return wake * rFade * hullDeHalo * mix(0.06, 1.0, keelClear);
   }
   float sumShipWakes(vec2 P){
     float s = 0.0;
@@ -10645,7 +10607,6 @@ function beginSpectate(spec) {
   if (dm) { dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); }
   mobileOrbitTouchId = null;
   resetMobileCameraChase();
-  clearPlayerGpuWakeTrail();
   G.spectate = spec;
   const hud = document.getElementById('spectate-hud');
   if (hud) hud.style.display = 'block';
@@ -12113,7 +12074,6 @@ function dockAtPort() {
   G.player.dockBerthIndex = berthIdx;
   G.docked = true; G.player.anchored = true; G.player.speed = 0;
   G.anchorDropping = false;
-  clearPlayerGpuWakeTrail();
   resetMobileCameraChase();
   syncAnchorToolbarButton();
   syncAnchorStatusHud();
@@ -13543,7 +13503,7 @@ function dampShipWaveTilt(pitch, roll) {
   return { wavePitch: p, waveRoll: r };
 }
 
-const WAKE_TRAIL_MAX = 168;
+const WAKE_TRAIL_MAX = 72;
 let _wakeFoamRadialTex = null;
 function getWakeFoamRadialTexture() {
   if (_wakeFoamRadialTex) return _wakeFoamRadialTex;
@@ -13588,12 +13548,12 @@ function spawnShipWakePiece(x, z, rotation, speed, sideSign, wakeKind) {
     opacity = 0.44;
     sclJ = 0.88;
   } else {
-    rad = 0.4 + Math.random() * 0.18;
-    along = 2.38;
-    lat = 0.62 * side;
-    life = 1.78;
-    fade0 = 0.76;
-    opacity = 0.64;
+    rad = 0.34 + Math.random() * 0.14;
+    along = 1.72;
+    lat = 0.58 * side;
+    life = 0.92;
+    fade0 = 0.74;
+    opacity = 0.52;
     sclJ = 1;
   }
   const wakeGeo = new THREE.CircleGeometry(rad, 36);
@@ -13644,18 +13604,9 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
     G.wakeSpawnCooldowns.set(key, t);
     return;
   }
-  G.wakeSpawnCooldowns.set(key, 0.168);
+  G.wakeSpawnCooldowns.set(key, 0.175);
   spawnShipWakePiece(x, z, rotation, speed, -1, 'stern');
   spawnShipWakePiece(x, z, rotation, speed, 1, 'stern');
-  spawnShipWakePiece(x, z, rotation, speed, -1, 'bow');
-  spawnShipWakePiece(x, z, rotation, speed, 1, 'bow');
-  if (!G.wakeBeamPhase) G.wakeBeamPhase = new Map();
-  let b = (G.wakeBeamPhase.get(key) || 0) + 1;
-  if (b >= 2) {
-    G.wakeBeamPhase.set(key, 0);
-    spawnShipWakePiece(x, z, rotation, speed, -1, 'beam');
-    spawnShipWakePiece(x, z, rotation, speed, 1, 'beam');
-  } else G.wakeBeamPhase.set(key, b);
 }
 
 /* ============================== GAME LOOP ================================ */
@@ -13738,8 +13689,6 @@ function update(dt) {
     clampPlayerIntoWorldBounds();
     pushPlayerOutOfShipOverlaps();
   }
-
-  if (G.mode === 'playing') recordPlayerGpuWakeTrail(dt);
 
   if (!G.captainWalk.active) {
     if (keys['q']) G.camera.targetYaw -= 1.5 * dt;
