@@ -103,7 +103,7 @@ function readJsonBody(req, limit = 65536) {
 }
 
 const players = new Map();
-/** Shared narrative + contracts for all captains on this server (merged from clients, broadcast on change). */
+/** @deprecated kept for old clients; no longer merged globally */
 let worldStoryQuest = {
   phase: 'intro',
   step: 0,
@@ -114,6 +114,8 @@ let worldStoryQuest = {
   bountyZ: null,
   bountyRot: null
 };
+/** Per connected captain: main story progress for bounty spawns (not global). */
+const playerStories = new Map();
 /** @type {object[]|null} */
 let worldQuests = null;
 let nextId = 1;
@@ -121,8 +123,116 @@ let nextLootNetId = 1;
 let nextSwimmerNetId = 1;
 let nextChatMessageId = 1;
 const CHAT_HISTORY_MAX = 200;
-/** @type {{ id: number, t: number, playerId: number, name: string, text: string }[]} */
+/** @type {{ id: number, t: number, playerId: number, name: string, text: string, channel?: string, partyId?: string|null, partyTag?: string }[]} */
 const chatHistory = [];
+
+const PARTIES_FILE = path.join(DATA_DIR, 'parties.json');
+/** @type {{ parties: Record<string, { id: string, tag: string, leaderKey: string, memberKeys: string[], pendingKeys?: string[] }>, captainParty: Record<string, string>, nextPartyNum: number }} */
+let partyStore = { parties: {}, captainParty: {}, nextPartyNum: 1 };
+
+function loadPartyStore() {
+  try {
+    if (!fs.existsSync(PARTIES_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(PARTIES_FILE, 'utf8'));
+    if (raw && typeof raw === 'object' && raw.parties && raw.captainParty) {
+      partyStore = {
+        parties: typeof raw.parties === 'object' ? raw.parties : {},
+        captainParty: typeof raw.captainParty === 'object' ? raw.captainParty : {},
+        nextPartyNum: Math.max(1, Math.floor(Number(raw.nextPartyNum) || 1))
+      };
+    }
+  } catch (e) {
+    console.error('[playground] parties load error:', e.message);
+  }
+}
+function savePartyStore() {
+  try {
+    writeFileAtomic(PARTIES_FILE, JSON.stringify(partyStore));
+  } catch (e) {
+    console.error('[playground] parties save error:', e.message);
+  }
+}
+loadPartyStore();
+
+function sanitizePartyTag(t) {
+  return String(t != null ? t : '').trim().slice(0, 24);
+}
+
+function findPlayerIdByCaptainKey(ck) {
+  if (!ck) return null;
+  for (const [pid, pl] of players) {
+    if (pl && pl.captainKey === ck) return pid;
+  }
+  return null;
+}
+
+function broadcastPartySync(partyId) {
+  const p = partyStore.parties[partyId];
+  if (!p || !Array.isArray(p.memberKeys)) return;
+  const payload = buildPartySyncPayload(p);
+  for (const ck of p.memberKeys) {
+    const pid = findPlayerIdByCaptainKey(ck);
+    if (pid == null) continue;
+    const cws = findWsByPlayerId(pid);
+    if (cws && cws.readyState === 1) {
+      try {
+        cws.send(JSON.stringify({ type: 'party_sync', party: payload }));
+      } catch (e) {}
+    }
+  }
+}
+
+function buildPartySyncPayload(p) {
+  const memberKeys = Array.isArray(p.memberKeys) ? p.memberKeys.slice() : [];
+  const members = memberKeys.map(ck => {
+    const pid = findPlayerIdByCaptainKey(ck);
+    const pl = pid != null ? players.get(pid) : null;
+    const acc = captainAccounts[ck];
+    return {
+      captainKey: ck,
+      playerId: pid != null ? pid : null,
+      name: pl && pl.name ? String(pl.name).slice(0, 28) : (acc && acc.displayName ? String(acc.displayName).slice(0, 28) : ck)
+    };
+  });
+  return {
+    id: p.id,
+    tag: p.tag,
+    leaderCaptainKey: p.leaderKey,
+    memberKeys,
+    members
+  };
+}
+
+function getPartyForCaptainKey(ck) {
+  if (!ck) return null;
+  const partyId = partyStore.captainParty[ck];
+  if (!partyId) return null;
+  return partyStore.parties[partyId] || null;
+}
+
+function disbandParty(partyId) {
+  const p = partyStore.parties[partyId];
+  if (!p) return;
+  const keys = (p.memberKeys || []).slice();
+  for (const ck of keys) {
+    delete partyStore.captainParty[ck];
+  }
+  delete partyStore.parties[partyId];
+  savePartyStore();
+  for (const ck of keys) {
+    const pid = findPlayerIdByCaptainKey(ck);
+    if (pid != null) sendToPlayerId(pid, { type: 'party_sync', party: null });
+  }
+}
+
+function sendToPlayerId(pid, obj) {
+  const cws = findWsByPlayerId(pid);
+  if (cws && cws.readyState === 1) {
+    try {
+      cws.send(JSON.stringify(obj));
+    } catch (e) {}
+  }
+}
 
 const BANS_FILE = path.join(DATA_DIR, 'bans.json');
 let leaderboardHistory = [];
@@ -135,10 +245,11 @@ const mutedPlayerIds = new Set();
 
 function normalizeLbEntry(e) {
   if (!e || typeof e !== 'object') {
-    return { name: 'Unknown', gold: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, playerId: null, captainKey: null, shipName: '' };
+    return { name: 'Unknown', gold: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, playerId: null, captainKey: null, shipName: '', partyTag: '' };
   }
   const name = String(e.name || 'Pirate').slice(0, 28);
   const shipName = e.shipName != null ? String(e.shipName).slice(0, 28) : '';
+  const partyTag = e.partyTag != null ? String(e.partyTag).slice(0, 24) : '';
   const gold = Math.max(0, Math.floor(
     e.gold != null ? Number(e.gold) : (e.loot != null ? Number(e.loot) : 0)
   ));
@@ -155,7 +266,7 @@ function normalizeLbEntry(e) {
     const ck = normalizeCaptainKey(String(e.captainKey));
     if (ck) captainKey = ck;
   }
-  return { name, gold, sinksAi, sinksPlayer, ransoms, deaths, playerId, captainKey, shipName };
+  return { name, gold, sinksAi, sinksPlayer, ransoms, deaths, playerId, captainKey, shipName, partyTag };
 }
 
 /**
@@ -186,6 +297,7 @@ function mergeLeaderboardByIdentity() {
       o.deaths += e.deaths;
       if (e.name && e.name !== 'Pirate' && e.name !== 'Unknown') o.name = e.name;
       if (e.shipName && String(e.shipName).trim()) o.shipName = String(e.shipName).slice(0, 28);
+      if (e.partyTag != null && String(e.partyTag).trim()) o.partyTag = String(e.partyTag).slice(0, 24);
       if (o.captainKey == null && e.captainKey != null) o.captainKey = e.captainKey;
       if (o.playerId == null && e.playerId != null) o.playerId = e.playerId;
       else if (o.playerId != null && e.playerId != null && o.playerId !== e.playerId) o.playerId = null;
@@ -894,6 +1006,12 @@ function findWsByPlayerId(pid) {
   return null;
 }
 
+function findWsByCaptainKey(ck) {
+  if (!ck) return null;
+  const pid = findPlayerIdByCaptainKey(ck);
+  return pid != null ? findWsByPlayerId(pid) : null;
+}
+
 function storyProgressRank(st) {
   if (!st || typeof st !== 'object') return -1;
   const ph = String(st.phase || 'intro');
@@ -1037,6 +1155,16 @@ wss.on('connection', (ws, req) => {
 
   players.set(id, playerData);
 
+  const storySnap = [];
+  for (const [pid, st] of playerStories) {
+    storySnap.push({ playerId: pid, story: sanitizeWorldStory(st) });
+  }
+  let partyPayload = null;
+  const myCkInit = ws.captainAccountKey || null;
+  if (myCkInit) {
+    const pr = getPartyForCaptainKey(myCkInit);
+    if (pr) partyPayload = buildPartySyncPayload(pr);
+  }
   ws.send(JSON.stringify({
     type: 'init',
     id,
@@ -1045,19 +1173,29 @@ wss.on('connection', (ws, req) => {
     player: playerData,
     players: Array.from(players.values()).filter(p => p.id !== id),
     worldStory: sanitizeWorldStory(worldStoryQuest),
-    worldQuests: worldQuests && worldQuests.length ? worldQuests : null
+    worldQuests: null,
+    playerStories: storySnap,
+    party: partyPayload
   }));
   reconcileLeaderboardRows();
   ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
 
+  const myCkChat = ws.captainAccountKey || null;
+  const myPartyForChat = myCkChat ? getPartyForCaptainKey(myCkChat) : null;
   for (const m of chatHistory.slice(-40)) {
+    if (m.channel === 'party') {
+      if (!myPartyForChat || m.partyId !== myPartyForChat.id) continue;
+    }
     try {
       ws.send(JSON.stringify({
         type: 'chat',
         chatId: m.id,
         id: m.playerId,
         name: m.name,
-        text: m.text
+        text: m.text,
+        channel: m.channel || 'global',
+        partyId: m.partyId || null,
+        partyTag: m.partyTag || ''
       }));
     } catch (e) {}
   }
@@ -1207,10 +1345,17 @@ wss.on('connection', (ws, req) => {
           }
           if (msg.crew) p.crewData = msg.crew.slice(0, 32);
           ws.captainAccountKey = newKey;
+          const prSync = getPartyForCaptainKey(newKey);
+          if (prSync) {
+            try {
+              ws.send(JSON.stringify({ type: 'party_sync', party: buildPartySyncPayload(prSync) }));
+            } catch (e) {}
+          }
           broadcastAll({
             type: 'player_identity',
             id,
             name: displayName,
+            captainKey: newKey,
             shipName: p.shipName != null ? String(p.shipName).slice(0, 28) : '',
             joinAnnounce: hadPlaceholderName
           });
@@ -1234,10 +1379,36 @@ wss.on('connection', (ws, req) => {
           const text = String(msg.text != null ? msg.text : '').slice(0, 500);
           if (!text.trim()) break;
           const name = players.get(id)?.name || 'Unknown';
+          const channel = msg.channel === 'party' ? 'party' : 'global';
+          let partyId = null;
+          let partyTag = '';
+          let partyRef = null;
+          if (channel === 'party') {
+            const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+            partyRef = getPartyForCaptainKey(ck);
+            if (!partyRef) {
+              try {
+                ws.send(JSON.stringify({ type: 'chat_error', error: 'You are not in a party.' }));
+              } catch (e) {}
+              break;
+            }
+            partyId = partyRef.id;
+            partyTag = partyRef.tag || '';
+          }
           const mid = nextChatMessageId++;
-          chatHistory.push({ id: mid, t: Date.now(), playerId: id, name, text });
+          const row = { id: mid, t: Date.now(), playerId: id, name, text, channel, partyId, partyTag };
+          chatHistory.push(row);
           if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
-          broadcastAll({ type: 'chat', chatId: mid, id, name, text });
+          const out = { type: 'chat', chatId: mid, id, name, text, channel, partyId, partyTag };
+          if (channel === 'global') {
+            broadcastAll(out);
+          } else if (partyRef) {
+            for (const mck of partyRef.memberKeys || []) {
+              const pid = findPlayerIdByCaptainKey(mck);
+              if (pid == null) continue;
+              sendToPlayerId(pid, out);
+            }
+          }
           break;
         }
         case 'cannonball': {
@@ -1263,18 +1434,12 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'world_story_push': {
-          const merged = mergeWorldStory(worldStoryQuest, msg.story);
-          const before = JSON.stringify(worldStoryQuest);
-          worldStoryQuest = merged;
-          if (JSON.stringify(worldStoryQuest) !== before) {
-            broadcastAll({ type: 'world_story', story: sanitizeWorldStory(worldStoryQuest) });
-          }
+          const st = sanitizeWorldStory(msg.story);
+          playerStories.set(id, st);
+          broadcastAll({ type: 'player_story', playerId: id, story: st });
           break;
         }
         case 'world_quests_push': {
-          const next = sanitizeWorldQuests(msg.quests);
-          worldQuests = next;
-          broadcastAll({ type: 'world_quests', quests: next });
           break;
         }
         case 'npc_sync': {
@@ -1485,6 +1650,19 @@ wss.on('connection', (ws, req) => {
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
         }
+        case 'party_tag_sync': {
+          const p = players.get(id);
+          if (!p) break;
+          const capName = (p.name || p.shipName || 'Pirate').slice(0, 28);
+          const idx = getLeaderboardRowIndex(id, capName, ws.captainAccountKey || p.captainKey || null, p.shipName);
+          const row = normalizeLbEntry(leaderboardHistory[idx]);
+          row.partyTag = String(msg.partyTag != null ? msg.partyTag : '').slice(0, 24);
+          leaderboardHistory[idx] = row;
+          reconcileLeaderboardRows();
+          saveLeaderboard();
+          broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          break;
+        }
         case 'npc_kill_credit': {
           let hostId = null;
           for (const pid of players.keys()) {
@@ -1515,10 +1693,165 @@ wss.on('connection', (ws, req) => {
             killerId,
             gold: dg,
             sinksAi: dAi,
-            storyBounty: !!msg.storyBounty,
+            storyBounty: false,
             huntNpcName: msg.huntNpcName != null ? String(msg.huntNpcName).slice(0, 48) : '',
             victimName: msg.victimName != null ? String(msg.victimName).slice(0, 48) : 'ship'
           });
+          const storyOwnerId = msg.storyOwnerId != null ? Math.floor(Number(msg.storyOwnerId)) : null;
+          const so = msg.storyOutcome != null ? String(msg.storyOutcome) : 'none';
+          if (Number.isFinite(storyOwnerId) && players.has(storyOwnerId) && (so === 'complete' || so === 'reroll')) {
+            sendToPlayerId(storyOwnerId, { type: 'story_bounty_outcome', outcome: so === 'complete' ? 'complete' : 'reroll' });
+          }
+          break;
+        }
+        case 'party_create': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          if (!ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Reserve a captain name on this server before forming a party.' })); } catch (e) {}
+            break;
+          }
+          if (getPartyForCaptainKey(ck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Already in a party. Leave or disband first.' })); } catch (e) {}
+            break;
+          }
+          const pid = `p${partyStore.nextPartyNum++}`;
+          const tag = sanitizePartyTag(msg.tag) || 'Crew';
+          partyStore.parties[pid] = { id: pid, tag, leaderKey: ck, memberKeys: [ck], pendingKeys: [] };
+          partyStore.captainParty[ck] = pid;
+          savePartyStore();
+          broadcastPartySync(pid);
+          break;
+        }
+        case 'party_invite': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          if (!pr || pr.leaderKey !== ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the party leader can invite.' })); } catch (e) {}
+            break;
+          }
+          const tck = normalizeCaptainKey(String(msg.targetCaptainKey != null ? msg.targetCaptainKey : msg.targetName || ''));
+          if (!tck || tck === ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Pick another captain to invite.' })); } catch (e) {}
+            break;
+          }
+          if (getPartyForCaptainKey(tck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'That captain is already in a party.' })); } catch (e) {}
+            break;
+          }
+          if (pr.memberKeys.length + (pr.pendingKeys || []).length >= 8) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Party is full.' })); } catch (e) {}
+            break;
+          }
+          if (!pr.pendingKeys) pr.pendingKeys = [];
+          if (!pr.pendingKeys.includes(tck)) pr.pendingKeys.push(tck);
+          savePartyStore();
+          const tws = findWsByCaptainKey(tck);
+          const fromName = players.get(id)?.name || 'Captain';
+          if (tws) {
+            try {
+              tws.send(JSON.stringify({
+                type: 'party_invite_pending',
+                partyId: pr.id,
+                tag: pr.tag,
+                fromCaptainKey: ck,
+                fromName: String(fromName).slice(0, 28)
+              }));
+            } catch (e) {}
+          }
+          try { ws.send(JSON.stringify({ type: 'party_ok', action: 'invite_sent' })); } catch (e) {}
+          break;
+        }
+        case 'party_invite_accept':
+        case 'party_accept': {
+          const tck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const partyId = String(msg.partyId || '').trim();
+          const pr = partyStore.parties[partyId];
+          if (!tck || !pr || !Array.isArray(pr.pendingKeys) || !pr.pendingKeys.includes(tck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'No pending invite for that crew.' })); } catch (e) {}
+            break;
+          }
+          if (getPartyForCaptainKey(tck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Already in a party.' })); } catch (e) {}
+            break;
+          }
+          pr.pendingKeys = pr.pendingKeys.filter(k => k !== tck);
+          if (!pr.memberKeys.includes(tck)) pr.memberKeys.push(tck);
+          partyStore.captainParty[tck] = partyId;
+          savePartyStore();
+          broadcastPartySync(partyId);
+          break;
+        }
+        case 'party_invite_decline':
+        case 'party_decline': {
+          const tck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const partyId = String(msg.partyId || '').trim();
+          const pr = partyStore.parties[partyId];
+          if (tck && pr && pr.pendingKeys) {
+            pr.pendingKeys = pr.pendingKeys.filter(k => k !== tck);
+            savePartyStore();
+          }
+          break;
+        }
+        case 'party_leave': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          if (!pr) break;
+          if (pr.leaderKey === ck) {
+            disbandParty(pr.id);
+          } else {
+            pr.memberKeys = pr.memberKeys.filter(k => k !== ck);
+            delete partyStore.captainParty[ck];
+            if (pr.pendingKeys) pr.pendingKeys = pr.pendingKeys.filter(k => k !== ck);
+            if (pr.memberKeys.length === 0) disbandParty(pr.id);
+            else {
+              savePartyStore();
+              broadcastPartySync(pr.id);
+            }
+            try { ws.send(JSON.stringify({ type: 'party_sync', party: null })); } catch (e) {}
+          }
+          break;
+        }
+        case 'party_kick': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          if (!pr || pr.leaderKey !== ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the leader can remove members.' })); } catch (e) {}
+            break;
+          }
+          const kickKey = normalizeCaptainKey(String(msg.targetCaptainKey || ''));
+          if (!kickKey || kickKey === ck) break;
+          pr.memberKeys = pr.memberKeys.filter(k => k !== kickKey);
+          delete partyStore.captainParty[kickKey];
+          if (pr.pendingKeys) pr.pendingKeys = pr.pendingKeys.filter(k => k !== kickKey);
+          savePartyStore();
+          const kickedWs = findWsByCaptainKey(kickKey);
+          if (kickedWs) {
+            try { kickedWs.send(JSON.stringify({ type: 'party_sync', party: null })); } catch (e) {}
+          }
+          if (pr.memberKeys.length === 0) disbandParty(pr.id);
+          else broadcastPartySync(pr.id);
+          break;
+        }
+        case 'party_disband': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          if (!pr || pr.leaderKey !== ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the leader can disband.' })); } catch (e) {}
+            break;
+          }
+          disbandParty(pr.id);
+          break;
+        }
+        case 'party_set_tag': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          if (!pr || pr.leaderKey !== ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the leader can rename the crew tag.' })); } catch (e) {}
+            break;
+          }
+          pr.tag = sanitizePartyTag(msg.tag) || pr.tag;
+          savePartyStore();
+          broadcastPartySync(pr.id);
           break;
         }
         case 'admin_nav': {
@@ -1713,6 +2046,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    playerStories.delete(id);
     players.delete(id);
     broadcast({ type: 'player_leave', id });
   });
@@ -1723,6 +2057,7 @@ setInterval(() => {
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
     name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
+    captainKey: p.captainKey != null ? String(p.captainKey) : null,
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     crewData: p.crewData,
