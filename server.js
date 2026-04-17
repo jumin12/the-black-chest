@@ -7,18 +7,6 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
 const TICK_RATE = 45;
-function normalizeShipVisualVariant(sv) {
-  const s = String(sv || '').trim();
-  if (s === 'sloop2') return 'sloop2';
-  if (s === 'sloop3') return 'sloop3';
-  return 'sloop1';
-}
-function normalizeGalleonVisualVariant(gv) {
-  const s = String(gv || '').trim();
-  if (s === 'galleon3') return 'galleon3';
-  if (s === 'galleon4') return 'galleon4';
-  return 'galleon2';
-}
 /** Optional directory for persistent JSON (e.g. Docker volume). Defaults next to server.js. */
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
 const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
@@ -37,6 +25,19 @@ let leaderboardClientSeeded = false;
 /** Stable default when no file/env (matches client `CANONICAL_DEFAULT_WORLD_SEED`). Commit `world_seed.json` so restarts and deploys reload the same archipelago; live rankings persist in the same file under `leaderboard`. */
 const DEFAULT_WORLD_SEED = 42;
 let WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
+
+function normalizeServerSloopVariant(sv) {
+  const s = String(sv == null ? '' : sv).trim().toLowerCase();
+  if (s === 'sloop2') return 'sloop2';
+  if (s === 'sloop3' || s === 'pirate') return 'sloop3';
+  return 'sloop1';
+}
+function normalizeServerGalleonHull(gk) {
+  const s = String(gk == null ? '' : gk).trim().toLowerCase();
+  if (s === 'galleon3') return 'galleon3';
+  if (s === 'galleon4') return 'galleon4';
+  return 'galleon2';
+}
 
 /**
  * Navigator unlock password: prefer `NAVIGATOR_ADMIN_PASSWORD` (hosting secret / env).
@@ -1177,7 +1178,7 @@ wss.on('connection', (ws, req) => {
     speed: 0,
     shipType: 'sloop',
     shipVisualVariant: 'sloop1',
-    galleonVisualVariant: 'galleon2',
+    galleonHullKey: 'galleon2',
     shipName: '',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
@@ -1247,10 +1248,10 @@ wss.on('connection', (ws, req) => {
             if (st) p.shipType = st;
           }
           if (msg.shipVisualVariant !== undefined) {
-            p.shipVisualVariant = normalizeShipVisualVariant(msg.shipVisualVariant);
+            p.shipVisualVariant = normalizeServerSloopVariant(msg.shipVisualVariant);
           }
-          if (msg.galleonVisualVariant !== undefined) {
-            p.galleonVisualVariant = normalizeGalleonVisualVariant(msg.galleonVisualVariant);
+          if (msg.galleonHullKey !== undefined) {
+            p.galleonHullKey = normalizeServerGalleonHull(msg.galleonHullKey);
           }
           if (msg.shipName !== undefined) p.shipName = String(msg.shipName || '').slice(0, 28);
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
@@ -1350,10 +1351,10 @@ wss.on('connection', (ws, req) => {
             if (st) p.shipType = st;
           }
           if (msg.shipVisualVariant !== undefined) {
-            p.shipVisualVariant = normalizeShipVisualVariant(msg.shipVisualVariant);
+            p.shipVisualVariant = normalizeServerSloopVariant(msg.shipVisualVariant);
           }
-          if (msg.galleonVisualVariant !== undefined) {
-            p.galleonVisualVariant = normalizeGalleonVisualVariant(msg.galleonVisualVariant);
+          if (msg.galleonHullKey !== undefined) {
+            p.galleonHullKey = normalizeServerGalleonHull(msg.galleonHullKey);
           }
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
@@ -1379,10 +1380,10 @@ wss.on('connection', (ws, req) => {
           if (!p) break;
           if (msg.shipType) p.shipType = msg.shipType;
           if (msg.shipVisualVariant !== undefined) {
-            p.shipVisualVariant = normalizeShipVisualVariant(msg.shipVisualVariant);
+            p.shipVisualVariant = normalizeServerSloopVariant(msg.shipVisualVariant);
           }
-          if (msg.galleonVisualVariant !== undefined) {
-            p.galleonVisualVariant = normalizeGalleonVisualVariant(msg.galleonVisualVariant);
+          if (msg.galleonHullKey !== undefined) {
+            p.galleonHullKey = normalizeServerGalleonHull(msg.galleonHullKey);
           }
           if (msg.shipParts) p.shipParts = { ...p.shipParts, ...msg.shipParts };
           broadcast({
@@ -1390,7 +1391,7 @@ wss.on('connection', (ws, req) => {
             id,
             shipType: p.shipType,
             shipVisualVariant: p.shipVisualVariant != null ? p.shipVisualVariant : 'sloop1',
-            galleonVisualVariant: p.galleonVisualVariant != null ? p.galleonVisualVariant : 'galleon2',
+            galleonHullKey: normalizeServerGalleonHull(p.galleonHullKey),
             shipParts: p.shipParts
           }, id);
           break;
@@ -1892,7 +1893,7 @@ setInterval(() => {
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
     name: p.name, color: p.color, shipType: p.shipType,
     shipVisualVariant: p.shipVisualVariant != null ? p.shipVisualVariant : 'sloop1',
-    galleonVisualVariant: p.galleonVisualVariant != null ? p.galleonVisualVariant : 'galleon2',
+    galleonHullKey: normalizeServerGalleonHull(p.galleonHullKey),
     shipName: p.shipName,
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
