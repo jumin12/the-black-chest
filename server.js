@@ -1031,7 +1031,7 @@ wss.on('connection', (ws, req) => {
     dockAngle: null,
     riggingHealth: 100,
     morale: 100,
-    captainWalk: { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main' },
+    captainWalk: { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main', crewIdx: 0 },
     clientIp
   };
 
@@ -1106,7 +1106,8 @@ wss.on('connection', (ws, req) => {
               yaw: Number.isFinite(Number(cw.yaw)) ? Number(cw.yaw) : 0,
               pitch: Math.max(-1.22, Math.min(1.22, Number.isFinite(Number(cw.pitch)) ? Number(cw.pitch) : 0)),
               airY: Math.max(0, Number.isFinite(Number(cw.airY)) ? Number(cw.airY) : 0),
-              deckTier: cw.deckTier === 'qd' ? 'qd' : 'main'
+              deckTier: cw.deckTier === 'qd' ? 'qd' : 'main',
+              crewIdx: Math.max(0, Math.min(31, Math.floor(Number(cw.crewIdx)) || 0))
             };
           }
           const ck = ws.captainAccountKey;
@@ -1725,7 +1726,7 @@ setInterval(() => {
     dockAngle: p.dockAngle != null ? p.dockAngle : null,
     riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
     morale: p.morale != null ? p.morale : 100,
-    captainWalk: p.captainWalk && typeof p.captainWalk === 'object' ? p.captainWalk : { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main' }
+    captainWalk: p.captainWalk && typeof p.captainWalk === 'object' ? p.captainWalk : { active: false, x: 0, z: 0, yaw: 0, pitch: 0, airY: 0, deckTier: 'main', crewIdx: 0 }
   }));
   broadcast({ type: 'state', players: snapshot, worldT: serverWorldTime });
 }, 1000 / TICK_RATE);
