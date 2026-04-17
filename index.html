@@ -2445,7 +2445,8 @@ const waterFS = `
     vec2 F = vel / vm;
     vec2 d = P - u.xy;
     float r = length(d);
-    if(r > 28.0) return 0.0;
+    float rFade = 1.0 - smoothstep(23.5, 31.0, r);
+    if(rFade <= 0.001) return 0.0;
     float ahead = dot(d, F);
     float side = dot(d, vec2(-F.y, F.x));
     float astern = max(0.0, -ahead);
@@ -2453,16 +2454,18 @@ const waterFS = `
     float sp = clamp(vm, 0.0, 1.05);
     float halfW = 0.74 + astern * 0.05 + sp * 0.11;
     float sternCore = exp(-(side*side)/(halfW*halfW));
-    float sternLen = exp(-astern * 0.132) * smoothstep(0.04, 5.2, astern);
-    float sternTwin = 0.82 + 0.18 * exp(-(side*side) / ((halfW * 1.2) * (halfW * 1.2)));
-    float sternTerm = sternCore * sternLen * sp * 0.36 * sternTwin;
+    float sternLen = exp(-astern * 0.132) * smoothstep(0.12, 5.4, astern);
+    float sternTwin = 0.88 + 0.12 * exp(-(side*side) / ((halfW * 1.25) * (halfW * 1.25)));
+    float sternTerm = sternCore * sternLen * sp * 0.34 * sternTwin;
     float bowW = 0.5 + sp * 0.24;
     float bowRing = exp(-(side*side)/(bowW*bowW)) * exp(-forward * 0.33);
-    float bowFan = smoothstep(0.1, 2.35, forward) * (0.52 + 0.48 * exp(-abs(side)*0.09));
-    float bowTerm = bowRing * bowFan * sp * 0.38;
-    float shoulder = exp(-abs(side)/(0.9 + sp*0.26)) * exp(-pow(abs(ahead + 1.05), 1.32) * 0.105) * sp * 0.15;
-    float bridge = exp(-(side*side)/((0.62+sp*0.18)*(0.62+sp*0.18))) * exp(-abs(ahead)*0.075) * smoothstep(1.8, 9.0, astern) * sp * 0.1;
-    return sternTerm + bowTerm + shoulder + bridge;
+    float bowFan = smoothstep(0.35, 2.5, forward) * (0.52 + 0.48 * exp(-abs(side)*0.09));
+    float bowTerm = bowRing * bowFan * sp * 0.36;
+    float shoulder = exp(-abs(side)/(0.92 + sp*0.26)) * exp(-pow(abs(ahead + 2.15), 1.25) * 0.072) * smoothstep(0.9, 4.5, astern) * sp * 0.11;
+    float bridge = exp(-(side*side)/((0.68+sp*0.2)*(0.68+sp*0.2))) * exp(-abs(ahead)*0.11) * smoothstep(3.2, 10.0, astern) * (1.0 - smoothstep(0.0, 2.8, forward)) * sp * 0.042;
+    float wake = sternTerm + bowTerm + shoulder + bridge;
+    float hullDeHalo = smoothstep(0.55, 2.85, r);
+    return wake * rFade * hullDeHalo;
   }
   float sumShipWakes(vec2 P){
     float s = 0.0;
@@ -2472,7 +2475,7 @@ const waterFS = `
     s += evalShipWake(uWake3, P);
     s += evalShipWake(uWake4, P);
     s += evalShipWake(uWake5, P);
-    return min(2.85, s);
+    return s / (1.0 + s * 0.48);
   }
   float n2(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
   float nSmooth(vec2 p){
@@ -2535,7 +2538,7 @@ const waterFS = `
     float shipWake = sumShipWakes(vWorldPos.xz);
     float wakeRip = 0.5 + 0.5 * sin(dot(vWorldPos.xz, vec2(0.13, -0.11)) * 3.2 + uTime * 3.5);
     vec3 wakeFoam = vec3(0.93,0.96,1.0) * shipWake * (0.48 + 0.52 * uDayFactor) * (0.78 + 0.22 * wakeRip);
-    vec3 colorLin = diff*(1.0-fresnel)+refl+specC+sub+foam*0.55 + wakeFoam * 0.15;
+    vec3 colorLin = diff*(1.0-fresnel)+refl+specC+sub+foam*0.55 + wakeFoam * 0.168;
     float waterAlpha = mix(0.52, 0.9, fresnel);
     waterAlpha = clamp(waterAlpha + (NdotV - 0.35) * 0.22, 0.46, 0.93);
     vec3 color = pow(colorLin,vec3(1.0/2.2));
