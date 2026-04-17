@@ -1033,6 +1033,26 @@ function rgbIslandTerrainOpenSea(wx, wz, noise2d) {
     Math.max(0, Math.min(1, 0.42 + w * 0.52))
   ];
 }
+/**
+ * Remove triangles that lie entirely in “open sea” verts. Those faces sit shallow under the water shader and read as a
+ * chunk-sized tint; deleting them lets the same seabed show through as in open ocean (land/coast triangles stay).
+ */
+function stripIslandTerrainOpenSeaTriangles(geo, waterMask) {
+  const idx = geo.getIndex();
+  if (!idx) return;
+  const ia = idx.array;
+  const n = idx.count;
+  const out = [];
+  for (let f = 0; f < n; f += 3) {
+    const a = ia[f], b = ia[f + 1], c = ia[f + 2];
+    if (waterMask[a] && waterMask[b] && waterMask[c]) continue;
+    out.push(a, b, c);
+  }
+  if (out.length >= 3) {
+    geo.setIndex(out);
+    geo.computeBoundingSphere();
+  }
+}
 /** Large deterministic pool of port-style names (prefix + suffix); avoids repeats from a tiny fixed list. */
 const TOWN_NAME_LEXICON = (() => {
   const p = ['Port','Cape','New','Fort','East','West','North','South','Great','Little','Lost','Fair','Grim','High','Low',"Sailor's","Pirate's","Crow's",'Keel','Black','Red','White','Gold','Silver','Grey','Storm','Salt','Brine','Tide','Wave','Moon','Drift','Wreck','Anchor',"Smuggler's",'Barnacle',"King's","Queen's",'Rum','Dead','Lone','Free','Noble','Wild','Drowned','Hidden','Morrow','Sable','Ashen','Velvet','Iron','Coral','Pearl','Cursed','Blessed','Jolly','Misty','Crimson','Azure','Bitter','Sweet','Broken','Hollow','Proud','Humble','Fallow','Green','Blue','Northern','Southern','Eastern','Western'];
@@ -2378,84 +2398,67 @@ scene.add(water);
 
 /** Infinite sand floor below the waves (visible through transparent water); follows sea patch center like `water`. */
 const SEABED_VISUAL_Y = -13.5;
-/** Island terrain groups sit at `SEA_LEVEL`; bottom cap is just above the seabed mesh to limit z-fighting. */
-const ISLAND_SEAFLOOR_CAP_LOCAL_Y = SEABED_VISUAL_Y - SEA_LEVEL + 0.22;
+/** Minimum Y lift so island underfoot stays slightly above the infinite seabed mesh (avoids z-fighting). */
+const ISLAND_UNDERFOOT_SEABED_MIN_LIFT = 0.12;
 /**
- * Keeps open-sea top triangles stripped, adds a sandy bottom cap under land and side walls so islands read as rooted
- * seamounts instead of floating shells. `bumpNoise(px,pz)` is in local XZ (meters).
+ * After the top surface is built and open-sea faces stripped, duplicate verts to the seabed and add a bottom cap plus
+ * boundary walls so landmasses read as rooted in the floor instead of a floating skin.
  */
-function extrudeIslandTerrainToSeafloor(geo, waterMask, seg, capLocalY, bumpNoise) {
+function appendIslandTerrainUnderfoot(geo, waterMask, seaBedYFn) {
   const posAttr = geo.attributes.position;
   const colAttr = geo.attributes.color;
+  if (!posAttr || !colAttr) return;
   const idx = geo.getIndex();
-  if (!colAttr || !idx) return;
-  const parr = posAttr.array;
-  const carr = colAttr.array;
-  const n = posAttr.count;
-  const stride = seg + 1;
-  const topMap = new Int32Array(n).fill(-1);
-  const botMap = new Int32Array(n).fill(-1);
-  const posOut = [];
-  const colOut = [];
-  let v = 0;
-  const pushVert = (x, y, z, r, g, b) => {
-    posOut.push(x, y, z);
-    colOut.push(r, g, b);
-    return v++;
-  };
-  for (let i = 0; i < n; i++) {
-    topMap[i] = pushVert(parr[i * 3], parr[i * 3 + 1], parr[i * 3 + 2], carr[i * 3], carr[i * 3 + 1], carr[i * 3 + 2]);
-  }
-  for (let i = 0; i < n; i++) {
-    if (waterMask[i]) continue;
-    const px = parr[i * 3], pz = parr[i * 3 + 2];
-    const bump = bumpNoise(px, pz);
-    const yb = capLocalY + bump;
-    const r = carr[i * 3] * 0.4 + 0.09;
-    const g = carr[i * 3 + 1] * 0.36 + 0.07;
-    const b = carr[i * 3 + 2] * 0.32 + 0.11;
-    botMap[i] = pushVert(px, yb, pz, Math.min(1, r), Math.min(1, g), Math.min(1, b));
-  }
-  const idxOut = [];
+  if (!idx) return;
   const ia = idx.array;
-  for (let f = 0; f < idx.count; f += 3) {
-    const a = ia[f], b = ia[f + 1], c = ia[f + 2];
-    if (waterMask[a] && waterMask[b] && waterMask[c]) continue;
-    idxOut.push(topMap[a], topMap[b], topMap[c]);
+  const triCount = ia.length / 3;
+  const n = posAttr.count;
+  const oldPos = posAttr.array;
+  const oldCol = colAttr.array;
+  const newPos = new Float32Array(n * 6);
+  const newCol = new Float32Array(n * 6);
+  newPos.set(oldPos);
+  newCol.set(oldCol);
+  const floorMin = SEABED_VISUAL_Y + ISLAND_UNDERFOOT_SEABED_MIN_LIFT;
+  for (let i = 0; i < n; i++) {
+    const px = oldPos[i * 3], py = oldPos[i * 3 + 1], pz = oldPos[i * 3 + 2];
+    let by = seaBedYFn(i, px, pz, py);
+    if (by < floorMin) by = floorMin;
+    const bi = n + i;
+    newPos[bi * 3] = px;
+    newPos[bi * 3 + 1] = by;
+    newPos[bi * 3 + 2] = pz;
+    const dim = waterMask[i] ? 0.74 : 0.64;
+    const ri = i * 3, oi = bi * 3;
+    newCol[oi] = oldCol[ri] * dim;
+    newCol[oi + 1] = oldCol[ri + 1] * dim;
+    newCol[oi + 2] = oldCol[ri + 2] * dim;
   }
-  for (let iy = 0; iy < seg; iy++) {
-    for (let ix = 0; ix < seg; ix++) {
-      const i00 = ix + iy * stride;
-      const i10 = i00 + 1;
-      const i01 = i00 + stride;
-      const i11 = i01 + 1;
-      if (waterMask[i00] || waterMask[i10] || waterMask[i01] || waterMask[i11]) continue;
-      idxOut.push(botMap[i00], botMap[i01], botMap[i11]);
-      idxOut.push(botMap[i00], botMap[i11], botMap[i10]);
-    }
+  geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(newCol, 3));
+  const edgeCount = Object.create(null);
+  for (let t = 0; t < triCount; t++) {
+    const o = t * 3, a = ia[o], b = ia[o + 1], c = ia[o + 2];
+    const e0 = a < b ? a + ',' + b : b + ',' + a;
+    const e1 = b < c ? b + ',' + c : c + ',' + b;
+    const e2 = c < a ? c + ',' + a : a + ',' + c;
+    edgeCount[e0] = (edgeCount[e0] || 0) + 1;
+    edgeCount[e1] = (edgeCount[e1] || 0) + 1;
+    edgeCount[e2] = (edgeCount[e2] || 0) + 1;
   }
-  const wall = (i0, i1) => {
-    const l0 = !waterMask[i0], l1 = !waterMask[i1];
-    if (!l0 && !l1) return;
-    if (l0 && l1) {
-      idxOut.push(topMap[i0], topMap[i1], botMap[i1]);
-      idxOut.push(topMap[i0], botMap[i1], botMap[i0]);
-    } else if (l0) {
-      idxOut.push(topMap[i0], topMap[i1], botMap[i0]);
-    } else {
-      idxOut.push(topMap[i0], topMap[i1], botMap[i1]);
-    }
-  };
-  for (let iy = 0; iy <= seg; iy++) {
-    for (let ix = 0; ix < seg; ix++) wall(ix + iy * stride, ix + 1 + iy * stride);
+  const newIdx = [];
+  for (let i = 0; i < ia.length; i++) newIdx.push(ia[i]);
+  for (let t = 0; t < triCount; t++) {
+    const o = t * 3, a = ia[o], b = ia[o + 1], c = ia[o + 2];
+    newIdx.push(c + n, b + n, a + n);
   }
-  for (let iy = 0; iy < seg; iy++) {
-    for (let ix = 0; ix <= seg; ix++) wall(ix + iy * stride, ix + (iy + 1) * stride);
+  for (const k in edgeCount) {
+    if (edgeCount[k] !== 1) continue;
+    const pair = k.split(',');
+    const a = +pair[0], b = +pair[1];
+    newIdx.push(a, b, b + n, a, b + n, a + n);
   }
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(posOut), 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colOut), 3));
-  geo.setIndex(idxOut.length ? idxOut : null);
-  geo.computeVertexNormals();
+  geo.setIndex(newIdx);
   geo.computeBoundingSphere();
 }
 function createSandSeabedTexture() {
@@ -3745,6 +3748,7 @@ function generateCustomMapChunk(cx, cz) {
   const positions = geo.attributes.position;
   const colors = new Float32Array(positions.count * 3);
   const waterMask = new Uint8Array(positions.count);
+  const bottomAux = new Float32Array(positions.count);
   let maxChunkH = 4;
   for (let i = 0; i < positions.count; i++) {
     const lx = positions.getX(i), lz = positions.getZ(i);
@@ -3755,6 +3759,7 @@ function generateCustomMapChunk(cx, cz) {
     positions.setY(i, y);
     if (h > wThr) maxChunkH = Math.max(maxChunkH, h * maxH);
     waterMask[i] = h <= wThr ? 1 : 0;
+    bottomAux[i] = Math.min(1, Math.hypot(lx, lz) / (CHUNK_SIZE * 0.72));
     let r, g, b;
     if (h <= wThr) {
       [r, g, b] = rgbIslandTerrainOpenSea(wx, wz, (ax, az) => noise.noise2D(ax, az));
@@ -3771,9 +3776,25 @@ function generateCustomMapChunk(cx, cz) {
   }
   positions.needsUpdate = true;
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  extrudeIslandTerrainToSeafloor(geo, waterMask, seg, ISLAND_SEAFLOOR_CAP_LOCAL_Y, (px, pz) =>
-    noise.noise2D((minWx + CHUNK_SIZE * 0.5 + px) * 0.034, (minWz + CHUNK_SIZE * 0.5 + pz) * 0.031) * 0.7);
-  const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  stripIslandTerrainOpenSeaTriangles(geo, waterMask);
+  appendIslandTerrainUnderfoot(geo, waterMask, (vi, px, pz, topY) => {
+    const wx = minWx + CHUNK_SIZE * 0.5 + px;
+    const wz = minWz + CHUNK_SIZE * 0.5 + pz;
+    const floorMin = SEABED_VISUAL_Y + ISLAND_UNDERFOOT_SEABED_MIN_LIFT;
+    if (waterMask[vi]) {
+      const by = SEABED_VISUAL_Y + 0.16 + noise.noise2D(wx * 0.07, wz * 0.07) * 0.3;
+      return Math.max(by, floorMin);
+    }
+    const inland = Math.max(0, 1 - bottomAux[vi]);
+    const peak = Math.max(0, topY - 0.22);
+    const roll = noise.noise2D(wx * 0.031, wz * 0.029) * 0.55;
+    const rootLift = Math.min(6.2, peak * (0.28 + 0.52 * inland * inland)) * (0.82 + roll);
+    return Math.max(SEABED_VISUAL_Y + rootLift, floorMin);
+  });
+  geo.computeVertexNormals();
+  const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+    vertexColors: true, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2
+  }));
   const cwx = minWx + CHUNK_SIZE * 0.5;
   const cwz = minWz + CHUNK_SIZE * 0.5;
   terrain.position.set(cwx, SEA_LEVEL, cwz);
@@ -3904,6 +3925,7 @@ function generateIsland(cx, cz) {
   const positions = terrainGeo.attributes.position;
   const colors = new Float32Array(positions.count * 3);
   const waterMask = new Uint8Array(positions.count);
+  const bottomAux = new Float32Array(positions.count);
 
   const islandNoise = new SimplexNoise(cx * 777 + cz * 333);
   for (let i = 0; i < positions.count; i++) {
@@ -3918,6 +3940,7 @@ function generateIsland(cx, cz) {
     const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
     const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
     const warpedDist = dist + edgeWarp + coastWobble;
+    bottomAux[i] = warpedDist;
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
     const isLand = ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
@@ -3960,10 +3983,26 @@ function generateIsland(cx, cz) {
   }
   positions.needsUpdate = true;
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  extrudeIslandTerrainToSeafloor(terrainGeo, waterMask, seg, ISLAND_SEAFLOOR_CAP_LOCAL_Y, (px, pz) =>
-    islandNoise.noise2D((worldX + px) * 0.034, (worldZ + pz) * 0.031) * 0.7);
+  stripIslandTerrainOpenSeaTriangles(terrainGeo, waterMask);
+  appendIslandTerrainUnderfoot(terrainGeo, waterMask, (vi, px, pz, topY) => {
+    const wx = worldX + px, wz = worldZ + pz;
+    const floorMin = SEABED_VISUAL_Y + ISLAND_UNDERFOOT_SEABED_MIN_LIFT;
+    if (waterMask[vi]) {
+      const by = SEABED_VISUAL_Y + 0.16 + islandNoise.noise2D(wx * 0.07, wz * 0.07) * 0.3;
+      return Math.max(by, floorMin);
+    }
+    const wd = bottomAux[vi];
+    const inland = Math.max(0, 1 - wd / PROC_LAND_WARP_MAX);
+    const peak = Math.max(0, topY - 0.32);
+    const roll = islandNoise.noise2D(wx * 0.031, wz * 0.029) * 0.55;
+    const rootLift = Math.min(6.2, peak * (0.26 + 0.56 * inland * inland)) * (0.8 + roll);
+    return Math.max(SEABED_VISUAL_Y + rootLift, floorMin);
+  });
+  terrainGeo.computeVertexNormals();
 
-  const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({
+    vertexColors: true, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2
+  }));
   terrain.receiveShadow = true; terrain.castShadow = true;
   terrain.position.set(worldX, SEA_LEVEL, worldZ);
   terrain.renderOrder = 1;
