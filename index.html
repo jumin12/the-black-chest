@@ -78,6 +78,8 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 #start-screen h1{font-size:clamp(24px,6vw,48px);color:#d4a848;text-shadow:0 2px 4px rgba(0,0,0,0.6),0 0 30px rgba(212,168,72,0.3);margin-bottom:10px;letter-spacing:3px;text-align:center;font-family:Georgia,serif;}
 #start-screen p{color:#9a8a6a;margin-bottom:30px;font-size:clamp(14px,3vw,16px);text-align:center;font-style:italic;}
 #notification{position:absolute;top:50px;left:50%;transform:translateX(-50%);background:rgba(20,12,8,0.9);border:1px solid #d4a848;border-radius:6px;padding:8px 20px;font-size:13px;opacity:0;transition:opacity 0.3s;pointer-events:none;white-space:nowrap;z-index:30;}
+#deck-walk-exit-hint{display:none;position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:95;pointer-events:none;padding:8px 20px 11px;background:linear-gradient(180deg,rgba(26,20,14,0.96),rgba(14,10,8,0.93));border:1px solid rgba(180,140,60,0.5);border-top:none;border-radius:0 0 12px 12px;box-shadow:0 6px 18px rgba(0,0,0,0.4);font-family:Georgia,serif;font-size:12px;color:#d8ccb8;letter-spacing:0.04em;text-align:center;max-width:min(92vw,420px);}
+#deck-walk-exit-hint kbd{display:inline-block;background:rgba(180,140,60,0.22);border:1px solid rgba(212,168,72,0.55);border-radius:4px;padding:2px 8px;font-size:11px;color:#f0e4c8;font-family:inherit;}
 #combat-popups-root{position:fixed;inset:0;pointer-events:none;z-index:26;overflow:visible;}
 .combat-popup{position:absolute;left:0;top:0;max-width:min(240px,42vw);padding:5px 10px;border-radius:6px;background:rgba(18,10,6,0.92);border:1px solid rgba(200,120,80,0.55);color:#e8d8c8;font-size:12px;font-family:Georgia,serif;text-shadow:0 1px 2px rgba(0,0,0,0.85);line-height:1.25;pointer-events:none;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.45);}
 .combat-popup.chain{border-color:rgba(160,140,200,0.55);color:#e4dcf8;}
@@ -668,6 +670,7 @@ input,textarea{-webkit-user-select:text;user-select:text;}
   <div id="anchor-status" class="hud-box" style="display:none;">Anchored</div>
   <div id="spyglass-overlay" aria-hidden="true"><div class="spyglass-ring"></div></div>
   <div id="notification"></div>
+  <div id="deck-walk-exit-hint" aria-hidden="true">Press <kbd>Esc</kbd> to exit deck view</div>
   <div id="combat-popups-root" aria-hidden="true"></div>
 
   <div class="toolbar">
@@ -3244,27 +3247,10 @@ function mulberry32Wild(s0) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-/** After custom or procedural world (re)build, ensure fish and gulls exist near the player. */
+/** Legacy hook after world rebuild — wildlife is seeded per chunk in `ensureCanonicalWildlifeForChunk` so all players see the same schools. */
 function seedDecorativeWildlifeNearPlayer() {
   if (G.mode !== 'playing') return;
-  const rng = mulberry32Wild((G.worldSeed ^ 0x91d4f5a3) >>> 0);
-  const px = G.player.x, pz = G.player.z;
-  if (seagulls.length < 52) spawnSeagulls(px, pz, 8 + Math.floor(rng() * 7), rng);
-  let added = 0;
-  for (let i = 0; i < 48 && added < 32; i++) {
-    const ang = rng() * Math.PI * 2;
-    const dist = 140 + rng() * 4800;
-    const ox = px + Math.cos(ang) * dist, oz = pz + Math.sin(ang) * dist;
-    if (!isSeaObstructed(ox, oz)) {
-      spawnFish(ox, oz, 5 + Math.floor(rng() * 11), rng);
-      added++;
-    }
-  }
-  for (let sh = 0; sh < 12 && ambientSharkPairs.length < 28; sh++) {
-    const ang = rng() * Math.PI * 2;
-    const dist = 180 + rng() * 5200;
-    spawnAmbientSharkPair(px + Math.cos(ang) * dist, pz + Math.sin(ang) * dist, rng);
-  }
+  updateChunks();
 }
 function decoRand(rng) {
   return typeof rng === 'function' ? rng : Math.random;
@@ -3357,6 +3343,40 @@ function sampleIslandLandHeight(px, pz, worldX, worldZ, islandRadius, islandHeig
   const isLand = ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
   if (!isLand) return -1;
   return Math.max(PROC_LAND_HT_MIN, ht);
+}
+
+/** One-shot per chunk index — identical fish/shark placement for all players (see `islandRng`). */
+const wildlifeChunkKeys = new Set();
+function ensureCanonicalWildlifeForChunk(cx, cz) {
+  if (G.mode !== 'playing') return;
+  if (!isChunkInWorld(cx, cz)) return;
+  const ck = cx + ',' + cz;
+  if (wildlifeChunkKeys.has(ck)) return;
+  wildlifeChunkKeys.add(ck);
+  const rng = islandRng(cx, cz);
+  const cwx = cx * CHUNK_SIZE + CHUNK_SIZE * 0.5;
+  const cwz = cz * CHUNK_SIZE + CHUNK_SIZE * 0.5;
+  if (G.customMap && G.customMap.heights && G.customMap.gridN) {
+    for (let i = 0; i < 7; i++) {
+      const ang = rng() * Math.PI * 2;
+      const dist = 22 + rng() * 138;
+      const ox = cwx + Math.cos(ang) * dist;
+      const oz = cwz + Math.sin(ang) * dist;
+      if (!isSeaObstructed(ox, oz)) spawnFish(ox, oz, 4 + Math.floor(rng() * 10), rng);
+    }
+    if (rng() < 0.4) spawnAmbientSharkPair(cwx + (rng() - 0.5) * 90, cwz + (rng() - 0.5) * 90, rng);
+    return;
+  }
+  if (getProceduralIslandMeta(cx, cz)) return;
+  spawnSeagulls(cwx, cwz, 2 + Math.floor(rng() * 5), rng);
+  for (let i = 0; i < 9; i++) {
+    const ang = rng() * Math.PI * 2;
+    const dist = 35 + rng() * 145;
+    const ox = cwx + Math.cos(ang) * dist;
+    const oz = cwz + Math.sin(ang) * dist;
+    if (!isSeaObstructed(ox, oz)) spawnFish(ox, oz, 5 + Math.floor(rng() * 12), rng);
+  }
+  if (rng() < 0.48) spawnAmbientSharkPair(cwx + (rng() - 0.5) * 105, cwz + (rng() - 0.5) * 105, rng);
 }
 
 function generateCustomMapChunk(cx, cz) {
@@ -3833,19 +3853,62 @@ const ambientSharkPairs = [];
 
 function makePredatorSharkMesh(scale) {
   const g = new THREE.Group();
-  const col = 0x5a6d78;
   const s = Number(scale) || 1;
-  const body = new THREE.Mesh(new THREE.ConeGeometry(0.14 * s, 1.05 * s, 6), new THREE.MeshLambertMaterial({ color: col }));
-  body.rotation.x = Math.PI / 2;
-  g.add(body);
-  const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.34 * s, 0.19 * s), new THREE.MeshLambertMaterial({ color: col, side: THREE.DoubleSide }));
-  tail.position.set(0, 0, -0.58 * s);
+  const matTop = new THREE.MeshPhongMaterial({ color: 0x3d4a52, emissive: 0x05080a, shininess: 28, specular: 0x334455 });
+  const matBelly = new THREE.MeshPhongMaterial({ color: 0x6a7580, emissive: 0x040506, shininess: 18, specular: 0x223033 });
+  const matFin = new THREE.MeshPhongMaterial({ color: 0x2a343c, emissive: 0x030405, shininess: 12, specular: 0x1a2028, side: THREE.DoubleSide });
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.1 * s, 0.15 * s, 0.74 * s, 12, 1), matTop);
+  torso.rotation.x = Math.PI / 2;
+  torso.position.z = 0.02 * s;
+  g.add(torso);
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.11 * s, 10, 8, 0, Math.PI * 2, Math.PI * 0.5, Math.PI * 0.5), matBelly);
+  belly.scale.set(1, 0.55, 1.25);
+  belly.rotation.x = Math.PI / 2;
+  belly.position.set(0, -0.05 * s, 0.02 * s);
+  g.add(belly);
+  const snout = new THREE.Mesh(new THREE.ConeGeometry(0.085 * s, 0.32 * s, 10), matTop);
+  snout.rotation.x = Math.PI / 2;
+  snout.position.z = 0.48 * s;
+  g.add(snout);
+  const tail = new THREE.Group();
+  tail.position.z = -0.38 * s;
+  const caudal = new THREE.Mesh(new THREE.ConeGeometry(0.2 * s, 0.4 * s, 6), matTop);
+  caudal.rotation.x = Math.PI / 2;
+  caudal.position.z = -0.18 * s;
+  tail.add(caudal);
   g.add(tail);
-  const fin = new THREE.Mesh(new THREE.ConeGeometry(0.075 * s, 0.4 * s, 4), new THREE.MeshLambertMaterial({ color: col }));
-  fin.position.set(0, 0.17 * s, -0.08 * s);
-  g.add(fin);
+  g.userData.tail = tail;
+  const dorsal = new THREE.Mesh(new THREE.PlaneGeometry(0.1 * s, 0.36 * s), matFin);
+  dorsal.rotation.y = Math.PI / 2;
+  dorsal.position.set(0, 0.13 * s, -0.02 * s);
+  g.add(dorsal);
+  const pecL = new THREE.Mesh(new THREE.PlaneGeometry(0.27 * s, 0.13 * s), matFin);
+  pecL.position.set(-0.14 * s, -0.03 * s, 0.1 * s);
+  pecL.rotation.set(0.42, 0, 0.52);
+  g.add(pecL);
+  const pecR = pecL.clone();
+  pecR.position.x *= -1;
+  pecR.rotation.z *= -1;
+  g.add(pecR);
+  g.userData.pecFinL = pecL;
+  g.userData.pecFinR = pecR;
   g.userData.isPredatorShark = true;
+  g.userData.swimPhase = 0;
   return g;
+}
+function applyPredatorSharkSwimMotion(mesh, swimMag, bankZ) {
+  if (!mesh || !mesh.userData || !mesh.userData.isPredatorShark) return;
+  const sm = swimMag == null ? 1 : swimMag;
+  const ph = mesh.userData.swimPhase || 0;
+  const t = G.time;
+  if (mesh.userData.tail) mesh.userData.tail.rotation.y = Math.sin(t * 2.95 * sm + ph) * 0.55;
+  mesh.rotation.x = Math.sin(t * 2.08 * sm + ph * 1.15) * 0.09 * sm;
+  if (mesh.userData.pecFinL && mesh.userData.pecFinR) {
+    const flap = Math.sin(t * 2.35 * sm + ph * 0.9) * 0.14 * sm;
+    mesh.userData.pecFinL.rotation.x = 0.42 + flap;
+    mesh.userData.pecFinR.rotation.x = 0.42 - flap;
+  }
+  mesh.rotation.z = bankZ != null ? bankZ : 0;
 }
 function disposePredatorSharkMesh(root) {
   if (!root) return;
@@ -3865,9 +3928,12 @@ function spawnAmbientSharkPair(wx, wz, rng) {
   const depth = SEA_LEVEL - 0.62;
   const mA = makePredatorSharkMesh(1.02 + r() * 0.2);
   const mB = makePredatorSharkMesh(0.86 + r() * 0.16);
+  mA.userData.swimPhase = swimmerStreamHash(wx, wz, 401) * Math.PI * 2;
+  mB.userData.swimPhase = swimmerStreamHash(wx, wz, 402) * Math.PI * 2;
   scene.add(mA);
   scene.add(mB);
-  ambientSharkPairs.push({ cx, cz, rad, spd, ph0, depth, mA, mB });
+  const pruneKey = wildlifePruneKey(cx, cz, 0x3a11);
+  ambientSharkPairs.push({ cx, cz, rad, spd, ph0, depth, mA, mB, pruneKey });
 }
 function updateAmbientSharkPairs(dt) {
   const t = G.time;
@@ -3885,8 +3951,14 @@ function updateAmbientSharkPairs(dt) {
       pair.depth - wob * 0.65,
       pair.cz + Math.sin(a2) * pair.rad * 0.9
     );
-    pair.mA.rotation.y = a1 + Math.PI / 2;
-    pair.mB.rotation.y = a2 + Math.PI / 2;
+    const vxa = -Math.sin(a1);
+    const vza = Math.cos(a1);
+    pair.mA.rotation.y = Math.atan2(vxa, vza);
+    applyPredatorSharkSwimMotion(pair.mA, 1, -Math.sin(a1) * 0.09);
+    const vxb = -Math.sin(a2);
+    const vzb = Math.cos(a2);
+    pair.mB.rotation.y = Math.atan2(vxb, vzb);
+    applyPredatorSharkSwimMotion(pair.mB, 0.92, -Math.sin(a2) * 0.085);
   }
 }
 
@@ -3907,6 +3979,8 @@ function initSwimmerPredators(sw) {
   const m2 = makePredatorSharkMesh(0.9);
   m1.userData.phaseOff = 0;
   m2.userData.phaseOff = 2.05;
+  m1.userData.swimPhase = swimmerStreamHash(u.sx || 0, u.sz || 0, salt) * Math.PI * 2;
+  m2.userData.swimPhase = swimmerStreamHash(u.sx || 0, u.sz || 0, (salt + 5) | 0) * Math.PI * 2;
   scene.add(m1);
   scene.add(m2);
   u.predatorMeshes = [m1, m2];
@@ -3956,11 +4030,24 @@ function updateSwimmerPredatorMeshes(sw, swx, swy, swz, tw) {
       pz = swz;
     }
     mesh.position.set(px, depth + Math.sin(G.time * 2.2 + phOff) * 0.12, pz);
-    const rdx = swx - px;
-    const rdz = swz - pz;
-    if (Math.hypot(rdx, rdz) > 0.04) mesh.rotation.y = Math.atan2(rdx, rdz);
-    mesh.rotation.x = tw >= APP + CIR ? Math.sin(G.time * 12) * 0.14 : 0;
-    mesh.rotation.z = tw >= APP + CIR ? Math.sin(G.time * 14 + mi) * 0.09 : 0;
+    let headYaw = mesh.rotation.y;
+    if (tw < APP) {
+      const rdx = swx - px;
+      const rdz = swz - pz;
+      if (Math.hypot(rdx, rdz) > 0.04) headYaw = Math.atan2(rdx, rdz);
+    } else if (tw < APP + CIR) {
+      const ct = tw - APP;
+      const omega = 0.42;
+      const ang = u.predatorA0 + phOff + ct * omega + mi * 0.95;
+      headYaw = Math.atan2(-Math.sin(ang), Math.cos(ang));
+    } else {
+      const rdx = swx - px;
+      const rdz = swz - pz;
+      if (Math.hypot(rdx, rdz) > 0.04) headYaw = Math.atan2(rdx, rdz);
+    }
+    mesh.rotation.y = headYaw;
+    const sm = tw < APP ? 0.82 : tw < APP + CIR ? 1.08 : tw < APP + CIR + ATK ? 1.35 : 0.9;
+    applyPredatorSharkSwimMotion(mesh, sm);
   }
 }
 
@@ -3979,6 +4066,7 @@ function spawnSeagulls(wx, wz, count, rng) {
     sg.userData.t0Phase = r() * Math.PI * 2;
     sg.userData.radius = 26 + r() * 42; sg.userData.speed = 0.12 + r() * 0.16;
     sg.userData.wingL = wingL; sg.userData.wingR = wingR;
+    sg.userData.pruneKey = wildlifePruneKey(wx + i * 0.017, wz - i * 0.013, 0x4e67 + i);
     scene.add(sg); seagulls.push(sg);
   }
 }
@@ -4020,8 +4108,11 @@ const FISH_SPECIES = [
 
 const WILDLIFE_FISH_CAP = 2800;
 const WILDLIFE_SEAGULL_CAP = 900;
-const WILDLIFE_PRUNE_DIST = 9200;
 const WILDLIFE_SHARK_PAIR_CAP = 140;
+/** Stable tie-break for multiplayer: everyone drops the same schools / gulls / sharks when over cap. */
+function wildlifePruneKey(wx, wz, salt) {
+  return swimmerStreamHash(wx, wz, (salt ^ (G.worldSeed & 0xffff)) | 0);
+}
 /** Crew in the water: approach, circle, then attack — wall-clock `tw` after splash-down (synced via `spawnAtMs`). */
 const SWIMMER_PREDATOR_APPROACH_SEC = 6;
 const SWIMMER_PREDATOR_CIRCLE_SEC = 30;
@@ -4046,48 +4137,26 @@ function removeFishSchoolByLeader(leader) {
 
 function pruneWildlifeAwayFromPlayer() {
   if (G.mode !== 'playing') return;
-  const px = G.player.x, pz = G.player.z;
-  const d2Cut = WILDLIFE_PRUNE_DIST * WILDLIFE_PRUNE_DIST;
-  for (let i = seagulls.length - 1; i >= 0; i--) {
-    const sg = seagulls[i];
-    const d2 = (sg.userData.cx - px) ** 2 + (sg.userData.cz - pz) ** 2;
-    if (d2 > d2Cut) { scene.remove(sg); seagulls.splice(i, 1); }
-  }
   const leaders = [...schoolLeaders];
-  leaders.sort((a, b) => {
-    const ad = (a.x - px) ** 2 + (a.z - pz) ** 2;
-    const bd = (b.x - px) ** 2 + (b.z - pz) ** 2;
-    return bd - ad;
-  });
+  leaders.sort((a, b) => (b.pruneKey ?? wildlifePruneKey(b.x, b.z, 0x71ad)) - (a.pruneKey ?? wildlifePruneKey(a.x, a.z, 0x71ad)));
   while (fishSchools.length > WILDLIFE_FISH_CAP && leaders.length) {
     removeFishSchoolByLeader(leaders.shift());
   }
   while (seagulls.length > WILDLIFE_SEAGULL_CAP) {
-    let farI = -1, farD = -1;
+    let dropI = -1, dropK = -1;
     seagulls.forEach((sg, idx) => {
-      const d2 = (sg.userData.cx - px) ** 2 + (sg.userData.cz - pz) ** 2;
-      if (d2 > farD) { farD = d2; farI = idx; }
+      const k = sg.userData.pruneKey ?? wildlifePruneKey(sg.userData.cx, sg.userData.cz, idx);
+      if (k > dropK) { dropK = k; dropI = idx; }
     });
-    if (farI < 0) break;
-    scene.remove(seagulls[farI]);
-    seagulls.splice(farI, 1);
-  }
-  for (let si = ambientSharkPairs.length - 1; si >= 0; si--) {
-    const sh = ambientSharkPairs[si];
-    const d2 = (sh.cx - px) ** 2 + (sh.cz - pz) ** 2;
-    if (d2 > d2Cut) {
-      scene.remove(sh.mA);
-      scene.remove(sh.mB);
-      disposePredatorSharkMesh(sh.mA);
-      disposePredatorSharkMesh(sh.mB);
-      ambientSharkPairs.splice(si, 1);
-    }
+    if (dropI < 0) break;
+    scene.remove(seagulls[dropI]);
+    seagulls.splice(dropI, 1);
   }
   while (ambientSharkPairs.length > WILDLIFE_SHARK_PAIR_CAP) {
-    let farI = -1, farD = -1;
+    let farI = -1, farK = -1;
     ambientSharkPairs.forEach((sh, idx) => {
-      const d2 = (sh.cx - px) ** 2 + (sh.cz - pz) ** 2;
-      if (d2 > farD) { farD = d2; farI = idx; }
+      const k = sh.pruneKey ?? wildlifePruneKey(sh.cx, sh.cz, idx);
+      if (k > farK) { farK = k; farI = idx; }
     });
     if (farI < 0) break;
     const sh = ambientSharkPairs[farI];
@@ -4104,7 +4173,10 @@ function spawnFish(wx, wz, count, rng) {
   const r = decoRand(rng);
   const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
   const depth = SEA_LEVEL - 0.05 - r() * 0.15;
-  const leader = { x: wx, z: wz, dir: r() * Math.PI * 2, speed: 1.5 + r() * 3, turnTimer: 3 + r() * 5, depth, _turnN: 0 };
+  const leader = {
+    x: wx, z: wz, dir: r() * Math.PI * 2, speed: 1.5 + r() * 3, turnTimer: 3 + r() * 5, depth, _turnN: 0,
+    pruneKey: wildlifePruneKey(wx, wz, 0x71ad)
+  };
   schoolLeaders.push(leader);
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
@@ -4236,9 +4308,13 @@ function updateChunks() {
     if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) { wx = t.x; wz = t.z; }
   }
   const pcx = Math.floor(wx / CHUNK_SIZE), pcz = Math.floor(wz / CHUNK_SIZE);
-  for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++)
-    for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++)
-      generateIsland(pcx + dx, pcz + dz);
+  for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++) {
+    for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++) {
+      const cx = pcx + dx, cz = pcz + dz;
+      generateIsland(cx, cz);
+      ensureCanonicalWildlifeForChunk(cx, cz);
+    }
+  }
 }
 
 /* ============================== SHIPS ==================================== */
@@ -4919,6 +4995,7 @@ function canUseCaptainWalk() {
 function setCaptainWalkActive(on) {
   const cw = G.captainWalk;
   const btn = document.getElementById('btn-deck-walk');
+  const exitHint = document.getElementById('deck-walk-exit-hint');
   if (on) {
     if (!canUseCaptainWalk()) return;
     const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
@@ -4942,6 +5019,10 @@ function setCaptainWalkActive(on) {
     notify(isMobile
       ? 'Captain on deck — drag to look; tap spyglass on the right to toggle. Double-tap sea to jump.'
       : 'Captain on deck — move to look; hold right mouse for spyglass. Space / double-tap to jump.');
+    if (exitHint && !isMobile) {
+      exitHint.style.display = 'block';
+      exitHint.setAttribute('aria-hidden', 'false');
+    }
   } else {
     cw.active = false;
     cw.spyglass = false;
@@ -4957,6 +5038,10 @@ function setCaptainWalkActive(on) {
     if (glass) glass.style.display = 'none';
     if (document.pointerLockElement === renderer.domElement) {
       try { document.exitPointerLock(); } catch (e) {}
+    }
+    if (exitHint) {
+      exitHint.style.display = 'none';
+      exitHint.setAttribute('aria-hidden', 'true');
     }
   }
   syncDeckSpyglassMobileButton();
@@ -7589,6 +7674,7 @@ function destroyAmbientWildlife() {
     disposePredatorSharkMesh(sh.mB);
   });
   ambientSharkPairs.length = 0;
+  wildlifeChunkKeys.clear();
 }
 
 function applySharedWorldFromServerSeed(s, opts) {
@@ -8358,6 +8444,11 @@ window.addEventListener('keydown', e => {
       sm.style.display = 'none';
       document.getElementById('btn-settings')?.classList.remove('active');
       restoreMobileGameControls();
+      e.preventDefault();
+      return;
+    }
+    if (G.mode === 'playing' && G.captainWalk?.active && !isMobile) {
+      setCaptainWalkActive(false);
       e.preventDefault();
       return;
     }
@@ -12727,7 +12818,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE for smooth remote motion. */
 const NET_SYNC_HZ = 45;
-let lastTime = 0, sendTimer = 0, oceanFishSpawnAcc = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
+let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 
 function update(dt) {
   if (G.mode !== 'playing') return;
@@ -12856,20 +12947,6 @@ function update(dt) {
   if (wildlifePruneAcc >= 2.1) {
     wildlifePruneAcc = 0;
     pruneWildlifeAwayFromPlayer();
-  }
-  oceanFishSpawnAcc += dt;
-  if (fishSchools.length < WILDLIFE_FISH_CAP && oceanFishSpawnAcc >= 0.12) {
-    oceanFishSpawnAcc = 0;
-    const oceanRng = mulberry32Wild((G.worldSeed
-      ^ Math.imul(Math.floor(G.player.x / 80) | 0, 1259)
-      ^ Math.imul(Math.floor(G.player.z / 80) | 0, 7949)
-      ^ Math.floor(G.time * 0.25)) >>> 0);
-    for (let k = 0; k < 7; k++) {
-      const ox = G.player.x + (oceanRng() - 0.5) * 5600;
-      const oz = G.player.z + (oceanRng() - 0.5) * 5600;
-      if (isSeaObstructed(ox, oz)) continue;
-      spawnFish(ox, oz, 5 + Math.floor(oceanRng() * 11), oceanRng);
-    }
   }
 
   const waveH = Math.sin(G.time * 0.7 + G.player.x * 0.04) * 0.15 + Math.sin(G.time * 1.1 + G.player.z * 0.06) * 0.1 + Math.sin(G.time * 1.8 + G.player.x * 0.08) * 0.05;
