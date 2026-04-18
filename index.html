@@ -9331,6 +9331,17 @@ function connectToServer() {
     switch (msg.type) {
       case 'init':
         G.myId = netPlayerId(msg.id);
+        for (const opid of Array.from(G.otherPlayers.keys())) {
+          disposeRemoteDockRopes(opid);
+          G.pendingRemoteShipSink.delete(opid);
+          if (otherShipGroups.has(opid)) {
+            const og = otherShipGroups.get(opid);
+            disposeObject3DSubtree(og);
+            scene.remove(og);
+            otherShipGroups.delete(opid);
+          }
+        }
+        G.otherPlayers.clear();
         if (msg.worldMapRevision != null) {
           const wr = Number(msg.worldMapRevision) >>> 0;
           if (wr > 0) {
@@ -9564,7 +9575,9 @@ function connectToServer() {
         if (cleared) {
           leaderboardData = entries.slice();
         } else if (serverHad) {
-          leaderboardData = dedupeLeaderboardForDisplay(entries);
+          leaderboardData = dedupeLeaderboardForDisplay(
+            mergeLeaderboardByMaxStats(leaderboardData, entries)
+          );
         } else {
           if (leaderboardData.length === 0) {
             try {
@@ -11575,9 +11588,11 @@ function applyPartySyncPayload(party) {
   if (party === undefined) return;
   const prevTag = G.party?.tag || '';
   const prevId = G.party?.id || '';
-  if (party === null || typeof party !== 'object' || !party.id) {
+  if (party === null) {
     G.party = null;
     clearClanLocalSnapshot();
+  } else if (typeof party !== 'object' || party.id == null || String(party.id).trim() === '') {
+    return;
   } else {
     G.party = {
       id: String(party.id),
@@ -12995,6 +13010,47 @@ function lbRowSinksAi(e) {
 function lbRowSinksPl(e) { return Math.max(0, Math.floor(Number(e && e.sinksPlayer) || 0)); }
 function lbRowRansoms(e) { return Math.max(0, Math.floor(Number(e && e.ransoms) || 0)); }
 function lbRowDeaths(e) { return Math.max(0, Math.floor(Number(e && e.deaths) || 0)); }
+/** Stable key aligned with dedupeLeaderboardForDisplay (captainKey beats socket playerId). */
+function lbEntryMergeKey(e) {
+  if (!e) return '';
+  let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
+  if (ck === 'pirate' || ck === 'unknown') ck = '';
+  const pid = e.playerId != null ? Number(e.playerId) : null;
+  if (ck) return `k:${ck}`;
+  if (Number.isFinite(pid)) return `p:${pid}`;
+  return '';
+}
+/** Per-captain max stats so a partial / zeroed broadcast cannot wipe the UI while names still show. */
+function mergeLeaderboardByMaxStats(prev, next) {
+  const m = new Map();
+  const add = (e) => {
+    if (!e) return;
+    const key = lbEntryMergeKey(e);
+    if (!key) return;
+    const cur = m.get(key);
+    if (!cur) {
+      m.set(key, { ...e });
+      return;
+    }
+    const merged = { ...cur };
+    merged.gold = Math.max(lbRowGold(cur), lbRowGold(e));
+    merged.sinksAi = Math.max(lbRowSinksAi(cur), lbRowSinksAi(e));
+    merged.sinksPlayer = Math.max(lbRowSinksPl(cur), lbRowSinksPl(e));
+    merged.ransoms = Math.max(lbRowRansoms(cur), lbRowRansoms(e));
+    merged.deaths = Math.max(lbRowDeaths(cur), lbRowDeaths(e));
+    const en = String(e.name || '').trim();
+    const cn = String(cur.name || '').trim();
+    if (en && (!cn || cn === 'Pirate' || cn === 'Unknown')) merged.name = e.name;
+    if (e.shipName && String(e.shipName).trim()) merged.shipName = e.shipName;
+    if (e.captainKey && String(e.captainKey).trim()) merged.captainKey = e.captainKey;
+    if (e.playerId != null && Number.isFinite(Number(e.playerId))) merged.playerId = Number(e.playerId);
+    if (e.partyTag != null && String(e.partyTag).trim()) merged.partyTag = String(e.partyTag).slice(0, 24);
+    m.set(key, merged);
+  };
+  (Array.isArray(prev) ? prev : []).forEach(add);
+  (Array.isArray(next) ? next : []).forEach(add);
+  return Array.from(m.values());
+}
 function sortLbEntries(a, b) {
   const ta = lbRowSinksAi(a) + lbRowSinksPl(a) + lbRowRansoms(a) * 0.25;
   const tb = lbRowSinksAi(b) + lbRowSinksPl(b) + lbRowRansoms(b) * 0.25;
