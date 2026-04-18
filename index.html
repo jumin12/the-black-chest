@@ -227,8 +227,9 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 .clan-badge-online{color:#5ec45e;font-size:9px;font-weight:bold;letter-spacing:0.06em;}
 .clan-badge-offline{color:#7a7068;font-size:9px;letter-spacing:0.06em;}
 .clan-role-pill{font-size:9px;padding:2px 7px;border-radius:999px;background:rgba(70,54,36,0.65);color:#d4b878;border:1px solid rgba(120,90,50,0.35);}
-#chat-log{height:108px;overflow-y:auto;font-size:12px;margin-bottom:8px;padding:6px;border-radius:8px;background:rgba(8,6,5,0.35);border:1px solid rgba(80,60,40,0.25);}
-#chat-log div{margin-bottom:4px;line-height:1.35;}
+.chat-log-pane{display:none;height:108px;overflow-y:auto;font-size:12px;margin-bottom:8px;padding:6px;border-radius:8px;background:rgba(8,6,5,0.35);border:1px solid rgba(80,60,40,0.25);}
+.chat-log-pane--world{display:block;}
+.chat-log-pane div{margin-bottom:4px;line-height:1.35;}
 #chat-input{width:100%;background:rgba(40,30,20,0.65);border:1px solid rgba(120,90,40,0.4);border-radius:8px;padding:10px;color:#e0d6c2;font-size:14px;outline:none;min-height:44px;}
 #start-screen{position:fixed;top:0;left:0;width:100%;height:100%;background:radial-gradient(ellipse 85% 65% at 50% 20%,rgba(201,162,74,0.07),transparent 55%),transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;padding:max(16px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom));overflow-y:auto;-webkit-overflow-scrolling:touch;}
 .main-menu-card{
@@ -1379,7 +1380,8 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     </div>
     <p id="chat-channel-hint" class="chat-channel-hint">World chat is public — every captain on the server sees it.</p>
     <div id="chat-party-panel" class="chat-clan-panel" style="display:none;"></div>
-    <div id="chat-log"></div>
+    <div id="chat-log-world" class="chat-log-pane chat-log-pane--world" aria-label="World chat log"></div>
+    <div id="chat-log-clan" class="chat-log-pane" aria-label="Clan chat log"></div>
     <input id="chat-input" placeholder="Type message, press Enter…" />
   </div>
   <div id="controls-help">
@@ -9367,15 +9369,13 @@ function connectToServer() {
         addChatMessage(msg.name, msg.text, msg.chatId, msg.channel || 'global', msg.partyTag || '', msg.clanTag || '');
         break;
       case 'chat_removed': {
-        const log = document.getElementById('chat-log');
-        if (!log || msg.chatId == null) break;
-        const sel = log.querySelector('[data-chat-id="' + String(msg.chatId) + '"]');
-        if (sel) sel.remove();
+        if (msg.chatId == null) break;
+        removeChatMessageFromLogs(msg.chatId);
         break;
       }
       case 'chat_cleared': {
-        const log = document.getElementById('chat-log');
-        if (log) log.innerHTML = '';
+        document.getElementById('chat-log-world')?.replaceChildren();
+        document.getElementById('chat-log-clan')?.replaceChildren();
         break;
       }
       case 'reset_local_career_data':
@@ -11450,7 +11450,31 @@ function setChatChannel(ch) {
       ? 'Clan chat is private — only captains in your clan (online or listed in the roster) see these messages.'
       : 'World chat is public — every captain on the server sees it.';
   }
+  const logW = document.getElementById('chat-log-world');
+  const logC = document.getElementById('chat-log-clan');
+  if (logW && logC) {
+    if (G.chatChannel === 'party') {
+      logW.style.display = 'none';
+      logC.style.display = 'block';
+    } else {
+      logC.style.display = 'none';
+      logW.style.display = 'block';
+    }
+  }
   if (G.chatChannel === 'party') renderPartyChatPanel();
+}
+function getChatLogElementForChannel(channel) {
+  const ch = channel === 'party' ? 'party' : 'global';
+  return document.getElementById(ch === 'party' ? 'chat-log-clan' : 'chat-log-world');
+}
+function removeChatMessageFromLogs(chatId) {
+  const id = String(chatId);
+  for (const lid of ['chat-log-world', 'chat-log-clan']) {
+    const log = document.getElementById(lid);
+    if (!log) continue;
+    const sel = log.querySelector('[data-chat-id="' + id + '"]');
+    if (sel) { sel.remove(); return; }
+  }
 }
 function collectCaptainNameSuggestions(query, limit = 10) {
   const q = String(query || '').trim().toLowerCase();
@@ -11640,8 +11664,9 @@ function renderPartyChatPanel() {
   });
 }
 function addChatMessage(name, text, chatId, channel, partyTag, clanTag) {
-  const log = document.getElementById('chat-log');
   const ch = channel === 'party' ? 'party' : 'global';
+  const log = getChatLogElementForChannel(ch);
+  if (!log) return;
   const d = document.createElement('div');
   if (chatId != null) d.setAttribute('data-chat-id', String(chatId));
   const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');

@@ -131,7 +131,7 @@ const CLAN_MAX_MEMBERS = 5;
 const PARTIES_FILE = path.join(DATA_DIR, 'parties.json');
 /** Secondary copy beside server.js so ephemeral DATA_DIR (e.g. some hosts) still recovers clans after restart. */
 const PARTIES_SHADOW = path.join(__dirname, 'parties.shadow.json');
-/** @type {{ parties: Record<string, { id: string, tag: string, leaderKey: string, memberKeys: string[], pendingKeys?: string[], officerKeys?: string[] }>, captainParty: Record<string, string>, nextPartyNum: number }} */
+/** @type {{ parties: Record<string, { id: string, tag: string, leaderKey: string, memberKeys: string[], pendingKeys?: string[], pendingInviteFrom?: Record<string, { fromCaptainKey: string, fromName: string }>, officerKeys?: string[] }>, captainParty: Record<string, string>, nextPartyNum: number }} */
 let partyStore = { parties: {}, captainParty: {}, nextPartyNum: 1 };
 
 function normalizeClanNameKey(tag) {
@@ -151,6 +151,45 @@ function clanNameTaken(normKey, excludePartyId) {
 function migratePartyRecord(pr) {
   if (!pr) return;
   if (!Array.isArray(pr.officerKeys)) pr.officerKeys = [];
+  if (!pr.pendingInviteFrom || typeof pr.pendingInviteFrom !== 'object') pr.pendingInviteFrom = {};
+}
+
+function deletePendingInviteMeta(pr, captainKey) {
+  if (!pr || !captainKey || !pr.pendingInviteFrom) return;
+  delete pr.pendingInviteFrom[captainKey];
+}
+
+function stripCaptainFromOtherPendingInvites(targetKey, exceptPartyId) {
+  if (!targetKey) return;
+  for (const pid of Object.keys(partyStore.parties)) {
+    if (exceptPartyId && pid === exceptPartyId) continue;
+    const o = partyStore.parties[pid];
+    if (!o || !o.pendingKeys || !o.pendingKeys.includes(targetKey)) continue;
+    o.pendingKeys = o.pendingKeys.filter(k => k !== targetKey);
+    deletePendingInviteMeta(o, targetKey);
+  }
+}
+
+/** When a captain reserves their name, deliver any clan invites received while offline. */
+function sendPendingClanInvitesForCaptain(ws, captainKey) {
+  if (!ws || ws.readyState !== 1 || !captainKey || getPartyForCaptainKey(captainKey)) return;
+  for (const pr of Object.values(partyStore.parties)) {
+    migratePartyRecord(pr);
+    if (!pr.pendingKeys || !pr.pendingKeys.includes(captainKey)) continue;
+    const meta = pr.pendingInviteFrom && pr.pendingInviteFrom[captainKey];
+    const fromName = meta && meta.fromName ? meta.fromName : 'A captain';
+    const fromCaptainKey = meta && meta.fromCaptainKey ? meta.fromCaptainKey : (pr.leaderKey || '');
+    try {
+      ws.send(JSON.stringify({
+        type: 'party_invite_pending',
+        partyId: pr.id,
+        tag: pr.tag,
+        fromCaptainKey,
+        fromName: String(fromName).slice(0, 28)
+      }));
+    } catch (e) {}
+    break;
+  }
 }
 
 function readPartyStoreFileCandidate(filePath) {
@@ -217,6 +256,12 @@ function savePartyStore() {
   }
 }
 loadPartyStore();
+
+setInterval(() => {
+  try {
+    savePartyStore();
+  } catch (e) {}
+}, 60000);
 
 function sanitizePartyTag(t) {
   return String(t != null ? t : '').trim().slice(0, 24);
@@ -777,6 +822,7 @@ setInterval(() => {
 process.on('beforeExit', () => {
   try {
     if (leaderboardHistory.length > 0) persistWorldSeedFile();
+    savePartyStore();
   } catch (e) {}
 });
 
@@ -878,13 +924,20 @@ function persistLeaderboardShutdown() {
 function persistCaptainAccountsShutdown() {
   flushCaptainAccountsIfDirty();
 }
+function persistPartiesShutdown() {
+  try {
+    savePartyStore();
+  } catch (e) {}
+}
 process.on('SIGINT', () => {
   persistLeaderboardShutdown();
   persistCaptainAccountsShutdown();
+  persistPartiesShutdown();
 });
 process.on('SIGTERM', () => {
   persistLeaderboardShutdown();
   persistCaptainAccountsShutdown();
+  persistPartiesShutdown();
 });
 
 const CORS_HEADERS = {
@@ -1470,6 +1523,7 @@ wss.on('connection', (ws, req) => {
             partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
             joinAnnounce: hadPlaceholderName
           });
+          sendPendingClanInvitesForCaptain(ws, newKey);
           break;
         }
         case 'ship_update': {
@@ -1838,7 +1892,7 @@ wss.on('connection', (ws, req) => {
             break;
           }
           const pid = `p${partyStore.nextPartyNum++}`;
-          partyStore.parties[pid] = { id: pid, tag, leaderKey: ck, memberKeys: [ck], pendingKeys: [], officerKeys: [] };
+          partyStore.parties[pid] = { id: pid, tag, leaderKey: ck, memberKeys: [ck], pendingKeys: [], pendingInviteFrom: {}, officerKeys: [] };
           partyStore.captainParty[ck] = pid;
           savePartyStore();
           broadcastPartySync(pid);
@@ -1865,11 +1919,14 @@ wss.on('connection', (ws, req) => {
             try { ws.send(JSON.stringify({ type: 'party_error', error: 'Clan is full (5 captains max).' })); } catch (e) {}
             break;
           }
+          stripCaptainFromOtherPendingInvites(tck, pr.id);
           if (!pr.pendingKeys) pr.pendingKeys = [];
+          if (!pr.pendingInviteFrom) pr.pendingInviteFrom = {};
           if (!pr.pendingKeys.includes(tck)) pr.pendingKeys.push(tck);
+          const fromName = players.get(id)?.name || 'Captain';
+          pr.pendingInviteFrom[tck] = { fromCaptainKey: ck, fromName: String(fromName).slice(0, 28) };
           savePartyStore();
           const tws = findWsByCaptainKey(tck);
-          const fromName = players.get(id)?.name || 'Captain';
           if (tws) {
             try {
               tws.send(JSON.stringify({
@@ -1902,6 +1959,7 @@ wss.on('connection', (ws, req) => {
             break;
           }
           pr.pendingKeys = pr.pendingKeys.filter(k => k !== tck);
+          deletePendingInviteMeta(pr, tck);
           if (!pr.memberKeys.includes(tck)) pr.memberKeys.push(tck);
           partyStore.captainParty[tck] = partyId;
           savePartyStore();
@@ -1915,6 +1973,7 @@ wss.on('connection', (ws, req) => {
           const pr = partyStore.parties[partyId];
           if (tck && pr && pr.pendingKeys) {
             pr.pendingKeys = pr.pendingKeys.filter(k => k !== tck);
+            deletePendingInviteMeta(pr, tck);
             savePartyStore();
           }
           break;
@@ -1931,6 +1990,7 @@ wss.on('connection', (ws, req) => {
             if (pr.officerKeys) pr.officerKeys = pr.officerKeys.filter(k => k !== ck);
             delete partyStore.captainParty[ck];
             if (pr.pendingKeys) pr.pendingKeys = pr.pendingKeys.filter(k => k !== ck);
+            deletePendingInviteMeta(pr, ck);
             if (pr.memberKeys.length === 0) disbandParty(pr.id);
             else {
               savePartyStore();
@@ -1954,6 +2014,7 @@ wss.on('connection', (ws, req) => {
           if (pr.officerKeys) pr.officerKeys = pr.officerKeys.filter(k => k !== kickKey);
           delete partyStore.captainParty[kickKey];
           if (pr.pendingKeys) pr.pendingKeys = pr.pendingKeys.filter(k => k !== kickKey);
+          deletePendingInviteMeta(pr, kickKey);
           savePartyStore();
           const kickedPid = findPlayerIdByCaptainKey(kickKey);
           const kickedPl = kickedPid != null ? players.get(kickedPid) : null;
