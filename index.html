@@ -9288,6 +9288,21 @@ function netNpcSyncId(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
+/** Drop a remote captain from roster + scene (dock ropes, story, ship group). */
+function removeRemotePeer(lid) {
+  const lidN = netPlayerId(lid);
+  if (lidN == null) return;
+  disposeRemoteDockRopes(lidN);
+  G.pendingRemoteShipSink.delete(lidN);
+  G.remotePlayerStories.delete(lidN);
+  G.otherPlayers.delete(lidN);
+  if (otherShipGroups.has(lidN)) {
+    const og = otherShipGroups.get(lidN);
+    disposeObject3DSubtree(og);
+    scene.remove(og);
+    otherShipGroups.delete(lidN);
+  }
+}
 function connectToServer() {
   if (wsUserBanned) return;
   const url = getServerUrl();
@@ -9301,6 +9316,9 @@ function connectToServer() {
       ws.close();
     } catch (err) {}
     ws = null;
+    for (const opid of Array.from(G.otherPlayers.keys())) {
+      removeRemotePeer(opid);
+    }
   }
   let socket;
   try { socket = new WebSocket(url); } catch (e) { return; }
@@ -9332,16 +9350,8 @@ function connectToServer() {
       case 'init':
         G.myId = netPlayerId(msg.id);
         for (const opid of Array.from(G.otherPlayers.keys())) {
-          disposeRemoteDockRopes(opid);
-          G.pendingRemoteShipSink.delete(opid);
-          if (otherShipGroups.has(opid)) {
-            const og = otherShipGroups.get(opid);
-            disposeObject3DSubtree(og);
-            scene.remove(og);
-            otherShipGroups.delete(opid);
-          }
+          removeRemotePeer(opid);
         }
-        G.otherPlayers.clear();
         if (msg.worldMapRevision != null) {
           const wr = Number(msg.worldMapRevision) >>> 0;
           if (wr > 0) {
@@ -9394,6 +9404,7 @@ function connectToServer() {
         if (isMultiplayerHost()) syncHostStoryBountyFleet();
         break;
       case 'player_join': {
+        if (G.myId == null) break;
         const pl = msg.player;
         if (!pl) break;
         const pid = netPlayerId(pl.id);
@@ -9404,6 +9415,7 @@ function connectToServer() {
         break;
       }
       case 'player_identity': {
+        if (G.myId == null) break;
         const pid = netPlayerId(msg.id);
         if (pid == null) break;
         const row = G.otherPlayers.get(pid);
@@ -9423,30 +9435,29 @@ function connectToServer() {
       case 'player_leave': {
         const lid = netPlayerId(msg.id);
         if (lid == null) break;
-        disposeRemoteDockRopes(lid);
-        G.pendingRemoteShipSink.delete(lid);
-        G.remotePlayerStories.delete(lid);
-        G.otherPlayers.delete(lid);
-        if (otherShipGroups.has(lid)) {
-          const og = otherShipGroups.get(lid);
-          disposeObject3DSubtree(og);
-          scene.remove(og);
-          otherShipGroups.delete(lid);
-        }
+        removeRemotePeer(lid);
         break;
       }
       case 'state':
         if (msg.worldT != null) anchorWildlifeClockFromServer(msg.worldT);
         if (!Array.isArray(msg.players)) break;
+        if (G.myId == null) break;
+        const myN = Number(G.myId);
+        if (!msg.players.some(p => netPlayerId(p.id) === myN)) break;
+        const activeRemote = new Set();
         msg.players.forEach(p => {
           const pid = netPlayerId(p.id);
           if (pid == null || pid === G.myId) return;
+          activeRemote.add(pid);
           const ex = G.otherPlayers.get(pid);
           if (ex) Object.assign(ex, p, { id: pid });
           else G.otherPlayers.set(pid, { ...p, id: pid });
           const row = G.otherPlayers.get(pid);
           if (row) refreshOtherPlayerShipCacheKey(row);
         });
+        for (const pid of Array.from(G.otherPlayers.keys())) {
+          if (!activeRemote.has(pid)) removeRemotePeer(pid);
+        }
         break;
       case 'ship_update': {
         const sid = netPlayerId(msg.id);
