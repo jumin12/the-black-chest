@@ -15,6 +15,15 @@ const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
 const WORLD_MAP_FILE = path.join(DATA_DIR, 'world_map.json');
 /** Snapshot of the chart before the last successful publish — used for one-step revert. */
 const WORLD_MAP_BACKUP_FILE = path.join(DATA_DIR, 'world_map.prev.json');
+/** Secondary copy beside server.js (same pattern as leaderboard.shadow) when DATA_DIR is ephemeral. */
+const WORLD_MAP_SHADOW = path.join(__dirname, 'world_map.shadow.json');
+/** Optional extra copy next to server when DATA_DIR points elsewhere. */
+const WORLD_MAP_BESIDE = path.join(__dirname, 'world_map.json');
+/** How often to flush seed, leaderboard, clans, and (if due) world map to disk. */
+const SERVER_STATE_SAVE_INTERVAL_MS = Math.max(200, Number(process.env.SERVER_STATE_SAVE_INTERVAL_MS) || 1000);
+/** Large chart payloads: re-save at most this often unless a new revision was published (override with env). */
+const WORLD_MAP_AUTOSAVE_MS = Math.max(SERVER_STATE_SAVE_INTERVAL_MS, Number(process.env.WORLD_MAP_AUTOSAVE_MS) || SERVER_STATE_SAVE_INTERVAL_MS);
+let lastWorldMapDiskWriteMs = 0;
 /** Full map JSON (same shape as editor export); null if no published chart. */
 let WORLD_MAP_PAYLOAD = null;
 let WORLD_MAP_REVISION = 0;
@@ -356,12 +365,6 @@ function tryMergePartyStoreFromWorldSeedBlob(blob) {
   savePartyStore();
 }
 loadPartyStore();
-
-setInterval(() => {
-  try {
-    savePartyStore();
-  } catch (e) {}
-}, 60000);
 
 /** Refresh clan rosters (online/offline) for all connected members; complements event-driven broadcastPartySync. */
 setInterval(() => {
@@ -850,34 +853,85 @@ function validateWorldMapPayload(map) {
   return true;
 }
 
+function readWorldMapDiskBundle(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const o = JSON.parse(raw);
+    if (!o || typeof o !== 'object' || !o.map) return null;
+    if (!validateWorldMapPayload(o.map)) return null;
+    let revision = Number(o.revision) >>> 0;
+    if (!revision) revision = 1;
+    return { map: o.map, revision, filePath };
+  } catch (e) {
+    return null;
+  }
+}
+
+function worldMapSourceRank(p) {
+  if (p === WORLD_MAP_FILE) return 0;
+  if (p === WORLD_MAP_BESIDE) return 1;
+  if (p === WORLD_MAP_BACKUP_FILE) return 2;
+  if (p === WORLD_MAP_SHADOW) return 3;
+  return 4;
+}
+
 function loadWorldMapFromDisk() {
   WORLD_MAP_PAYLOAD = null;
   WORLD_MAP_REVISION = 0;
-  try {
-    if (!fs.existsSync(WORLD_MAP_FILE)) return;
-    const raw = fs.readFileSync(WORLD_MAP_FILE, 'utf8');
-    const o = JSON.parse(raw);
-    if (!o || typeof o !== 'object' || !o.map) return;
-    if (!validateWorldMapPayload(o.map)) return;
-    WORLD_MAP_PAYLOAD = o.map;
-    WORLD_MAP_REVISION = Number(o.revision) >>> 0;
-    if (!WORLD_MAP_REVISION) WORLD_MAP_REVISION = 1;
-  } catch (e) {
-    WORLD_MAP_PAYLOAD = null;
-    WORLD_MAP_REVISION = 0;
+  const searchPaths = [...new Set([
+    WORLD_MAP_FILE,
+    WORLD_MAP_BESIDE,
+    WORLD_MAP_BACKUP_FILE,
+    WORLD_MAP_SHADOW
+  ])];
+  const candidates = [];
+  for (const p of searchPaths) {
+    const c = readWorldMapDiskBundle(p);
+    if (c) candidates.push(c);
   }
+  if (!candidates.length) return;
+  candidates.sort((a, b) => {
+    if (b.revision !== a.revision) return b.revision - a.revision;
+    return worldMapSourceRank(a.filePath) - worldMapSourceRank(b.filePath);
+  });
+  const picked = candidates[0];
+  WORLD_MAP_PAYLOAD = picked.map;
+  WORLD_MAP_REVISION = picked.revision;
+  if (!WORLD_MAP_REVISION) WORLD_MAP_REVISION = 1;
+  if (picked.filePath !== WORLD_MAP_FILE) {
+    console.warn('[playground] world map loaded from', picked.filePath, '(primary missing or invalid); rewriting canonical files.');
+  }
+  try {
+    persistWorldMapToDisk();
+    lastWorldMapDiskWriteMs = Date.now();
+  } catch (e) {}
 }
 
 function persistWorldMapToDisk() {
   if (!WORLD_MAP_PAYLOAD || !validateWorldMapPayload(WORLD_MAP_PAYLOAD)) return;
+  const bundle = JSON.stringify({
+    revision: WORLD_MAP_REVISION,
+    updatedAt: Date.now(),
+    map: WORLD_MAP_PAYLOAD
+  });
   try {
-    writeFileAtomic(WORLD_MAP_FILE, JSON.stringify({
-      revision: WORLD_MAP_REVISION,
-      updatedAt: Date.now(),
-      map: WORLD_MAP_PAYLOAD
-    }));
+    writeFileAtomic(WORLD_MAP_FILE, bundle);
   } catch (e) {
     console.error('[playground] persist world_map.json failed:', e.message);
+    return;
+  }
+  try {
+    writeFileAtomic(WORLD_MAP_SHADOW, bundle);
+  } catch (e) {
+    console.error('[playground] persist world_map.shadow failed:', e.message);
+  }
+  if (WORLD_MAP_BESIDE !== WORLD_MAP_FILE) {
+    try {
+      writeFileAtomic(WORLD_MAP_BESIDE, bundle);
+    } catch (e) {
+      console.error('[playground] persist world_map (beside server) failed:', e.message);
+    }
   }
 }
 
@@ -898,6 +952,7 @@ function setWorldMapAndBroadcast(mapObj) {
   WORLD_MAP_REVISION = (WORLD_MAP_REVISION >>> 0) + 1;
   if (!WORLD_MAP_REVISION) WORLD_MAP_REVISION = 1;
   persistWorldMapToDisk();
+  lastWorldMapDiskWriteMs = Date.now();
   broadcastAll({ type: 'world_map', revision: WORLD_MAP_REVISION });
   return true;
 }
@@ -913,6 +968,7 @@ function revertWorldMapFromBackupAndBroadcast() {
     WORLD_MAP_REVISION = (WORLD_MAP_REVISION >>> 0) + 1;
     if (!WORLD_MAP_REVISION) WORLD_MAP_REVISION = 1;
     persistWorldMapToDisk();
+    lastWorldMapDiskWriteMs = Date.now();
     broadcastAll({ type: 'world_map', revision: WORLD_MAP_REVISION });
     return true;
   } catch (e) {
@@ -927,8 +983,18 @@ leaderboardClientSeeded = leaderboardHistory.length > 0;
 if (leaderboardHistory.length) persistWorldSeedFile();
 
 setInterval(() => {
-  if (leaderboardHistory.length > 0) persistWorldSeedFile();
-}, 20000);
+  try {
+    savePartyStore();
+    flushCaptainAccountsIfDirty();
+    const now = Date.now();
+    if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
+      if (now - lastWorldMapDiskWriteMs >= WORLD_MAP_AUTOSAVE_MS) {
+        persistWorldMapToDisk();
+        lastWorldMapDiskWriteMs = now;
+      }
+    }
+  } catch (e) {}
+}, SERVER_STATE_SAVE_INTERVAL_MS);
 
 process.on('beforeExit', () => {
   try {
@@ -936,8 +1002,9 @@ process.on('beforeExit', () => {
   } catch (e) {}
 });
 
+/** Keeps parties.json / shadows in lockstep with leaderboard.json (same bundle as persistWorldSeedFile). */
 function saveLeaderboard() {
-  persistWorldSeedFile();
+  savePartyStore();
 }
 
 function loadBans() {
@@ -1096,9 +1163,6 @@ pruneStaleCaptainAccounts();
 setInterval(() => {
   pruneStaleCaptainAccounts();
 }, 60 * 60 * 1000);
-setInterval(flushCaptainAccountsIfDirty, 15000);
-
-setInterval(() => { saveLeaderboard(); }, 60000);
 function persistLeaderboardShutdown() {
   saveLeaderboard();
 }
