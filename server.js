@@ -878,6 +878,77 @@ function secureTokenEquals(a, b) {
   }
 }
 
+/** Same captain token may map to a different normalized key after a display-name change; remap clan rows so getPartyForCaptainKey(newKey) works on reconnect. */
+function findCaptainKeyByToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  let found = null;
+  for (const [k, a] of Object.entries(captainAccounts)) {
+    if (!a || typeof a.token !== 'string') continue;
+    try {
+      if (secureTokenEquals(a.token, token)) {
+        if (found) return null;
+        found = k;
+      }
+    } catch (e) {}
+  }
+  return found;
+}
+
+/** @returns {boolean} false if newKey is already indexed to a different clan (data conflict). */
+function remapCaptainAccountKeyInParties(oldKey, newKey) {
+  if (!oldKey || !newKey || oldKey === newKey) return true;
+  const pidOld = partyStore.captainParty[oldKey];
+  const pidNew = partyStore.captainParty[newKey];
+  if (pidNew != null && pidOld != null && pidNew !== pidOld) return false;
+  if (pidNew != null && pidOld == null) return false;
+  let touched = false;
+  for (const pr of Object.values(partyStore.parties)) {
+    if (!pr) continue;
+    migratePartyRecord(pr);
+    if (pr.leaderKey === oldKey) {
+      pr.leaderKey = newKey;
+      touched = true;
+    }
+    if (Array.isArray(pr.memberKeys)) {
+      const i = pr.memberKeys.indexOf(oldKey);
+      if (i !== -1) {
+        if (pr.memberKeys.includes(newKey)) pr.memberKeys.splice(i, 1);
+        else pr.memberKeys[i] = newKey;
+        touched = true;
+      }
+    }
+    if (Array.isArray(pr.officerKeys)) {
+      const i = pr.officerKeys.indexOf(oldKey);
+      if (i !== -1) {
+        if (pr.officerKeys.includes(newKey)) pr.officerKeys.splice(i, 1);
+        else pr.officerKeys[i] = newKey;
+        touched = true;
+      }
+    }
+    if (Array.isArray(pr.pendingKeys)) {
+      const i = pr.pendingKeys.indexOf(oldKey);
+      if (i !== -1) {
+        if (pr.pendingKeys.includes(newKey)) pr.pendingKeys.splice(i, 1);
+        else pr.pendingKeys[i] = newKey;
+        touched = true;
+      }
+    }
+    if (pr.pendingInviteFrom && pr.pendingInviteFrom[oldKey]) {
+      const meta = pr.pendingInviteFrom[oldKey];
+      delete pr.pendingInviteFrom[oldKey];
+      if (!pr.pendingInviteFrom[newKey]) pr.pendingInviteFrom[newKey] = meta;
+      touched = true;
+    }
+  }
+  if (pidOld) {
+    delete partyStore.captainParty[oldKey];
+    partyStore.captainParty[newKey] = pidOld;
+    touched = true;
+  }
+  if (touched) savePartyStore();
+  return true;
+}
+
 function loadCaptainAccounts() {
   try {
     const raw = fs.readFileSync(CAPTAIN_ACCOUNTS_FILE, 'utf-8');
@@ -1451,6 +1522,28 @@ wss.on('connection', (ws, req) => {
 
           const oldKey = ws.captainAccountKey || null;
 
+          if (tokenOffered && !captainAccounts[newKey]) {
+            const kTok = findCaptainKeyByToken(tokenOffered);
+            if (kTok && kTok !== newKey && captainAccounts[kTok] && secureTokenEquals(captainAccounts[kTok].token, tokenOffered)) {
+              if (!remapCaptainAccountKeyInParties(kTok, newKey)) {
+                try {
+                  ws.send(JSON.stringify({
+                    type: 'name_rejected',
+                    error: 'That name conflicts with another captain’s clan record on this server. Try a different name.'
+                  }));
+                } catch (e) {}
+                break;
+              }
+              captainAccounts[newKey] = {
+                ...captainAccounts[kTok],
+                displayName,
+                lastActiveMs: Date.now()
+              };
+              delete captainAccounts[kTok];
+              saveCaptainAccounts();
+            }
+          }
+
           let duplicateOnline = false;
           for (const [pid, pl] of players) {
             if (pid === id) continue;
@@ -1480,23 +1573,47 @@ wss.on('connection', (ws, req) => {
           } else {
             if (oldKey && oldKey !== newKey && captainAccounts[oldKey] && tokenOffered
               && secureTokenEquals(captainAccounts[oldKey].token, tokenOffered)) {
+              if (!remapCaptainAccountKeyInParties(oldKey, newKey)) {
+                try {
+                  ws.send(JSON.stringify({
+                    type: 'name_rejected',
+                    error: 'Clan record conflict while renaming. Try another name or use your previous captain name.'
+                  }));
+                } catch (e) {}
+                break;
+              }
+              captainAccounts[newKey] = {
+                ...captainAccounts[oldKey],
+                displayName,
+                lastActiveMs: Date.now()
+              };
               delete captainAccounts[oldKey];
+              saveCaptainAccounts();
+              try {
+                ws.send(JSON.stringify({
+                  type: 'name_reserved',
+                  captainKey: newKey,
+                  captainToken: captainAccounts[newKey].token,
+                  name: displayName
+                }));
+              } catch (e) {}
+            } else {
+              const newTok = crypto.randomBytes(24).toString('hex');
+              captainAccounts[newKey] = {
+                token: newTok,
+                displayName,
+                lastActiveMs: Date.now()
+              };
+              saveCaptainAccounts();
+              try {
+                ws.send(JSON.stringify({
+                  type: 'name_reserved',
+                  captainKey: newKey,
+                  captainToken: newTok,
+                  name: displayName
+                }));
+              } catch (e) {}
             }
-            const newTok = crypto.randomBytes(24).toString('hex');
-            captainAccounts[newKey] = {
-              token: newTok,
-              displayName,
-              lastActiveMs: Date.now()
-            };
-            saveCaptainAccounts();
-            try {
-              ws.send(JSON.stringify({
-                type: 'name_reserved',
-                captainKey: newKey,
-                captainToken: newTok,
-                name: displayName
-              }));
-            } catch (e) {}
           }
 
           p.name = displayName;
@@ -1528,7 +1645,9 @@ wss.on('connection', (ws, req) => {
           });
           const prSync = getPartyForCaptainKey(newKey);
           if (prSync) {
+            const syncPayload = buildPartySyncPayload(prSync);
             broadcastPartySync(prSync.id);
+            try { ws.send(JSON.stringify({ type: 'party_sync', party: syncPayload })); } catch (e) {}
           } else {
             try { ws.send(JSON.stringify({ type: 'party_sync', party: null })); } catch (e) {}
           }
