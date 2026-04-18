@@ -2273,10 +2273,14 @@ function syncHostStoryBountyFleet() {
   if (!isMultiplayerHost()) return;
   let needNpcSync = false;
   const online = new Set();
-  if (G.myId != null) online.add(G.myId);
-  G.otherPlayers.forEach((_p, pid) => online.add(pid));
+  const myPid = netPlayerId(G.myId);
+  if (myPid != null) online.add(myPid);
+  G.otherPlayers.forEach((_p, pid) => {
+    const np = netPlayerId(pid);
+    if (np != null) online.add(np);
+  });
   for (const pid of online) {
-    const st = pid === G.myId ? G.storyQuest : G.remotePlayerStories.get(pid);
+    const st = myPid != null && pid === myPid ? G.storyQuest : G.remotePlayerStories.get(pid);
     if (!st || st.phase !== 'active' || st.step >= STORY_SHIP_ORDER.length) continue;
     const sid = storyBountySyncId(pid, st.step);
     const existing = G.npcs.find(n => n.syncId === sid && n.isStoryBounty && !n.sinking && n.health > 0);
@@ -2288,13 +2292,13 @@ function syncHostStoryBountyFleet() {
   for (let j = G.npcs.length - 1; j >= 0; j--) {
     const n = G.npcs[j];
     if (!n.isStoryBounty || n.missionOwnerPlayerId == null) continue;
-    const oid = n.missionOwnerPlayerId;
-    if (!online.has(oid)) {
+    const oid = netPlayerId(n.missionOwnerPlayerId);
+    if (oid == null || !online.has(oid)) {
       if (n.mesh) { scene.remove(n.mesh); n.mesh = null; }
       G.npcs.splice(j, 1);
       continue;
     }
-    const st = oid === G.myId ? G.storyQuest : G.remotePlayerStories.get(oid);
+    const st = myPid != null && oid === myPid ? G.storyQuest : G.remotePlayerStories.get(oid);
     const wantSid = st && st.phase === 'active' && st.step < STORY_SHIP_ORDER.length ? storyBountySyncId(oid, st.step) : null;
     if (!wantSid || wantSid !== n.syncId) {
       if (n.mesh) { scene.remove(n.mesh); n.mesh = null; }
@@ -9261,6 +9265,11 @@ function netPlayerId(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
+/** Host `npc_sync` ids must stay numeric for Set lookups — string ids made `seen.has(syncId)` false and deleted every AI ship. */
+function netNpcSyncId(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 function connectToServer() {
   if (wsUserBanned) return;
   const url = getServerUrl();
@@ -9387,6 +9396,7 @@ function connectToServer() {
         if (lid == null) break;
         disposeRemoteDockRopes(lid);
         G.pendingRemoteShipSink.delete(lid);
+        G.remotePlayerStories.delete(lid);
         G.otherPlayers.delete(lid);
         if (otherShipGroups.has(lid)) {
           const og = otherShipGroups.get(lid);
@@ -9664,12 +9674,15 @@ function connectToServer() {
       case 'world_quests':
         break;
       case 'npc_sync': {
-        if (!msg.npcs) break;
+        if (!Array.isArray(msg.npcs)) break;
         const seen = new Set();
         msg.npcs.forEach(nd => {
-          seen.add(nd.id);
-          let npc = G.npcs.find(n => n.syncId === nd.id);
-          const sbMeta = parseStoryBountyFromSyncId(nd.id);
+          if (!nd) return;
+          const nid = netNpcSyncId(nd.id);
+          if (nid == null) return;
+          seen.add(nid);
+          let npc = G.npcs.find(n => netNpcSyncId(n.syncId) === nid);
+          const sbMeta = parseStoryBountyFromSyncId(nid);
           const moNet = nd.mo != null && Number.isFinite(Number(nd.mo)) ? Math.floor(Number(nd.mo)) : (sbMeta ? sbMeta.ownerPlayerId : null);
           if (!npc && sbMeta) {
             const step = sbMeta ? sbMeta.step : 0;
@@ -9677,7 +9690,7 @@ function connectToServer() {
             const name = nd.n || STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
             const flagColor = nd.fc || '#5a0808';
             npc = {
-              syncId: nd.id,
+              syncId: nid,
               missionOwnerPlayerId: moNet,
               x: nd.x, z: nd.z,
               rotation: nd.r,
@@ -9685,7 +9698,7 @@ function connectToServer() {
               type: shipType,
               name,
               flagColor,
-              flagPosition: nd.flag === 'mast' || nd.flag === 'side' || nd.flag === 'stern' ? nd.flag : AI_FLAG_POSITIONS[(nd.id | 0) %3],
+              flagPosition: nd.flag === 'mast' || nd.flag === 'side' || nd.flag === 'stern' ? nd.flag : AI_FLAG_POSITIONS[(nid | 0) % 3],
               wanderAngle: 0, wanderTimer: 5,
               underFireTimer: 0, fireJitter: 0,
               isStoryBounty: true,
@@ -9725,7 +9738,8 @@ function connectToServer() {
         });
         for (let j = G.npcs.length - 1; j >= 0; j--) {
           const npc = G.npcs[j];
-          if (!seen.has(npc.syncId)) {
+          const sid = netNpcSyncId(npc.syncId);
+          if (sid == null || !seen.has(sid)) {
             if (npc.mesh) { scene.remove(npc.mesh); npc.mesh = null; }
             G.npcs.splice(j, 1);
           }
