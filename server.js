@@ -129,6 +129,8 @@ const chatHistory = [];
 const CLAN_MAX_MEMBERS = 5;
 
 const PARTIES_FILE = path.join(DATA_DIR, 'parties.json');
+/** Secondary copy beside server.js so ephemeral DATA_DIR (e.g. some hosts) still recovers clans after restart. */
+const PARTIES_SHADOW = path.join(__dirname, 'parties.shadow.json');
 /** @type {{ parties: Record<string, { id: string, tag: string, leaderKey: string, memberKeys: string[], pendingKeys?: string[], officerKeys?: string[] }>, captainParty: Record<string, string>, nextPartyNum: number }} */
 let partyStore = { parties: {}, captainParty: {}, nextPartyNum: 1 };
 
@@ -151,27 +153,65 @@ function migratePartyRecord(pr) {
   if (!Array.isArray(pr.officerKeys)) pr.officerKeys = [];
 }
 
-function loadPartyStore() {
+function readPartyStoreFileCandidate(filePath) {
   try {
-    if (!fs.existsSync(PARTIES_FILE)) return;
-    const raw = JSON.parse(fs.readFileSync(PARTIES_FILE, 'utf8'));
-    if (raw && typeof raw === 'object' && raw.parties && raw.captainParty) {
-      partyStore = {
+    if (!fs.existsSync(filePath)) return { data: null, mtime: 0 };
+    const st = fs.statSync(filePath);
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!raw || typeof raw !== 'object' || !raw.parties || !raw.captainParty) return { data: null, mtime: st.mtimeMs };
+    return {
+      data: {
         parties: typeof raw.parties === 'object' ? raw.parties : {},
         captainParty: typeof raw.captainParty === 'object' ? raw.captainParty : {},
         nextPartyNum: Math.max(1, Math.floor(Number(raw.nextPartyNum) || 1))
-      };
-      for (const pid of Object.keys(partyStore.parties)) {
-        migratePartyRecord(partyStore.parties[pid]);
-      }
+      },
+      mtime: st.mtimeMs
+    };
+  } catch (e) {
+    console.error('[playground] parties read error:', filePath, e.message);
+    return { data: null, mtime: 0 };
+  }
+}
+
+function scorePartyStoreSnapshot(s) {
+  if (!s || !s.parties) return -1;
+  return Object.keys(s.parties).length * 10000 + Object.keys(s.captainParty || {}).length * 100 + (s.nextPartyNum || 0);
+}
+
+function loadPartyStore() {
+  const tryPaths = [...new Set([PARTIES_FILE, PARTIES_SHADOW, path.join(__dirname, 'parties.json')])];
+  let best = null;
+  let bestScore = -1;
+  let bestMtime = -1;
+  for (const p of tryPaths) {
+    const { data, mtime } = readPartyStoreFileCandidate(p);
+    if (!data) continue;
+    const sc = scorePartyStoreSnapshot(data);
+    if (sc > bestScore || (sc === bestScore && mtime > bestMtime)) {
+      best = data;
+      bestScore = sc;
+      bestMtime = mtime;
+    }
+  }
+  if (!best) return;
+  try {
+    partyStore = {
+      parties: typeof best.parties === 'object' ? { ...best.parties } : {},
+      captainParty: typeof best.captainParty === 'object' ? { ...best.captainParty } : {},
+      nextPartyNum: Math.max(1, Math.floor(Number(best.nextPartyNum) || 1))
+    };
+    for (const pid of Object.keys(partyStore.parties)) {
+      migratePartyRecord(partyStore.parties[pid]);
     }
   } catch (e) {
     console.error('[playground] parties load error:', e.message);
   }
 }
 function savePartyStore() {
+  const json = JSON.stringify(partyStore);
   try {
-    writeFileAtomic(PARTIES_FILE, JSON.stringify(partyStore));
+    writeFileAtomic(PARTIES_FILE, json);
+    writeFileAtomic(PARTIES_SHADOW, json);
   } catch (e) {
     console.error('[playground] parties save error:', e.message);
   }
