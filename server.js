@@ -212,23 +212,73 @@ function readPartyStoreFileCandidate(filePath) {
   }
 }
 
-function scorePartyStoreSnapshot(s) {
-  if (!s || !s.parties) return -1;
-  return Object.keys(s.parties).length * 10000 + Object.keys(s.captainParty || {}).length * 100 + (s.nextPartyNum || 0);
+/** Embedded `partyStore` inside world_seed.json (same persistence path as leaderboard). */
+function readPartyStoreFromSeedFileCandidate(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return { data: null, mtime: 0 };
+    const st = fs.statSync(filePath);
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!raw || typeof raw !== 'object' || !raw.partyStore || typeof raw.partyStore !== 'object') return { data: null, mtime: st.mtimeMs };
+    const ps = raw.partyStore;
+    if (!ps.parties || !ps.captainParty) return { data: null, mtime: st.mtimeMs };
+    return {
+      data: {
+        parties: typeof ps.parties === 'object' ? { ...ps.parties } : {},
+        captainParty: typeof ps.captainParty === 'object' ? { ...ps.captainParty } : {},
+        nextPartyNum: Math.max(1, Math.floor(Number(ps.nextPartyNum) || 1))
+      },
+      mtime: st.mtimeMs
+    };
+  } catch (e) {
+    return { data: null, mtime: 0 };
+  }
+}
+
+/** Lexicographic richness: real clans/members first; `nextPartyNum` is last tie-breaker only (high counter must not beat non-empty rosters). */
+function partyStoreRichnessTuple(s) {
+  if (!s || typeof s.parties !== 'object') return [-1, 0, 0, 0, 0];
+  const nPart = Object.keys(s.parties).length;
+  const cap = s.captainParty && typeof s.captainParty === 'object' ? s.captainParty : {};
+  const nCap = Object.keys(cap).length;
+  let members = 0, pending = 0;
+  for (const pr of Object.values(s.parties)) {
+    if (!pr) continue;
+    if (Array.isArray(pr.memberKeys)) members += pr.memberKeys.length;
+    if (Array.isArray(pr.pendingKeys)) pending += pr.pendingKeys.length;
+  }
+  const npn = Math.max(1, Math.floor(Number(s.nextPartyNum) || 1));
+  return [nPart, nCap, members, pending, npn];
+}
+/** >0 if a is strictly richer than b */
+function comparePartyStoreSnapshots(a, b) {
+  const ta = partyStoreRichnessTuple(a);
+  const tb = partyStoreRichnessTuple(b);
+  for (let i = 0; i < ta.length; i++) {
+    const d = ta[i] - tb[i];
+    if (d !== 0) return d;
+  }
+  return 0;
 }
 
 function loadPartyStore() {
   const tryPaths = [...new Set([PARTIES_FILE, PARTIES_SHADOW, path.join(__dirname, 'parties.json')])];
   let best = null;
-  let bestScore = -1;
   let bestMtime = -1;
   for (const p of tryPaths) {
     const { data, mtime } = readPartyStoreFileCandidate(p);
     if (!data) continue;
-    const sc = scorePartyStoreSnapshot(data);
-    if (sc > bestScore || (sc === bestScore && mtime > bestMtime)) {
+    const cmp = best ? comparePartyStoreSnapshots(data, best) : 1;
+    if (!best || cmp > 0 || (cmp === 0 && mtime > bestMtime)) {
       best = data;
-      bestScore = sc;
+      bestMtime = mtime;
+    }
+  }
+  const seedCand = readPartyStoreFromSeedFileCandidate(SEED_FILE);
+  if (seedCand.data) {
+    const { data, mtime } = seedCand;
+    const cmp = best ? comparePartyStoreSnapshots(data, best) : 1;
+    if (!best || cmp > 0 || (cmp === 0 && mtime > bestMtime)) {
+      best = data;
       bestMtime = mtime;
     }
   }
@@ -266,9 +316,7 @@ function tryMergePartyStoreFromWorldSeedBlob(blob) {
     captainParty: typeof ps.captainParty === 'object' && ps.captainParty ? { ...ps.captainParty } : {},
     nextPartyNum: Math.max(1, Math.floor(Number(ps.nextPartyNum) || 1))
   };
-  const sc = scorePartyStoreSnapshot(candidate);
-  const scCur = scorePartyStoreSnapshot(partyStore);
-  if (sc <= scCur) return;
+  if (comparePartyStoreSnapshots(candidate, partyStore) <= 0) return;
   partyStore = candidate;
   for (const pid of Object.keys(partyStore.parties)) {
     migratePartyRecord(partyStore.parties[pid]);
