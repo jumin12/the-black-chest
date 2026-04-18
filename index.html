@@ -8996,6 +8996,7 @@ function navigatorWipeLocalVoyageFromBroadcast() {
     localStorage.removeItem('pirates_save_v1');
     localStorage.removeItem(CAPTAIN_ACCOUNTS_STORAGE_KEY);
     localStorage.removeItem('pirates_alltime_v1');
+    localStorage.removeItem(CLAN_LOCAL_SNAPSHOT_KEY);
     localStorage.setItem('pirates_lb_cache', '[]');
   } catch (e) {}
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
@@ -9225,6 +9226,7 @@ function connectToServer() {
     flushPendingCaptainCareerDelete();
     const capName = G.player.crew[0]?.name || 'Pirate';
     G.myCaptainKey = captainNameStorageKey(capName) || G.myCaptainKey;
+    tryRestoreClanFromLocalSnapshot();
     const captainToken = getCaptainTokenForName(capName);
     ws.send(JSON.stringify({
       type: 'set_name',
@@ -9288,6 +9290,7 @@ function connectToServer() {
           });
         }
         if (msg.party) applyPartySyncPayload(msg.party);
+        else tryRestoreClanFromLocalSnapshot();
         /* Do not clear G.party when init omits party — connection runs before set_name; server sends party_sync after syncCaptainNameToServer. Clearing here forced everyone to recreate their clan on every reconnect / world revision. */
         if (isMultiplayerHost()) syncHostStoryBountyFleet();
         break;
@@ -11414,6 +11417,7 @@ function applyPartySyncPayload(party) {
   const prevId = G.party?.id || '';
   if (!party || typeof party !== 'object' || !party.id) {
     G.party = null;
+    clearClanLocalSnapshot();
   } else {
     G.party = {
       id: String(party.id),
@@ -11424,6 +11428,7 @@ function applyPartySyncPayload(party) {
       members: Array.isArray(party.members) ? party.members : []
     };
     G.partyInvite = null;
+    persistClanLocalSnapshotFromParty(G.party);
   }
   syncPartyTagToLeaderboard();
   renderPartyChatPanel();
@@ -16787,6 +16792,47 @@ document.getElementById('settings-scheme-select')?.addEventListener('change', e 
 
 /* ============================== PERSISTENCE ============================== */
 const SAVE_KEY = 'pirates_save_v1';
+const CLAN_LOCAL_SNAPSHOT_KEY = 'pirates_clan_snap_v1';
+
+function clearClanLocalSnapshot() {
+  try { localStorage.removeItem(CLAN_LOCAL_SNAPSHOT_KEY); } catch (e) {}
+}
+
+function persistClanLocalSnapshotFromParty(party) {
+  try {
+    const ck = captainNameStorageKey(G.player.crew[0]?.name || '');
+    if (!ck || !party || typeof party !== 'object' || !party.id) {
+      clearClanLocalSnapshot();
+      return;
+    }
+    localStorage.setItem(CLAN_LOCAL_SNAPSHOT_KEY, JSON.stringify({
+      captainKey: ck,
+      party: {
+        id: String(party.id),
+        tag: party.tag != null ? String(party.tag).slice(0, 24) : '',
+        leaderCaptainKey: party.leaderCaptainKey != null ? String(party.leaderCaptainKey) : '',
+        officerCaptainKeys: Array.isArray(party.officerCaptainKeys) ? party.officerCaptainKeys.map(k => String(k)) : [],
+        memberKeys: Array.isArray(party.memberKeys) ? party.memberKeys.map(k => String(k)) : [],
+        members: Array.isArray(party.members) ? party.members : []
+      },
+      at: Date.now()
+    }));
+  } catch (e) {}
+}
+
+function tryRestoreClanFromLocalSnapshot() {
+  try {
+    if (G.party && G.party.id) return;
+    const raw = localStorage.getItem(CLAN_LOCAL_SNAPSHOT_KEY);
+    if (!raw) return;
+    const o = JSON.parse(raw);
+    const ck = captainNameStorageKey(G.player.crew[0]?.name || '');
+    if (!ck || o.captainKey !== ck || !o.party || !o.party.id) return;
+    const mks = Array.isArray(o.party.memberKeys) ? o.party.memberKeys.map(k => String(k)) : [];
+    if (!mks.includes(ck)) return;
+    applyPartySyncPayload(o.party);
+  } catch (e) {}
+}
 
 function getDefaultStartingInventory() {
   return [
@@ -17170,6 +17216,7 @@ function executeStartNewVoyageAfterConfirm() {
   updatePiratesPanel();
   retireCurrentCaptainIntoAllTime();
   localStorage.removeItem(SAVE_KEY);
+  clearClanLocalSnapshot();
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
   G.player.health = 100; G.player.riggingHealth = 100; G.player.morale = 100;
