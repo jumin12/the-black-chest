@@ -123,12 +123,33 @@ let nextLootNetId = 1;
 let nextSwimmerNetId = 1;
 let nextChatMessageId = 1;
 const CHAT_HISTORY_MAX = 200;
-/** @type {{ id: number, t: number, playerId: number, name: string, text: string, channel?: string, partyId?: string|null, partyTag?: string }[]} */
+/** @type {{ id: number, t: number, playerId: number, name: string, text: string, channel?: string, partyId?: string|null, partyTag?: string, clanTag?: string }[]} */
 const chatHistory = [];
 
+const CLAN_MAX_MEMBERS = 5;
+
 const PARTIES_FILE = path.join(DATA_DIR, 'parties.json');
-/** @type {{ parties: Record<string, { id: string, tag: string, leaderKey: string, memberKeys: string[], pendingKeys?: string[] }>, captainParty: Record<string, string>, nextPartyNum: number }} */
+/** @type {{ parties: Record<string, { id: string, tag: string, leaderKey: string, memberKeys: string[], pendingKeys?: string[], officerKeys?: string[] }>, captainParty: Record<string, string>, nextPartyNum: number }} */
 let partyStore = { parties: {}, captainParty: {}, nextPartyNum: 1 };
+
+function normalizeClanNameKey(tag) {
+  return String(tag || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function clanNameTaken(normKey, excludePartyId) {
+  if (!normKey) return false;
+  for (const pid of Object.keys(partyStore.parties)) {
+    if (excludePartyId && pid === excludePartyId) continue;
+    const pr = partyStore.parties[pid];
+    if (pr && normalizeClanNameKey(pr.tag) === normKey) return true;
+  }
+  return false;
+}
+
+function migratePartyRecord(pr) {
+  if (!pr) return;
+  if (!Array.isArray(pr.officerKeys)) pr.officerKeys = [];
+}
 
 function loadPartyStore() {
   try {
@@ -140,6 +161,9 @@ function loadPartyStore() {
         captainParty: typeof raw.captainParty === 'object' ? raw.captainParty : {},
         nextPartyNum: Math.max(1, Math.floor(Number(raw.nextPartyNum) || 1))
       };
+      for (const pid of Object.keys(partyStore.parties)) {
+        migratePartyRecord(partyStore.parties[pid]);
+      }
     }
   } catch (e) {
     console.error('[playground] parties load error:', e.message);
@@ -166,9 +190,38 @@ function findPlayerIdByCaptainKey(ck) {
   return null;
 }
 
+function refreshPlayerPartyTag(pl) {
+  if (!pl) return;
+  const ck = pl.captainKey || null;
+  if (!ck) {
+    pl.partyTag = '';
+    return;
+  }
+  const pr = getPartyForCaptainKey(ck);
+  pl.partyTag = pr && pr.tag ? String(pr.tag).slice(0, 24) : '';
+}
+
+function refreshPartyTagsForMemberKeys(keys) {
+  if (!Array.isArray(keys)) return;
+  for (const ck of keys) {
+    const pid = findPlayerIdByCaptainKey(ck);
+    if (pid == null) continue;
+    const pl = players.get(pid);
+    if (pl) refreshPlayerPartyTag(pl);
+  }
+}
+
+function canInviteToClan(pr, ck) {
+  if (!pr || !ck) return false;
+  if (pr.leaderKey === ck) return true;
+  migratePartyRecord(pr);
+  return Array.isArray(pr.officerKeys) && pr.officerKeys.includes(ck);
+}
+
 function broadcastPartySync(partyId) {
   const p = partyStore.parties[partyId];
   if (!p || !Array.isArray(p.memberKeys)) return;
+  refreshPartyTagsForMemberKeys(p.memberKeys);
   const payload = buildPartySyncPayload(p);
   for (const ck of p.memberKeys) {
     const pid = findPlayerIdByCaptainKey(ck);
@@ -183,21 +236,31 @@ function broadcastPartySync(partyId) {
 }
 
 function buildPartySyncPayload(p) {
+  migratePartyRecord(p);
+  const officerKeys = Array.isArray(p.officerKeys) ? p.officerKeys.slice() : [];
   const memberKeys = Array.isArray(p.memberKeys) ? p.memberKeys.slice() : [];
   const members = memberKeys.map(ck => {
     const pid = findPlayerIdByCaptainKey(ck);
     const pl = pid != null ? players.get(pid) : null;
     const acc = captainAccounts[ck];
+    const online = pl != null;
+    const name = pl && pl.name ? String(pl.name).slice(0, 28) : (acc && acc.displayName ? String(acc.displayName).slice(0, 28) : ck);
+    let role = 'member';
+    if (ck === p.leaderKey) role = 'leader';
+    else if (officerKeys.includes(ck)) role = 'officer';
     return {
       captainKey: ck,
       playerId: pid != null ? pid : null,
-      name: pl && pl.name ? String(pl.name).slice(0, 28) : (acc && acc.displayName ? String(acc.displayName).slice(0, 28) : ck)
+      name,
+      online,
+      role
     };
   });
   return {
     id: p.id,
     tag: p.tag,
     leaderCaptainKey: p.leaderKey,
+    officerCaptainKeys: officerKeys,
     memberKeys,
     members
   };
@@ -221,7 +284,11 @@ function disbandParty(partyId) {
   savePartyStore();
   for (const ck of keys) {
     const pid = findPlayerIdByCaptainKey(ck);
-    if (pid != null) sendToPlayerId(pid, { type: 'party_sync', party: null });
+    if (pid != null) {
+      const pl = players.get(pid);
+      if (pl) refreshPlayerPartyTag(pl);
+      sendToPlayerId(pid, { type: 'party_sync', party: null });
+    }
   }
 }
 
@@ -1150,6 +1217,7 @@ wss.on('connection', (ws, req) => {
     riggingHealth: 100,
     morale: 100,
     deckWalk: null,
+    partyTag: '',
     clientIp
   };
 
@@ -1195,7 +1263,8 @@ wss.on('connection', (ws, req) => {
         text: m.text,
         channel: m.channel || 'global',
         partyId: m.partyId || null,
-        partyTag: m.partyTag || ''
+        partyTag: m.partyTag || '',
+        clanTag: m.clanTag != null ? String(m.clanTag).slice(0, 24) : ''
       }));
     } catch (e) {}
   }
@@ -1345,6 +1414,7 @@ wss.on('connection', (ws, req) => {
           }
           if (msg.crew) p.crewData = msg.crew.slice(0, 32);
           ws.captainAccountKey = newKey;
+          refreshPlayerPartyTag(p);
           const prSync = getPartyForCaptainKey(newKey);
           if (prSync) {
             try {
@@ -1357,6 +1427,7 @@ wss.on('connection', (ws, req) => {
             name: displayName,
             captainKey: newKey,
             shipName: p.shipName != null ? String(p.shipName).slice(0, 28) : '',
+            partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
             joinAnnounce: hadPlaceholderName
           });
           break;
@@ -1388,7 +1459,7 @@ wss.on('connection', (ws, req) => {
             partyRef = getPartyForCaptainKey(ck);
             if (!partyRef) {
               try {
-                ws.send(JSON.stringify({ type: 'chat_error', error: 'You are not in a party.' }));
+                ws.send(JSON.stringify({ type: 'chat_error', error: 'You are not in a clan.' }));
               } catch (e) {}
               break;
             }
@@ -1396,10 +1467,12 @@ wss.on('connection', (ws, req) => {
             partyTag = partyRef.tag || '';
           }
           const mid = nextChatMessageId++;
-          const row = { id: mid, t: Date.now(), playerId: id, name, text, channel, partyId, partyTag };
+          const plChat = players.get(id);
+          const clanTag = (plChat && plChat.partyTag) ? String(plChat.partyTag).slice(0, 24) : '';
+          const row = { id: mid, t: Date.now(), playerId: id, name, text, channel, partyId, partyTag, clanTag };
           chatHistory.push(row);
           if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
-          const out = { type: 'chat', chatId: mid, id, name, text, channel, partyId, partyTag };
+          const out = { type: 'chat', chatId: mid, id, name, text, channel, partyId, partyTag, clanTag };
           if (channel === 'global') {
             broadcastAll(out);
           } else if (partyRef) {
@@ -1707,16 +1780,25 @@ wss.on('connection', (ws, req) => {
         case 'party_create': {
           const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
           if (!ck) {
-            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Reserve a captain name on this server before forming a party.' })); } catch (e) {}
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Reserve a captain name on this server before forming a clan.' })); } catch (e) {}
             break;
           }
           if (getPartyForCaptainKey(ck)) {
-            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Already in a party. Leave or disband first.' })); } catch (e) {}
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Already in a clan. Leave or disband first.' })); } catch (e) {}
+            break;
+          }
+          const tag = sanitizePartyTag(msg.tag);
+          if (!tag) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Enter a clan name to create one.' })); } catch (e) {}
+            break;
+          }
+          const nameKey = normalizeClanNameKey(tag);
+          if (clanNameTaken(nameKey, null)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'That clan name is already taken.' })); } catch (e) {}
             break;
           }
           const pid = `p${partyStore.nextPartyNum++}`;
-          const tag = sanitizePartyTag(msg.tag) || 'Crew';
-          partyStore.parties[pid] = { id: pid, tag, leaderKey: ck, memberKeys: [ck], pendingKeys: [] };
+          partyStore.parties[pid] = { id: pid, tag, leaderKey: ck, memberKeys: [ck], pendingKeys: [], officerKeys: [] };
           partyStore.captainParty[ck] = pid;
           savePartyStore();
           broadcastPartySync(pid);
@@ -1725,8 +1807,9 @@ wss.on('connection', (ws, req) => {
         case 'party_invite': {
           const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
           const pr = getPartyForCaptainKey(ck);
-          if (!pr || pr.leaderKey !== ck) {
-            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the party leader can invite.' })); } catch (e) {}
+          migratePartyRecord(pr);
+          if (!pr || !canInviteToClan(pr, ck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the captain or a clan officer can invite.' })); } catch (e) {}
             break;
           }
           const tck = normalizeCaptainKey(String(msg.targetCaptainKey != null ? msg.targetCaptainKey : msg.targetName || ''));
@@ -1735,11 +1818,11 @@ wss.on('connection', (ws, req) => {
             break;
           }
           if (getPartyForCaptainKey(tck)) {
-            try { ws.send(JSON.stringify({ type: 'party_error', error: 'That captain is already in a party.' })); } catch (e) {}
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'That captain is already in a clan.' })); } catch (e) {}
             break;
           }
-          if (pr.memberKeys.length + (pr.pendingKeys || []).length >= 8) {
-            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Party is full.' })); } catch (e) {}
+          if (pr.memberKeys.length + (pr.pendingKeys || []).length >= CLAN_MAX_MEMBERS) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Clan is full (5 captains max).' })); } catch (e) {}
             break;
           }
           if (!pr.pendingKeys) pr.pendingKeys = [];
@@ -1771,7 +1854,11 @@ wss.on('connection', (ws, req) => {
             break;
           }
           if (getPartyForCaptainKey(tck)) {
-            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Already in a party.' })); } catch (e) {}
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Already in a clan.' })); } catch (e) {}
+            break;
+          }
+          if (pr.memberKeys.length >= CLAN_MAX_MEMBERS) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Clan is full (5 captains max).' })); } catch (e) {}
             break;
           }
           pr.pendingKeys = pr.pendingKeys.filter(k => k !== tck);
@@ -1796,10 +1883,12 @@ wss.on('connection', (ws, req) => {
           const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
           const pr = getPartyForCaptainKey(ck);
           if (!pr) break;
+          migratePartyRecord(pr);
           if (pr.leaderKey === ck) {
             disbandParty(pr.id);
           } else {
             pr.memberKeys = pr.memberKeys.filter(k => k !== ck);
+            if (pr.officerKeys) pr.officerKeys = pr.officerKeys.filter(k => k !== ck);
             delete partyStore.captainParty[ck];
             if (pr.pendingKeys) pr.pendingKeys = pr.pendingKeys.filter(k => k !== ck);
             if (pr.memberKeys.length === 0) disbandParty(pr.id);
@@ -1807,6 +1896,7 @@ wss.on('connection', (ws, req) => {
               savePartyStore();
               broadcastPartySync(pr.id);
             }
+            refreshPlayerPartyTag(players.get(id));
             try { ws.send(JSON.stringify({ type: 'party_sync', party: null })); } catch (e) {}
           }
           break;
@@ -1821,9 +1911,13 @@ wss.on('connection', (ws, req) => {
           const kickKey = normalizeCaptainKey(String(msg.targetCaptainKey || ''));
           if (!kickKey || kickKey === ck) break;
           pr.memberKeys = pr.memberKeys.filter(k => k !== kickKey);
+          if (pr.officerKeys) pr.officerKeys = pr.officerKeys.filter(k => k !== kickKey);
           delete partyStore.captainParty[kickKey];
           if (pr.pendingKeys) pr.pendingKeys = pr.pendingKeys.filter(k => k !== kickKey);
           savePartyStore();
+          const kickedPid = findPlayerIdByCaptainKey(kickKey);
+          const kickedPl = kickedPid != null ? players.get(kickedPid) : null;
+          if (kickedPl) refreshPlayerPartyTag(kickedPl);
           const kickedWs = findWsByCaptainKey(kickKey);
           if (kickedWs) {
             try { kickedWs.send(JSON.stringify({ type: 'party_sync', party: null })); } catch (e) {}
@@ -1846,12 +1940,58 @@ wss.on('connection', (ws, req) => {
           const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
           const pr = getPartyForCaptainKey(ck);
           if (!pr || pr.leaderKey !== ck) {
-            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the leader can rename the crew tag.' })); } catch (e) {}
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the captain can rename the clan.' })); } catch (e) {}
             break;
           }
-          pr.tag = sanitizePartyTag(msg.tag) || pr.tag;
+          const newTag = sanitizePartyTag(msg.tag);
+          if (!newTag) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Clan name cannot be empty.' })); } catch (e) {}
+            break;
+          }
+          const nk = normalizeClanNameKey(newTag);
+          if (clanNameTaken(nk, pr.id)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'That clan name is already taken.' })); } catch (e) {}
+            break;
+          }
+          pr.tag = newTag;
           savePartyStore();
           broadcastPartySync(pr.id);
+          break;
+        }
+        case 'party_promote_officer': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          migratePartyRecord(pr);
+          if (!pr || pr.leaderKey !== ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the captain can promote officers.' })); } catch (e) {}
+            break;
+          }
+          const tck = normalizeCaptainKey(String(msg.targetCaptainKey || ''));
+          if (!tck || tck === ck || !pr.memberKeys.includes(tck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Pick a clan member to promote.' })); } catch (e) {}
+            break;
+          }
+          if (!pr.officerKeys) pr.officerKeys = [];
+          if (!pr.officerKeys.includes(tck)) pr.officerKeys.push(tck);
+          savePartyStore();
+          broadcastPartySync(pr.id);
+          try { ws.send(JSON.stringify({ type: 'party_ok', action: 'officer_promoted' })); } catch (e) {}
+          break;
+        }
+        case 'party_demote_officer': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          migratePartyRecord(pr);
+          if (!pr || pr.leaderKey !== ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the captain can demote officers.' })); } catch (e) {}
+            break;
+          }
+          const tck = normalizeCaptainKey(String(msg.targetCaptainKey || ''));
+          if (!tck || !pr.officerKeys || !pr.officerKeys.includes(tck)) break;
+          pr.officerKeys = pr.officerKeys.filter(k => k !== tck);
+          savePartyStore();
+          broadcastPartySync(pr.id);
+          try { ws.send(JSON.stringify({ type: 'party_ok', action: 'officer_demoted' })); } catch (e) {}
           break;
         }
         case 'admin_nav': {
@@ -2058,6 +2198,7 @@ setInterval(() => {
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
     name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
     captainKey: p.captainKey != null ? String(p.captainKey) : null,
+    partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     crewData: p.crewData,
