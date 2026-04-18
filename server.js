@@ -1951,7 +1951,9 @@ wss.on('connection', (ws, req) => {
           const capName = (p.name || p.shipName || 'Pirate').slice(0, 28);
           const idx = getLeaderboardRowIndex(id, capName, ws.captainAccountKey || p.captainKey || null, p.shipName);
           const row = normalizeLbEntry(leaderboardHistory[idx]);
-          row.partyTag = String(msg.partyTag != null ? msg.partyTag : '').slice(0, 24);
+          const nextTag = String(msg.partyTag != null ? msg.partyTag : '').slice(0, 24);
+          if (row.partyTag === nextTag) break;
+          row.partyTag = nextTag;
           leaderboardHistory[idx] = row;
           reconcileLeaderboardRows();
           saveLeaderboard();
@@ -2348,6 +2350,40 @@ wss.on('connection', (ws, req) => {
             chatHistory.length = 0;
             broadcastAll({ type: 'chat_cleared' });
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'clear_chat' }));
+            break;
+          }
+          if (action === 'list_clans') {
+            const clans = [];
+            for (const pr of Object.values(partyStore.parties)) {
+              if (!pr) continue;
+              migratePartyRecord(pr);
+              clans.push({
+                id: pr.id,
+                tag: pr.tag,
+                leaderKey: pr.leaderKey,
+                memberKeys: (pr.memberKeys || []).slice(),
+                officerKeys: (pr.officerKeys || []).slice(),
+                pendingKeys: (pr.pendingKeys || []).slice()
+              });
+            }
+            clans.sort((a, b) => String(a.tag || '').localeCompare(String(b.tag || '')));
+            try {
+              ws.send(JSON.stringify({ type: 'admin_clans', clans }));
+            } catch (e) {}
+            break;
+          }
+          if (action === 'delete_clan') {
+            const partyId = msg.partyId != null ? String(msg.partyId).trim() : '';
+            if (!partyId || !partyStore.parties[partyId]) {
+              try {
+                ws.send(JSON.stringify({ type: 'admin_error', error: 'Unknown clan id.' }));
+              } catch (e) {}
+              break;
+            }
+            disbandParty(partyId);
+            try {
+              ws.send(JSON.stringify({ type: 'admin_ok', action: 'delete_clan', partyId }));
+            } catch (e) {}
             break;
           }
           if (targetId == null || !Number.isFinite(targetId)) {
