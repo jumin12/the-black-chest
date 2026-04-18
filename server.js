@@ -263,6 +263,15 @@ setInterval(() => {
   } catch (e) {}
 }, 60000);
 
+/** Refresh clan rosters (online/offline) for all connected members; complements event-driven broadcastPartySync. */
+setInterval(() => {
+  try {
+    for (const partyId of Object.keys(partyStore.parties)) {
+      broadcastPartySync(partyId);
+    }
+  } catch (e) {}
+}, 8000);
+
 function sanitizePartyTag(t) {
   return String(t != null ? t : '').trim().slice(0, 24);
 }
@@ -1508,12 +1517,6 @@ wss.on('connection', (ws, req) => {
           if (msg.crew) p.crewData = msg.crew.slice(0, 32);
           ws.captainAccountKey = newKey;
           refreshPlayerPartyTag(p);
-          const prSync = getPartyForCaptainKey(newKey);
-          if (prSync) {
-            try {
-              ws.send(JSON.stringify({ type: 'party_sync', party: buildPartySyncPayload(prSync) }));
-            } catch (e) {}
-          }
           broadcastAll({
             type: 'player_identity',
             id,
@@ -1523,6 +1526,12 @@ wss.on('connection', (ws, req) => {
             partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
             joinAnnounce: hadPlaceholderName
           });
+          const prSync = getPartyForCaptainKey(newKey);
+          if (prSync) {
+            broadcastPartySync(prSync.id);
+          } else {
+            try { ws.send(JSON.stringify({ type: 'party_sync', party: null })); } catch (e) {}
+          }
           sendPendingClanInvitesForCaptain(ws, newKey);
           break;
         }
@@ -2005,7 +2014,7 @@ wss.on('connection', (ws, req) => {
           const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
           const pr = getPartyForCaptainKey(ck);
           if (!pr || pr.leaderKey !== ck) {
-            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the leader can remove members.' })); } catch (e) {}
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the clan captain can remove members. Officers may invite only.' })); } catch (e) {}
             break;
           }
           const kickKey = normalizeCaptainKey(String(msg.targetCaptainKey || ''));
@@ -2287,9 +2296,16 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    const left = players.get(id);
+    const leftCk = left && left.captainKey ? normalizeCaptainKey(String(left.captainKey))
+      : (ws.captainAccountKey ? normalizeCaptainKey(String(ws.captainAccountKey)) : null);
     playerStories.delete(id);
     players.delete(id);
     broadcast({ type: 'player_leave', id });
+    if (leftCk) {
+      const prLeft = getPartyForCaptainKey(leftCk);
+      if (prLeft) broadcastPartySync(prLeft.id);
+    }
   });
 });
 
