@@ -212,6 +212,28 @@ function readPartyStoreFileCandidate(filePath) {
   }
 }
 
+/** Optional `partyStore` bundled next to leaderboard rows (same files / shadow copies as scores). */
+function readPartyStoreFromLeaderboardBundle(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return { data: null, mtime: 0 };
+    const st = fs.statSync(filePath);
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { data: null, mtime: st.mtimeMs };
+    const ps = raw.partyStore;
+    if (!ps || typeof ps !== 'object' || !ps.parties || !ps.captainParty) return { data: null, mtime: st.mtimeMs };
+    return {
+      data: {
+        parties: typeof ps.parties === 'object' ? { ...ps.parties } : {},
+        captainParty: typeof ps.captainParty === 'object' ? { ...ps.captainParty } : {},
+        nextPartyNum: Math.max(1, Math.floor(Number(ps.nextPartyNum) || 1))
+      },
+      mtime: st.mtimeMs
+    };
+  } catch (e) {
+    return { data: null, mtime: 0 };
+  }
+}
+
 /** Embedded `partyStore` inside world_seed.json (same persistence path as leaderboard). */
 function readPartyStoreFromSeedFileCandidate(filePath) {
   try {
@@ -276,6 +298,16 @@ function loadPartyStore() {
   const seedCand = readPartyStoreFromSeedFileCandidate(SEED_FILE);
   if (seedCand.data) {
     const { data, mtime } = seedCand;
+    const cmp = best ? comparePartyStoreSnapshots(data, best) : 1;
+    if (!best || cmp > 0 || (cmp === 0 && mtime > bestMtime)) {
+      best = data;
+      bestMtime = mtime;
+    }
+  }
+  const lbPartyPaths = [...new Set([LEADERBOARD_FILE, LEADERBOARD_SHADOW, path.join(__dirname, 'leaderboard.json')])];
+  for (const p of lbPartyPaths) {
+    const { data, mtime } = readPartyStoreFromLeaderboardBundle(p);
+    if (!data) continue;
     const cmp = best ? comparePartyStoreSnapshots(data, best) : 1;
     if (!best || cmp > 0 || (cmp === 0 && mtime > bestMtime)) {
       best = data;
@@ -738,11 +770,12 @@ function collectLeaderboardCandidatesFromDisk(worldRaw, worldMtimeMs) {
 
 function persistWorldSeedFile() {
   const worldPayload = JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory, partyStore });
-  const lbOnly = JSON.stringify(leaderboardHistory);
+  /** Mirror clans into the same JSON files as leaderboard rows so both survive identical deploy paths. */
+  const lbBundle = JSON.stringify({ leaderboard: leaderboardHistory, partyStore });
   try {
     writeFileAtomic(SEED_FILE, worldPayload);
-    writeFileAtomic(LEADERBOARD_FILE, lbOnly);
-    writeFileAtomic(LEADERBOARD_SHADOW, lbOnly);
+    writeFileAtomic(LEADERBOARD_FILE, lbBundle);
+    writeFileAtomic(LEADERBOARD_SHADOW, lbBundle);
   } catch (e) {
     console.error('[playground] persist world/leaderboard failed:', e.message);
   }
