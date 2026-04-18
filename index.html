@@ -7154,15 +7154,28 @@ function ensurePlayerCrewTasks() {
 /** Fully dispose GPU resources under a Three.js object (geometries, materials, textures). */
 function disposeObject3DSubtree(root) {
   if (!root) return;
+  const doneGeo = new Set();
+  const doneMap = new Set();
+  const doneMat = new Set();
   root.traverse(obj => {
     try {
-      if (obj.geometry) obj.geometry.dispose();
+      const g = obj.geometry;
+      if (g && !doneGeo.has(g)) {
+        doneGeo.add(g);
+        g.dispose();
+      }
       const mat = obj.material;
       if (mat) {
         const arr = Array.isArray(mat) ? mat : [mat];
         for (const m of arr) {
-          if (m && m.map) m.map.dispose();
-          if (m && m.dispose) m.dispose();
+          if (!m || doneMat.has(m)) continue;
+          const map = m.map;
+          if (map && !doneMap.has(map)) {
+            doneMap.add(map);
+            try { map.dispose(); } catch (e) {}
+          }
+          doneMat.add(m);
+          try { if (m.dispose) m.dispose(); } catch (e2) {}
         }
       }
     } catch (e) {}
@@ -9437,6 +9450,7 @@ function connectToServer() {
         break;
       }
       case 'party_sync':
+        if (!('party' in msg)) break;
         applyPartySyncPayload(msg.party);
         break;
       case 'party_invite_pending':
@@ -11552,9 +11566,10 @@ function syncPartyTagToLeaderboard() {
   try { ws.send(JSON.stringify({ type: 'party_tag_sync', partyTag: tag })); } catch (e) {}
 }
 function applyPartySyncPayload(party) {
+  if (party === undefined) return;
   const prevTag = G.party?.tag || '';
   const prevId = G.party?.id || '';
-  if (!party || typeof party !== 'object' || !party.id) {
+  if (party === null || typeof party !== 'object' || !party.id) {
     G.party = null;
     clearClanLocalSnapshot();
   } else {
