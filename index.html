@@ -100,6 +100,35 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 @media (max-width:768px){
   #pc-combat-hud-bar{display:contents;}
 }
+/* Vibe Jam 2026 widget (injected as body > a): smaller on phones, bottom-right; desktop top-right */
+body > a[href="https://vibej.am/"][target="_blank"]{
+  z-index:10001 !important;
+}
+@media (max-width:768px){
+  body > a[href="https://vibej.am/"][target="_blank"]{
+    bottom:calc(6px + env(safe-area-inset-bottom, 0px)) !important;
+    right:6px !important;
+    top:auto !important;
+    left:auto !important;
+    padding:5px 9px !important;
+    font-size:10.5px !important;
+    line-height:1.15 !important;
+    transform:scale(0.66);
+    transform-origin:bottom right;
+  }
+}
+@media (min-width:769px){
+  body > a[href="https://vibej.am/"][target="_blank"]{
+    top:10px !important;
+    right:12px !important;
+    bottom:auto !important;
+    left:auto !important;
+    padding:6px 11px !important;
+    font-size:11.5px !important;
+    transform:scale(0.86);
+    transform-origin:top right;
+  }
+}
 #combat-shot-toggle{
   position:relative;display:inline-flex;align-items:center;justify-content:center;gap:5px;
   min-height:44px;min-width:52px;padding:5px 12px 5px 7px;border-radius:22px;cursor:pointer;touch-action:manipulation;
@@ -9227,6 +9256,11 @@ function schedulePlayWorldNetFallback() {
 function voyageSaveExistsInStorage() {
   try { return !!localStorage.getItem('pirates_save_v1'); } catch (e) { return false; }
 }
+/** Server player ids are numeric; JSON may coerce keys — keep Map keys and comparisons consistent. */
+function netPlayerId(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 function connectToServer() {
   if (wsUserBanned) return;
   const url = getServerUrl();
@@ -9269,7 +9303,7 @@ function connectToServer() {
     const msg = JSON.parse(e.data);
     switch (msg.type) {
       case 'init':
-        G.myId = msg.id;
+        G.myId = netPlayerId(msg.id);
         if (msg.worldMapRevision != null) {
           const wr = Number(msg.worldMapRevision) >>> 0;
           if (wr > 0) {
@@ -9295,8 +9329,11 @@ function connectToServer() {
         }
         if (msg.players) {
           msg.players.forEach(p => {
-            G.otherPlayers.set(p.id, p);
-            refreshOtherPlayerShipCacheKey(G.otherPlayers.get(p.id));
+            const pid = netPlayerId(p.id);
+            if (pid == null || pid === G.myId) return;
+            const row = { ...p, id: pid };
+            G.otherPlayers.set(pid, row);
+            refreshOtherPlayerShipCacheKey(G.otherPlayers.get(pid));
           });
         }
         if (G.mode === 'playing' && !voyageSaveExistsInStorage()) {
@@ -9318,12 +9355,18 @@ function connectToServer() {
         /* Do not clear G.party when init omits party — connection runs before set_name; server sends party_sync after syncCaptainNameToServer. Clearing here forced everyone to recreate their clan on every reconnect / world revision. */
         if (isMultiplayerHost()) syncHostStoryBountyFleet();
         break;
-      case 'player_join':
-        G.otherPlayers.set(msg.player.id, msg.player);
-        refreshOtherPlayerShipCacheKey(G.otherPlayers.get(msg.player.id));
+      case 'player_join': {
+        const pl = msg.player;
+        if (!pl) break;
+        const pid = netPlayerId(pl.id);
+        if (pid == null || pid === G.myId) break;
+        const row = { ...pl, id: pid };
+        G.otherPlayers.set(pid, row);
+        refreshOtherPlayerShipCacheKey(G.otherPlayers.get(pid));
         break;
+      }
       case 'player_identity': {
-        const pid = msg.id;
+        const pid = netPlayerId(msg.id);
         if (pid == null) break;
         const row = G.otherPlayers.get(pid);
         if (row) {
@@ -9340,40 +9383,45 @@ function connectToServer() {
         break;
       }
       case 'player_leave': {
-        const lid = Number(msg.id);
-        disposeRemoteDockRopes(msg.id);
-        if (Number.isFinite(lid)) G.pendingRemoteShipSink.delete(lid);
-        G.otherPlayers.delete(msg.id);
-        if (otherShipGroups.has(msg.id)) {
-          const og = otherShipGroups.get(msg.id);
+        const lid = netPlayerId(msg.id);
+        if (lid == null) break;
+        disposeRemoteDockRopes(lid);
+        G.pendingRemoteShipSink.delete(lid);
+        G.otherPlayers.delete(lid);
+        if (otherShipGroups.has(lid)) {
+          const og = otherShipGroups.get(lid);
           disposeObject3DSubtree(og);
           scene.remove(og);
-          otherShipGroups.delete(msg.id);
+          otherShipGroups.delete(lid);
         }
         break;
       }
       case 'state':
         if (msg.worldT != null) anchorWildlifeClockFromServer(msg.worldT);
+        if (!Array.isArray(msg.players)) break;
         msg.players.forEach(p => {
-          if (p.id === G.myId) return;
-          const ex = G.otherPlayers.get(p.id);
-          if (ex) Object.assign(ex, p);
-          else G.otherPlayers.set(p.id, p);
-          const row = G.otherPlayers.get(p.id);
+          const pid = netPlayerId(p.id);
+          if (pid == null || pid === G.myId) return;
+          const ex = G.otherPlayers.get(pid);
+          if (ex) Object.assign(ex, p, { id: pid });
+          else G.otherPlayers.set(pid, { ...p, id: pid });
+          const row = G.otherPlayers.get(pid);
           if (row) refreshOtherPlayerShipCacheKey(row);
         });
         break;
       case 'ship_update': {
-        const p = G.otherPlayers.get(msg.id);
+        const sid = netPlayerId(msg.id);
+        if (sid == null) break;
+        const p = G.otherPlayers.get(sid);
         if (p) {
           p.shipType = msg.shipType;
           p.shipParts = msg.shipParts;
           refreshOtherPlayerShipCacheKey(p);
-          if (otherShipGroups.has(msg.id)) {
-            const og = otherShipGroups.get(msg.id);
+          if (otherShipGroups.has(sid)) {
+            const og = otherShipGroups.get(sid);
             disposeObject3DSubtree(og);
             scene.remove(og);
-            otherShipGroups.delete(msg.id);
+            otherShipGroups.delete(sid);
           }
         }
         break;
@@ -15399,7 +15447,10 @@ function update(dt) {
         const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, (p.flagColor || p.color || ''), String(p.partyTag || '').slice(0, 24));
         const spec = SHIP_TYPES[st];
         capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
-        sm.children = sm.children.filter(c => !(c instanceof THREE.Sprite));
+        for (let ci = sm.children.length - 1; ci >= 0; ci--) {
+          const ch = sm.children[ci];
+          if (ch instanceof THREE.Sprite) sm.remove(ch);
+        }
         sm.add(capLabel);
       }
       const pCrew = p.crewData && p.crewData.length ? p.crewData.map((c, ci) => {

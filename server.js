@@ -254,6 +254,26 @@ function savePartyStore() {
   } catch (e) {
     console.error('[playground] parties save error:', e.message);
   }
+  persistWorldSeedFile();
+}
+
+/** If `world_seed.json` carries a richer clan snapshot than `parties.json` (e.g. ephemeral DATA_DIR), restore from it. */
+function tryMergePartyStoreFromWorldSeedBlob(blob) {
+  if (!blob || !blob.partyStore || typeof blob.partyStore !== 'object') return;
+  const ps = blob.partyStore;
+  const candidate = {
+    parties: typeof ps.parties === 'object' && ps.parties ? { ...ps.parties } : {},
+    captainParty: typeof ps.captainParty === 'object' && ps.captainParty ? { ...ps.captainParty } : {},
+    nextPartyNum: Math.max(1, Math.floor(Number(ps.nextPartyNum) || 1))
+  };
+  const sc = scorePartyStoreSnapshot(candidate);
+  const scCur = scorePartyStoreSnapshot(partyStore);
+  if (sc <= scCur) return;
+  partyStore = candidate;
+  for (const pid of Object.keys(partyStore.parties)) {
+    migratePartyRecord(partyStore.parties[pid]);
+  }
+  savePartyStore();
 }
 loadPartyStore();
 
@@ -669,7 +689,7 @@ function collectLeaderboardCandidatesFromDisk(worldRaw, worldMtimeMs) {
 }
 
 function persistWorldSeedFile() {
-  const worldPayload = JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory });
+  const worldPayload = JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory, partyStore });
   const lbOnly = JSON.stringify(leaderboardHistory);
   try {
     writeFileAtomic(SEED_FILE, worldPayload);
@@ -720,7 +740,7 @@ function loadPersistedState() {
     leaderboardHistory = picked.map(normalizeLbEntry);
     if (!seedFileExists) {
       try {
-        writeFileAtomic(SEED_FILE, JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory }));
+        persistWorldSeedFile();
       } catch (e2) {}
     }
     migrateLegacyStandaloneLeaderboard();
@@ -733,6 +753,7 @@ function loadPersistedState() {
   const picked = pickBestLeaderboardArrays(collectLeaderboardCandidatesFromDisk(raw, worldMtime));
   leaderboardHistory = picked.map(normalizeLbEntry);
   migrateLegacyStandaloneLeaderboard();
+  tryMergePartyStoreFromWorldSeedBlob(raw);
 }
 
 loadPersistedState();
@@ -830,7 +851,6 @@ setInterval(() => {
 
 process.on('beforeExit', () => {
   try {
-    if (leaderboardHistory.length > 0) persistWorldSeedFile();
     savePartyStore();
   } catch (e) {}
 });
