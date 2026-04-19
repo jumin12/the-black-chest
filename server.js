@@ -1640,6 +1640,21 @@ function broadcastAll(data) {
   });
 }
 
+function serverPopulationPayload() {
+  return {
+    type: 'server_pop',
+    online: players.size,
+    registered: Object.keys(captainAccounts || {}).length
+  };
+}
+
+/** Broadcast online / registered captain counts (chat header). */
+function broadcastServerPopulation() {
+  try {
+    broadcastAll(serverPopulationPayload());
+  } catch (e) {}
+}
+
 function normalizeClientIp(req) {
   let ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
     || req.socket?.remoteAddress || '';
@@ -1865,7 +1880,8 @@ wss.on('connection', (ws, req) => {
     worldStory: sanitizeWorldStory(worldStoryQuest),
     worldQuests: null,
     playerStories: storySnap,
-    party: partyPayload
+    party: partyPayload,
+    serverPop: { online: players.size, registered: Object.keys(captainAccounts || {}).length }
   }));
   reconcileLeaderboardRows();
   ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
@@ -1892,6 +1908,7 @@ wss.on('connection', (ws, req) => {
   }
 
   broadcast({ type: 'player_join', player: playerData }, id);
+  broadcastServerPopulation();
 
   ws.on('message', (raw) => {
     try {
@@ -2097,6 +2114,7 @@ wss.on('connection', (ws, req) => {
             try { ws.send(JSON.stringify({ type: 'party_sync', party: null })); } catch (e) {}
           }
           sendPendingClanInvitesForCaptain(ws, newKey);
+          broadcastServerPopulation();
           break;
         }
         case 'ship_update': {
@@ -2914,6 +2932,7 @@ wss.on('connection', (ws, req) => {
     playerStories.delete(id);
     players.delete(id);
     broadcast({ type: 'player_leave', id });
+    broadcastServerPopulation();
     if (leftCk) {
       const prLeft = getPartyForCaptainKey(leftCk);
       if (prLeft) broadcastPartySync(prLeft.id);
@@ -2949,13 +2968,7 @@ setInterval(() => {
     morale: p.morale != null ? p.morale : 100,
     deckWalk: p.deckWalk || null
   }));
-  broadcast({
-    type: 'state',
-    players: snapshot,
-    worldT: (Date.now() - SERVER_WORLD_T0_MS) / 1000,
-    populationOnline: players.size,
-    populationRegistered: Object.keys(captainAccounts || {}).length
-  });
+  broadcast({ type: 'state', players: snapshot, worldT: (Date.now() - SERVER_WORLD_T0_MS) / 1000 });
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, '0.0.0.0', () => {
