@@ -11963,26 +11963,25 @@ window.addEventListener('resize', () => {
 });
 
 let audioCtx, masterGain;
-/** Sample paths (relative to page). */
+/** Sample paths (root-relative so they work from any page URL and are not eaten by SPA rewrites). */
 const GAME_AUDIO = {
-  cannon: 'assets/sound/effects/cannon-shot.wav',
-  yellA: 'assets/sound/effects/captain-fire-yell.wav',
-  yellB: 'assets/sound/effects/captain-fire-yell2.wav',
-  seagull: 'assets/sound/effects/seagul.wav',
-  shipTravel: 'assets/sound/effects/ship-traveling.wav',
-  shipDamage: 'assets/sound/effects/ship-damage.wav',
-  death: 'assets/sound/effects/death.mp3',
-  fall: 'assets/sound/effects/fall.mp3',
+  cannon: '/assets/sound/effects/cannon-shot.wav',
+  yellA: '/assets/sound/effects/captain-fire-yell.wav',
+  yellB: '/assets/sound/effects/captain-fire-yell2.wav',
+  seagull: '/assets/sound/effects/seagul.wav',
+  shipTravel: '/assets/sound/effects/ship-traveling.wav',
+  shipDamage: '/assets/sound/effects/ship-damage.wav',
+  death: '/assets/sound/effects/death.mp3',
+  fall: '/assets/sound/effects/fall.mp3',
   bgm: [
-    'assets/sound/music/track1.mp3',
-    'assets/sound/music/track2.mp3',
-    'assets/sound/music/track3.mp3',
-    'assets/sound/music/track4.mp3',
-    'assets/sound/music/track5.mp3',
-    'assets/sound/music/track6.mp3'
+    '/assets/sound/music/track1.mp3',
+    '/assets/sound/music/track2.mp3',
+    '/assets/sound/music/track3.mp3',
+    '/assets/sound/music/track4.mp3',
+    '/assets/sound/music/track5.mp3',
+    '/assets/sound/music/track6.mp3'
   ]
 };
-let _gameAudioUnlocked = false;
 let _bgmAudio = null;
 let _bgmTrackIndex = 0;
 let _shipLoopAudio = null;
@@ -11997,22 +11996,28 @@ function ensureAudio() {
   masterGain.connect(audioCtx.destination);
 }
 function tryUnlockGameAudio() {
-  if (_gameAudioUnlocked) return;
-  _gameAudioUnlocked = true;
   ensureAudio();
   if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume().catch(() => {});
   }
+  if (!_shipLoopAudio) initShipTravelLoop();
+  else if (_shipLoopAudio.paused) _shipLoopAudio.play().catch(() => {});
   startBackgroundMusic();
-  initShipTravelLoop();
 }
 function playOneShotUrl(url, volumeMul) {
   if (G.soundVolume <= 0.02 || !url) return;
   tryUnlockGameAudio();
   const a = new Audio(url);
+  a.preload = 'auto';
   const vm = volumeMul != null ? volumeMul : 1;
   a.volume = Math.max(0, Math.min(1, G.soundVolume * vm));
-  a.play().catch(() => {});
+  const p = a.play();
+  if (p && typeof p.catch === 'function') {
+    p.catch(() => {
+      tryUnlockGameAudio();
+      a.play().catch(() => {});
+    });
+  }
 }
 function playCaptainFireYell() {
   const u = Math.random() < 0.5 ? GAME_AUDIO.yellA : GAME_AUDIO.yellB;
@@ -12039,8 +12044,16 @@ function playFallSound() {
   playOneShotUrl(GAME_AUDIO.fall, 0.75);
 }
 function startBackgroundMusic() {
-  if (!GAME_AUDIO.bgm.length || G.soundVolume <= 0.02) return;
-  if (_bgmAudio) return;
+  if (!GAME_AUDIO.bgm.length) return;
+  if (G.soundVolume <= 0.02) {
+    if (_bgmAudio) try { _bgmAudio.pause(); } catch (e) {}
+    return;
+  }
+  if (_bgmAudio) {
+    syncBgmAndShipLoopVolume();
+    _bgmAudio.play().catch(() => {});
+    return;
+  }
   const el = new Audio();
   el.preload = 'auto';
   _bgmTrackIndex = Math.floor(Math.random() * GAME_AUDIO.bgm.length);
@@ -12051,17 +12064,21 @@ function startBackgroundMusic() {
     if (!_bgmAudio || G.soundVolume <= 0.02) return;
     _bgmTrackIndex = (_bgmTrackIndex + 1) % GAME_AUDIO.bgm.length;
     _bgmAudio.src = GAME_AUDIO.bgm[_bgmTrackIndex];
+    try { _bgmAudio.load(); } catch (e) {}
     _bgmAudio.play().catch(() => {});
   });
   _bgmAudio = el;
+  try { el.load(); } catch (e2) {}
   el.play().catch(() => {});
 }
 function initShipTravelLoop() {
   if (_shipLoopAudio) return;
   const el = new Audio(GAME_AUDIO.shipTravel);
   el.loop = true;
+  el.preload = 'auto';
   el.volume = 0;
   _shipLoopAudio = el;
+  try { el.load(); } catch (e) {}
   el.play().catch(() => {});
 }
 function syncBgmAndShipLoopVolume() {
@@ -12098,6 +12115,9 @@ function updateAmbientGameAudio(dt) {
 function playCannonSound() {
   playCannonSoundWorld(G.player.x, G.player.z, 0.88);
 }
+
+/** First taps on UI (not only the canvas) resume HTMLAudio + WebAudio on strict mobile browsers. */
+document.addEventListener('pointerdown', () => { tryUnlockGameAudio(); }, { capture: true, passive: true });
 
 function applyMobileControlScheme(sc) {
   G.mobileControlScheme = sc;
@@ -18227,11 +18247,6 @@ document.getElementById('settings-volume')?.addEventListener('input', e => {
     if (_bgmAudio) try { _bgmAudio.pause(); } catch (err) {}
   } else {
     tryUnlockGameAudio();
-    if (_bgmAudio) {
-      try { _bgmAudio.play(); } catch (err2) {}
-    } else {
-      startBackgroundMusic();
-    }
   }
   try { localStorage.setItem('pirates_volume', String(v)); } catch (err) {}
 });
