@@ -11969,13 +11969,45 @@ const GAME_BGM_TRACKS = [
   `${GAME_AUDIO_BASE}/music/track5.mp3`,
   `${GAME_AUDIO_BASE}/music/track6.mp3`
 ];
-function gameAudioUrl(relPath) {
-  return encodeURI(relPath.replace(/\\/g, '/'));
+/** Absolute URL so audio works from any path; avoids broken relative resolution. */
+function resolveGameAudioUrl(relPath) {
+  const clean = String(relPath || '').replace(/\\/g, '/');
+  try {
+    return new URL(clean, window.location.href).href;
+  } catch (e) {
+    return encodeURI(clean);
+  }
 }
-function playGameSample(relPath, volumeMul = 1) {
+function resumeGameAudioAfterUserGesture() {
+  try {
+    ensureAudio();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) {}
   if (G.soundVolume <= 0.02) return;
   try {
-    const a = new Audio(gameAudioUrl(relPath));
+    if (_gameBgmStarted && _bgmAudio && _bgmAudio.paused) {
+      _bgmAudio.play().catch(() => {});
+    }
+  } catch (e2) {}
+  try {
+    if (_shipLoopAudio && G.mode === 'playing') {
+      const want = !G.docked && !G.playerSinking && !G.spectate && !(G.captainWalk && G.captainWalk.active)
+        && Math.abs(G.player.speed) > 0.06;
+      if (want && _shipLoopAudio.paused) _shipLoopAudio.play().catch(() => {});
+    }
+  } catch (e3) {}
+}
+(function installGameAudioUnlockListeners() {
+  const go = () => resumeGameAudioAfterUserGesture();
+  window.addEventListener('pointerdown', go, { passive: true, capture: true });
+  window.addEventListener('keydown', go, { capture: true });
+  window.addEventListener('touchstart', go, { passive: true, capture: true });
+})();
+function playGameSample(relPath, volumeMul = 1) {
+  if (G.soundVolume <= 0.02) return;
+  resumeGameAudioAfterUserGesture();
+  try {
+    const a = new Audio(resolveGameAudioUrl(relPath));
     a.volume = Math.max(0, Math.min(1, G.soundVolume * volumeMul));
     a.play().catch(() => {});
   } catch (e) {}
@@ -11997,19 +12029,21 @@ function startAmbientGameAudio() {
   const playNext = () => {
     if (G.soundVolume <= 0.02) return;
     if (!_bgmAudio) _bgmAudio = new Audio();
-    _bgmAudio.src = gameAudioUrl(GAME_BGM_TRACKS[_bgmTrackIdx % GAME_BGM_TRACKS.length]);
+    _bgmAudio.src = resolveGameAudioUrl(GAME_BGM_TRACKS[_bgmTrackIdx % GAME_BGM_TRACKS.length]);
     _bgmAudio.volume = Math.max(0, Math.min(1, G.soundVolume * 0.32));
+    _bgmAudio.preload = 'auto';
     _bgmAudio.onended = () => {
       _bgmTrackIdx++;
       playNext();
     };
+    resumeGameAudioAfterUserGesture();
     _bgmAudio.play().catch(() => {});
   };
   playNext();
 }
 function ensureShipLoopAudio() {
   if (!_shipLoopAudio) {
-    _shipLoopAudio = new Audio(gameAudioUrl(GAME_SFX_FILES.shipLoop));
+    _shipLoopAudio = new Audio(resolveGameAudioUrl(GAME_SFX_FILES.shipLoop));
     _shipLoopAudio.loop = true;
   }
 }
