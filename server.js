@@ -127,6 +127,8 @@ function readJsonBody(req, limit = 65536) {
 }
 
 const players = new Map();
+/** Latest WebSocket per normalized captain key; a new login replaces the previous. */
+const captainSocketByKey = new Map();
 /** @deprecated kept for old clients; no longer merged globally */
 let worldStoryQuest = {
   phase: 'intro',
@@ -1600,6 +1602,43 @@ function findWsByCaptainKey(ck) {
   return pid != null ? findWsByPlayerId(pid) : null;
 }
 
+function clearCaptainSocketSlot(ws) {
+  if (!ws) return;
+  for (const [ck, cws] of captainSocketByKey) {
+    if (cws === ws) captainSocketByKey.delete(ck);
+  }
+}
+
+function closeWsWithSessionReplaced(ow, reason) {
+  if (!ow || ow.readyState !== 1) return;
+  const text = reason || 'This captain signed in from another browser or tab. Only one session may sail at a time.';
+  try {
+    ow.send(JSON.stringify({ type: 'session_replaced', reason: text }));
+  } catch (e) {}
+  try {
+    ow.close(4000, 'session_replaced');
+  } catch (e) {}
+}
+
+/** End any other connection for this captain; then claim `ws` as the active session. */
+function registerCaptainSessionSocket(ws, playerId, oldCaptainKey, newCaptainKey) {
+  if (!ws || !newCaptainKey) return;
+  const nck = normalizeCaptainKey(String(newCaptainKey));
+  if (!nck) return;
+  if (oldCaptainKey) {
+    const ock = normalizeCaptainKey(String(oldCaptainKey));
+    if (ock && captainSocketByKey.get(ock) === ws) captainSocketByKey.delete(ock);
+  }
+  const dupPid = findPlayerIdByCaptainKey(nck);
+  if (dupPid != null && dupPid !== playerId) {
+    const ow = findWsByPlayerId(dupPid);
+    if (ow && ow !== ws) closeWsWithSessionReplaced(ow);
+  }
+  const prevWs = captainSocketByKey.get(nck);
+  if (prevWs && prevWs !== ws) closeWsWithSessionReplaced(prevWs);
+  captainSocketByKey.set(nck, ws);
+}
+
 function storyProgressRank(st) {
   if (!st || typeof st !== 'object') return -1;
   const ph = String(st.phase || 'intro');
@@ -1892,18 +1931,6 @@ wss.on('connection', (ws, req) => {
             }
           }
 
-          let duplicateOnline = false;
-          for (const [pid, pl] of players) {
-            if (pid === id) continue;
-            if (normalizeCaptainKey(pl.name) === newKey) duplicateOnline = true;
-          }
-          if (duplicateOnline) {
-            try {
-              ws.send(JSON.stringify({ type: 'name_rejected', error: 'That captain name is already in use by a connected player.' }));
-            } catch (e) {}
-            break;
-          }
-
           const acc = captainAccounts[newKey];
           if (acc) {
             if (!tokenOffered || !secureTokenEquals(acc.token, tokenOffered)) {
@@ -1964,6 +1991,7 @@ wss.on('connection', (ws, req) => {
             }
           }
 
+          registerCaptainSessionSocket(ws, id, oldKey, newKey);
           p.name = displayName;
           p.captainKey = newKey;
           if (msg.shipName) p.shipName = String(msg.shipName).slice(0, 28);
@@ -2810,6 +2838,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    clearCaptainSocketSlot(ws);
     const left = players.get(id);
     const leftCk = left && left.captainKey ? normalizeCaptainKey(String(left.captainKey))
       : (ws.captainAccountKey ? normalizeCaptainKey(String(ws.captainAccountKey)) : null);
