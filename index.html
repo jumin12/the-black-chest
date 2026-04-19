@@ -9137,8 +9137,9 @@ function flushPendingCaptainCareerDelete() {
       captainKey: String(o.captainKey),
       captainToken: String(o.captainToken)
     };
-    if (G.myId != null && Number(o.stripLeaderboardPlayerId) === Number(G.myId)) {
-      payload.stripLeaderboardPlayerId = Number(G.myId);
+    /** Always send the id captured at abandon time so the server can strip stale rows after reconnect (new socket id). */
+    if (o.stripLeaderboardPlayerId != null && Number.isFinite(Number(o.stripLeaderboardPlayerId))) {
+      payload.stripLeaderboardPlayerId = Number(o.stripLeaderboardPlayerId);
     }
     ws.send(JSON.stringify(payload));
   } catch (e) {}
@@ -9686,6 +9687,13 @@ function connectToServer() {
       }
       case 'captain_career_deleted':
         try { localStorage.removeItem(PENDING_CAPTAIN_CAREER_DELETE_KEY); } catch (e) {}
+        if (msg.captainKey) {
+          pruneLocalLeaderboardCacheForAbandonedCareer(captainNameStorageKey(String(msg.captainKey)), '', null);
+        }
+        if (msg.stripLeaderboardPlayerId != null && Number.isFinite(Number(msg.stripLeaderboardPlayerId))) {
+          pruneLocalLeaderboardCacheForAbandonedCareer('', '', Number(msg.stripLeaderboardPlayerId));
+        }
+        updatePiratesPanel();
         break;
       case 'leaderboard': {
         let entries = Array.isArray(msg.entries) ? msg.entries : [];
@@ -9694,9 +9702,25 @@ function connectToServer() {
         if (cleared) {
           leaderboardData = entries.slice();
         } else if (serverHad) {
-          leaderboardData = dedupeLeaderboardForDisplay(
+          const merged = dedupeLeaderboardForDisplay(
             mergeLeaderboardByMaxStats(leaderboardData, entries)
           );
+          const serverNorm = normalizeLeaderboardEntriesForIdentity(entries);
+          const sk = new Set(serverNorm.map(e => lbEntryMergeKey(e)).filter(Boolean));
+          const myK = captainNameStorageKey(G.myCaptainKey || G.player.crew[0]?.name || '');
+          const myNameK = captainNameStorageKey(G.player.crew[0]?.name || '');
+          const myPid = G.myId != null && Number.isFinite(Number(G.myId)) ? Number(G.myId) : null;
+          leaderboardData = merged.filter(e => {
+            const k = lbEntryMergeKey(e);
+            if (!k) return true;
+            if (sk.has(k)) return true;
+            if (myK && k === `k:${myK}`) return true;
+            if (myPid != null && k === `p:${myPid}`) return true;
+            const rowNameK = e.name ? captainNameStorageKey(String(e.name)) : '';
+            if (myNameK && rowNameK && rowNameK === myNameK) return true;
+            return false;
+          });
+          leaderboardData = dedupeLeaderboardForDisplay(leaderboardData);
         } else {
           if (leaderboardData.length === 0) {
             try {
@@ -17762,7 +17786,7 @@ function executeStartNewVoyageAfterConfirm() {
   if (capNameEl) delete capNameEl.dataset.seededUnique;
   const oldCapName = (G.player.crew && G.player.crew[0] && G.player.crew[0].name)
     ? String(G.player.crew[0].name).trim() : '';
-  const oldCk = captainNameStorageKey(oldCapName);
+  const oldCk = captainNameStorageKey(G.myCaptainKey || oldCapName);
   const oldTok = oldCk ? getCaptainTokenForName(oldCapName) : null;
   const stripId = G.myId != null && Number.isFinite(Number(G.myId)) ? Number(G.myId) : null;
   if (oldCk && oldTok) {
@@ -17778,7 +17802,8 @@ function executeStartNewVoyageAfterConfirm() {
   }
   if (oldCapName) forgetCaptainTokenForDisplayName(oldCapName);
   if (ws && ws.readyState === 1) flushPendingCaptainCareerDelete();
-  pruneLocalLeaderboardCacheForAbandonedCareer(oldCk, oldCapName, stripId);
+  pruneLocalLeaderboardCacheForAbandonedCareer(oldCk || captainNameStorageKey(G.myCaptainKey || ''), oldCapName, stripId);
+  G.myCaptainKey = null;
   updatePiratesPanel();
   retireCurrentCaptainIntoAllTime();
   localStorage.removeItem(SAVE_KEY);
