@@ -1451,19 +1451,39 @@ const server = http.createServer((req, res) => {
   }
 
   const reqPath = String(req.url || '').split('?')[0];
-  if (req.method === 'GET' && reqPath === '/favicon.ico') {
+  if (req.method === 'GET' && (reqPath === '/favicon.ico' || reqPath === '/favicon.svg')) {
+    const sendSvg = (buf) => {
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Cache-Control': 'public, max-age=86400',
+        ...CORS_HEADERS
+      });
+      res.end(buf);
+    };
+    if (reqPath === '/favicon.svg') {
+      const fp = path.join(__dirname, 'favicon.svg');
+      fs.readFile(fp, (err, data) => {
+        if (!err && data && data.length) {
+          sendSvg(data);
+          return;
+        }
+        const fallback = Buffer.from(
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+          + '<rect width="32" height="32" rx="5" fill="#1a140c"/>'
+          + '<path fill="#d4a848" d="M16 5l2.2 7.2H26l-5.8 4.4L22.4 26 16 21.7 9.6 26l2.2-9.4L6 12.2h7.8L16 5z"/>'
+          + '</svg>'
+        );
+        sendSvg(fallback);
+      });
+      return;
+    }
     const svg = Buffer.from(
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
       + '<rect width="32" height="32" rx="5" fill="#1a140c"/>'
       + '<path fill="#d4a848" d="M16 5l2.2 7.2H26l-5.8 4.4L22.4 26 16 21.7 9.6 26l2.2-9.4L6 12.2h7.8L16 5z"/>'
       + '</svg>'
     );
-    res.writeHead(200, {
-      'Content-Type': 'image/svg+xml; charset=utf-8',
-      'Cache-Control': 'public, max-age=86400',
-      ...CORS_HEADERS
-    });
-    res.end(svg);
+    sendSvg(svg);
     return;
   }
 
