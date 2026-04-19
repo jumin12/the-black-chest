@@ -11974,6 +11974,27 @@ const MUSIC_URLS = [
   'assets/sound/music/track6.mp3'
 ];
 
+/**
+ * Relative `assets/...` URLs are resolved against the *current* path. On anything other than
+ * site root (deep links, some dev servers, history quirks) they become wrong paths; Vercel’s
+ * SPA rewrite then serves HTML and <audio> fails with no visible error. Anchor http(s) to origin.
+ */
+function resolveGameAssetUrl(relPath) {
+  if (relPath == null || relPath === '') return relPath;
+  const s = String(relPath);
+  if (/^https?:\/\//i.test(s) || /^data:/i.test(s) || /^blob:/i.test(s)) return s;
+  const clean = s.replace(/^\//, '');
+  try {
+    const proto = window.location.protocol;
+    const base = proto === 'http:' || proto === 'https:'
+      ? window.location.origin + '/'
+      : window.location.href;
+    return new URL(clean, base).href;
+  } catch (e) {
+    return s;
+  }
+}
+
 function ensureAudio() {
   if (audioCtx) return;
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -11988,10 +12009,11 @@ function sfxUiVolume(mult = 1) {
 }
 function playSfxUrl(url, volMul = 1) {
   if (G.soundVolume <= 0.02 || !url) return;
+  const src = resolveGameAssetUrl(url);
   try {
-    const a = new Audio(url);
+    const a = new Audio(src);
     a.volume = sfxUiVolume(volMul);
-    void a.play();
+    void a.play().catch(() => {});
   } catch (e) {}
 }
 function playCannonSound(volMul = 1) {
@@ -12022,7 +12044,7 @@ function syncMusicAndTravelVolume() {
 function playNextMusicTrack() {
   if (!_musicAudio || !MUSIC_URLS.length) return;
   _musicTrackIdx = (_musicTrackIdx + 1) % MUSIC_URLS.length;
-  _musicAudio.src = MUSIC_URLS[_musicTrackIdx];
+  _musicAudio.src = resolveGameAssetUrl(MUSIC_URLS[_musicTrackIdx]);
   _musicAudio.volume = Math.max(0, Math.min(1, G.soundVolume * 0.4));
   void _musicAudio.play().catch(() => {});
 }
@@ -12034,7 +12056,7 @@ function tryStartBackgroundMusic() {
     _musicAudio.addEventListener('ended', playNextMusicTrack);
   }
   if (_musicAudio.src && !_musicAudio.paused) return;
-  _musicAudio.src = MUSIC_URLS[_musicTrackIdx % MUSIC_URLS.length];
+  _musicAudio.src = resolveGameAssetUrl(MUSIC_URLS[_musicTrackIdx % MUSIC_URLS.length]);
   _musicAudio.volume = Math.max(0, Math.min(1, G.soundVolume * 0.4));
   void _musicAudio.play().catch(() => {});
 }
@@ -12066,7 +12088,7 @@ function updateAmbientSeaAudio(dt) {
   const wantShip = !G.spectate && !G.docked && !G.playerSinking && G.player.health > 0
     && !G.captainWalk?.active && !G.player.anchored && Math.abs(G.player.speed || 0) > 0.06;
   if (!_shipTravelAudio) {
-    _shipTravelAudio = new Audio(SFX_URL.shipTravel);
+    _shipTravelAudio = new Audio(resolveGameAssetUrl(SFX_URL.shipTravel));
     _shipTravelAudio.loop = true;
     _shipTravelAudio.volume = 0;
   }
