@@ -2949,7 +2949,13 @@ setInterval(() => {
     morale: p.morale != null ? p.morale : 100,
     deckWalk: p.deckWalk || null
   }));
-  broadcast({ type: 'state', players: snapshot, worldT: (Date.now() - SERVER_WORLD_T0_MS) / 1000 });
+  broadcast({
+    type: 'state',
+    players: snapshot,
+    worldT: (Date.now() - SERVER_WORLD_T0_MS) / 1000,
+    populationOnline: players.size,
+    populationRegistered: Object.keys(captainAccounts || {}).length
+  });
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, '0.0.0.0', () => {
