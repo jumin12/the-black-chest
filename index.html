@@ -2692,6 +2692,12 @@ document.body.prepend(renderer.domElement);
 renderer.domElement.style.touchAction = 'none';
 renderer.domElement.tabIndex = 0;
 renderer.domElement.style.outline = 'none';
+renderer.domElement.addEventListener('webglcontextlost', e => {
+  try { e.preventDefault(); } catch (err) {}
+  try {
+    notify('Graphics reset — reload the page to restore the sea and ships.');
+  } catch (err2) {}
+}, false);
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
@@ -11604,6 +11610,7 @@ function restoreMobileGameControls() {
 
 function closeAllPanels() {
   stopCaptainsLogLiveRefresh();
+  disposeCargoShipPreview();
   document.querySelectorAll('.side-panel,#chat-box').forEach(p => p.style.display = 'none');
   document.getElementById('log-panel')?.classList.remove('log-panel--cargo');
   const sm = document.getElementById('settings-modal');
@@ -12955,9 +12962,28 @@ function jettisonCargoSlot(slotIdx) {
   notify(`Jettisoned ${qty}× ${getItemMeta(id).name} astern!`);
 }
 
+function disposeCargoShipPreview() {
+  cargoPreviewMeshSig = '';
+  if (cargoShipPreview && cargoScene) {
+    cargoScene.remove(cargoShipPreview);
+    disposeObject3DSubtree(cargoShipPreview);
+    cargoShipPreview = null;
+  }
+  if (cargoRenderer) {
+    try {
+      cargoRenderer.dispose();
+    } catch (e) {}
+    const el = cargoRenderer.domElement;
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    cargoRenderer = null;
+  }
+  cargoScene = null;
+  cargoCamera = null;
+}
 function ensureCargoPreview() {
   const container = document.getElementById('cargo-3d');
   if (!container || cargoRenderer) return;
+  disposeYardShipPreview();
   const h = Math.max(280, container.clientHeight || 340);
   const w = Math.max(200, container.clientWidth || 280);
   cargoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -13089,6 +13115,7 @@ function disposeYardShipPreview() {
 function ensureYardShipPreview() {
   const container = document.getElementById('shipyard-3d');
   if (!container || yardShipRenderer) return;
+  disposeCargoShipPreview();
   const h = Math.max(200, container.clientHeight || 260);
   const w = Math.max(200, container.clientWidth || 280);
   yardShipRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
