@@ -847,8 +847,8 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 
 <div id="duplicate-session-overlay" aria-live="polite">
   <div class="duplicate-session-panel">
-    <h3>Session already open</h3>
-    <p>This game is already running in another browser tab. Close that tab first, then reload this page to continue.</p>
+    <h3 id="duplicate-session-title">Session already open</h3>
+    <p id="duplicate-session-text">This game is already running in another browser tab. Close that tab first, then reload this page to continue.</p>
     <button type="button" id="duplicate-session-reload">Reload this page</button>
   </div>
 </div>
@@ -1842,7 +1842,9 @@ const G = {
     lastMobileTapT: 0
   },
   /** True while coasting to a stop before `player.anchored` becomes true. */
-  anchorDropping: false
+  anchorDropping: false,
+  /** Lowest-id incumbent keeps NPC simulation when peers join so world AI is not reset by a new connection. */
+  multiplayerNpcAuthorityId: null
 };
 
 try {
@@ -1899,12 +1901,27 @@ function acquireGameTabLockOrExplain() {
   if (!gameTabLockListenersAttached) {
     gameTabLockListenersAttached = true;
     window.addEventListener('beforeunload', clearGameTabLockIfMine);
+    window.addEventListener('storage', e => {
+      if (e.key !== GAME_TAB_LOCK_KEY || G.mode !== 'playing') return;
+      if (anotherTabHoldsGameLock()) {
+        resetDuplicateSessionOverlayCopy();
+        showDuplicateSessionOverlay();
+      }
+    });
   }
   return true;
 }
 function showDuplicateSessionOverlay() {
   const ov = document.getElementById('duplicate-session-overlay');
   if (ov) ov.style.display = 'flex';
+}
+function resetDuplicateSessionOverlayCopy() {
+  const t = document.getElementById('duplicate-session-title');
+  const p = document.getElementById('duplicate-session-text');
+  if (t) t.textContent = 'Session already open';
+  if (p) {
+    p.textContent = 'This game is already running in another browser tab. Close that tab first, then reload this page to continue.';
+  }
 }
 
 const QUEST_PANEL_VISIBLE_KEY = 'pirates_quest_panel_visible';
@@ -2430,11 +2447,11 @@ function storyBountyRerollLocal() {
 }
 
 const SHIP_TYPES = {
-  cutter: { name: 'Cutter', desc: 'Nimble scout', hullLen: 5, hullW: 1.6, hullH: 1.0, masts: 1, maxCrew: 3, maxPrisoners: 2, speed: 1.4, turnRate: 1.6, cannonSlots: 1, cargoSlots: 4, bowStyle: 'pointed' },
-  sloop: { name: 'Sloop', desc: 'Fast raider', hullLen: 7, hullW: 2.2, hullH: 1.3, masts: 1, maxCrew: 5, maxPrisoners: 4, speed: 1.2, turnRate: 1.3, cannonSlots: 2, cargoSlots: 8, bowStyle: 'pointed' },
-  brigantine: { name: 'Brigantine', desc: 'Balanced trader', hullLen: 10, hullW: 3.2, hullH: 1.7, masts: 2, maxCrew: 10, maxPrisoners: 8, speed: 1.0, turnRate: 1.0, cannonSlots: 4, cargoSlots: 10, bowStyle: 'wide' },
-  galleon: { name: 'Galleon', desc: 'Heavy hauler', hullLen: 14, hullW: 4.5, hullH: 2.3, masts: 3, maxCrew: 18, maxPrisoners: 16, speed: 0.75, turnRate: 0.7, cannonSlots: 6, cargoSlots: 16, bowStyle: 'wide' },
-  warship: { name: 'Man-o-War', desc: 'Floating fortress', hullLen: 18, hullW: 5.5, hullH: 2.8, masts: 3, maxCrew: 28, maxPrisoners: 24, speed: 0.55, turnRate: 0.5, cannonSlots: 10, cargoSlots: 22, bowStyle: 'blunt' }
+  cutter: { name: 'Cutter', desc: 'Nimble scout', hullLen: 5, hullW: 1.6, hullH: 1.0, masts: 1, maxCrew: 3, maxPrisoners: 2, speed: 1.75, turnRate: 1.6, cannonSlots: 1, cargoSlots: 4, bowStyle: 'pointed' },
+  sloop: { name: 'Sloop', desc: 'Fast raider', hullLen: 7, hullW: 2.2, hullH: 1.3, masts: 1, maxCrew: 5, maxPrisoners: 4, speed: 1.5, turnRate: 1.3, cannonSlots: 2, cargoSlots: 8, bowStyle: 'pointed' },
+  brigantine: { name: 'Brigantine', desc: 'Balanced trader', hullLen: 10, hullW: 3.2, hullH: 1.7, masts: 2, maxCrew: 10, maxPrisoners: 8, speed: 1.25, turnRate: 1.0, cannonSlots: 4, cargoSlots: 10, bowStyle: 'wide' },
+  galleon: { name: 'Galleon', desc: 'Heavy hauler', hullLen: 14, hullW: 4.5, hullH: 2.3, masts: 3, maxCrew: 18, maxPrisoners: 16, speed: 0.94, turnRate: 0.7, cannonSlots: 6, cargoSlots: 16, bowStyle: 'wide' },
+  warship: { name: 'Man-o-War', desc: 'Floating fortress', hullLen: 18, hullW: 5.5, hullH: 2.8, masts: 3, maxCrew: 28, maxPrisoners: 24, speed: 0.69, turnRate: 0.5, cannonSlots: 10, cargoSlots: 22, bowStyle: 'blunt' }
 };
 
 function shipHullRadius(shipType) {
@@ -2445,14 +2462,19 @@ function shipRamMass(shipType) {
   const s = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
   return Math.max(1.15, s.hullLen * 0.62 + s.hullW * 0.38);
 }
-function computePlayerEffectiveSpeedScalar() {
+function playerSpeedMultFromShipParts() {
   const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
-  const sailPart = SHIP_PARTS.sail.find(s => s.id === (G.player.shipParts && G.player.shipParts.sail));
-  const speedMult = spec.speed + (sailPart ? sailPart.speedBonus : 0);
+  const sp = G.player.shipParts;
+  const sailPart = sp && sp.sail ? SHIP_PARTS.sail.find(s => s.id === sp.sail) : null;
+  const sailBonus = sailPart ? sailPart.speedBonus : SHIP_PARTS.sail[0].speedBonus;
+  const noCannons = sp && sp.cannon === 'none';
+  return spec.speed + sailBonus + (noCannons ? 0.1 : 0);
+}
+function computePlayerEffectiveSpeedScalar() {
   const windDot = Math.cos(G.wind.angle - G.player.rotation);
   const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
   const rigPct = (G.player.riggingHealth != null ? G.player.riggingHealth : 100) / 100;
-  const rigF = Math.max(0.12, Math.pow(Math.max(0.05, rigPct), 1.35));
+  const rigF = Math.max(0.26, Math.pow(Math.max(0.05, rigPct), 1.35));
   const morF = (G.player.morale != null ? G.player.morale : 100) < 32 ? 0.9 : 1;
   return G.player.speed * windEffect * rigF * morF;
 }
@@ -2515,6 +2537,17 @@ function cannonballStrikeHitRadius(shipType, ammoType, isPellet) {
   if (at === 'grape') return Math.max(2.8, Math.min(11, hull * 0.78 + 1.15));
   if (at === 'chain') return Math.max(2.6, Math.min(10, hull * 0.68 + 1.05));
   return Math.max(2.5, Math.min(9.5, hull * 0.62 + 1.0));
+}
+
+/** Closest distance from segment (x0,z0)-(x1,z1) to point (px,pz) — avoids tunneling past hulls at high speed. */
+function distSegmentToPointXZ(x0, z0, x1, z1, px, pz) {
+  const dx = x1 - x0, dz = z1 - z0;
+  const len2 = dx * dx + dz * dz;
+  if (len2 < 1e-10) return Math.hypot(px - x0, pz - z0);
+  let t = ((px - x0) * dx + (pz - z0) * dz) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const qx = x0 + t * dx, qz = z0 + t * dz;
+  return Math.hypot(px - qx, pz - qz);
 }
 
 const SHIP_PURCHASE_PRICE = { cutter: 85, sloop: 125, brigantine: 245, galleon: 395, warship: 575 };
@@ -2605,9 +2638,9 @@ const SHIP_PARTS = {
     { id: 'darkwood', name: 'Darkwood Hull', armor: 15, cost: 3 }
   ],
   sail: [
-    { id: 'basic', name: 'Canvas Sails', speedBonus: 0, cost: 0 },
-    { id: 'silk', name: 'Silk Sails', speedBonus: 0.3, cost: 4 },
-    { id: 'war', name: 'War Sails', speedBonus: 0.1, cost: 2 }
+    { id: 'basic', name: 'Canvas Sails', speedBonus: 0.3, cost: 0 },
+    { id: 'silk', name: 'Silk Sails', speedBonus: 0.6, cost: 4 },
+    { id: 'war', name: 'War Sails', speedBonus: 0.4, cost: 2 }
   ],
   cannon: [
     { id: 'none', name: 'No Cannons', damage: 0, cost: 0 },
@@ -2692,11 +2725,15 @@ document.body.prepend(renderer.domElement);
 renderer.domElement.style.touchAction = 'none';
 renderer.domElement.tabIndex = 0;
 renderer.domElement.style.outline = 'none';
+let _webglReloadScheduled = false;
 renderer.domElement.addEventListener('webglcontextlost', e => {
   try { e.preventDefault(); } catch (err) {}
+  if (_webglReloadScheduled) return;
+  _webglReloadScheduled = true;
   try {
-    notify('Graphics reset — reload the page to restore the sea and ships.');
+    notify('Graphics lost — restarting…');
   } catch (err2) {}
+  requestAnimationFrame(() => { location.reload(); });
 }, false);
 
 const scene = new THREE.Scene();
@@ -6292,6 +6329,19 @@ function buildCrewMeshes(group, crewList, shipType) {
     cg.userData.wanderTimer = Math.random() * 5;
     group.add(cg);
   });
+  group.userData.crewManifest = crewList.map((c, ci) => {
+    let task = c.task;
+    if (!task || task === 'idle') {
+      if (c.role === 'captain') task = 'helm';
+      else if (c.role === 'gunner') task = 'cannons';
+      else if (c.role === 'navigator') task = 'lookout';
+      else task = ['helm', 'cannons', 'sails', 'lookout'][ci % 4];
+    }
+    const h = c.health != null ? Math.max(0, Math.min(100, Number(c.health))) : 100;
+    return {
+      name: c.name, role: c.role, task, color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot, health: h
+    };
+  });
 }
 
 function clampCrewToShipDeck(sm, spec, member, shipType) {
@@ -7487,10 +7537,19 @@ function pickUniqueNPCShipNames(count, rng) {
 }
 function isMultiplayerHost() {
   if (!G.myId || !ws || ws.readyState !== 1) return true;
-  if (!G.otherPlayers.size) return true;
-  const ids = Array.from(G.otherPlayers.keys());
-  ids.push(G.myId);
-  return G.myId <= Math.min(...ids);
+  if (!G.otherPlayers.size) {
+    G.multiplayerNpcAuthorityId = null;
+    return true;
+  }
+  const my = Number(G.myId);
+  const oids = Array.from(G.otherPlayers.keys()).map(Number).filter(Number.isFinite);
+  const connected = new Set([my, ...oids]);
+  if (G.multiplayerNpcAuthorityId != null && connected.has(G.multiplayerNpcAuthorityId)) {
+    return my === G.multiplayerNpcAuthorityId;
+  }
+  const minId = Math.min(my, ...oids);
+  G.multiplayerNpcAuthorityId = minId;
+  return my === minId;
 }
 /** True if (wx,wz) is open sea and most compass bearings stay in water at ~clear units (off beaches, still works in channels). */
 function hasMinClearanceFromLand(wx, wz, clear) {
@@ -7556,8 +7615,8 @@ function nudgeNpcOffIsland(npc) {
 }
 function npcSailBonus(npc) {
   if (npc.sailBonus != null) return npc.sailBonus;
-  if (npc.isTradeShip) return npc.sailPick === 'silk' ? 0.3 : 0;
-  return 0.1;
+  if (npc.isTradeShip) return npc.sailPick === 'silk' ? 0.6 : 0.3;
+  return 0.35;
 }
 /** Rigging 0–100 for AI ships (synced); legacy `riggingMult` still supported for old saves. */
 function getNpcRiggingHealth(npc) {
@@ -7570,7 +7629,7 @@ function getNpcRiggingHealth(npc) {
 function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
-  const rigF = Math.pow(rm, 1.32);
+  const rigF = Math.max(0.26, Math.pow(rm, 1.32));
   return 12 * (spec.speed + npcSailBonus(npc)) * rigF;
 }
 function npcWindEffect(npc) {
@@ -8093,9 +8152,6 @@ const PLAYER_RESPAWN_DELAY_SEC = 5;
 const PLAYER_RESPAWN_MIN_DIST = 92;
 const PLAYER_RESPAWN_TARGET_DIST = 175;
 function getPlayerVelocityForLead() {
-  const spec = SHIP_TYPES[G.player.shipType];
-  const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
-  const speedMult = spec.speed + (sailPart ? sailPart.speedBonus : 0);
   const windDot = Math.cos(G.wind.angle - G.player.rotation);
   const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
   const effectiveSpeed = Math.abs(G.player.speed * windEffect);
@@ -8160,6 +8216,7 @@ function npcFireBroadsideAtPlayer(npc) {
     kickShipBroadsideCannon(npc.mesh, side, g);
     spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
     fireCannonball(wx, wz, dirX, dirZ, wy, 'npc', null, 'ball');
+    if (npc.mesh) npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
     if (ws?.readyState === 1 && isMultiplayerHost()) {
       ws.send(JSON.stringify({ type: 'npc_cannon', x: wx, z: wz, dx: dirX, dz: dirZ, y: wy }));
       ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
@@ -8946,6 +9003,7 @@ function removeLootByNetId(netId) {
 let ws = null;
 let wsReconnectTimer = null;
 let wsUserBanned = false;
+let wsSuppressReconnect = false;
 let playWorldNetTimeoutId = null;
 let prefetchedServerSeed = null;
 /** Server-published chart revision (from init / health / `world_map`); 0 = procedural-only. */
@@ -9496,6 +9554,16 @@ function connectToServer() {
             refreshOtherPlayerShipCacheKey(G.otherPlayers.get(pid));
           });
         }
+        if (msg.players && msg.players.length > 0) {
+          const existingIds = [];
+          for (const p of msg.players) {
+            const pid = netPlayerId(p.id);
+            if (pid != null && pid !== G.myId) existingIds.push(pid);
+          }
+          G.multiplayerNpcAuthorityId = existingIds.length ? Math.min(...existingIds) : null;
+        } else {
+          G.multiplayerNpcAuthorityId = null;
+        }
         if (G.mode === 'playing' && !voyageSaveExistsInStorage()) {
           ensurePlayerInOpenOcean();
           nudgePlayerSpawnClearOfShips();
@@ -9521,9 +9589,11 @@ function connectToServer() {
         if (!pl) break;
         const pid = netPlayerId(pl.id);
         if (pid == null || pid === G.myId) break;
+        const incumbentAlone = G.otherPlayers.size === 0;
         const row = { ...pl, id: pid };
         G.otherPlayers.set(pid, row);
         refreshOtherPlayerShipCacheKey(G.otherPlayers.get(pid));
+        if (incumbentAlone) G.multiplayerNpcAuthorityId = Number(G.myId);
         break;
       }
       case 'player_identity': {
@@ -9547,6 +9617,12 @@ function connectToServer() {
       case 'player_leave': {
         const lid = netPlayerId(msg.id);
         if (lid == null) break;
+        if (G.multiplayerNpcAuthorityId != null && lid === G.multiplayerNpcAuthorityId) {
+          const my = Number(G.myId);
+          const rest = new Set([my, ...G.otherPlayers.keys()]);
+          rest.delete(lid);
+          G.multiplayerNpcAuthorityId = rest.size ? Math.min(...rest) : null;
+        }
         removeRemotePeer(lid);
         break;
       }
@@ -9655,7 +9731,7 @@ function connectToServer() {
         break;
       }
       case 'cannonball': {
-        fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId, msg.ammoType);
+        fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId != null ? Number(msg.shooterId) : null, msg.ammoType);
         const sid = msg.shooterId;
         if (sid != null && otherShipGroups.has(sid)) {
           const og = otherShipGroups.get(sid);
@@ -9785,6 +9861,28 @@ function connectToServer() {
           requestAdminClansList();
         }
         break;
+      case 'session_replaced': {
+        resetDuplicateSessionOverlayCopy();
+        const tEl = document.getElementById('duplicate-session-title');
+        const pEl = document.getElementById('duplicate-session-text');
+        if (tEl) tEl.textContent = 'Signed in elsewhere';
+        if (pEl) {
+          pEl.textContent = String(
+            msg.reason || 'This captain is already sailing from another browser or tab. Close that session, then reload this page.'
+          );
+        }
+        showDuplicateSessionOverlay();
+        clearGameTabLockIfMine();
+        wsSuppressReconnect = true;
+        if (wsReconnectTimer) {
+          clearTimeout(wsReconnectTimer);
+          wsReconnectTimer = null;
+        }
+        try {
+          ws.close();
+        } catch (e) {}
+        break;
+      }
       case 'kicked':
         notify(msg.reason || 'You were removed from the server.');
         break;
@@ -10013,6 +10111,10 @@ function connectToServer() {
   ws.onerror = () => {};
   ws.onclose = () => {
     if (wsUserBanned) return;
+    if (wsSuppressReconnect) {
+      wsSuppressReconnect = false;
+      return;
+    }
     wsReconnectTimer = setTimeout(() => {
       wsReconnectTimer = null;
       if (G.mode === 'playing') connectToServer();
@@ -10094,6 +10196,8 @@ initAmmoTypeBar();
 
 /* ============================== INPUT ==================================== */
 const keys = {};
+/** Hold W (or ↑) alone ~3s to engage; A/D/S or arrow keys cancel; touch steering disables. */
+let autoSailActive = false, autoSailWTimer = 0;
 let middleDown = false, lastMX = 0, lastMY = 0;
 /** Mobile one-finger orbit outside HUD (same sensitivity scale as middle-mouse on PC). */
 let mobileOrbitTouchId = null, mobileOrbitLX = 0, mobileOrbitLY = 0;
@@ -11509,7 +11613,7 @@ function doFireSide(fireSide) {
         if (p === 0) spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
         fireCannonball(wx, wz, pdx, pdz, wy, 'player', G.myId, 'grape_pellet');
         if (ws?.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: pdx, dz: pdz, ammoType: 'grape_pellet' }));
+          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: pdx, dz: pdz, ammoType: 'grape_pellet', shooterId: G.myId }));
         }
       }
       if (ws?.readyState === 1) {
@@ -11519,7 +11623,7 @@ function doFireSide(fireSide) {
       spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
       fireCannonball(wx, wz, dirX, dirZ, wy, 'player', G.myId, ammoKind);
       if (ws?.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind }));
+        ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind, shooterId: G.myId }));
         ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
       }
     }
@@ -15567,7 +15671,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const windDot = Math.cos(wHere.angle - ns.ry);
   const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
   const rigPct = (p.riggingHealth != null ? p.riggingHealth : 100) / 100;
-  const rigF = Math.max(0.12, Math.pow(Math.max(0.05, rigPct), 1.35));
+  const rigF = Math.max(0.26, Math.pow(Math.max(0.05, rigPct), 1.35));
   const morF = (p.morale != null ? p.morale : 100) < 32 ? 0.9 : 1;
   const effSpd = (p.speed || 0) * windEffect * rigF * morF;
   ns.x += Math.sin(ns.ry) * effSpd * dt;
@@ -15614,8 +15718,7 @@ function update(dt) {
 
   if (!G.player.anchored && !G.spectate && !G.playerSinking && G.player.health > 0 && !G.captainWalk.active) {
     const spec = SHIP_TYPES[G.player.shipType];
-    const sailPart = SHIP_PARTS.sail.find(s => s.id === G.player.shipParts.sail);
-    const speedMult = spec.speed + (sailPart ? sailPart.speedBonus : 0);
+    const speedMult = playerSpeedMultFromShipParts();
     const windDot = Math.cos(G.wind.angle - G.player.rotation);
     const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
 
@@ -15628,10 +15731,38 @@ function update(dt) {
     }
 
     if (G.touch.active) {
+      autoSailActive = false;
+      autoSailWTimer = 0;
       forward = -G.touch.joyY * 1.2;
       turn = -G.touch.joyX * 1.3;
       forward = Math.max(-1, Math.min(1, forward));
       turn = Math.max(-1, Math.min(1, turn));
+    } else if (!fullmapOpen) {
+      const cancelAuto = !!(keys['s'] || keys['arrowdown'] || keys['a'] || keys['arrowleft'] || keys['d'] || keys['arrowright']);
+      if (autoSailActive) {
+        if (cancelAuto) {
+          autoSailActive = false;
+          autoSailWTimer = 0;
+        } else {
+          forward = 1;
+          turn = 0;
+        }
+      }
+      if (!autoSailActive) {
+        const wAloneFwd = (keys['w'] || keys['arrowup']) && forward > 0 && !cancelAuto;
+        if (wAloneFwd) {
+          autoSailWTimer += dt;
+          if (autoSailWTimer >= 3) {
+            autoSailActive = true;
+            autoSailWTimer = 0;
+            notify('Auto sail — full ahead on this heading. Use turn keys, reverse, or tap the wheel to cancel.', 4200);
+          }
+        } else {
+          autoSailWTimer = 0;
+        }
+      }
+    } else {
+      autoSailWTimer = 0;
     }
 
     if (forward > 0.1) G.player.speed = Math.min(G.player.speed + 4 * dt * speedMult * forward, 12 * speedMult);
@@ -15642,7 +15773,7 @@ function update(dt) {
     if (Math.abs(turn) > 0.1) G.player.rotation += turn * spec.turnRate * dt * Math.min(1, Math.abs(G.player.speed) * 0.3 + 0.3);
 
     const rigPct = (G.player.riggingHealth != null ? G.player.riggingHealth : 100) / 100;
-    const rigF = Math.max(0.12, Math.pow(Math.max(0.05, rigPct), 1.35));
+    const rigF = Math.max(0.26, Math.pow(Math.max(0.05, rigPct), 1.35));
     const morF = (G.player.morale != null ? G.player.morale : 100) < 32 ? 0.9 : 1;
     const effectiveSpeed = G.player.speed * windEffect * rigF * morF;
     const stMove = G.player.shipType || 'sloop';
@@ -15723,6 +15854,13 @@ function update(dt) {
 
   updateChunks();
   updateNPCs(dt);
+  G.npcs.forEach(npc => {
+    if (!npc.mesh || npc.sinking) return;
+    animateRemoteShipSails(npc.mesh, npc.x, npc.z, npc.rotation, npc.speed || 0, dt);
+    if (!npc.mesh.userData.crewManifest || !npc.mesh.userData.crewManifest.length) return;
+    const pseudo = { rotation: npc.rotation, speed: npc.speed || 0, docked: false, deckWalk: null };
+    updateRemoteCrewDeckAnimations(dt, npc.mesh, pseudo, npc.type || 'sloop');
+  });
   storyBountyEnsureAcc += dt;
   if (storyBountyEnsureAcc >= 1.35) {
     storyBountyEnsureAcc = 0;
@@ -16008,13 +16146,24 @@ function update(dt) {
       }
     }
 
-    if (b.owner !== 'npc' && isMultiplayerHost()) {
+    const mpHost = isMultiplayerHost();
+    const applyNpcCannonHits = mpHost && b.owner !== 'npc';
+    const predictLocalNpcHitFx = !mpHost && b.owner === 'player';
+    if (applyNpcCannonHits || predictLocalNpcHitFx) {
+      const px = b.x - b.dx * dt, pz = b.z - b.dz * dt;
       G.npcs.forEach(npc => {
+        if (b.life <= 0) return;
         if (npc.sinking || npc.health <= 0) return;
         const at = b.ammoType || 'ball';
         const isPellet = !!b.isPellet;
-        const hitR = cannonballStrikeHitRadius(npc.type, at, isPellet);
-        if (Math.hypot(b.x - npc.x, b.z - npc.z) < hitR) {
+        let hitR = cannonballStrikeHitRadius(npc.type, at, isPellet);
+        if (at === 'ball' && !isPellet) hitR *= 1.15;
+        const distHit = Math.min(
+          Math.hypot(b.x - npc.x, b.z - npc.z),
+          distSegmentToPointXZ(px, pz, b.x, b.z, npc.x, npc.z)
+        );
+        if (distHit >= hitR || b.y < SEA_LEVEL - 4) return;
+        if (applyNpcCannonHits) {
           let dh = 15;
           if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
           else if (at === 'grape') dh = 10;
@@ -16040,16 +16189,23 @@ function update(dt) {
           if (npc.health <= 0) {
             runNpcSinkOutcome(npc, getCannonballKillerPlayerId(b));
           }
-          b.life = 0;
+        } else {
+          spawnDamageChunks(b.x, b.y, b.z);
         }
+        b.life = 0;
       });
     }
 
     if ((b.owner === 'npc' || b.owner === 'other_player') && !G.playerSinking && G.player.health > 0 && !G.docked) {
       const at = b.ammoType || 'ball';
       const isPellet = !!b.isPellet;
-      const distP = Math.hypot(b.x - G.player.x, b.z - G.player.z);
-      const hitR = cannonballStrikeHitRadius(G.player.shipType, at, isPellet);
+      const ppx = b.x - b.dx * dt, ppz = b.z - b.dz * dt;
+      const distP = Math.min(
+        Math.hypot(b.x - G.player.x, b.z - G.player.z),
+        distSegmentToPointXZ(ppx, ppz, b.x, b.z, G.player.x, G.player.z)
+      );
+      let hitR = cannonballStrikeHitRadius(G.player.shipType, at, isPellet);
+      if (at === 'ball' && !isPellet) hitR *= 1.12;
       if (distP < hitR && b.y > SEA_LEVEL - 1) {
         if (b.owner === 'other_player') {
           G.lastAttackerId = b.sourcePlayerId != null ? b.sourcePlayerId : null;
@@ -16460,6 +16616,7 @@ function update(dt) {
     G.npcSyncTimer = 0.125;
     const npcData = G.npcs.filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
+      if (n.sinking) return true;
       return h > -900;
     }).map(n => ({
       id: n.syncId,
@@ -17147,6 +17304,7 @@ document.getElementById('tutorial-skip')?.addEventListener('click', () => {
 
 function beginVoyageAfterCharacter() {
   if (!acquireGameTabLockOrExplain()) {
+    resetDuplicateSessionOverlayCopy();
     showDuplicateSessionOverlay();
     return;
   }
@@ -17767,6 +17925,7 @@ function drawMenuBg() {
 document.getElementById('start-btn').onclick = () => {
   if (voyageSaveExistsInStorage()) {
     if (!acquireGameTabLockOrExplain()) {
+      resetDuplicateSessionOverlayCopy();
       showDuplicateSessionOverlay();
       return;
     }
