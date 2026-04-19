@@ -1690,7 +1690,7 @@ function sanitizeWorldQuests(arr) {
   for (let i = 0; i < arr.length && out.length < 12; i++) {
     const q = arr[i];
     if (!q || typeof q !== 'object') continue;
-    const type = q.type === 'hunt' || q.type === 'delivery' || q.type === 'transport' ? q.type : null;
+    const type = q.type === 'hunt' || q.type === 'delivery' ? q.type : null;
     if (!type) continue;
     const row = {
       type,
@@ -1707,18 +1707,6 @@ function sanitizeWorldQuests(arr) {
       row.destTown = q.destTown != null ? String(q.destTown).slice(0, 48) : '';
       row.destDockX = q.destDockX != null ? Number(q.destDockX) : null;
       row.destDockZ = q.destDockZ != null ? Number(q.destDockZ) : null;
-    }
-    if (type === 'transport') {
-      row.item = String(q.item != null ? q.item : 'wood').slice(0, 24);
-      row.count = Math.max(1, Math.min(99, Math.floor(Number(q.count) || 1)));
-      row.destCx = q.destCx != null ? Math.floor(Number(q.destCx)) : null;
-      row.destCz = q.destCz != null ? Math.floor(Number(q.destCz)) : null;
-      row.destTown = q.destTown != null ? String(q.destTown).slice(0, 48) : '';
-      row.destDockX = q.destDockX != null ? Number(q.destDockX) : null;
-      row.destDockZ = q.destDockZ != null ? Number(q.destDockZ) : null;
-      row.originCx = q.originCx != null ? Math.floor(Number(q.originCx)) : null;
-      row.originCz = q.originCz != null ? Math.floor(Number(q.originCz)) : null;
-      row.escortSyncId = q.escortSyncId != null ? Math.floor(Number(q.escortSyncId)) : null;
     }
     out.push(row);
   }
@@ -2853,7 +2841,6 @@ wss.on('connection', (ws, req) => {
     playerStories.delete(id);
     players.delete(id);
     broadcast({ type: 'player_leave', id });
-    broadcastAll({ type: 'escort_holder_left', playerId: id });
     if (leftCk) {
       const prLeft = getPartyForCaptainKey(leftCk);
       if (prLeft) broadcastPartySync(prLeft.id);
