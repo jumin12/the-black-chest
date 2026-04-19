@@ -1046,7 +1046,12 @@ function revertWorldMapFromBackupAndBroadcast() {
 loadWorldMapFromDisk();
 reconcileLeaderboardRows();
 leaderboardClientSeeded = leaderboardHistory.length > 0;
-if (leaderboardHistory.length) persistWorldSeedFile();
+/** Old `world_seed.json` / repo snapshots often omitted `partyStore`; re-bundle so clans survive the same deploy path as scores. */
+if (leaderboardHistory.length > 0 || Object.keys(partyStore.parties || {}).length > 0) {
+  try {
+    persistWorldSeedFile();
+  } catch (e) {}
+}
 
 setInterval(() => {
   try {
@@ -1063,6 +1068,19 @@ process.on('beforeExit', () => {
 /** Keeps parties.json / shadows in lockstep with leaderboard.json (same bundle as persistWorldSeedFile). */
 function saveLeaderboard() {
   savePartyStore();
+}
+
+/** After F3 navigator mutations: flush everything durable so the next process start matches what the dev saw. */
+function flushNavigatorMutationToDisk() {
+  try {
+    savePartyStore();
+    flushCaptainAccountsIfDirty();
+    saveBans();
+    if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
+      persistWorldMapToDisk();
+      lastWorldMapDiskWriteMs = Date.now();
+    }
+  } catch (e) {}
 }
 
 function loadBans() {
@@ -2479,7 +2497,7 @@ wss.on('connection', (ws, req) => {
             const removed = before - leaderboardHistory.length;
             if (removed > 0) {
               reconcileLeaderboardRows();
-              saveLeaderboard();
+              flushNavigatorMutationToDisk();
               broadcast({ type: 'leaderboard', entries: leaderboardHistory });
             }
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'clear_leaderboard_entry', removed }));
@@ -2489,7 +2507,7 @@ wss.on('connection', (ws, req) => {
             leaderboardHistory = [];
             leaderboardClientSeeded = true;
             sortLeaderboardHistory();
-            saveLeaderboard();
+            flushNavigatorMutationToDisk();
             broadcast({ type: 'leaderboard', entries: leaderboardHistory, cleared: true });
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'reset_leaderboard' }));
             break;
@@ -2498,7 +2516,7 @@ wss.on('connection', (ws, req) => {
             leaderboardHistory = [];
             leaderboardClientSeeded = true;
             sortLeaderboardHistory();
-            saveLeaderboard();
+            flushNavigatorMutationToDisk();
             broadcast({ type: 'leaderboard', entries: leaderboardHistory, cleared: true });
             broadcastAll({ type: 'reset_local_career_data' });
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'reset_all_time_data' }));
@@ -2508,6 +2526,7 @@ wss.on('connection', (ws, req) => {
             captainAccounts = {};
             captainAccountsDirty = true;
             saveCaptainAccounts();
+            flushNavigatorMutationToDisk();
             broadcastAll({ type: 'navigator_wipe_local_voyage_data' });
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'wipe_all_client_voyage_data' }));
             break;
@@ -2535,6 +2554,7 @@ wss.on('connection', (ws, req) => {
               captainAccountsDirty = true;
               saveCaptainAccounts();
             }
+            flushNavigatorMutationToDisk();
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'delete_registered_captain', captainKey: ck }));
             break;
           }
@@ -2550,6 +2570,7 @@ wss.on('connection', (ws, req) => {
             }
             bannedIps.delete(ip);
             saveBans();
+            flushNavigatorMutationToDisk();
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'unban' }));
             break;
           }
@@ -2604,6 +2625,7 @@ wss.on('connection', (ws, req) => {
               break;
             }
             disbandParty(partyId);
+            flushNavigatorMutationToDisk();
             try {
               ws.send(JSON.stringify({ type: 'admin_ok', action: 'delete_clan', partyId }));
             } catch (e) {}
@@ -2647,6 +2669,7 @@ wss.on('connection', (ws, req) => {
               } catch (e) {}
               tw.close();
             }
+            flushNavigatorMutationToDisk();
             ws.send(JSON.stringify({ type: 'admin_players', players: collectAdminPlayerList() }));
             break;
           }
