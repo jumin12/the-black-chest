@@ -1300,7 +1300,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
       </header>
       <div class="cargo-berths-panel">
         <div id="cargo-berths-grid-main" class="cargo-berths-grid" aria-label="Cargo berths"></div>
-        <p class="cargo-grid-hint">Drag stacks between berths to reorder · Drag off the grid to jettison into the sea</p>
+        <p class="cargo-grid-hint">Drag stacks between berths to reorder · Drag off the grid to jettison (choose how much)</p>
       </div>
     </div>
     <div id="log-crew" class="log-content" style="display:none;"><div id="crew-list"></div></div>
@@ -1842,7 +1842,7 @@ const G = {
       { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 20 },
       { id: 'grapeshot', name: 'Grapeshot', icon: 'G', count: 10 },
       { id: 'chainshot', name: 'Chain shot', icon: 'C', count: 10 },
-      { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 50 }
+      { id: 'gold', name: 'Gold Coins', icon: '', count: 50 }
     ],
     crew: [
       { name: 'Captain Blackwood', role: 'captain', health: 100, task: 'helm' },
@@ -2070,8 +2070,7 @@ function applyLocalNpcKillLootFromNet(msg) {
   saveProgressDebounced();
   if (gold > 0) {
     notify(`Sinking ${victimName}! +${gold} gold`);
-    const gi = G.player.inventory.find(x => x.id === 'gold');
-    if (gi) gi.count += gold;
+    addGoldToLedger(gold);
   }
   if (huntNpcName) checkHuntQuestOnNpcSink({ name: huntNpcName });
   reconcileSlotsWithInventory();
@@ -2123,8 +2122,7 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
       bumpNotoriety({ sinksAi: 1 });
     } else if (!storyMission) {
       notify(`Sinking ${npc.name}! +30 gold`);
-      const gi = G.player.inventory.find(x => x.id === 'gold');
-      if (gi) gi.count += 30;
+      addGoldToLedger(30);
       bumpNotoriety({ sinksAi: 1, gold: 30 });
     } else {
       bumpNotoriety({ sinksAi: 1 });
@@ -2791,6 +2789,17 @@ function getInvCount(id) {
     if (i && i.id === id) t += Math.max(0, Math.floor(Number(i.count) || 0));
   }
   return t;
+}
+function addGoldToLedger(amount) {
+  const c = Math.max(0, Math.floor(Number(amount) || 0));
+  if (c <= 0) return;
+  const m = getItemMeta('gold');
+  let gi = G.player.inventory.find(x => x.id === 'gold');
+  if (!gi) {
+    gi = { id: 'gold', name: m.name, icon: m.icon, count: 0 };
+    G.player.inventory.push(gi);
+  }
+  gi.count += c;
 }
 function countSailorCrew() { return G.player.crew.filter(c => c.role !== 'prisoner').length; }
 function countPrisonerCrew() { return G.player.crew.filter(c => c.role === 'prisoner').length; }
@@ -7359,8 +7368,7 @@ function checkHuntQuestOnNpcSink(npc) {
     const q = G.quests[i];
     if (!q.accepted || q.type !== 'hunt') continue;
     if (!huntQuestTargetsNpc(q, npc)) continue;
-    const gi = G.player.inventory.find(x => x.id === 'gold');
-    if (gi) gi.count += q.reward;
+    addGoldToLedger(q.reward);
     bumpNotoriety({ gold: q.reward });
     appendCompletedMission({ kind: 'side', title: 'Hunt complete', detail: q.desc, reward: q.reward });
     G.quests.splice(i, 1);
@@ -7384,8 +7392,7 @@ function checkPortQuestProgress() {
     if (q.destCx !== cx || q.destCz !== cz) continue;
     if (getInvCount(q.item) < q.count) continue;
     if (!removeInventoryAmount(q.item, q.count)) continue;
-    const gi = G.player.inventory.find(x => x.id === 'gold');
-    if (gi) gi.count += q.reward;
+    addGoldToLedger(q.reward);
     reconcileSlotsWithInventory();
     appendCompletedMission({ kind: 'side', title: 'Delivery complete', detail: q.desc, reward: q.reward });
     G.quests.splice(i, 1);
@@ -13398,9 +13405,7 @@ function getCargoPreviewMeshSig() {
   return `${G.player.shipType}|${JSON.stringify(G.player.shipParts)}|${c}|${G.player.flagColor}|${G.player.shipName}`;
 }
 function getCargoInventoryUiSig() {
-  const slots = (G.player.cargoSlots || []).map(s => (s && s.count > 0) ? `${s.id}:${s.count}` : '').join(',');
-  const gold = getInvCount('gold');
-  return `${slots}#g${gold}`;
+  return (G.player.cargoSlots || []).map(s => (s && s.count > 0) ? `${s.id}:${s.count}` : '').join(',');
 }
 function updateCargoManifestAndBadges() {
   const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
@@ -13471,19 +13476,14 @@ function canFitStackInCargoSlots(type, addAmount) {
   }
   return need <= 0;
 }
-/** One row per item id; gold collapsed to a single purse. Fixes inflated totals after save/load or duplicate ledger rows. */
+/** One row per item id (gold uses cargo berths like any other good). Fixes inflated totals after save/load or duplicate ledger rows. */
 function normalizeInventoryMergeStacks() {
   const inv = G.player.inventory;
   if (!Array.isArray(inv)) return;
   const sums = new Map();
-  let goldTotal = 0;
   for (const row of inv) {
     if (!row || row.count <= 0) continue;
     const c = Math.max(0, Math.floor(Number(row.count) || 0));
-    if (row.id === 'gold') {
-      goldTotal += c;
-      continue;
-    }
     sums.set(row.id, (sums.get(row.id) || 0) + c);
   }
   const next = [];
@@ -13491,10 +13491,6 @@ function normalizeInventoryMergeStacks() {
     if (count <= 0) continue;
     const m = getItemMeta(id);
     next.push({ id, name: m.name, icon: m.icon, count });
-  }
-  if (goldTotal > 0) {
-    const gm = getItemMeta('gold');
-    next.push({ id: 'gold', name: gm.name, icon: gm.icon, count: goldTotal });
   }
   G.player.inventory = next;
 }
@@ -13849,7 +13845,7 @@ function renderCargoSlotsOverlay() {
   for (let i = 0; i < n; i++) {
     const it = G.player.cargoSlots[i];
     if (it && it.count > 0) {
-      html += `<div class="cargo-slot-box filled" data-slot="${i}" data-empty="0"><span class="cargo-slot-icon-wrap">${itemIconSvg(it.id, `cs${i}-${it.id}`)}</span><span class="cargo-slot-icon">${it.icon || ''}</span><span class="cargo-slot-amt">×${it.count}</span><span class="cargo-slot-name">${it.name}</span></div>`;
+      html += `<div class="cargo-slot-box filled" data-slot="${i}" data-empty="0"><span class="cargo-slot-icon-wrap">${itemIconSvg(it.id, `cs${i}-${it.id}`)}</span><span class="cargo-slot-amt">×${it.count}</span><span class="cargo-slot-name">${it.name}</span></div>`;
     } else {
       html += `<div class="cargo-slot-box empty" data-slot="${i}" data-empty="1"><span class="cargo-slot-vacant">Vacant</span></div>`;
     }
@@ -14457,8 +14453,7 @@ function updateWorldPanel() {
 window.ransomPrisoner = function(idx) {
   if (idx < 0 || idx >= G.player.crew.length) return;
   if (G.player.crew[idx].role !== 'prisoner') { notify('Can only ransom prisoners!'); return; }
-  const gold = G.player.inventory.find(i => i.id === 'gold');
-  if (gold) gold.count += 15;
+  addGoldToLedger(15);
   reconcileSlotsWithInventory();
   bumpNotoriety({ gold: 15, ransoms: 1 });
   notify(`Ransomed ${G.player.crew[idx].name} for 15 gold!`);
@@ -14766,7 +14761,7 @@ function dockAtPort() {
 function prepareTradeInventoryView() {
   if (G.mode !== 'playing') return;
   ensureCargoSlots();
-  syncInventoryFromCargoSlots();
+  reconcileSlotsWithInventory();
 }
 function leavePort() {
   G.docked = false; G.player.anchored = false;
@@ -14796,7 +14791,17 @@ function showPortTab(tab) {
   if (tab === 'trade') {
     prepareTradeInventoryView();
     const gHave = getInvCount('gold');
-    content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:10px;">Gold: ${gHave}</div>`;
+    const goldRow = document.createElement('div');
+    goldRow.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(40,32,22,0.55);border:1px solid rgba(212,168,72,0.28);border-radius:8px;margin-bottom:10px;';
+    const gIc = document.createElement('div');
+    gIc.className = 'port-trade-icon';
+    gIc.innerHTML = itemIconSvg('gold', 'trade-gold-hdr');
+    const gTxt = document.createElement('div');
+    gTxt.style.minWidth = '0';
+    gTxt.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">Gold coins</div><div style="color:#8a7a60;font-size:10px;">In hold: ${gHave}</div>`;
+    goldRow.appendChild(gIc);
+    goldRow.appendChild(gTxt);
+    content.appendChild(goldRow);
     const tradeIdSet = new Set(TRADE_GOODS.map(t => t.id));
     const dock = G.nearDock;
     const stockKey = dock ? ensureStockpileForPort(dock) : null;
@@ -15114,6 +15119,7 @@ window.portRepairHull = function() {
   }
   gold.count -= spend;
   G.player.health = Math.min(100, G.player.health + hpGain);
+  reconcileSlotsWithInventory();
   notify(hpGain >= missing ? 'Shipwright patched the hull.' : `Shipwright patched ${hpGain} hull damage for ${spend}g (partial repair).`);
   showPortTab('upgrades');
   updateShipPanel();
@@ -15140,6 +15146,7 @@ window.portRepairSails = function() {
   gold.count -= spend;
   G.player.riggingHealth = Math.min(100, rh + pctGain);
   applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
+  reconcileSlotsWithInventory();
   notify(pctGain >= missing ? 'Rigger bent the sails back true.' : `Rigger restored ${pctGain}% rigging for ${spend}g (partial repair).`);
   showPortTab('upgrades');
   updateShipPanel();
@@ -15150,7 +15157,7 @@ window.portBuy = function(id, cost) {
   if (!G.docked || !G.nearDock) { notify('Dock at a port to trade.'); return; }
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (!gold || gold.count < cost) { notify('Not enough gold!'); return; }
-  if (id !== 'gold' && !canFitStackInCargoSlots(id, 1)) {
+  if (!canFitStackInCargoSlots(id, 1)) {
     notify('Cargo hold is full — sell or jettison goods before buying more.');
     return;
   }
@@ -15188,7 +15195,8 @@ window.portSell = function(id, price) {
   if (rem > 0) { notify('None to sell!'); return; }
   let gold = G.player.inventory.find(i => i.id === 'gold');
   if (!gold) {
-    gold = { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 0 };
+    const gm = getItemMeta('gold');
+    gold = { id: 'gold', name: gm.name, icon: gm.icon, count: 0 };
     G.player.inventory.push(gold);
   }
   gold.count += price;
@@ -15214,7 +15222,7 @@ window.portBuyShip = function(shipType) {
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (!gold) { notify('No gold in hold.'); return; }
   if (gold.count < payFromHold) {
-    notify(`You need ${payFromHold}g in your purse (list ${price}g minus ${tradeIn}g trade-in on your old hull).`);
+    notify(`You need ${payFromHold}g in your hold (list ${price}g minus ${tradeIn}g trade-in on your old hull).`);
     return;
   }
   gold.count -= payFromHold;
@@ -15227,7 +15235,7 @@ window.portBuyShip = function(shipType) {
   reconcileSlotsWithInventory();
   rebuildPlayerShip();
   applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
-  notify(`Trade-in: ${tradeIn}g · Price: ${price}g · Paid from purse: ${payFromHold}g. Welcome aboard the ${specNew.name}.`);
+  notify(`Trade-in: ${tradeIn}g · Price: ${price}g · Paid from hold: ${payFromHold}g. Welcome aboard the ${specNew.name}.`);
   saveProgress();
   if (ws?.readyState === 1) {
     try {
@@ -15424,8 +15432,7 @@ window.reportStoryBountyTurnIn = function() {
     }
   }
   const reward = STORY_REWARDS[sq.step];
-  const gi = G.player.inventory.find(x => x.id === 'gold');
-  if (gi) gi.count += reward;
+  addGoldToLedger(reward);
   bumpNotoriety({ gold: reward });
   const siTurn = sq.step;
   const stTurn = STORY_SHIP_ORDER[siTurn];
@@ -18523,12 +18530,11 @@ function tryRestoreClanFromEmbeddedVoyageSave(data) {
 
 function getDefaultStartingInventory() {
   return [
-    { id: 'food', name: 'Provisions', icon: 'F', count: 12 },
-    { id: 'cannonballs', name: 'Cannonballs', icon: 'B', count: 20 },
-    { id: 'grapeshot', name: 'Grapeshot', icon: 'G', count: 10 },
-    { id: 'chainshot', name: 'Chain shot', icon: 'C', count: 10 },
-    { id: 'gold', name: 'Gold Coins', icon: 'Au', count: 50 }
-  ];
+    ['food', 12], ['cannonballs', 20], ['grapeshot', 10], ['chainshot', 10], ['gold', 50]
+  ].map(([id, count]) => {
+    const m = getItemMeta(id);
+    return { id, name: m.name, icon: m.icon, count };
+  });
 }
 function getDefaultStartingCrew() {
   return [
