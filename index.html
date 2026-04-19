@@ -10491,6 +10491,9 @@ function isTypingInModalInput() {
   return !!(el.closest('#chat-box') || el.closest('#debug-modal-root') || el.closest('#debug-password-root') || el.closest('#settings-modal') || el.closest('#port-panel') || el.closest('#create-screen') || el.closest('#credits-modal'));
 }
 
+const PIRATES_LEADERBOARD_PAGE_SIZE = 3;
+let piratesLeaderboardPage = 0;
+
 window.addEventListener('keydown', e => {
   if (document.activeElement?.id === 'chat-input') {
     if (e.key === 'Enter') {
@@ -10513,6 +10516,21 @@ window.addEventListener('keydown', e => {
     return;
   }
   if (isTypingInModalInput() && e.key !== 'Escape') return;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    const lp = document.getElementById('log-panel');
+    const lpOpen = lp && lp.style.display !== 'none' && lp.style.display !== '';
+    if (lpOpen && getActiveLogTabName() === 'pirates') {
+      const board = dedupeLeaderboardForDisplay(leaderboardData);
+      const totalPages = Math.max(1, Math.ceil(board.length / PIRATES_LEADERBOARD_PAGE_SIZE));
+      if (board.length > 0 && totalPages > 1) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft') piratesLeaderboardPage = Math.max(0, piratesLeaderboardPage - 1);
+        else piratesLeaderboardPage = Math.min(totalPages - 1, piratesLeaderboardPage + 1);
+        updatePiratesPanel();
+        return;
+      }
+    }
+  }
   keys[e.key.toLowerCase()] = true;
   const k = e.key.toLowerCase();
   if (k === 'b' || k === 'i' || k === 'c' || k === 'tab') {
@@ -13941,22 +13959,19 @@ function updatePiratesPanel() {
   let head = '<div style="color:#d4a848;font-size:12px;margin-bottom:8px;text-align:center;letter-spacing:1px;">TOP PIRATES</div>';
   head += youBlk;
   const board = dedupeLeaderboardForDisplay(leaderboardData);
-  if (board.length > 0) {
-    const top = board[0];
-    const topShipNm = top.shipName && String(top.shipName).trim();
-    const topShip = `<div style="color:#8a7a68;font-size:9px;margin-top:3px;line-height:1.25;">${topShipNm ? escapeDebugHtml(topShipNm) : '<span style="opacity:0.55">Ship unknown</span>'}</div>`;
-    head += `<div style="text-align:center;margin-bottom:10px;padding:8px;background:rgba(50,18,18,0.4);border:1px solid rgba(180,80,60,0.35);border-radius:8px;font-size:10px;color:#e8dcc8;line-height:1.5;"><strong style="color:#d4a848;">Most notorious:</strong><div style="color:#e0d6c2;font-size:12px;margin-top:2px;">${escapeDebugHtml(top.name)}</div>${topShip}<div style="margin-top:6px;">
-      <span style="color:#d4a848;">${lbRowGold(top)}g</span> earned · <span style="color:#cc8888;">${lbRowSinksAi(top)}</span> AI · <span style="color:#88a8cc;">${lbRowSinksPl(top)}</span> captains<br>
-      <span style="color:#a8c8a8;">${lbRowRansoms(top)}</span> ransoms · <span style="color:#9888a8;">${lbRowDeaths(top)}</span> deaths</div></div>`;
-  }
   l.innerHTML = head;
   if (board.length === 0) {
     l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No live rankings yet. Connect to the server to share the board — your all-time career stats above stay on this device.</div>';
     return;
   }
-  const scrollWrap = document.createElement('div');
-  scrollWrap.style.cssText = 'max-height:min(52vh,420px);overflow-y:auto;-webkit-overflow-scrolling:touch;margin-top:8px;padding-right:4px;';
-  board.forEach((e, i) => {
+  const totalPages = Math.max(1, Math.ceil(board.length / PIRATES_LEADERBOARD_PAGE_SIZE));
+  piratesLeaderboardPage = Math.max(0, Math.min(piratesLeaderboardPage, totalPages - 1));
+  const pageStart = piratesLeaderboardPage * PIRATES_LEADERBOARD_PAGE_SIZE;
+  const pageSlice = board.slice(pageStart, pageStart + PIRATES_LEADERBOARD_PAGE_SIZE);
+  const pageWrap = document.createElement('div');
+  pageWrap.style.cssText = 'min-height:min(52vh,280px);margin-top:8px;';
+  pageSlice.forEach((e, j) => {
+    const i = pageStart + j;
     const medal = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? '3rd' : `${i + 1}th`;
     const medalColor = i === 0 ? '#ffd700' : i === 1 ? '#c0c0c0' : i === 2 ? '#cd7f32' : '#8a7a60';
     const d = document.createElement('div');
@@ -13968,9 +13983,40 @@ function updatePiratesPanel() {
     d.innerHTML = `<div style="color:${medalColor};font-weight:bold;font-size:13px;min-width:32px;text-align:center;">${medal}</div>
       <div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${escapeDebugHtml(e.name)}</div>${shipLine}${partyLine}
  <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:4px;">${lbRowGold(e)}g · AI ${lbRowSinksAi(e)} · captains ${lbRowSinksPl(e)} · ransoms ${lbRowRansoms(e)} · deaths ${lbRowDeaths(e)}</div></div>`;
-    scrollWrap.appendChild(d);
+    pageWrap.appendChild(d);
   });
-  l.appendChild(scrollWrap);
+  l.appendChild(pageWrap);
+  const nav = document.createElement('div');
+  nav.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid rgba(120,90,50,0.25);flex-wrap:wrap;';
+  const prev = document.createElement('button');
+  prev.type = 'button';
+  prev.textContent = '‹ Prev';
+  prev.style.cssText = 'font-family:Georgia,serif;font-size:10px;padding:6px 10px;border-radius:6px;cursor:pointer;border:1px solid rgba(160,120,60,0.45);background:rgba(55,42,26,0.88);color:#e8dcc8;';
+  prev.disabled = piratesLeaderboardPage <= 0;
+  prev.onclick = () => {
+    if (piratesLeaderboardPage <= 0) return;
+    piratesLeaderboardPage--;
+    updatePiratesPanel();
+  };
+  const next = document.createElement('button');
+  next.type = 'button';
+  next.textContent = 'Next ›';
+  next.style.cssText = prev.style.cssText;
+  next.disabled = piratesLeaderboardPage >= totalPages - 1;
+  next.onclick = () => {
+    if (piratesLeaderboardPage >= totalPages - 1) return;
+    piratesLeaderboardPage++;
+    updatePiratesPanel();
+  };
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:9px;color:#7a6a58;line-height:1.35;text-align:center;flex:1;min-width:120px;';
+  hint.innerHTML = totalPages > 1
+    ? `<span style="color:#a89880;">Page ${piratesLeaderboardPage + 1} / ${totalPages}</span> · <span style="color:#8a7a68;">← →</span> keys`
+    : `<span style="color:#a89880;">${board.length} captain${board.length !== 1 ? 's' : ''}</span>`;
+  nav.appendChild(prev);
+  nav.appendChild(hint);
+  nav.appendChild(next);
+  l.appendChild(nav);
 }
 
 function updateWorldPanel() {
@@ -14195,7 +14241,11 @@ function switchLogTab(name) {
   if (name === 'inv') updateInventoryPanel();
   if (name === 'crew') updateCrewPanel();
   if (name === 'missions') updateMissionsPanel();
-  if (name === 'pirates') { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'get_leaderboard' })); updatePiratesPanel(); }
+  if (name === 'pirates') {
+    piratesLeaderboardPage = 0;
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'get_leaderboard' }));
+    updatePiratesPanel();
+  }
   if (name === 'world') updateWorldPanel();
 }
 document.getElementById('btn-chat').onclick = () => {
