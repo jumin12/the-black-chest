@@ -17173,7 +17173,7 @@ function clearClanLocalSnapshot() {
 
 function persistClanLocalSnapshotFromParty(party) {
   try {
-    const ck = captainNameStorageKey(G.player.crew[0]?.name || '');
+    const ck = captainNameStorageKey(G.myCaptainKey || G.player.crew[0]?.name || '');
     if (!ck || !party || typeof party !== 'object' || !party.id) {
       clearClanLocalSnapshot();
       return;
@@ -17199,11 +17199,28 @@ function tryRestoreClanFromLocalSnapshot() {
     const raw = localStorage.getItem(CLAN_LOCAL_SNAPSHOT_KEY);
     if (!raw) return;
     const o = JSON.parse(raw);
-    const ck = captainNameStorageKey(G.player.crew[0]?.name || '');
-    if (!ck || o.captainKey !== ck || !o.party || !o.party.id) return;
+    const ck = captainNameStorageKey(G.myCaptainKey || G.player.crew[0]?.name || '');
+    const snapCk = o.captainKey != null ? captainNameStorageKey(String(o.captainKey)) : '';
+    if (!ck || snapCk !== ck || !o.party || !o.party.id) return;
     const mks = Array.isArray(o.party.memberKeys) ? o.party.memberKeys.map(k => String(k)) : [];
-    if (!mks.includes(ck)) return;
+    if (!mks.some(k => captainNameStorageKey(k) === ck)) return;
     applyPartySyncPayload(o.party);
+  } catch (e) {}
+}
+
+/** Older voyages only had clan in `pirates_save_v1` after this field was added; restores clan when the dedicated snapshot key is missing. */
+function tryRestoreClanFromEmbeddedVoyageSave(data) {
+  try {
+    if (G.party && G.party.id) return;
+    if (!data || !data.clanSnap || typeof data.clanSnap !== 'object') return;
+    const p = data.clanSnap.party;
+    if (!p || !p.id) return;
+    const ck = captainNameStorageKey(G.myCaptainKey || G.player.crew[0]?.name || '');
+    const snapCk = data.clanSnap.captainKey != null ? captainNameStorageKey(String(data.clanSnap.captainKey)) : '';
+    if (!ck || !snapCk || snapCk !== ck) return;
+    const mks = Array.isArray(p.memberKeys) ? p.memberKeys.map(k => String(k)) : [];
+    if (!mks.some(k => captainNameStorageKey(k) === ck)) return;
+    applyPartySyncPayload(p);
   } catch (e) {}
 }
 
@@ -17303,7 +17320,29 @@ function saveProgress() {
       townStockpiles: G.townStockpiles,
       playerStats: { ...G.playerStats },
       morale: G.player.morale != null ? G.player.morale : 100,
-      riggingHealth: G.player.riggingHealth != null ? G.player.riggingHealth : 100
+      riggingHealth: G.player.riggingHealth != null ? G.player.riggingHealth : 100,
+      clanSnap: (() => {
+        try {
+          if (!G.party || !G.party.id) return null;
+          const myK = captainNameStorageKey(G.myCaptainKey || G.player.crew[0]?.name || '');
+          if (!myK) return null;
+          const mks = Array.isArray(G.party.memberKeys) ? G.party.memberKeys.map(k => String(k)) : [];
+          if (!mks.some(k => captainNameStorageKey(k) === myK)) return null;
+          return {
+            captainKey: myK,
+            party: {
+              id: String(G.party.id),
+              tag: G.party.tag != null ? String(G.party.tag).slice(0, 24) : '',
+              leaderCaptainKey: G.party.leaderCaptainKey != null ? String(G.party.leaderCaptainKey) : '',
+              officerCaptainKeys: Array.isArray(G.party.officerCaptainKeys) ? G.party.officerCaptainKeys.map(k => String(k)) : [],
+              memberKeys: mks,
+              members: Array.isArray(G.party.members) ? G.party.members : []
+            }
+          };
+        } catch (e) {
+          return null;
+        }
+      })()
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
   } catch (e) {}
@@ -17379,6 +17418,8 @@ function loadProgress() {
     noise = new SimplexNoise(G.worldSeed >>> 0);
     clampPlayerIntoWorldBounds();
     ensurePlayerInOpenOcean();
+    tryRestoreClanFromLocalSnapshot();
+    tryRestoreClanFromEmbeddedVoyageSave(data);
     saveProgress();
     return true;
   } catch (e) { return false; }
