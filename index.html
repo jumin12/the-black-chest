@@ -11949,12 +11949,15 @@ window.addEventListener('resize', () => {
 let audioCtx, masterGain;
 /** Player broadside: captain yell then 1s fuse before shot (see scheduleBroadsideSides). */
 let playerBroadsidePending = null;
-let _gameAudioBootstrapped = false;
 let _musicAudio = null;
 let _musicTrackIdx = 0;
 let _shipTravelAudio = null;
 let _shipTravelVolSm = 0;
 let _nextSeagullGameTime = 0;
+/** Decoded cannon shot for Web Audio (delayed broadside + iOS-friendly playback). */
+let _waGunshotBuffer = null;
+let _waGunshotLoadPromise = null;
+let _musicSrcInitialized = false;
 const SFX_URL = {
   cannon: 'assets/sound/effects/cannon-shot.wav',
   yell1: 'assets/sound/effects/captain-fire-yell.wav',
@@ -11975,9 +11978,8 @@ const MUSIC_URLS = [
 ];
 
 /**
- * Relative `assets/...` URLs are resolved against the *current* path. On anything other than
- * site root (deep links, some dev servers, history quirks) they become wrong paths; Vercel’s
- * SPA rewrite then serves HTML and <audio> fails with no visible error. Anchor http(s) to origin.
+ * Resolve `assets/...` against the document base URL so subpaths like `/play/index.html` work.
+ * Falls back to `location.origin + '/'` if `baseURI` is missing.
  */
 function resolveGameAssetUrl(relPath) {
   if (relPath == null || relPath === '') return relPath;
@@ -11986,13 +11988,72 @@ function resolveGameAssetUrl(relPath) {
   const clean = s.replace(/^\//, '');
   try {
     const proto = window.location.protocol;
-    const base = proto === 'http:' || proto === 'https:'
-      ? window.location.origin + '/'
-      : window.location.href;
+    let base;
+    if (proto === 'http:' || proto === 'https:') {
+      base = (typeof document !== 'undefined' && document.baseURI) ? document.baseURI : (window.location.origin + '/');
+    } else {
+      base = window.location.href;
+    }
     return new URL(clean, base).href;
   } catch (e) {
-    return s;
+    try {
+      return new URL(clean, window.location.origin + '/').href;
+    } catch (e2) {
+      return s;
+    }
   }
+}
+
+async function ensureWaGunshotBuffer() {
+  if (_waGunshotBuffer) return _waGunshotBuffer;
+  if (_waGunshotLoadPromise) return _waGunshotLoadPromise;
+  _waGunshotLoadPromise = (async () => {
+    const url = resolveGameAssetUrl(SFX_URL.cannon);
+    const r = await fetch(url, { cache: 'force-cache' });
+    if (!r.ok) throw new Error('gunshot ' + r.status);
+    const ab = await r.arrayBuffer();
+    ensureAudio();
+    if (!audioCtx) return null;
+    try {
+      _waGunshotBuffer = await audioCtx.decodeAudioData(ab.slice(0));
+    } catch (e) {
+      _waGunshotBuffer = null;
+    }
+    return _waGunshotBuffer;
+  })();
+  return _waGunshotLoadPromise;
+}
+function playWaGunshotAt(ctxTime, volMul = 1) {
+  if (!audioCtx || !_waGunshotBuffer || !masterGain) return false;
+  try {
+    const srcN = audioCtx.createBufferSource();
+    const g = audioCtx.createGain();
+    g.gain.value = Math.max(0, Math.min(1, 0.55 * sfxUiVolume(volMul)));
+    srcN.buffer = _waGunshotBuffer;
+    srcN.connect(g);
+    g.connect(masterGain);
+    srcN.start(ctxTime);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function primeShipTravelAudioElement() {
+  try {
+    if (!_shipTravelAudio) {
+      _shipTravelAudio = new Audio(resolveGameAssetUrl(SFX_URL.shipTravel));
+      _shipTravelAudio.loop = true;
+      _shipTravelAudio.volume = 0;
+    }
+    const prev = _shipTravelAudio.volume;
+    _shipTravelAudio.volume = 0.0001;
+    void _shipTravelAudio.play().then(() => {
+      try {
+        _shipTravelAudio.pause();
+      } catch (e2) {}
+      _shipTravelAudio.volume = prev;
+    }).catch(() => { _shipTravelAudio.volume = prev; });
+  } catch (e) {}
 }
 
 function ensureAudio() {
@@ -12017,6 +12078,11 @@ function playSfxUrl(url, volMul = 1) {
   } catch (e) {}
 }
 function playCannonSound(volMul = 1) {
+  ensureAudio();
+  if (audioCtx && _waGunshotBuffer && masterGain) {
+    void audioCtx.resume();
+    if (playWaGunshotAt(audioCtx.currentTime, 0.88 * volMul)) return;
+  }
   playSfxUrl(SFX_URL.cannon, 0.88 * volMul);
 }
 function playCaptainFireYell() {
@@ -12055,20 +12121,22 @@ function tryStartBackgroundMusic() {
     _musicAudio.preload = 'auto';
     _musicAudio.addEventListener('ended', playNextMusicTrack);
   }
-  if (_musicAudio.src && !_musicAudio.paused) return;
-  _musicAudio.src = resolveGameAssetUrl(MUSIC_URLS[_musicTrackIdx % MUSIC_URLS.length]);
+  if (!_musicSrcInitialized) {
+    _musicAudio.src = resolveGameAssetUrl(MUSIC_URLS[_musicTrackIdx % MUSIC_URLS.length]);
+    _musicSrcInitialized = true;
+  }
   _musicAudio.volume = Math.max(0, Math.min(1, G.soundVolume * 0.4));
-  void _musicAudio.play().catch(() => {});
+  if (_musicAudio.paused || _musicAudio.ended) void _musicAudio.play().catch(() => {});
 }
-function bootstrapGameAudioOnce() {
-  if (_gameAudioBootstrapped) return;
-  _gameAudioBootstrapped = true;
+function bootstrapGameAudioOnUserGesture() {
   ensureAudio();
   if (audioCtx && audioCtx.state === 'suspended') void audioCtx.resume();
   tryStartBackgroundMusic();
+  void ensureWaGunshotBuffer().catch(() => {});
+  primeShipTravelAudioElement();
 }
 ['pointerdown', 'keydown'].forEach(ev => {
-  window.addEventListener(ev, bootstrapGameAudioOnce, { capture: true, passive: true });
+  window.addEventListener(ev, bootstrapGameAudioOnUserGesture, { capture: true, passive: true });
 });
 
 function updateAmbientSeaAudio(dt) {
@@ -12224,7 +12292,8 @@ function broadsideReadyInfo(fireSide, silent) {
   return { fireSide, spec, perSide, ammoKind, invId, ammoRow, cp };
 }
 
-function executeBroadsideVolley(info) {
+function executeBroadsideVolley(info, opts) {
+  opts = opts || {};
   const { fireSide, spec, perSide, ammoKind, invId, ammoRow } = info;
   ammoRow.count -= perSide;
   if (ammoRow.count <= 0) {
@@ -12237,7 +12306,7 @@ function executeBroadsideVolley(info) {
   else G.portCooldown = PLAYER_BROADSIDE_COOLDOWN;
   G.crewDeckCombatT = 1;
   G.crewReloading = true; G.crewReloadTimer = 1.5;
-  playCannonSound(1);
+  if (!opts.skipCannonSound) playCannonSound(1);
   triggerCombatFireHint();
 
   const rot = G.player.rotation;
@@ -12314,16 +12383,26 @@ function scheduleBroadsideSides(sidesRaw) {
     notify('Steady — the crew is still on the last order.');
     return;
   }
-  playerBroadsidePending = { sides: ready.map(r => r.fireSide) };
-  bootstrapGameAudioOnce();
+  const orderToken = Math.random();
+  const waScheduledRef = { ok: false };
+  playerBroadsidePending = { sides: ready.map(r => r.fireSide), token: orderToken };
+  bootstrapGameAudioOnUserGesture();
   playCaptainFireYell();
+  ensureAudio();
+  if (audioCtx) void audioCtx.resume();
+  void ensureWaGunshotBuffer().then(() => {
+    if (!audioCtx || !_waGunshotBuffer) return;
+    if (!playerBroadsidePending || playerBroadsidePending.token !== orderToken) return;
+    void audioCtx.resume();
+    waScheduledRef.ok = playWaGunshotAt(audioCtx.currentTime + 1.0, 0.88);
+  }).catch(() => {});
   window.setTimeout(() => {
     const pend = playerBroadsidePending;
     playerBroadsidePending = null;
     if (!pend || G.mode !== 'playing' || G.spectate) return;
     for (const fs of pend.sides) {
       const inf = broadsideReadyInfo(fs, true);
-      if (inf) executeBroadsideVolley(inf);
+      if (inf) executeBroadsideVolley(inf, { skipCannonSound: waScheduledRef.ok });
     }
   }, 1000);
 }
@@ -18025,6 +18104,8 @@ function beginVoyageAfterCharacter() {
     showDuplicateSessionOverlay();
     return;
   }
+  bootstrapGameAudioOnUserGesture();
+  void ensureWaGunshotBuffer().catch(() => {});
   G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
   G.quests = [];
   G.completedMissionLog = [];
