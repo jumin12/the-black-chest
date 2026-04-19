@@ -1770,6 +1770,7 @@ wss.on('connection', (ws, req) => {
     dockX: null,
     dockZ: null,
     dockAngle: null,
+    dockBerthIndex: null,
     riggingHealth: 100,
     morale: 100,
     deckWalk: null,
@@ -1843,6 +1844,13 @@ wss.on('connection', (ws, req) => {
           if (msg.dockX !== undefined) p.dockX = msg.dockX;
           if (msg.dockZ !== undefined) p.dockZ = msg.dockZ;
           if (msg.dockAngle !== undefined) p.dockAngle = msg.dockAngle;
+          if (msg.dockBerthIndex !== undefined) {
+            if (msg.dockBerthIndex == null) p.dockBerthIndex = null;
+            else {
+              const bi = Math.floor(Number(msg.dockBerthIndex));
+              p.dockBerthIndex = Number.isFinite(bi) ? bi : null;
+            }
+          }
           if (msg.riggingHealth !== undefined) p.riggingHealth = Math.max(0, Math.min(100, Number(msg.riggingHealth) || 0));
           if (msg.morale !== undefined) p.morale = Math.max(0, Math.min(100, Number(msg.morale) || 0));
           if (msg.shipType !== undefined && msg.shipType !== null) {
@@ -2871,6 +2879,7 @@ setInterval(() => {
     dockX: p.dockX != null ? p.dockX : null,
     dockZ: p.dockZ != null ? p.dockZ : null,
     dockAngle: p.dockAngle != null ? p.dockAngle : null,
+    dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
     riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
     morale: p.morale != null ? p.morale : 100,
     deckWalk: p.deckWalk || null
