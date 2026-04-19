@@ -1,6 +1,5 @@
 const http = require('http');
 const fs = require('fs');
-const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
@@ -25,8 +24,6 @@ const SERVER_STATE_SAVE_INTERVAL_MS = Math.max(200, Number(process.env.SERVER_ST
 /** Large chart payloads: re-save at most this often unless a new revision was published (override with env). */
 const WORLD_MAP_AUTOSAVE_MS = Math.max(SERVER_STATE_SAVE_INTERVAL_MS, Number(process.env.WORLD_MAP_AUTOSAVE_MS) || SERVER_STATE_SAVE_INTERVAL_MS);
 let lastWorldMapDiskWriteMs = 0;
-/** When a synchronous world_map disk write finishes, skip older async chart snapshots. */
-let lastWorldMapSyncPersistMs = 0;
 /** Full map JSON (same shape as editor export); null if no published chart. */
 let WORLD_MAP_PAYLOAD = null;
 let WORLD_MAP_REVISION = 0;
@@ -340,9 +337,6 @@ function loadPartyStore() {
     console.error('[playground] parties load error:', e.message);
   }
 }
-/** Updated when a synchronous disk persist completes so in-flight async snapshots can skip (avoid stale overwrite). */
-let lastSyncDiskPersistMs = 0;
-
 function savePartyStore() {
   const json = JSON.stringify(partyStore);
   try {
@@ -352,44 +346,26 @@ function savePartyStore() {
     console.error('[playground] parties save error:', e.message);
   }
   persistWorldSeedFile();
-  lastSyncDiskPersistMs = Date.now();
 }
 
-async function writeFileAtomicAsync(filePath, dataStr) {
-  const dir = path.dirname(filePath);
-  const base = path.basename(filePath);
-  const tmp = path.join(dir, `.${base}.tmp.${process.pid}.${Date.now()}`);
-  await fsp.writeFile(tmp, dataStr, 'utf-8');
-  try {
-    await fsp.rename(tmp, filePath);
-  } catch (e) {
+/** Defer full disk flush to the next idle turn so 45Hz `state` + WS I/O are not blocked in the timer callback. */
+let idlePersistCoalesced = false;
+function scheduleIdlePersistedStateFlush() {
+  if (idlePersistCoalesced) return;
+  idlePersistCoalesced = true;
+  setImmediate(() => {
+    idlePersistCoalesced = false;
     try {
-      await fsp.copyFile(tmp, filePath);
-    } catch (e2) {
-      throw e2;
-    } finally {
-      try { await fsp.unlink(tmp); } catch (e3) {}
-    }
-  }
-}
-
-let asyncPersistChain = Promise.resolve();
-function scheduleAsyncPersistedStateFlush() {
-  const scheduledAt = Date.now();
-  const partyJson = JSON.stringify(partyStore);
-  const worldPayload = JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory, partyStore });
-  const lbBundle = JSON.stringify({ leaderboard: leaderboardHistory, partyStore });
-  asyncPersistChain = asyncPersistChain.then(async () => {
-    if (scheduledAt < lastSyncDiskPersistMs) return;
-    try {
-      await writeFileAtomicAsync(PARTIES_FILE, partyJson);
-      await writeFileAtomicAsync(PARTIES_SHADOW, partyJson);
-      await writeFileAtomicAsync(SEED_FILE, worldPayload);
-      await writeFileAtomicAsync(LEADERBOARD_FILE, lbBundle);
-      await writeFileAtomicAsync(LEADERBOARD_SHADOW, lbBundle);
-    } catch (e) {
-      console.error('[playground] async persist failed:', e.message);
-    }
+      savePartyStore();
+      flushCaptainAccountsIfDirty();
+      const now = Date.now();
+      if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
+        if (now - lastWorldMapDiskWriteMs >= WORLD_MAP_AUTOSAVE_MS) {
+          persistWorldMapToDisk();
+          lastWorldMapDiskWriteMs = now;
+        }
+      }
+    } catch (e) {}
   });
 }
 
@@ -614,11 +590,12 @@ function mergeLeaderboardByIdentity() {
       m.set(key, { ...e });
     } else {
       const o = m.get(key);
-      o.gold += e.gold;
-      o.sinksAi += e.sinksAi;
-      o.sinksPlayer += e.sinksPlayer;
-      o.ransoms += e.ransoms;
-      o.deaths += e.deaths;
+      /** Use max so duplicate rows for the same captain (reconnect / bad merge) do not double-count stats. */
+      o.gold = Math.max(o.gold, e.gold);
+      o.sinksAi = Math.max(o.sinksAi, e.sinksAi);
+      o.sinksPlayer = Math.max(o.sinksPlayer, e.sinksPlayer);
+      o.ransoms = Math.max(o.ransoms, e.ransoms);
+      o.deaths = Math.max(o.deaths, e.deaths);
       if (e.name && e.name !== 'Pirate' && e.name !== 'Unknown') o.name = e.name;
       if (e.shipName && String(e.shipName).trim()) o.shipName = String(e.shipName).slice(0, 28);
       if (e.partyTag != null && String(e.partyTag).trim()) o.partyTag = String(e.partyTag).slice(0, 24);
@@ -646,6 +623,34 @@ function backfillLeaderboardCaptainKeys() {
     const ck = normalizeCaptainKey(n);
     if (ck && !captainKeyFromDisplayNameIsAmbiguous(n)) row.captainKey = ck;
     leaderboardHistory[i] = row;
+  }
+}
+
+/**
+ * When the same display name appears on multiple rows and only some rows carry `captainKey`,
+ * copy the key onto the rest so `mergeLeaderboardByIdentity` can fold them (reconnect / race artifacts).
+ * If the same name maps to more than one distinct key, treat as ambiguous and skip.
+ */
+function linkLeaderboardCaptainKeysByDisplayName() {
+  const nameToCk = new Map();
+  for (const raw of leaderboardHistory) {
+    const e = normalizeLbEntry(raw);
+    const n = String(e.name || '').trim();
+    if (!e.captainKey || captainKeyFromDisplayNameIsAmbiguous(n)) continue;
+    const ck = e.captainKey;
+    if (!nameToCk.has(n)) nameToCk.set(n, ck);
+    else if (nameToCk.get(n) !== ck) nameToCk.set(n, null);
+  }
+  for (let i = 0; i < leaderboardHistory.length; i++) {
+    const e = normalizeLbEntry(leaderboardHistory[i]);
+    const n = String(e.name || '').trim();
+    if (e.captainKey || captainKeyFromDisplayNameIsAmbiguous(n)) {
+      leaderboardHistory[i] = e;
+      continue;
+    }
+    const ck = nameToCk.get(n);
+    if (ck) e.captainKey = ck;
+    leaderboardHistory[i] = e;
   }
 }
 
@@ -753,6 +758,7 @@ function sortLeaderboardHistory() {
 function reconcileLeaderboardRows() {
   stripMergePoisonousCaptainKeys();
   backfillLeaderboardCaptainKeys();
+  linkLeaderboardCaptainKeysByDisplayName();
   mergeLeaderboardByIdentity();
   sortLeaderboardHistory();
   leaderboardHistory = leaderboardHistory.slice(0, LEADERBOARD_CAP);
@@ -993,29 +999,6 @@ function persistWorldMapToDisk() {
       console.error('[playground] persist world_map (beside server) failed:', e.message);
     }
   }
-  lastWorldMapSyncPersistMs = Date.now();
-}
-
-let asyncWorldMapChain = Promise.resolve();
-function scheduleAsyncWorldMapPersist() {
-  if (!WORLD_MAP_PAYLOAD || !validateWorldMapPayload(WORLD_MAP_PAYLOAD)) return;
-  const scheduledAt = Date.now();
-  const bundle = JSON.stringify({
-    revision: WORLD_MAP_REVISION,
-    updatedAt: Date.now(),
-    map: WORLD_MAP_PAYLOAD
-  });
-  asyncWorldMapChain = asyncWorldMapChain.then(async () => {
-    if (scheduledAt < lastWorldMapSyncPersistMs) return;
-    try {
-      await writeFileAtomicAsync(WORLD_MAP_FILE, bundle);
-      await writeFileAtomicAsync(WORLD_MAP_SHADOW, bundle);
-      if (WORLD_MAP_BESIDE !== WORLD_MAP_FILE) await writeFileAtomicAsync(WORLD_MAP_BESIDE, bundle);
-      lastWorldMapDiskWriteMs = Date.now();
-    } catch (e) {
-      console.error('[playground] async world_map persist failed:', e.message);
-    }
-  });
 }
 
 function setWorldMapAndBroadcast(mapObj) {
@@ -1067,14 +1050,7 @@ if (leaderboardHistory.length) persistWorldSeedFile();
 
 setInterval(() => {
   try {
-    scheduleAsyncPersistedStateFlush();
-    flushCaptainAccountsIfDirty();
-    const now = Date.now();
-    if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
-      if (now - lastWorldMapDiskWriteMs >= WORLD_MAP_AUTOSAVE_MS) {
-        scheduleAsyncWorldMapPersist();
-      }
-    }
+    scheduleIdlePersistedStateFlush();
   } catch (e) {}
 }, SERVER_STATE_SAVE_INTERVAL_MS);
 
@@ -2502,7 +2478,7 @@ wss.on('connection', (ws, req) => {
             });
             const removed = before - leaderboardHistory.length;
             if (removed > 0) {
-              sortLeaderboardHistory();
+              reconcileLeaderboardRows();
               saveLeaderboard();
               broadcast({ type: 'leaderboard', entries: leaderboardHistory });
             }
@@ -2708,6 +2684,15 @@ wss.on('connection', (ws, req) => {
       const prLeft = getPartyForCaptainKey(leftCk);
       if (prLeft) broadcastPartySync(prLeft.id);
     }
+    try {
+      reconcileLeaderboardRows();
+      savePartyStore();
+      if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
+        persistWorldMapToDisk();
+        lastWorldMapDiskWriteMs = Date.now();
+      }
+      broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+    } catch (e) {}
   });
 });
 
