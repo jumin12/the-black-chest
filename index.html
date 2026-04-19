@@ -7447,6 +7447,52 @@ function completeTransportEscortMission(npc) {
     npc.mesh = null;
   }
 }
+function orphanTransportEscortNpcsForPlayer(ownerPlayerId) {
+  const oid = netPlayerId(ownerPlayerId);
+  if (oid == null) return;
+  for (const npc of G.npcs) {
+    if (!npc || !npc.isTransportEscort || npc.missionOwnerPlayerId == null) continue;
+    if (Number(npc.missionOwnerPlayerId) !== Number(oid)) continue;
+    npc.isTransportEscort = false;
+    npc.missionOwnerPlayerId = null;
+    npc.escortRaidersTimer = 0;
+    npc.escortPlayerTimer = 0;
+  }
+}
+function abandonLocalAcceptedTransportQuests() {
+  let removed = false;
+  for (let i = G.quests.length - 1; i >= 0; i--) {
+    const q = G.quests[i];
+    if (q && q.accepted && q.type === 'transport') {
+      G.quests.splice(i, 1);
+      removed = true;
+    }
+  }
+  if (removed) {
+    updateMissionsPanel();
+    updateStoryBriefHud();
+  }
+  return removed;
+}
+function reconcileStaleTransportEscortQuests() {
+  if (G.myId == null) return;
+  let removed = false;
+  for (let i = G.quests.length - 1; i >= 0; i--) {
+    const q = G.quests[i];
+    if (!q || !q.accepted || q.type !== 'transport' || q.escortSyncId == null) continue;
+    const npc = G.npcs.find(n => n.syncId != null && Number(n.syncId) === Number(q.escortSyncId));
+    const stillMine = npc && npc.isTransportEscort && npc.missionOwnerPlayerId != null
+      && Number(npc.missionOwnerPlayerId) === Number(G.myId);
+    if (stillMine) continue;
+    G.quests.splice(i, 1);
+    removed = true;
+  }
+  if (removed) {
+    updateMissionsPanel();
+    updateStoryBriefHud();
+    try { saveProgress(); } catch (e) {}
+  }
+}
 function spawnTransportRaiders(escort, q, sr) {
   const nRaid = 1 + Math.floor(sr() * 5);
   const x0 = escort.x, z0 = escort.z;
@@ -10217,6 +10263,13 @@ function connectToServer() {
         removeRemotePeer(lid);
         break;
       }
+      case 'escort_holder_left': {
+        const eid = netPlayerId(msg.playerId);
+        if (eid == null) break;
+        orphanTransportEscortNpcsForPlayer(eid);
+        reconcileStaleTransportEscortQuests();
+        break;
+      }
       case 'state':
         if (msg.worldT != null) anchorWildlifeClockFromServer(msg.worldT);
         if (!Array.isArray(msg.players)) break;
@@ -10597,7 +10650,16 @@ function connectToServer() {
             G.npcs.push(npc);
           }
           if (!npc) return;
-          if (nd.mo != null && Number.isFinite(Number(nd.mo))) npc.missionOwnerPlayerId = Math.floor(Number(nd.mo));
+          if ('mo' in nd) {
+            if (nd.mo != null && Number.isFinite(Number(nd.mo))) {
+              npc.missionOwnerPlayerId = Math.floor(Number(nd.mo));
+            } else if (npc.isStoryBounty) {
+              const sbFix = parseStoryBountyFromSyncId(nid);
+              npc.missionOwnerPlayerId = sbFix ? sbFix.ownerPlayerId : null;
+            } else {
+              npc.missionOwnerPlayerId = null;
+            }
+          }
           if (nd.t && SHIP_TYPES[nd.t] && (
             nd.t !== npc.type ||
             (nd.fc && nd.fc !== npc.flagColor) ||
@@ -10625,6 +10687,7 @@ function connectToServer() {
             G.npcs.splice(j, 1);
           }
         }
+        reconcileStaleTransportEscortQuests();
         break;
       }
       case 'npc_cannon':
@@ -17468,7 +17531,7 @@ function update(dt) {
       t: n.type,
       n: n.name,
       fc: n.flagColor,
-      mo: n.missionOwnerPlayerId != null ? n.missionOwnerPlayerId : undefined
+      mo: n.missionOwnerPlayerId == null ? null : n.missionOwnerPlayerId
     }));
     ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
   }
@@ -18334,7 +18397,12 @@ function refreshMainMenuSavePanel() {
 function exitGameToMainMenu() {
   if (G.mode !== 'playing') return;
   setCaptainWalkActive(false);
+  let releasedEscort = false;
   try {
+    if (G.myId != null) {
+      orphanTransportEscortNpcsForPlayer(G.myId);
+      releasedEscort = abandonLocalAcceptedTransportQuests();
+    }
     saveProgress();
   } catch (e) {}
   G.mode = 'start';
@@ -18360,6 +18428,7 @@ function exitGameToMainMenu() {
   restoreMobileGameControls();
   document.getElementById('start-screen').style.display = 'flex';
   refreshMainMenuSavePanel();
+  if (releasedEscort) notify('Escort contract released — convoy stays in the world until it resolves.');
   notify('Voyage saved — welcome back at port.');
 }
 
