@@ -8915,7 +8915,17 @@ function queueFetchServerWorldMap(rev) {
   if (targetRev <= 0) return;
   const runId = ++serverWorldMapFetchToken;
   fetch(getWorldMapApiUrl(), { cache: 'no-store' })
-    .then(r => (r.ok ? r.json() : Promise.reject(new Error('map http'))))
+    .then(r => {
+      if (r.status === 404) {
+        knownServerWorldMapRev = 0;
+        if (appliedServerWorldMapRev > 0 && G.mode === 'playing') {
+          appliedServerWorldMapRev = 0;
+          applySharedWorldFromServerSeed(G.worldSeed >>> 0, { skipServerMapReapply: true });
+        }
+        return Promise.reject(new Error('map missing'));
+      }
+      return r.ok ? r.json() : Promise.reject(new Error('map http'));
+    })
     .then(data => {
       if (runId !== serverWorldMapFetchToken || !data || !data.map) return;
       const mr = Number(data.revision) >>> 0;
@@ -9214,13 +9224,9 @@ function startServerSeedPrefetch() {
   fetch(getHealthUrl(), { cache: 'no-store' })
     .then(r => (r.ok ? r.json() : Promise.reject()))
     .then(j => {
-      if (j && j.worldMapRevision != null) {
-        const wr = Number(j.worldMapRevision) >>> 0;
-        if (wr > 0) {
-          knownServerWorldMapRev = Math.max(knownServerWorldMapRev, wr);
-          tryApplyServerWorldMapIfNeeded();
-        }
-      }
+      /* World chart revision must come from WebSocket `init` / `world_map` only. `/health` can race
+         after reconnect and resurrect a stale revision, triggering fetches against a cold server with
+         no map and wiping the client archipelago. */
       if (j && j.seed != null) {
         prefetchedServerSeed = Number(j.seed) >>> 0;
         if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
@@ -9255,13 +9261,6 @@ function schedulePlayWorldNetFallback() {
         const r = await fetch(getHealthUrl(), { cache: 'no-store' });
         if (r.ok) {
           const j = await r.json();
-          if (j.worldMapRevision != null) {
-            const wr = Number(j.worldMapRevision) >>> 0;
-            if (wr > 0) {
-              knownServerWorldMapRev = Math.max(knownServerWorldMapRev, wr);
-              tryApplyServerWorldMapIfNeeded();
-            }
-          }
           if (j.seed != null) {
             s = Number(j.seed) >>> 0;
             fromHttp = true;
@@ -9325,6 +9324,8 @@ function connectToServer() {
   ws = socket;
   ws.onopen = () => {
     wsUserBanned = false;
+    knownServerWorldMapRev = 0;
+    serverWorldMapFetchToken++;
     notify('Connected to server');
     flushPendingCaptainCareerDelete();
     const capName = G.player.crew[0]?.name || 'Pirate';
@@ -9352,12 +9353,6 @@ function connectToServer() {
         for (const opid of Array.from(G.otherPlayers.keys())) {
           removeRemotePeer(opid);
         }
-        if (msg.worldMapRevision != null) {
-          const wr = Number(msg.worldMapRevision) >>> 0;
-          if (wr > 0) {
-            knownServerWorldMapRev = Math.max(knownServerWorldMapRev, wr);
-          }
-        }
         if (msg.seed != null) {
           const s = Number(msg.seed) >>> 0;
           if (G.mode === 'playing' && (G.playWorldAwaitingNetInit || (G.worldSeed >>> 0) !== s)) {
@@ -9369,6 +9364,18 @@ function connectToServer() {
           }
         } else if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
           applySharedWorldFromServerSeed(G.fallbackWorldSeed >>> 0);
+        }
+        if (msg.worldMapRevision != null) {
+          const wr = Number(msg.worldMapRevision) >>> 0;
+          if (wr > 0) {
+            knownServerWorldMapRev = wr;
+          } else {
+            knownServerWorldMapRev = 0;
+            if (appliedServerWorldMapRev > 0 && G.mode === 'playing') {
+              appliedServerWorldMapRev = 0;
+              applySharedWorldFromServerSeed(G.worldSeed >>> 0, { skipServerMapReapply: true });
+            }
+          }
         }
         if (knownServerWorldMapRev > 0) tryApplyServerWorldMapIfNeeded();
         if (msg.player) {
@@ -9682,9 +9689,15 @@ function connectToServer() {
         if (msg.revision == null) break;
         const wr = Number(msg.revision) >>> 0;
         if (wr > 0) {
-          knownServerWorldMapRev = wr;
+          knownServerWorldMapRev = Math.max(knownServerWorldMapRev, wr);
           tryApplyServerWorldMapIfNeeded();
           notify('Server published a new world chart — downloading…');
+        } else {
+          knownServerWorldMapRev = 0;
+          if (appliedServerWorldMapRev > 0 && G.mode === 'playing') {
+            appliedServerWorldMapRev = 0;
+            applySharedWorldFromServerSeed(G.worldSeed >>> 0, { skipServerMapReapply: true });
+          }
         }
         break;
       }
