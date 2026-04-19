@@ -11982,10 +11982,20 @@ const GAME_AUDIO = {
     'assets/sound/music/track6.mp3'
   ]
 };
-let _gameAudioUnlocked = false;
 let _bgmAudio = null;
 let _bgmTrackIndex = 0;
 let _shipLoopAudio = null;
+
+/** Encode path segments (spaces in filenames) and resolve against the page URL so file:// and subpaths work. */
+function gameAudioAbsUrl(relPath) {
+  if (!relPath || typeof relPath !== 'string') return relPath;
+  const enc = relPath.split('/').map(s => encodeURIComponent(s)).join('/');
+  try {
+    return new URL(enc, window.location.href).href;
+  } catch (e) {
+    return enc;
+  }
+}
 
 function ensureAudio() {
   if (audioCtx) return;
@@ -11997,19 +12007,31 @@ function ensureAudio() {
   masterGain.connect(audioCtx.destination);
 }
 function tryUnlockGameAudio() {
-  if (_gameAudioUnlocked) return;
-  _gameAudioUnlocked = true;
   ensureAudio();
   if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume().catch(() => {});
   }
   startBackgroundMusic();
   initShipTravelLoop();
+  resumePausedHtmlAudio();
 }
+/** Browsers often reject the first play() until a gesture; retry after later gestures. */
+function resumePausedHtmlAudio() {
+  if (G.soundVolume <= 0.02) return;
+  if (_bgmAudio && _bgmAudio.paused) {
+    _bgmAudio.play().catch(() => {});
+  }
+  if (_shipLoopAudio && _shipLoopAudio.paused && _shipLoopAudio.volume > 0.01) {
+    _shipLoopAudio.play().catch(() => {});
+  }
+}
+document.addEventListener('pointerdown', () => tryUnlockGameAudio(), { capture: true, passive: true });
+document.addEventListener('keydown', () => tryUnlockGameAudio(), { capture: true, passive: true });
+
 function playOneShotUrl(url, volumeMul) {
   if (G.soundVolume <= 0.02 || !url) return;
   tryUnlockGameAudio();
-  const a = new Audio(url);
+  const a = new Audio(gameAudioAbsUrl(url));
   const vm = volumeMul != null ? volumeMul : 1;
   a.volume = Math.max(0, Math.min(1, G.soundVolume * vm));
   a.play().catch(() => {});
@@ -12040,37 +12062,45 @@ function playFallSound() {
 }
 function startBackgroundMusic() {
   if (!GAME_AUDIO.bgm.length || G.soundVolume <= 0.02) return;
-  if (_bgmAudio) return;
-  const el = new Audio();
-  el.preload = 'auto';
-  _bgmTrackIndex = Math.floor(Math.random() * GAME_AUDIO.bgm.length);
-  el.src = GAME_AUDIO.bgm[_bgmTrackIndex];
-  el.loop = false;
-  el.volume = Math.max(0, Math.min(1, G.soundVolume * 0.18));
-  el.addEventListener('ended', () => {
-    if (!_bgmAudio || G.soundVolume <= 0.02) return;
-    _bgmTrackIndex = (_bgmTrackIndex + 1) % GAME_AUDIO.bgm.length;
-    _bgmAudio.src = GAME_AUDIO.bgm[_bgmTrackIndex];
-    _bgmAudio.play().catch(() => {});
-  });
-  _bgmAudio = el;
-  el.play().catch(() => {});
+  if (!_bgmAudio) {
+    const el = new Audio();
+    el.preload = 'auto';
+    _bgmTrackIndex = Math.floor(Math.random() * GAME_AUDIO.bgm.length);
+    el.src = gameAudioAbsUrl(GAME_AUDIO.bgm[_bgmTrackIndex]);
+    el.loop = false;
+    el.volume = Math.max(0, Math.min(1, G.soundVolume * 0.26));
+    el.addEventListener('ended', () => {
+      if (!_bgmAudio || G.soundVolume <= 0.02) return;
+      _bgmTrackIndex = (_bgmTrackIndex + 1) % GAME_AUDIO.bgm.length;
+      _bgmAudio.src = gameAudioAbsUrl(GAME_AUDIO.bgm[_bgmTrackIndex]);
+      _bgmAudio.play().catch(() => {});
+    });
+    _bgmAudio = el;
+  }
+  syncBgmAndShipLoopVolume();
+  _bgmAudio.play().catch(() => {});
 }
 function initShipTravelLoop() {
-  if (_shipLoopAudio) return;
-  const el = new Audio(GAME_AUDIO.shipTravel);
-  el.loop = true;
-  el.volume = 0;
-  _shipLoopAudio = el;
-  el.play().catch(() => {});
+  if (!_shipLoopAudio) {
+    const el = new Audio(gameAudioAbsUrl(GAME_AUDIO.shipTravel));
+    el.loop = true;
+    el.volume = 0;
+    _shipLoopAudio = el;
+  }
+  _shipLoopAudio.play().catch(() => {});
 }
 function syncBgmAndShipLoopVolume() {
-  if (_bgmAudio) _bgmAudio.volume = Math.max(0, Math.min(1, G.soundVolume * 0.18));
+  if (_bgmAudio) _bgmAudio.volume = Math.max(0, Math.min(1, G.soundVolume * 0.26));
 }
 function updateAmbientGameAudio(dt) {
   if (G.mode !== 'playing' || G.soundVolume <= 0.02) {
     if (_shipLoopAudio) _shipLoopAudio.volume = 0;
     return;
+  }
+  G._audioResumeAcc = (G._audioResumeAcc || 0) + dt;
+  if (G._audioResumeAcc >= 2.2) {
+    G._audioResumeAcc = 0;
+    resumePausedHtmlAudio();
   }
   if (_shipLoopAudio) {
     let tgt = 0;
