@@ -2853,6 +2853,7 @@ wss.on('connection', (ws, req) => {
     playerStories.delete(id);
     players.delete(id);
     broadcast({ type: 'player_leave', id });
+    broadcastAll({ type: 'escort_holder_left', playerId: id });
     if (leftCk) {
       const prLeft = getPartyForCaptainKey(leftCk);
       if (prLeft) broadcastPartySync(prLeft.id);
