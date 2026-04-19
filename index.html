@@ -303,6 +303,28 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   padding:10px 20px;font-size:13px;opacity:0;transition:opacity 0.3s;pointer-events:none;white-space:normal;text-align:center;line-height:1.35;
   z-index:30;box-shadow:0 6px 20px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,220,180,0.1);color:#f0e8d8;
 }
+#notification.notification--clan-invite{
+  background:linear-gradient(180deg,rgba(22,52,34,0.96),rgba(12,32,22,0.99));
+  border:1px solid rgba(100,190,130,0.7);
+  color:#d8f4e4;
+  box-shadow:0 8px 24px rgba(0,0,0,0.45),inset 0 1px 0 rgba(200,255,220,0.12);
+}
+#clan-invite-popup{
+  display:none;position:fixed;inset:0;z-index:44;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(20px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+  background:rgba(4,10,6,0.55);pointer-events:auto;box-sizing:border-box;
+}
+#clan-invite-popup .clan-invite-popup-panel{
+  max-width:380px;width:100%;background:linear-gradient(180deg,rgba(28,48,36,0.98),rgba(14,28,20,0.99));
+  border:2px solid rgba(100,180,120,0.55);border-radius:14px;padding:20px 18px 18px;font-family:Georgia,serif;
+  box-shadow:0 12px 40px rgba(0,0,0,0.5),inset 0 1px 0 rgba(200,255,220,0.08);
+}
+#clan-invite-popup h3{margin:0 0 10px;font-size:11px;letter-spacing:0.12em;color:#7ec89a;}
+#clan-invite-popup p{margin:0 0 14px;font-size:14px;color:#e8f0e8;line-height:1.5;}
+#clan-invite-popup .clan-invite-popup-actions{display:flex;gap:10px;flex-wrap:wrap;}
+#clan-invite-popup .clan-invite-popup-actions button{flex:1;min-width:120px;padding:10px 12px;border-radius:8px;cursor:pointer;font-family:Georgia,serif;font-size:13px;}
+#clan-invite-popup .clan-invite-accept{background:linear-gradient(180deg,#2a8a52,#1a5a36);color:#e8ffe8;border:1px solid rgba(140,220,160,0.5);}
+#clan-invite-popup .clan-invite-decline{background:rgba(28,22,18,0.9);color:#c8c0b8;border:1px solid rgba(140,100,40,0.4);}
+#clan-invite-popup .clan-invite-later{background:transparent;color:#8a9a88;border:1px solid rgba(100,120,100,0.35);flex:100%;}
 #deck-walk-exit-hint{display:none;position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:95;pointer-events:none;padding:8px 20px 11px;background:linear-gradient(180deg,rgba(26,20,14,0.96),rgba(14,10,8,0.93));border:1px solid rgba(180,140,60,0.5);border-top:none;border-radius:0 0 12px 12px;box-shadow:0 6px 18px rgba(0,0,0,0.4);font-family:Georgia,serif;font-size:12px;color:#d8ccb8;letter-spacing:0.04em;text-align:center;max-width:min(92vw,420px);}
 #deck-walk-exit-hint kbd{display:inline-block;background:rgba(180,140,60,0.22);border:1px solid rgba(212,168,72,0.55);border-radius:4px;padding:2px 8px;font-size:11px;color:#f0e4c8;font-family:inherit;}
 #combat-popups-root{position:fixed;inset:0;pointer-events:none;z-index:26;overflow:visible;}
@@ -1175,6 +1197,17 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   <div id="anchor-status" class="hud-box" style="display:none;">Anchored</div>
   <div id="spyglass-overlay" aria-hidden="true"><div class="spyglass-ring"></div></div>
   <div id="notification"></div>
+  <div id="clan-invite-popup" role="dialog" aria-modal="true" aria-labelledby="clan-invite-popup-title" aria-hidden="true">
+    <div class="clan-invite-popup-panel">
+      <h3 id="clan-invite-popup-title">CLAN INVITATION</h3>
+      <p id="clan-invite-popup-text"></p>
+      <div class="clan-invite-popup-actions">
+        <button type="button" class="clan-invite-accept" id="clan-invite-popup-accept">Accept</button>
+        <button type="button" class="clan-invite-decline" id="clan-invite-popup-decline">Decline</button>
+        <button type="button" class="clan-invite-later" id="clan-invite-popup-later">Later</button>
+      </div>
+    </div>
+  </div>
   <div id="deck-walk-exit-hint" aria-hidden="true">Press <kbd>Esc</kbd> to exit deck view</div>
   <div id="combat-popups-root" aria-hidden="true"></div>
 
@@ -9559,8 +9592,10 @@ function connectToServer() {
           tag: msg.tag != null ? String(msg.tag) : '',
           fromName: msg.fromName != null ? String(msg.fromName) : ''
         };
+        syncClanInviteToolbarBadge();
         renderPartyChatPanel();
-        notify(`${G.partyInvite.fromName || 'A captain'} invited you to clan «${G.partyInvite.tag || ''}». Open chat → Clan.`);
+        notifyClanInvite(`${G.partyInvite.fromName || 'A captain'} invited you to clan «${G.partyInvite.tag || ''}». Green ! on chat — open Chat → Clan.`, 6800);
+        if (G.mode === 'playing') showClanInviteOnlinePopup();
         break;
       case 'party_error':
         notify(msg.error || 'Clan action failed.');
@@ -11611,6 +11646,7 @@ function syncHudToastAnchors() {
 function notify(text, durationMs) {
   const el = document.getElementById('notification');
   if (!el) return;
+  el.classList.remove('notification--clan-invite');
   el.textContent = text;
   el.style.opacity = '1';
   clearTimeout(el._t);
@@ -11618,6 +11654,55 @@ function notify(text, durationMs) {
   const ms = durationMs != null && Number.isFinite(Number(durationMs)) ? Math.max(800, Number(durationMs)) : 2500;
   el._t = setTimeout(() => { el.style.opacity = '0'; }, ms);
 }
+/** Green-styled toast for clan invites (matches chat toolbar badge). */
+function notifyClanInvite(text, durationMs) {
+  const el = document.getElementById('notification');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.add('notification--clan-invite');
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  syncHudToastAnchors();
+  const ms = durationMs != null && Number.isFinite(Number(durationMs)) ? Math.max(2000, Number(durationMs)) : 6200;
+  el._t = setTimeout(() => {
+    el.style.opacity = '0';
+    el.classList.remove('notification--clan-invite');
+  }, ms);
+}
+function hideClanInviteOnlinePopup() {
+  const root = document.getElementById('clan-invite-popup');
+  if (!root) return;
+  root.style.display = 'none';
+  root.setAttribute('aria-hidden', 'true');
+}
+function showClanInviteOnlinePopup() {
+  const root = document.getElementById('clan-invite-popup');
+  const txt = document.getElementById('clan-invite-popup-text');
+  if (!root || !txt || !G.partyInvite || G.party) return;
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  txt.innerHTML = `<strong style="color:#d4a848;">${esc(G.partyInvite.fromName)}</strong> invited you to join <strong style="color:#c8e8a8;">«${esc(G.partyInvite.tag)}»</strong>. Open chat (T) → Clan to respond, or use the buttons below.`;
+  root.style.display = 'flex';
+  root.setAttribute('aria-hidden', 'false');
+}
+(function bindClanInvitePopupButtons() {
+  document.getElementById('clan-invite-popup-accept')?.addEventListener('click', () => {
+    if (ws?.readyState === 1 && G.partyInvite) ws.send(JSON.stringify({ type: 'party_accept', partyId: G.partyInvite.partyId }));
+    G.partyInvite = null;
+    hideClanInviteOnlinePopup();
+    syncClanInviteToolbarBadge();
+    renderPartyChatPanel();
+  });
+  document.getElementById('clan-invite-popup-decline')?.addEventListener('click', () => {
+    if (ws?.readyState === 1 && G.partyInvite) ws.send(JSON.stringify({ type: 'party_decline', partyId: G.partyInvite.partyId }));
+    G.partyInvite = null;
+    hideClanInviteOnlinePopup();
+    syncClanInviteToolbarBadge();
+    renderPartyChatPanel();
+  });
+  document.getElementById('clan-invite-popup-later')?.addEventListener('click', () => {
+    hideClanInviteOnlinePopup();
+  });
+})();
 
 function showCombatPopupWorld(wx, wz, text, opts) {
   if (G.mode !== 'playing') return;
@@ -11700,6 +11785,7 @@ function applyPartySyncPayload(party) {
     };
     G.partyInvite = null;
     persistClanLocalSnapshotFromParty(G.party);
+    hideClanInviteOnlinePopup();
   }
   syncPartyTagToLeaderboard();
   renderPartyChatPanel();
@@ -11824,6 +11910,30 @@ function renderPartyChatPanel() {
   const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   let html = '';
   if (!ck) {
+    if (G.partyInvite && !G.party) {
+      html += `<div style="margin-bottom:10px;padding:10px;background:rgba(36,52,40,0.5);border-radius:10px;border:1px solid rgba(100,160,90,0.4);">
+      <div style="color:#9ed8a8;font-size:10px;font-weight:bold;letter-spacing:0.08em;margin-bottom:6px;">CLAN INVITATION</div>
+      <div style="color:#e8dcc8;line-height:1.45;"><strong>${esc(G.partyInvite.fromName)}</strong> invited you to <strong style="color:#d4a848;">«${esc(G.partyInvite.tag || '')}»</strong></div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button type="button" id="party-accept-btn" class="clan-btn clan-btn--primary" style="flex:1;">Accept</button>
+        <button type="button" id="party-decline-btn" class="clan-btn" style="flex:1;">Decline</button>
+      </div></div>`;
+      html += '<p style="font-size:10px;color:#8a7a68;line-height:1.45;margin:0 0 8px;">Reserve your captain name on this server (port / first sail) so invites can attach to your account — then tap Accept.</p>';
+      el.innerHTML = html;
+      document.getElementById('party-accept-btn')?.addEventListener('click', () => {
+        if (ws?.readyState === 1 && G.partyInvite) ws.send(JSON.stringify({ type: 'party_accept', partyId: G.partyInvite.partyId }));
+        G.partyInvite = null;
+        hideClanInviteOnlinePopup();
+        renderPartyChatPanel();
+      }, { once: true });
+      document.getElementById('party-decline-btn')?.addEventListener('click', () => {
+        if (ws?.readyState === 1 && G.partyInvite) ws.send(JSON.stringify({ type: 'party_decline', partyId: G.partyInvite.partyId }));
+        G.partyInvite = null;
+        hideClanInviteOnlinePopup();
+        renderPartyChatPanel();
+      }, { once: true });
+      return;
+    }
     html = '<div style="color:#c8a090;">Reserve your captain name on this server (first voyage / port) to create or join a clan.</div>';
     el.innerHTML = html;
     return;
@@ -11852,11 +11962,13 @@ function renderPartyChatPanel() {
     document.getElementById('party-accept-btn')?.addEventListener('click', () => {
       if (ws?.readyState === 1 && G.partyInvite) ws.send(JSON.stringify({ type: 'party_accept', partyId: G.partyInvite.partyId }));
       G.partyInvite = null;
+      hideClanInviteOnlinePopup();
       renderPartyChatPanel();
     }, { once: true });
     document.getElementById('party-decline-btn')?.addEventListener('click', () => {
       if (ws?.readyState === 1 && G.partyInvite) ws.send(JSON.stringify({ type: 'party_decline', partyId: G.partyInvite.partyId }));
       G.partyInvite = null;
+      hideClanInviteOnlinePopup();
       renderPartyChatPanel();
     }, { once: true });
     return;
@@ -13127,6 +13239,41 @@ function backfillLbCaptainKeysFromPlayerIds(entries) {
     return { ...e, captainKey: pidToCk.get(pid) };
   });
 }
+/** Same idea as server `linkLeaderboardCaptainKeysByDisplayName` — legacy caches often had two rows per captain (name vs id). */
+function lbDisplayNameIsAmbiguousForMerge(name) {
+  const n = String(name || '').trim();
+  if (!n || /^pirate_\d+$/i.test(n)) return true;
+  const k = captainNameStorageKey(n);
+  if (!k || k === 'pirate' || k === 'unknown') return true;
+  return false;
+}
+function linkLbCaptainKeysByDisplayName(entries) {
+  if (!Array.isArray(entries)) return entries;
+  const nameToCk = new Map();
+  for (const e of entries) {
+    if (!e) continue;
+    const n = String(e.name || '').trim();
+    let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
+    if (ck === 'pirate' || ck === 'unknown') ck = '';
+    if (!ck || lbDisplayNameIsAmbiguousForMerge(n)) continue;
+    const raw = String(e.captainKey).trim();
+    if (!nameToCk.has(n)) nameToCk.set(n, raw);
+    else if (captainNameStorageKey(nameToCk.get(n)) !== captainNameStorageKey(raw)) nameToCk.set(n, null);
+  }
+  return entries.map(e => {
+    if (!e) return e;
+    const n = String(e.name || '').trim();
+    let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
+    if (ck === 'pirate' || ck === 'unknown') ck = '';
+    if (ck || lbDisplayNameIsAmbiguousForMerge(n)) return e;
+    const infer = nameToCk.get(n);
+    if (!infer) return e;
+    return { ...e, captainKey: infer };
+  });
+}
+function normalizeLeaderboardEntriesForIdentity(entries) {
+  return linkLbCaptainKeysByDisplayName(backfillLbCaptainKeysFromPlayerIds(Array.isArray(entries) ? entries.slice() : []));
+}
 /** Stable key aligned with dedupeLeaderboardForDisplay (captainKey beats socket playerId). */
 function lbEntryMergeKey(e) {
   if (!e) return '';
@@ -13161,9 +13308,11 @@ function applyCaptainKeyFromPlayerIdMap(rows, pidToCk) {
 }
 /** Per-captain max stats so a partial / zeroed broadcast cannot wipe the UI while names still show. */
 function mergeLeaderboardByMaxStats(prev, next) {
+  const prevArr = normalizeLeaderboardEntriesForIdentity(prev);
+  const nextArr = normalizeLeaderboardEntriesForIdentity(next);
   const pidToCk = new Map();
-  collectCaptainKeyByPlayerIdFromRows(prev, pidToCk);
-  collectCaptainKeyByPlayerIdFromRows(next, pidToCk);
+  collectCaptainKeyByPlayerIdFromRows(prevArr, pidToCk);
+  collectCaptainKeyByPlayerIdFromRows(nextArr, pidToCk);
   const m = new Map();
   const add = (e) => {
     if (!e) return;
@@ -13189,8 +13338,8 @@ function mergeLeaderboardByMaxStats(prev, next) {
     if (e.partyTag != null && String(e.partyTag).trim()) merged.partyTag = String(e.partyTag).slice(0, 24);
     m.set(key, merged);
   };
-  applyCaptainKeyFromPlayerIdMap(Array.isArray(prev) ? prev : [], pidToCk).forEach(add);
-  applyCaptainKeyFromPlayerIdMap(Array.isArray(next) ? next : [], pidToCk).forEach(add);
+  applyCaptainKeyFromPlayerIdMap(prevArr, pidToCk).forEach(add);
+  applyCaptainKeyFromPlayerIdMap(nextArr, pidToCk).forEach(add);
   return Array.from(m.values());
 }
 function sortLbEntries(a, b) {
@@ -13204,7 +13353,7 @@ function sortLbEntries(a, b) {
 function dedupeLeaderboardForDisplay(entries) {
   const seen = new Set();
   const out = [];
-  const norm = backfillLbCaptainKeysFromPlayerIds(Array.isArray(entries) ? entries.slice() : []);
+  const norm = normalizeLeaderboardEntriesForIdentity(entries);
   for (const e of norm.sort(sortLbEntries)) {
     if (!e) continue;
     let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
@@ -13340,7 +13489,10 @@ try {
   if (_lbc) leaderboardData = JSON.parse(_lbc);
 } catch (e) {}
 if (leaderboardData.length) {
-  leaderboardData = leaderboardData.slice().sort(sortLbEntries);
+  leaderboardData = dedupeLeaderboardForDisplay(leaderboardData).sort(sortLbEntries);
+  try {
+    localStorage.setItem('pirates_lb_cache', JSON.stringify(leaderboardData));
+  } catch (e) {}
 }
 
 function updatePiratesPanel() {
