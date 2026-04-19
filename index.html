@@ -9401,7 +9401,14 @@ function connectToServer() {
     syncWorldProgressToServerIfNeeded();
   };
   ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
+    let msg;
+    try {
+      msg = JSON.parse(e.data);
+    } catch (err) {
+      return;
+    }
+    if (!msg || typeof msg !== 'object') return;
+    try {
     switch (msg.type) {
       case 'init':
         G.myId = netPlayerId(msg.id);
@@ -9507,9 +9514,9 @@ function connectToServer() {
       case 'state':
         if (msg.worldT != null) anchorWildlifeClockFromServer(msg.worldT);
         if (!Array.isArray(msg.players)) break;
-        if (G.myId == null) break;
-        const myN = Number(G.myId);
-        if (!msg.players.some(p => netPlayerId(p.id) === myN)) break;
+        const myIdForState = netPlayerId(G.myId);
+        if (myIdForState == null) break;
+        if (!msg.players.some(p => netPlayerId(p.id) === myIdForState)) break;
         const activeRemote = new Set();
         msg.players.forEach(p => {
           const pid = netPlayerId(p.id);
@@ -9937,6 +9944,7 @@ function connectToServer() {
         break;
       }
     }
+    } catch (err) {}
    };
   ws.onerror = () => {};
   ws.onclose = () => {
@@ -13098,6 +13106,27 @@ function lbRowSinksAi(e) {
 function lbRowSinksPl(e) { return Math.max(0, Math.floor(Number(e && e.sinksPlayer) || 0)); }
 function lbRowRansoms(e) { return Math.max(0, Math.floor(Number(e && e.ransoms) || 0)); }
 function lbRowDeaths(e) { return Math.max(0, Math.floor(Number(e && e.deaths) || 0)); }
+/** Copy `captainKey` onto rows that only have `playerId` when another row ties them (stops double listings). */
+function backfillLbCaptainKeysFromPlayerIds(entries) {
+  if (!Array.isArray(entries)) return entries;
+  const pidToCk = new Map();
+  for (const e of entries) {
+    if (!e) continue;
+    let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
+    if (ck === 'pirate' || ck === 'unknown') ck = '';
+    const pid = e.playerId != null ? Number(e.playerId) : null;
+    if (ck && Number.isFinite(pid)) pidToCk.set(pid, String(e.captainKey).trim());
+  }
+  return entries.map(e => {
+    if (!e) return e;
+    let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
+    if (ck === 'pirate' || ck === 'unknown') ck = '';
+    if (ck) return e;
+    const pid = e.playerId != null ? Number(e.playerId) : null;
+    if (!Number.isFinite(pid) || !pidToCk.has(pid)) return e;
+    return { ...e, captainKey: pidToCk.get(pid) };
+  });
+}
 /** Stable key aligned with dedupeLeaderboardForDisplay (captainKey beats socket playerId). */
 function lbEntryMergeKey(e) {
   if (!e) return '';
@@ -13108,8 +13137,33 @@ function lbEntryMergeKey(e) {
   if (Number.isFinite(pid)) return `p:${pid}`;
   return '';
 }
+function collectCaptainKeyByPlayerIdFromRows(rows, pidToCk) {
+  if (!Array.isArray(rows)) return;
+  for (const e of rows) {
+    if (!e) continue;
+    let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
+    if (ck === 'pirate' || ck === 'unknown') ck = '';
+    const pid = e.playerId != null ? Number(e.playerId) : null;
+    if (ck && Number.isFinite(pid)) pidToCk.set(pid, String(e.captainKey).trim());
+  }
+}
+function applyCaptainKeyFromPlayerIdMap(rows, pidToCk) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map(e => {
+    if (!e) return e;
+    let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
+    if (ck === 'pirate' || ck === 'unknown') ck = '';
+    if (ck) return e;
+    const pid = e.playerId != null ? Number(e.playerId) : null;
+    if (!Number.isFinite(pid) || !pidToCk.has(pid)) return e;
+    return { ...e, captainKey: pidToCk.get(pid) };
+  });
+}
 /** Per-captain max stats so a partial / zeroed broadcast cannot wipe the UI while names still show. */
 function mergeLeaderboardByMaxStats(prev, next) {
+  const pidToCk = new Map();
+  collectCaptainKeyByPlayerIdFromRows(prev, pidToCk);
+  collectCaptainKeyByPlayerIdFromRows(next, pidToCk);
   const m = new Map();
   const add = (e) => {
     if (!e) return;
@@ -13135,8 +13189,8 @@ function mergeLeaderboardByMaxStats(prev, next) {
     if (e.partyTag != null && String(e.partyTag).trim()) merged.partyTag = String(e.partyTag).slice(0, 24);
     m.set(key, merged);
   };
-  (Array.isArray(prev) ? prev : []).forEach(add);
-  (Array.isArray(next) ? next : []).forEach(add);
+  applyCaptainKeyFromPlayerIdMap(Array.isArray(prev) ? prev : [], pidToCk).forEach(add);
+  applyCaptainKeyFromPlayerIdMap(Array.isArray(next) ? next : [], pidToCk).forEach(add);
   return Array.from(m.values());
 }
 function sortLbEntries(a, b) {
@@ -13150,7 +13204,8 @@ function sortLbEntries(a, b) {
 function dedupeLeaderboardForDisplay(entries) {
   const seen = new Set();
   const out = [];
-  for (const e of entries.slice().sort(sortLbEntries)) {
+  const norm = backfillLbCaptainKeysFromPlayerIds(Array.isArray(entries) ? entries.slice() : []);
+  for (const e of norm.sort(sortLbEntries)) {
     if (!e) continue;
     let ck = e.captainKey ? captainNameStorageKey(String(e.captainKey)) : '';
     if (ck === 'pirate' || ck === 'unknown') ck = '';

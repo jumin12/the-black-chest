@@ -1,5 +1,6 @@
 const http = require('http');
 const fs = require('fs');
+const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
@@ -24,6 +25,8 @@ const SERVER_STATE_SAVE_INTERVAL_MS = Math.max(200, Number(process.env.SERVER_ST
 /** Large chart payloads: re-save at most this often unless a new revision was published (override with env). */
 const WORLD_MAP_AUTOSAVE_MS = Math.max(SERVER_STATE_SAVE_INTERVAL_MS, Number(process.env.WORLD_MAP_AUTOSAVE_MS) || SERVER_STATE_SAVE_INTERVAL_MS);
 let lastWorldMapDiskWriteMs = 0;
+/** When a synchronous world_map disk write finishes, skip older async chart snapshots. */
+let lastWorldMapSyncPersistMs = 0;
 /** Full map JSON (same shape as editor export); null if no published chart. */
 let WORLD_MAP_PAYLOAD = null;
 let WORLD_MAP_REVISION = 0;
@@ -337,6 +340,9 @@ function loadPartyStore() {
     console.error('[playground] parties load error:', e.message);
   }
 }
+/** Updated when a synchronous disk persist completes so in-flight async snapshots can skip (avoid stale overwrite). */
+let lastSyncDiskPersistMs = 0;
+
 function savePartyStore() {
   const json = JSON.stringify(partyStore);
   try {
@@ -346,6 +352,45 @@ function savePartyStore() {
     console.error('[playground] parties save error:', e.message);
   }
   persistWorldSeedFile();
+  lastSyncDiskPersistMs = Date.now();
+}
+
+async function writeFileAtomicAsync(filePath, dataStr) {
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const tmp = path.join(dir, `.${base}.tmp.${process.pid}.${Date.now()}`);
+  await fsp.writeFile(tmp, dataStr, 'utf-8');
+  try {
+    await fsp.rename(tmp, filePath);
+  } catch (e) {
+    try {
+      await fsp.copyFile(tmp, filePath);
+    } catch (e2) {
+      throw e2;
+    } finally {
+      try { await fsp.unlink(tmp); } catch (e3) {}
+    }
+  }
+}
+
+let asyncPersistChain = Promise.resolve();
+function scheduleAsyncPersistedStateFlush() {
+  const scheduledAt = Date.now();
+  const partyJson = JSON.stringify(partyStore);
+  const worldPayload = JSON.stringify({ seed: WORLD_SEED, leaderboard: leaderboardHistory, partyStore });
+  const lbBundle = JSON.stringify({ leaderboard: leaderboardHistory, partyStore });
+  asyncPersistChain = asyncPersistChain.then(async () => {
+    if (scheduledAt < lastSyncDiskPersistMs) return;
+    try {
+      await writeFileAtomicAsync(PARTIES_FILE, partyJson);
+      await writeFileAtomicAsync(PARTIES_SHADOW, partyJson);
+      await writeFileAtomicAsync(SEED_FILE, worldPayload);
+      await writeFileAtomicAsync(LEADERBOARD_FILE, lbBundle);
+      await writeFileAtomicAsync(LEADERBOARD_SHADOW, lbBundle);
+    } catch (e) {
+      console.error('[playground] async persist failed:', e.message);
+    }
+  });
 }
 
 /** If `world_seed.json` carries a richer clan snapshot than `parties.json` (e.g. ephemeral DATA_DIR), restore from it. */
@@ -538,6 +583,21 @@ function normalizeLbEntry(e) {
  * Does not merge different people who only share a display name.
  */
 function mergeLeaderboardByIdentity() {
+  /** Same captain often has one row keyed by `captainKey` and a stale row keyed only by `playerId`. */
+  const pidToCk = new Map();
+  for (const raw of leaderboardHistory) {
+    const e = normalizeLbEntry(raw);
+    if (e.captainKey && e.playerId != null && Number.isFinite(Number(e.playerId))) {
+      pidToCk.set(Number(e.playerId), e.captainKey);
+    }
+  }
+  for (let i = 0; i < leaderboardHistory.length; i++) {
+    const e = normalizeLbEntry(leaderboardHistory[i]);
+    if (!e.captainKey && e.playerId != null && pidToCk.has(Number(e.playerId))) {
+      e.captainKey = pidToCk.get(Number(e.playerId));
+      leaderboardHistory[i] = e;
+    }
+  }
   const m = new Map();
   let orphanSeq = 0;
   for (const raw of leaderboardHistory) {
@@ -933,6 +993,29 @@ function persistWorldMapToDisk() {
       console.error('[playground] persist world_map (beside server) failed:', e.message);
     }
   }
+  lastWorldMapSyncPersistMs = Date.now();
+}
+
+let asyncWorldMapChain = Promise.resolve();
+function scheduleAsyncWorldMapPersist() {
+  if (!WORLD_MAP_PAYLOAD || !validateWorldMapPayload(WORLD_MAP_PAYLOAD)) return;
+  const scheduledAt = Date.now();
+  const bundle = JSON.stringify({
+    revision: WORLD_MAP_REVISION,
+    updatedAt: Date.now(),
+    map: WORLD_MAP_PAYLOAD
+  });
+  asyncWorldMapChain = asyncWorldMapChain.then(async () => {
+    if (scheduledAt < lastWorldMapSyncPersistMs) return;
+    try {
+      await writeFileAtomicAsync(WORLD_MAP_FILE, bundle);
+      await writeFileAtomicAsync(WORLD_MAP_SHADOW, bundle);
+      if (WORLD_MAP_BESIDE !== WORLD_MAP_FILE) await writeFileAtomicAsync(WORLD_MAP_BESIDE, bundle);
+      lastWorldMapDiskWriteMs = Date.now();
+    } catch (e) {
+      console.error('[playground] async world_map persist failed:', e.message);
+    }
+  });
 }
 
 function setWorldMapAndBroadcast(mapObj) {
@@ -984,13 +1067,12 @@ if (leaderboardHistory.length) persistWorldSeedFile();
 
 setInterval(() => {
   try {
-    savePartyStore();
+    scheduleAsyncPersistedStateFlush();
     flushCaptainAccountsIfDirty();
     const now = Date.now();
     if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
       if (now - lastWorldMapDiskWriteMs >= WORLD_MAP_AUTOSAVE_MS) {
-        persistWorldMapToDisk();
-        lastWorldMapDiskWriteMs = now;
+        scheduleAsyncWorldMapPersist();
       }
     }
   } catch (e) {}
