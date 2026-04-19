@@ -81,17 +81,17 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     position:relative;left:auto;right:auto;bottom:auto;transform:none;
     display:flex;
   }
-  #compass{width:256px;height:256px;}
+  #compass{width:512px;height:512px;}
   #compass-stack{gap:4px;}
   .quest-toggle-btn{font-size:10px;padding:6px 14px;}
   #minimap{width:520px;height:520px;padding:12px;bottom:14px;right:14px;border-radius:12px 16px 14px 12px;}
   #hud-top{gap:10px;}
   .hud-box{font-size:13px;padding:7px 14px;}
-  #stats-ammo-stack{max-width:min(860px,calc(100vw - 580px));padding:12px 18px 14px;}
+  #stats-ammo-stack{max-width:min(780px,calc(100vw - 620px));padding:12px 18px 14px;}
   #story-brief-hud{
-    top:calc(8px + 256px + 36px);
+    top:calc(8px + 512px + 36px);
     left:12px;
-    max-width:min(420px,calc(100vw - 580px));
+    max-width:min(420px,calc(100vw - 620px));
   }
   #btn-chat{display:none !important;}
   body.game-playing #chat-box{
@@ -2587,6 +2587,80 @@ function distSegmentToPointXZ(x0, z0, x1, z1, px, pz) {
   t = Math.max(0, Math.min(1, t));
   const qx = x0 + t * dx, qz = z0 + t * dz;
   return Math.hypot(px - qx, pz - qz);
+}
+
+/** Half-beam / half-length along ship-local X (starboard) and Z (bow), tuned to extruded hull mesh. */
+function shipHullObbHalfExtents(shipType) {
+  const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
+  return { hw: spec.hullW * 0.5 * 1.08, hl: spec.hullLen * 0.5 * 1.06 };
+}
+/** Unsigned distance from (px,pz) to ship hull oriented box (0 inside). */
+function distPointToShipHullOBB(px, pz, shipX, shipZ, yaw, shipType) {
+  const { hw, hl } = shipHullObbHalfExtents(shipType);
+  const dx = px - shipX, dz = pz - shipZ;
+  const lx = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+  const lz = dx * Math.sin(yaw) + dz * Math.cos(yaw);
+  const ax = Math.abs(lx) - hw;
+  const az = Math.abs(lz) - hl;
+  const ox = Math.max(ax, 0);
+  const oz = Math.max(az, 0);
+  return Math.hypot(ox, oz);
+}
+/** Min distance from segment to hull surface (samples; good for fast cannonballs). */
+function distSegmentToShipHullOBB(x0, z0, x1, z1, shipX, shipZ, yaw, shipType) {
+  let minD = Infinity;
+  for (let k = 0; k <= 10; k++) {
+    const t = k / 10;
+    const px = x0 + (x1 - x0) * t;
+    const pz = z0 + (z1 - z0) * t;
+    const d = distPointToShipHullOBB(px, pz, shipX, shipZ, yaw, shipType);
+    if (d < minD) minD = d;
+  }
+  return minD;
+}
+function shipObbProjectionInterval(cx, cz, yaw, hw, hl, nx, nz) {
+  const ux = Math.cos(yaw), uz = -Math.sin(yaw);
+  const vx = Math.sin(yaw), vz = Math.cos(yaw);
+  const r = Math.abs(ux * nx + uz * nz) * hw + Math.abs(vx * nx + vz * nz) * hl;
+  const c = cx * nx + cz * nz;
+  return { min: c - r, max: c + r };
+}
+/** SAT overlap for two hull boxes; returns MTD from B toward A, or null if separated. */
+function obbShipsSeparation(cxA, czA, yawA, typeA, cxB, czB, yawB, typeB, margin) {
+  const m = margin != null ? margin : 0.92;
+  const ea = shipHullObbHalfExtents(typeA);
+  const eb = shipHullObbHalfExtents(typeB);
+  const hwa = ea.hw * m, hla = ea.hl * m;
+  const hwb = eb.hw * m, hlb = eb.hl * m;
+  const axes = [
+    { nx: Math.cos(yawA), nz: -Math.sin(yawA) },
+    { nx: Math.sin(yawA), nz: Math.cos(yawA) },
+    { nx: Math.cos(yawB), nz: -Math.sin(yawB) },
+    { nx: Math.sin(yawB), nz: Math.cos(yawB) }
+  ];
+  let minOverlap = Infinity;
+  let mtdNx = 1, mtdNz = 0;
+  for (let i = 0; i < axes.length; i++) {
+    let { nx, nz } = axes[i];
+    const len = Math.hypot(nx, nz) || 1e-6;
+    nx /= len;
+    nz /= len;
+    const pa = shipObbProjectionInterval(cxA, czA, yawA, hwa, hla, nx, nz);
+    const pb = shipObbProjectionInterval(cxB, czB, yawB, hwb, hlb, nx, nz);
+    const overlap = Math.min(pa.max, pb.max) - Math.max(pa.min, pb.min);
+    if (overlap <= 0) return null;
+    if (overlap < minOverlap) {
+      minOverlap = overlap;
+      mtdNx = nx;
+      mtdNz = nz;
+    }
+  }
+  const sx = cxA - cxB, sz = czA - czB;
+  if (mtdNx * sx + mtdNz * sz < 0) {
+    mtdNx = -mtdNx;
+    mtdNz = -mtdNz;
+  }
+  return { depth: minOverlap, nx: mtdNx, nz: mtdNz };
 }
 
 const SHIP_PURCHASE_PRICE = { cutter: 85, sloop: 125, brigantine: 245, galleon: 395, warship: 575 };
@@ -7818,7 +7892,7 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
 function pushPlayerOutOfShipOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
   if (G.dockingAnim) return;
-  const px = G.player.x, pz = G.player.z, pr = shipHullRadius(G.player.shipType);
+  const px = G.player.x, pz = G.player.z;
   const margin = 0.92;
   const pPos = { x: G.player.x, z: G.player.z };
   const pv = (!G.player.anchored && Math.abs(G.player.speed) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
@@ -7830,11 +7904,9 @@ function pushPlayerOutOfShipOverlaps() {
     let moved = false;
     G.npcs.forEach(npc => {
       if (npc.sinking || npc.health <= 0) return;
-      const nr = shipHullRadius(npc.type);
-      const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
-      const d = Math.hypot(dx, dz) || 1e-4;
-      const minD = (pr + nr) * margin;
-      if (d < minD) {
+      const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, npc.type, margin);
+      if (!sep) return;
+      {
         const sid = npc.syncId != null ? npc.syncId : `u${Math.round(npc.x)}_${Math.round(npc.z)}`;
         const rKey = G.myId != null ? `me${G.myId}|npc${sid}` : `me|npc${sid}`;
         if (canApplyRamPair(rKey, G.time)) {
@@ -7871,20 +7943,18 @@ function pushPlayerOutOfShipOverlaps() {
             notify(`Ramming impact — ${Math.round(stP.dmg)} hull damage`);
           }
         }
-        const push = (minD - d) * 0.55;
-        G.player.x += (dx / d) * push;
-        G.player.z += (dz / d) * push;
+        const push = sep.depth * 0.55;
+        G.player.x += sep.nx * push;
+        G.player.z += sep.nz * push;
         moved = true;
       }
     });
     if (G.otherPlayers && G.otherPlayers.size) {
       for (const op of G.otherPlayers.values()) {
         if (op.x == null || op.z == null) continue;
-        const or = shipHullRadius(op.shipType || 'sloop');
-        const dx = G.player.x - op.x, dz = G.player.z - op.z;
-        const d = Math.hypot(dx, dz) || 1e-4;
-        const minD = (pr + or) * margin;
-        if (d < minD) {
+        const sepOp = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, op.x, op.z, op.rotation || 0, op.shipType || 'sloop', margin);
+        if (!sepOp) continue;
+        {
           const oid = op.id != null ? op.id : 0;
           const rKey = G.myId != null ? `me${G.myId}|pl${oid}` : `me|pl${oid}`;
           if (canApplyRamPair(rKey, G.time)) {
@@ -7900,9 +7970,9 @@ function pushPlayerOutOfShipOverlaps() {
               notify(`Ram! −${Math.round(stP.dmg)} hull`);
             }
           }
-          const push = (minD - d) * 0.55;
-          G.player.x += (dx / d) * push;
-          G.player.z += (dz / d) * push;
+          const push = sepOp.depth * 0.55;
+          G.player.x += sepOp.nx * push;
+          G.player.z += sepOp.nz * push;
           moved = true;
         }
       }
@@ -7919,22 +7989,17 @@ function pushPlayerOutOfShipOverlaps() {
 
 function separateHostNpcsFromLocalPlayer() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked) return;
-  const px = G.player.x, pz = G.player.z, pr = shipHullRadius(G.player.shipType);
+  const px = G.player.x, pz = G.player.z;
   const margin = 0.92;
   G.npcs.forEach(npc => {
     if (npc.sinking || npc.health <= 0) return;
-    const nr = shipHullRadius(npc.type);
-    const dx = npc.x - px, dz = npc.z - pz;
-    const d = Math.hypot(dx, dz) || 1e-4;
-    const minD = (pr + nr) * margin;
-    if (d < minD) {
-      const push = (minD - d) * 0.6;
-      const nx = (dx / d) * push, nz = (dz / d) * push;
-      const ox = npc.x, oz = npc.z;
-      npc.x += nx;
-      npc.z += nz;
-      if (isSeaObstructed(npc.x, npc.z)) { npc.x = ox; npc.z = oz; }
-    }
+    const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, npc.type, px, pz, G.player.rotation, G.player.shipType, margin);
+    if (!sep) return;
+    const push = sep.depth * 0.6;
+    const ox = npc.x, oz = npc.z;
+    npc.x += sep.nx * push;
+    npc.z += sep.nz * push;
+    if (isSeaObstructed(npc.x, npc.z)) { npc.x = ox; npc.z = oz; }
   });
 }
 
@@ -7945,11 +8010,8 @@ function relaxHostNpcNpcOverlaps() {
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const a = list[i], b = list[j];
-        const ra = shipHullRadius(a.type), rb = shipHullRadius(b.type);
-        const dx = b.x - a.x, dz = b.z - a.z;
-        const d = Math.hypot(dx, dz) || 1e-4;
-        const minD = (ra + rb) * margin;
-        if (d < minD) {
+        const sep = obbShipsSeparation(a.x, a.z, a.rotation, a.type, b.x, b.z, b.rotation, b.type, margin);
+        if (sep) {
           const ida = a.syncId != null ? a.syncId : `i${i}`, idb = b.syncId != null ? b.syncId : `j${j}`;
           const sa = String(ida), sb = String(idb);
           const rrk = sa < sb ? `npc${sa}|npc${sb}` : `npc${sb}|npc${sa}`;
@@ -7977,10 +8039,9 @@ function relaxHostNpcNpcOverlaps() {
               }
             }
           }
-          const pen = (minD - d) * 0.5;
-          const nx = dx / d, nz = dz / d;
-          const ax = a.x - nx * pen, az = a.z - nz * pen;
-          const bx = b.x + nx * pen, bz = b.z + nz * pen;
+          const pen = sep.depth * 0.5;
+          const ax = a.x - sep.nx * pen, az = a.z - sep.nz * pen;
+          const bx = b.x + sep.nx * pen, bz = b.z + sep.nz * pen;
           if (!isSeaObstructed(ax, az)) { a.x = ax; a.z = az; }
           if (!isSeaObstructed(bx, bz)) { b.x = bx; b.z = bz; }
         }
@@ -16226,10 +16287,8 @@ function update(dt) {
         const isPellet = !!b.isPellet;
         let hitR = cannonballStrikeHitRadius(npc.type, at, isPellet);
         if (at === 'ball' && !isPellet) hitR *= 1.15;
-        const distHit = Math.min(
-          Math.hypot(b.x - npc.x, b.z - npc.z),
-          distSegmentToPointXZ(px, pz, b.x, b.z, npc.x, npc.z)
-        );
+        const nYaw = npc.rotation != null ? npc.rotation : 0;
+        const distHit = distSegmentToShipHullOBB(px, pz, b.x, b.z, npc.x, npc.z, nYaw, npc.type);
         if (distHit >= hitR || b.y < SEA_LEVEL - 4) return;
         if (applyNpcCannonHits) {
           let dh = 15;
@@ -16268,10 +16327,8 @@ function update(dt) {
       const at = b.ammoType || 'ball';
       const isPellet = !!b.isPellet;
       const ppx = b.x - b.dx * dt, ppz = b.z - b.dz * dt;
-      const distP = Math.min(
-        Math.hypot(b.x - G.player.x, b.z - G.player.z),
-        distSegmentToPointXZ(ppx, ppz, b.x, b.z, G.player.x, G.player.z)
-      );
+      const plYaw = G.player.rotation != null ? G.player.rotation : 0;
+      const distP = distSegmentToShipHullOBB(ppx, ppz, b.x, b.z, G.player.x, G.player.z, plYaw, G.player.shipType);
       let hitR = cannonballStrikeHitRadius(G.player.shipType, at, isPellet);
       if (at === 'ball' && !isPellet) hitR *= 1.12;
       if (distP < hitR && b.y > SEA_LEVEL - 1) {
@@ -16306,7 +16363,10 @@ function update(dt) {
       G.otherPlayers.forEach((op, opId) => {
         if (op.docked) return;
         const hitR = cannonballStrikeHitRadius(op.shipType || 'sloop', at, isPellet);
-        if (Math.hypot(b.x - op.x, b.z - op.z) < hitR) {
+        const opx0 = b.x - b.dx * dt, opz0 = b.z - b.dz * dt;
+        const oYaw = op.rotation != null ? op.rotation : 0;
+        const distOp = distSegmentToShipHullOBB(opx0, opz0, b.x, b.z, op.x, op.z, oYaw, op.shipType || 'sloop');
+        if (distOp < hitR) {
           let msg = `Hit ${networkPlayerCaptainName(op)}!`;
           if (at === 'ball') msg = `Round shot · hull −9`;
           else if (at === 'chain') msg = `Chain · hull −6 · sails`;
