@@ -8304,7 +8304,10 @@ function pushPlayerOutOfShipOverlaps() {
           }
           if (stP.dmg > 0) {
             G.player.health = Math.max(0, G.player.health - stP.dmg);
-            playShipDamageSound(0.75);
+            {
+              const rcx = (G.player.x + npc.x) * 0.5, rcz = (G.player.z + npc.z) * 0.5;
+              playShipDamageSound(0.75, rcx, SEA_LEVEL + 1.35, rcz);
+            }
             const rgP = ramRiggingLossFromBowDot(stP.bowDot, stP.closing);
             if (rgP > 0) {
               G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - rgP);
@@ -8334,7 +8337,10 @@ function pushPlayerOutOfShipOverlaps() {
             const stP = computeRamStrike(pPos, op, G.player.shipType, op.shipType || 'sloop', G.player.rotation, pv.vx, pv.vz, ov.vx, ov.vz);
             if (stP.dmg > 0) {
               G.player.health = Math.max(0, G.player.health - stP.dmg);
-              playShipDamageSound(0.75);
+              {
+                const rcx = (G.player.x + op.x) * 0.5, rcz = (G.player.z + op.z) * 0.5;
+                playShipDamageSound(0.75, rcx, SEA_LEVEL + 1.35, rcz);
+              }
               const rgP = ramRiggingLossFromBowDot(stP.bowDot, stP.closing);
               if (rgP > 0) {
                 G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - rgP);
@@ -8664,10 +8670,9 @@ function npcFireBroadsideAtPlayer(npc) {
   const baseDirX = aimDx0 / aimLen0;
   const baseDirZ = aimDz0 / aimLen0;
 
-  let firedAny = false;
+  const shots = [];
   for (let g = 0; g < perSide; g++) {
     if (Math.random() < 0.14) continue;
-    firedAny = true;
     const jitter = (Math.random() - 0.5) * 0.62;
     const wide = (Math.random() - 0.5) * (0.38 + Math.random() * 0.35);
     const ang = jitter + wide;
@@ -8688,17 +8693,24 @@ function npcFireBroadsideAtPlayer(npc) {
       wy = _muzzleW.y;
       wz = _muzzleW.z;
     }
-
-    kickShipBroadsideCannon(npc.mesh, side, g);
-    spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
-    fireCannonball(wx, wz, dirX, dirZ, wy, 'npc', null, 'ball');
-    if (npc.mesh) npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
-    if (ws?.readyState === 1 && isMultiplayerHost()) {
-      ws.send(JSON.stringify({ type: 'npc_cannon', x: wx, z: wz, dx: dirX, dz: dirZ, y: wy }));
-      ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
-    }
+    shots.push({ g, wx, wy, wz, dirX, dirZ, side });
   }
-  if (firedAny && G.soundVolume > 0.02) playCannonSound(0.52);
+  const staggerMs = Math.max(35, Math.round(BROADSIDE_GUN_STAGGER_SEC * 1000));
+  shots.forEach((shot, idx) => {
+    window.setTimeout(() => {
+      if (G.mode !== 'playing') return;
+      if (!npc.mesh || npc.sinking || npc.health <= 0) return;
+      kickShipBroadsideCannon(npc.mesh, shot.side, shot.g);
+      spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ);
+      fireCannonball(shot.wx, shot.wz, shot.dirX, shot.dirZ, shot.wy, 'npc', null, 'ball');
+      npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
+      if (ws?.readyState === 1 && isMultiplayerHost()) {
+        ws.send(JSON.stringify({ type: 'npc_cannon', x: shot.wx, z: shot.wz, dx: shot.dirX, dz: shot.dirZ, y: shot.wy }));
+        ws.send(JSON.stringify({ type: 'cannon_fx', x: shot.wx, y: shot.wy, z: shot.wz, dx: shot.dirX, dz: shot.dirZ }));
+      }
+      if (G.soundVolume > 0.02) playCannonSound(0.52, shot.wx, shot.wy, shot.wz);
+    }, idx * staggerMs);
+  });
 }
 
 function updateNPCs(dt) {
@@ -9311,8 +9323,8 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
   if (G.docked) return;
   const at = ammoType === 'grape' || ammoType === 'chain' ? ammoType : 'ball';
   markSeaBattleActivity();
-  playShipDamageSound(isPellet ? 0.45 : 0.82);
   const hitY = SEA_LEVEL + 1.2;
+  playShipDamageSound(isPellet ? 0.45 : 0.82, hx, hitY, hz);
   spawnDamageChunks(hx, hitY, hz);
   if (ws?.readyState === 1) {
     try { ws.send(JSON.stringify({ type: 'ship_hit_fx', x: hx, y: hitY, z: hz })); } catch (e) {}
@@ -10208,7 +10220,7 @@ function connectToServer() {
         if (!Number.isFinite(hx) || !Number.isFinite(hz)) break;
         const hy = msg.y != null && Number.isFinite(Number(msg.y)) ? Number(msg.y) : SEA_LEVEL + 1.2;
         spawnDamageChunks(hx, hy, hz);
-        playShipDamageSound(0.55);
+        playShipDamageSound(0.55, hx, hy, hz);
         break;
       }
       case 'cannonball': {
@@ -10523,10 +10535,10 @@ function connectToServer() {
       case 'cannon_fx':
         spawnCannonMuzzleSmoke(msg.x, msg.y, msg.z, msg.dx, msg.dz);
         {
-          const nowFx = performance.now();
-          if (!G._lastRemoteCannonSfxAt || nowFx - G._lastRemoteCannonSfxAt > 200) {
-            G._lastRemoteCannonSfxAt = nowFx;
-            playCannonSound(0.42);
+          const fx = Number(msg.x), fz = Number(msg.z);
+          if (Number.isFinite(fx) && Number.isFinite(fz)) {
+            const fy = msg.y != null && Number.isFinite(Number(msg.y)) ? Number(msg.y) : worldSeaSurfaceY(fx, fz) + 1.2;
+            playCannonSound(0.42, fx, fy, fz);
           }
         }
         break;
@@ -11951,17 +11963,23 @@ let audioCtx, masterGain;
 let playerBroadsidePending = null;
 let _musicAudio = null;
 let _musicTrackIdx = 0;
-let _shipTravelAudio = null;
 let _shipTravelVolSm = 0;
 let _nextSeagullGameTime = 0;
 /** Decoded cannon shot for Web Audio (delayed broadside + iOS-friendly playback). */
 let _waGunshotBuffer = null;
-let _waGunshotLoadPromise = null;
 let _musicSrcInitialized = false;
+const _decodedSfx = {};
+const _sfxLoadPromises = {};
+/** Seamless ship travel: one looping BufferSource; gain-only changes while sailing (no HTML pause/restart gap). */
+let _shipTravelWABuffer = null;
+let _shipTravelWALoadPromise = null;
+let _shipTravelWASource = null;
+let _shipTravelWAGain = null;
+/** Time between each gun in a broadside (movie-style ripple). */
+const BROADSIDE_GUN_STAGGER_SEC = 0.12;
 const SFX_URL = {
   cannon: 'assets/sound/effects/cannon-shot.wav',
-  yell1: 'assets/sound/effects/captain-fire-yell.wav',
-  yell2: 'assets/sound/effects/captain-fire-yell2.wav',
+  captainYell: 'assets/sound/effects/captain-fire-yell.wav',
   seagull: 'assets/sound/effects/seagul.wav',
   shipDamage: 'assets/sound/effects/ship-damage.wav',
   shipTravel: 'assets/sound/effects/ship-traveling.wav',
@@ -12004,24 +12022,148 @@ function resolveGameAssetUrl(relPath) {
   }
 }
 
-async function ensureWaGunshotBuffer() {
-  if (_waGunshotBuffer) return _waGunshotBuffer;
-  if (_waGunshotLoadPromise) return _waGunshotLoadPromise;
-  _waGunshotLoadPromise = (async () => {
-    const url = resolveGameAssetUrl(SFX_URL.cannon);
-    const r = await fetch(url, { cache: 'force-cache' });
-    if (!r.ok) throw new Error('gunshot ' + r.status);
+function ensureSfxBuffer(key, url) {
+  if (_decodedSfx[key]) return Promise.resolve(_decodedSfx[key]);
+  if (_sfxLoadPromises[key]) return _sfxLoadPromises[key];
+  _sfxLoadPromises[key] = (async () => {
+    const href = resolveGameAssetUrl(url);
+    const r = await fetch(href, { cache: 'force-cache' });
+    if (!r.ok) throw new Error(String(key) + ' ' + r.status);
     const ab = await r.arrayBuffer();
     ensureAudio();
     if (!audioCtx) return null;
     try {
-      _waGunshotBuffer = await audioCtx.decodeAudioData(ab.slice(0));
+      _decodedSfx[key] = await audioCtx.decodeAudioData(ab.slice(0));
     } catch (e) {
-      _waGunshotBuffer = null;
+      _decodedSfx[key] = null;
     }
-    return _waGunshotBuffer;
+    if (key === 'cannon') _waGunshotBuffer = _decodedSfx[key];
+    return _decodedSfx[key];
   })();
-  return _waGunshotLoadPromise;
+  return _sfxLoadPromises[key];
+}
+async function ensureWaGunshotBuffer() {
+  const b = await ensureSfxBuffer('cannon', SFX_URL.cannon);
+  _waGunshotBuffer = b;
+  return b;
+}
+async function ensureShipTravelBuffer() {
+  if (_shipTravelWABuffer) return _shipTravelWABuffer;
+  if (_shipTravelWALoadPromise) return _shipTravelWALoadPromise;
+  _shipTravelWALoadPromise = (async () => {
+    const url = resolveGameAssetUrl(SFX_URL.shipTravel);
+    const r = await fetch(url, { cache: 'force-cache' });
+    if (!r.ok) throw new Error('shipTravel ' + r.status);
+    const ab = await r.arrayBuffer();
+    ensureAudio();
+    if (!audioCtx) return null;
+    try {
+      _shipTravelWABuffer = await audioCtx.decodeAudioData(ab.slice(0));
+    } catch (e) {
+      _shipTravelWABuffer = null;
+    }
+    return _shipTravelWABuffer;
+  })();
+  return _shipTravelWALoadPromise;
+}
+function fadeAndStopShipTravelWA() {
+  try {
+    if (_shipTravelWASource) {
+      try { _shipTravelWASource.stop(); } catch (e) {}
+      try { _shipTravelWASource.disconnect(); } catch (e2) {}
+      _shipTravelWASource = null;
+    }
+    if (_shipTravelWAGain) {
+      try { _shipTravelWAGain.disconnect(); } catch (e) {}
+      _shipTravelWAGain = null;
+    }
+  } catch (e) {}
+}
+function configureWorldPanner(panner) {
+  try {
+    panner.panningModel = 'HRTF';
+  } catch (e) {
+    panner.panningModel = 'equalpower';
+  }
+  panner.distanceModel = 'inverse';
+  panner.refDistance = 10;
+  panner.maxDistance = 480;
+  panner.rolloffFactor = 1.28;
+  panner.coneInnerAngle = 360;
+  panner.coneOuterAngle = 360;
+}
+function setPannerWorldPosition(panner, x, y, z, when) {
+  const t = when != null ? when : audioCtx.currentTime;
+  try {
+    if (panner.positionX) {
+      panner.positionX.setValueAtTime(x, t);
+      panner.positionY.setValueAtTime(y, t);
+      panner.positionZ.setValueAtTime(z, t);
+    } else if (panner.setPosition) {
+      panner.setPosition(x, y, z);
+    }
+  } catch (e) {}
+}
+/** One-shot 3D sound at world position (listener updated from camera each frame). */
+function playWorldBufferOneShot(buffer, x, y, z, volMul, ctxTimeWhen) {
+  if (!audioCtx || !masterGain || !buffer || G.soundVolume <= 0.02) return false;
+  try {
+    void audioCtx.resume();
+    const when = ctxTimeWhen != null ? ctxTimeWhen : audioCtx.currentTime;
+    const src = audioCtx.createBufferSource();
+    const panner = audioCtx.createPanner();
+    configureWorldPanner(panner);
+    setPannerWorldPosition(panner, x, y, z, when);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(Math.max(0, Math.min(1, 0.62 * sfxUiVolume(volMul))), when);
+    src.buffer = buffer;
+    src.connect(panner);
+    panner.connect(g);
+    g.connect(masterGain);
+    src.start(when);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function captainWorldPositionForShout() {
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  const rot = G.player.rotation;
+  const sinR = Math.sin(rot), cosR = Math.cos(rot);
+  const sternDist = Math.max(2.2, (spec.hullLen || 7) * 0.38);
+  const deckY = playerShipGroup && playerShipGroup.position ? playerShipGroup.position.y : worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD;
+  const h = spec.hullH || 1.3;
+  return {
+    x: G.player.x - sinR * sternDist,
+    y: deckY + h * 0.72,
+    z: G.player.z - cosR * sternDist
+  };
+}
+function syncAudioListenerToCamera() {
+  if (!audioCtx || typeof camera === 'undefined' || !camera) return;
+  const lx = camera.position.x;
+  const ly = camera.position.y;
+  const lz = camera.position.z;
+  const fwd = new THREE.Vector3();
+  camera.getWorldDirection(fwd);
+  const ux = camera.up.x, uy = camera.up.y, uz = camera.up.z;
+  const L = audioCtx.listener;
+  try {
+    if (L.positionX) {
+      L.positionX.setValueAtTime(lx, audioCtx.currentTime);
+      L.positionY.setValueAtTime(ly, audioCtx.currentTime);
+      L.positionZ.setValueAtTime(lz, audioCtx.currentTime);
+      L.forwardX.setValueAtTime(fwd.x, audioCtx.currentTime);
+      L.forwardY.setValueAtTime(fwd.y, audioCtx.currentTime);
+      L.forwardZ.setValueAtTime(fwd.z, audioCtx.currentTime);
+      L.upX.setValueAtTime(ux, audioCtx.currentTime);
+      L.upY.setValueAtTime(uy, audioCtx.currentTime);
+      L.upZ.setValueAtTime(uz, audioCtx.currentTime);
+    } else if (L.setPosition) {
+      L.setPosition(lx, ly, lz);
+      L.setOrientation(fwd.x, fwd.y, fwd.z, ux, uy, uz);
+    }
+  } catch (e) {}
 }
 function playWaGunshotAt(ctxTime, volMul = 1) {
   if (!audioCtx || !_waGunshotBuffer || !masterGain) return false;
@@ -12039,21 +12181,7 @@ function playWaGunshotAt(ctxTime, volMul = 1) {
   }
 }
 function primeShipTravelAudioElement() {
-  try {
-    if (!_shipTravelAudio) {
-      _shipTravelAudio = new Audio(resolveGameAssetUrl(SFX_URL.shipTravel));
-      _shipTravelAudio.loop = true;
-      _shipTravelAudio.volume = 0;
-    }
-    const prev = _shipTravelAudio.volume;
-    _shipTravelAudio.volume = 0.0001;
-    void _shipTravelAudio.play().then(() => {
-      try {
-        _shipTravelAudio.pause();
-      } catch (e2) {}
-      _shipTravelAudio.volume = prev;
-    }).catch(() => { _shipTravelAudio.volume = prev; });
-  } catch (e) {}
+  void ensureShipTravelBuffer().catch(() => {});
 }
 
 function ensureAudio() {
@@ -12077,21 +12205,41 @@ function playSfxUrl(url, volMul = 1) {
     void a.play().catch(() => {});
   } catch (e) {}
 }
-function playCannonSound(volMul = 1) {
+function playCannonSound(volMul = 1, wx, wy, wz) {
   ensureAudio();
+  if (audioCtx) void audioCtx.resume();
+  if (wx != null && wy != null && wz != null && audioCtx && masterGain) {
+    void ensureSfxBuffer('cannon', SFX_URL.cannon).then(buf => {
+      if (buf && playWorldBufferOneShot(buf, wx, wy, wz, 0.88 * volMul)) return;
+      playSfxUrl(SFX_URL.cannon, 0.88 * volMul);
+    });
+    return;
+  }
   if (audioCtx && _waGunshotBuffer && masterGain) {
-    void audioCtx.resume();
     if (playWaGunshotAt(audioCtx.currentTime, 0.88 * volMul)) return;
   }
   playSfxUrl(SFX_URL.cannon, 0.88 * volMul);
 }
 function playCaptainFireYell() {
-  playSfxUrl(Math.random() < 0.5 ? SFX_URL.yell1 : SFX_URL.yell2, 1);
+  const p = captainWorldPositionForShout();
+  ensureAudio();
+  if (audioCtx) void audioCtx.resume();
+  void ensureSfxBuffer('captainYell', SFX_URL.captainYell).then(buf => {
+    if (buf && playWorldBufferOneShot(buf, p.x, p.y, p.z, 1)) return;
+    playSfxUrl(SFX_URL.captainYell, 1);
+  });
 }
-function playShipDamageSound(volMul = 0.95) {
+function playShipDamageSound(volMul = 0.95, wx, wy, wz) {
   const now = performance.now();
   if (G._lastShipDamageSfxAt != null && now - G._lastShipDamageSfxAt < 220) return;
   G._lastShipDamageSfxAt = now;
+  if (wx != null && wy != null && wz != null && audioCtx && masterGain) {
+    void ensureSfxBuffer('shipDamage', SFX_URL.shipDamage).then(buf => {
+      if (buf && playWorldBufferOneShot(buf, wx, wy, wz, volMul)) return;
+      playSfxUrl(SFX_URL.shipDamage, volMul);
+    });
+    return;
+  }
   playSfxUrl(SFX_URL.shipDamage, volMul);
 }
 function playCrewFallSound() {
@@ -12133,42 +12281,92 @@ function bootstrapGameAudioOnUserGesture() {
   if (audioCtx && audioCtx.state === 'suspended') void audioCtx.resume();
   tryStartBackgroundMusic();
   void ensureWaGunshotBuffer().catch(() => {});
+  void ensureShipTravelBuffer().catch(() => {});
   primeShipTravelAudioElement();
 }
 ['pointerdown', 'keydown'].forEach(ev => {
   window.addEventListener(ev, bootstrapGameAudioOnUserGesture, { capture: true, passive: true });
 });
 
-function updateAmbientSeaAudio(dt) {
-  if (_nextSeagullGameTime === 0) _nextSeagullGameTime = (G.time || 0) + 4;
-  if (G.mode !== 'playing' || G.soundVolume <= 0.02) {
-    if (_shipTravelAudio) {
-      _shipTravelVolSm = 0;
-      _shipTravelAudio.volume = 0;
-      try { _shipTravelAudio.pause(); } catch (e) {}
-    }
+function tryPlaySeagullSpatial() {
+  if (G.soundVolume <= 0.02) return;
+  ensureAudio();
+  if (audioCtx) void audioCtx.resume();
+  const px = camera && camera.position ? camera.position.x : G.player.x;
+  const pz = camera && camera.position ? camera.position.z : G.player.z;
+  let pick = null;
+  if (seagulls && seagulls.length) {
+    const candidates = seagulls.filter(sg => {
+      const d = Math.hypot(sg.position.x - px, sg.position.z - pz);
+      return d < 260 && d > 6;
+    });
+    const pool = candidates.length ? candidates : seagulls;
+    pick = pool[(Math.random() * pool.length) | 0];
+  }
+  if (!pick) {
+    playSfxUrl(SFX_URL.seagull, 0.32);
     return;
   }
-  if (G.time >= _nextSeagullGameTime && !G.docked && !G.spectate) {
+  void ensureSfxBuffer('seagull', SFX_URL.seagull).then(buf => {
+    if (buf && playWorldBufferOneShot(buf, pick.position.x, pick.position.y, pick.position.z, 0.38)) return;
     playSfxUrl(SFX_URL.seagull, 0.32);
-    _nextSeagullGameTime = G.time + 9 + Math.random() * 16;
+  });
+}
+function updateShipTravelWAAmbience(dt) {
+  if (!audioCtx || G.soundVolume <= 0.02) {
+    _shipTravelVolSm = 0;
+    fadeAndStopShipTravelWA();
+    return;
   }
   const wantShip = !G.spectate && !G.docked && !G.playerSinking && G.player.health > 0
     && !G.captainWalk?.active && !G.player.anchored && Math.abs(G.player.speed || 0) > 0.06;
-  if (!_shipTravelAudio) {
-    _shipTravelAudio = new Audio(resolveGameAssetUrl(SFX_URL.shipTravel));
-    _shipTravelAudio.loop = true;
-    _shipTravelAudio.volume = 0;
-  }
   const sp = Math.abs(G.player.speed || 0);
   const target = wantShip ? Math.min(0.5, 0.08 + sp * 0.14) * G.soundVolume : 0;
   _shipTravelVolSm += (target - _shipTravelVolSm) * Math.min(1, 4 * dt);
-  _shipTravelAudio.volume = Math.max(0, Math.min(1, _shipTravelVolSm));
-  if (target > 0.01) {
-    if (_shipTravelAudio.paused) void _shipTravelAudio.play().catch(() => {});
-  } else if (_shipTravelAudio.volume < 0.02) {
-    try { _shipTravelAudio.pause(); } catch (e) {}
+  const vol = Math.max(0, Math.min(1, _shipTravelVolSm));
+  void ensureShipTravelBuffer().then(buf => {
+    if (!buf || !audioCtx || !masterGain) return;
+    void audioCtx.resume();
+    if (wantShip && vol > 0.01) {
+      if (!_shipTravelWASource) {
+        try {
+          const src = audioCtx.createBufferSource();
+          const g = audioCtx.createGain();
+          g.gain.value = Math.max(0.001, vol);
+          src.buffer = buf;
+          src.loop = true;
+          src.connect(g);
+          g.connect(masterGain);
+          src.start(0);
+          _shipTravelWASource = src;
+          _shipTravelWAGain = g;
+        } catch (e) {}
+      }
+      if (_shipTravelWAGain) {
+        _shipTravelWAGain.gain.setValueAtTime(vol, audioCtx.currentTime);
+      }
+    } else {
+      if (_shipTravelWAGain) {
+        _shipTravelWAGain.gain.setValueAtTime(vol, audioCtx.currentTime);
+      }
+      if (vol < 0.018 && _shipTravelWASource) {
+        fadeAndStopShipTravelWA();
+      }
+    }
+  });
+}
+function updateAmbientSeaAudio(dt) {
+  if (_nextSeagullGameTime === 0) _nextSeagullGameTime = (G.time || 0) + 4;
+  if (G.mode !== 'playing' || G.soundVolume <= 0.02) {
+    _shipTravelVolSm = 0;
+    fadeAndStopShipTravelWA();
+    return;
   }
+  if (G.time >= _nextSeagullGameTime && !G.docked && !G.spectate) {
+    tryPlaySeagullSpatial();
+    _nextSeagullGameTime = G.time + 9 + Math.random() * 16;
+  }
+  updateShipTravelWAAmbience(dt);
 }
 
 function applyMobileControlScheme(sc) {
@@ -12306,7 +12504,6 @@ function executeBroadsideVolley(info, opts) {
   else G.portCooldown = PLAYER_BROADSIDE_COOLDOWN;
   G.crewDeckCombatT = 1;
   G.crewReloading = true; G.crewReloadTimer = 1.5;
-  if (!opts.skipCannonSound) playCannonSound(1);
   triggerCombatFireHint();
 
   const rot = G.player.rotation;
@@ -12317,6 +12514,7 @@ function executeBroadsideVolley(info, opts) {
 
   const broadsideAngle = rot + physSide * Math.PI / 2;
   const dirX = Math.sin(broadsideAngle), dirZ = Math.cos(broadsideAngle);
+  const guns = [];
   for (let i = 0; i < perSide; i++) {
     const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
     const localX = physSide * (spec.hullW * 0.55 + 0.6);
@@ -12328,34 +12526,41 @@ function executeBroadsideVolley(info, opts) {
       wy = _muzzleW.y;
       wz = _muzzleW.z;
     }
-
-    kickShipBroadsideCannon(playerShipGroup, physSide, i);
-
-    if (ammoKind === 'grape') {
-      const pelletsPerGun = 10;
-      for (let p = 0; p < pelletsPerGun; p++) {
-        const spread = (Math.random() - 0.5) * 0.58 + (Math.random() - 0.5) * 0.28;
-        const c = Math.cos(spread), s = Math.sin(spread);
-        const pdx = dirX * c - dirZ * s;
-        const pdz = dirX * s + dirZ * c;
-        if (p === 0) spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
-        fireCannonball(wx, wz, pdx, pdz, wy, 'player', G.myId, 'grape_pellet');
+    guns.push({ i, wx, wy, wz, physSide });
+  }
+  const staggerMs = Math.max(35, Math.round(BROADSIDE_GUN_STAGGER_SEC * 1000));
+  guns.forEach((g, idx) => {
+    window.setTimeout(() => {
+      if (G.mode !== 'playing' || G.spectate) return;
+      kickShipBroadsideCannon(playerShipGroup, g.physSide, g.i);
+      const wx = g.wx, wy = g.wy, wz = g.wz;
+      if (ammoKind === 'grape') {
+        const pelletsPerGun = 10;
+        for (let p = 0; p < pelletsPerGun; p++) {
+          const spread = (Math.random() - 0.5) * 0.58 + (Math.random() - 0.5) * 0.28;
+          const c = Math.cos(spread), s = Math.sin(spread);
+          const pdx = dirX * c - dirZ * s;
+          const pdz = dirX * s + dirZ * c;
+          if (p === 0) spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
+          fireCannonball(wx, wz, pdx, pdz, wy, 'player', G.myId, 'grape_pellet');
+          if (ws?.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: pdx, dz: pdz, ammoType: 'grape_pellet', shooterId: G.myId }));
+          }
+        }
         if (ws?.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: pdx, dz: pdz, ammoType: 'grape_pellet', shooterId: G.myId }));
+          ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
+        }
+      } else {
+        spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
+        fireCannonball(wx, wz, dirX, dirZ, wy, 'player', G.myId, ammoKind);
+        if (ws?.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind, shooterId: G.myId }));
+          ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
         }
       }
-      if (ws?.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
-      }
-    } else {
-      spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
-      fireCannonball(wx, wz, dirX, dirZ, wy, 'player', G.myId, ammoKind);
-      if (ws?.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind, shooterId: G.myId }));
-        ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
-      }
-    }
-  }
+      if (G.soundVolume > 0.02) playCannonSound(0.95, wx, wy, wz);
+    }, idx * staggerMs);
+  });
 }
 
 function scheduleBroadsideSides(sidesRaw) {
@@ -12384,25 +12589,19 @@ function scheduleBroadsideSides(sidesRaw) {
     return;
   }
   const orderToken = Math.random();
-  const waScheduledRef = { ok: false };
   playerBroadsidePending = { sides: ready.map(r => r.fireSide), token: orderToken };
   bootstrapGameAudioOnUserGesture();
   playCaptainFireYell();
   ensureAudio();
   if (audioCtx) void audioCtx.resume();
-  void ensureWaGunshotBuffer().then(() => {
-    if (!audioCtx || !_waGunshotBuffer) return;
-    if (!playerBroadsidePending || playerBroadsidePending.token !== orderToken) return;
-    void audioCtx.resume();
-    waScheduledRef.ok = playWaGunshotAt(audioCtx.currentTime + 1.0, 0.88);
-  }).catch(() => {});
+  void ensureWaGunshotBuffer().catch(() => {});
   window.setTimeout(() => {
     const pend = playerBroadsidePending;
     playerBroadsidePending = null;
     if (!pend || G.mode !== 'playing' || G.spectate) return;
     for (const fs of pend.sides) {
       const inf = broadsideReadyInfo(fs, true);
-      if (inf) executeBroadsideVolley(inf, { skipCannonSound: waScheduledRef.ok });
+      if (inf) executeBroadsideVolley(inf, {});
     }
   }, 1000);
 }
@@ -16470,6 +16669,7 @@ let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 function update(dt) {
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
+  syncAudioListenerToCamera();
   updateAmbientSeaAudio(dt);
   if (G.captainWalk.active && !canUseCaptainWalk()) setCaptainWalkActive(false);
   updateSeaDebrisBattleClock(dt);
@@ -16942,7 +17142,7 @@ function update(dt) {
           else if (at === 'grape') dh = 10;
           else if (at === 'chain') dh = 8;
           npc.health -= dh;
-          playShipDamageSound(isPellet ? 0.4 : 0.68);
+          playShipDamageSound(isPellet ? 0.4 : 0.68, b.x, b.y, b.z);
           npc.aggro = true;
           npc.underFireTimer = 4.6;
           let popMsg = `−${dh} hull`;
