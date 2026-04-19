@@ -762,7 +762,6 @@ body > a[href="https://vibej.am/"][target="_blank"]{
     max-width:min(320px,calc(100vw - 16px));
     padding:8px 12px;
     font-size:11px;
-    bottom:calc(88px + env(safe-area-inset-bottom, 0px)) !important;
   }
 }
 /* Very narrow phones: tighter top HUD band so compass, stats, and minimap do not collide */
@@ -1259,7 +1258,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   <div id="anchor-status" class="hud-box" style="display:none;">Anchored</div>
   <div id="spyglass-overlay" aria-hidden="true"><div class="spyglass-ring"></div></div>
   <div id="notification"></div>
-  <div id="dock-prompt" style="display:none;position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom, 0px));top:auto;transform:translateX(-50%);background:linear-gradient(180deg,rgba(30,20,12,0.95),rgba(18,12,6,0.98));border:2px solid rgba(180,140,60,0.5);border-radius:8px;padding:10px 18px;text-align:center;z-index:60;pointer-events:auto;max-width:min(400px,calc(100vw - 24px));box-shadow:0 8px 24px rgba(0,0,0,0.45);">
+  <div id="dock-prompt" style="display:none;position:fixed;left:50%;top:88px;bottom:auto;transform:translateX(-50%);background:linear-gradient(180deg,rgba(30,20,12,0.95),rgba(18,12,6,0.98));border:2px solid rgba(180,140,60,0.5);border-radius:8px;padding:10px 18px;text-align:center;z-index:60;pointer-events:auto;max-width:min(400px,calc(100vw - 24px));box-shadow:0 8px 24px rgba(0,0,0,0.45);">
     <div style="color:#d4a848;font-size:14px;font-weight:bold;" id="dock-town-name"></div>
     <div id="dock-hint" style="color:#a09070;font-size:11px;margin:4px 0 6px;">Press E to dock</div>
     <button type="button" id="dock-btn" style="background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;border:1px solid #b8942a;padding:8px 24px;border-radius:5px;cursor:pointer;font-family:Georgia,serif;font-size:14px;touch-action:manipulation;">Dock</button>
@@ -1539,7 +1538,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
     <label for="settings-volume">Master volume</label>
     <input type="range" id="settings-volume" min="0" max="100" value="80" />
     <label for="settings-music-volume">Music volume</label>
-    <input type="range" id="settings-music-volume" min="0" max="100" value="75" />
+    <input type="range" id="settings-music-volume" min="0" max="100" value="50" />
     <label for="settings-sfx-volume">Sound effects</label>
     <input type="range" id="settings-sfx-volume" min="0" max="100" value="100" />
     <label for="settings-show-firing-arcs" style="margin-top:14px;">Show broadside firing arcs</label>
@@ -1900,7 +1899,7 @@ const G = {
   currentSailAngle: 0,
   soundVolume: 0.8,
   /** 0–1; multiplied by master for background music (default 75%). */
-  musicVolume: 0.75,
+  musicVolume: 0.5,
   /** 0–1; multiplied by master for SFX / Web Audio bus. */
   sfxVolume: 1,
   showFiringArches: true,
@@ -5676,6 +5675,41 @@ const ambientSharkPairs = [];
 const rescueSharkEscorts = [];
 const RESCUE_SHARK_FOLLOW_SEC = 10;
 
+/** Move a predator pair so their midpoint sits on open water (avoids vanishing on coast handoff). */
+function nudgeSharkPairMidpointToOpenSea(mA, mB, yOff) {
+  if (!mA || !mB) return;
+  const yE = yOff != null ? yOff : -0.12;
+  let mx = (mA.position.x + mB.position.x) * 0.5;
+  let mz = (mA.position.z + mB.position.z) * 0.5;
+  if (!isSeaObstructed(mx, mz)) {
+    mA.position.y = worldSeaSurfaceY(mA.position.x, mA.position.z) + yE * 0.55;
+    mB.position.y = worldSeaSurfaceY(mB.position.x, mB.position.z) + yE * 0.55;
+    return;
+  }
+  const maxRing = 28;
+  const step = 7;
+  for (let ring = 1; ring <= maxRing; ring++) {
+    const dist = ring * step;
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2 + ring * 0.17;
+      const tx = mx + Math.sin(a) * dist;
+      const tz = mz + Math.cos(a) * dist;
+      if (!isSeaObstructed(tx, tz)) {
+        const dx = tx - mx, dz = tz - mz;
+        mA.position.x += dx;
+        mA.position.z += dz;
+        mB.position.x += dx;
+        mB.position.z += dz;
+        mA.position.y = worldSeaSurfaceY(mA.position.x, mA.position.z) + yE * 0.55;
+        mB.position.y = worldSeaSurfaceY(mB.position.x, mB.position.z) + yE * 0.55;
+        return;
+      }
+    }
+  }
+  mA.position.y = worldSeaSurfaceY(mA.position.x, mA.position.z) + yE * 0.55;
+  mB.position.y = worldSeaSurfaceY(mB.position.x, mB.position.z) + yE * 0.55;
+}
+
 function makePredatorSharkMesh(scale) {
   const g = new THREE.Group();
   const s = Number(scale) || 1;
@@ -5835,15 +5869,10 @@ function claimAmbientSharkPairForSwimmer(pairIndex, sw) {
 }
 function releaseEscortSharksToAmbientPair(mA, mB) {
   if (!mA || !mB) return;
+  nudgeSharkPairMidpointToOpenSea(mA, mB, -0.12);
   const mx = (mA.position.x + mB.position.x) * 0.5;
   const mz = (mA.position.z + mB.position.z) * 0.5;
-  if (!Number.isFinite(mx) || !Number.isFinite(mz) || isSeaObstructed(mx, mz)) {
-    scene.remove(mA);
-    scene.remove(mB);
-    disposePredatorSharkMesh(mA);
-    disposePredatorSharkMesh(mB);
-    return;
-  }
+  if (!Number.isFinite(mx) || !Number.isFinite(mz)) return;
   const rad = 32 + Math.random() * 58;
   const spd = 0.034 + Math.random() * 0.046;
   const ph0 = Math.random() * Math.PI * 2;
@@ -5879,27 +5908,85 @@ function handoffSwimmerPredatorsToBoatEscort(u, rescuerPlayerId) {
   const meshes = u.predatorMeshes;
   if (!meshes || meshes.length < 2) return;
   u.predatorMeshes = null;
+  const nowT = getWildlifeWorldTime();
   rescueSharkEscorts.push({
     playerId: rescuerPlayerId != null ? Number(rescuerPlayerId) : (G.myId != null ? Number(G.myId) : NaN),
     mA: meshes[0],
     mB: meshes[1],
-    endT: getWildlifeWorldTime() + RESCUE_SHARK_FOLLOW_SEC
+    endT: nowT + RESCUE_SHARK_FOLLOW_SEC,
+    phase: 'follow',
+    departEndT: 0,
+    departDirX: 0,
+    departDirZ: 1,
+    lastBoatX: NaN,
+    lastBoatZ: NaN
   });
 }
 function updateRescueSharkEscorts(dt) {
   const ddt = Math.min(0.08, dt != null && dt > 0 ? dt : 1 / 60);
   const followSpeed = 12;
+  const departSpeed = 16;
   const t = getWildlifeWorldTime();
   for (let i = rescueSharkEscorts.length - 1; i >= 0; i--) {
     const e = rescueSharkEscorts[i];
+    const phase = e.phase || 'follow';
+
+    if (phase === 'depart') {
+      if (t >= e.departEndT) {
+        releaseEscortSharksToAmbientPair(e.mA, e.mB);
+        rescueSharkEscorts.splice(i, 1);
+        continue;
+      }
+      const sp = departSpeed * ddt;
+      e.mA.position.x += e.departDirX * sp;
+      e.mA.position.z += e.departDirZ * sp;
+      e.mB.position.x += e.departDirX * sp;
+      e.mB.position.z += e.departDirZ * sp;
+      const mx = (e.mA.position.x + e.mB.position.x) * 0.5;
+      const mz = (e.mA.position.z + e.mB.position.z) * 0.5;
+      if (isSeaObstructed(mx, mz)) nudgeSharkPairMidpointToOpenSea(e.mA, e.mB, -0.02);
+      const escortFloat = -0.02;
+      const ph = e.mA.userData.swimPhase || 0;
+      const bob = Math.sin(t * 2.2 + ph) * 0.14;
+      e.mA.position.y = worldSeaSurfaceY(e.mA.position.x, e.mA.position.z) + escortFloat + bob;
+      e.mB.position.y = worldSeaSurfaceY(e.mB.position.x, e.mB.position.z) + escortFloat - bob * 0.7;
+      const faceY = Math.atan2(e.departDirX, e.departDirZ);
+      for (const mesh of [e.mA, e.mB]) {
+        let diff = faceY - mesh.rotation.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        mesh.rotation.y += diff * Math.min(1, 8 * ddt);
+      }
+      applyPredatorSharkSwimMotion(e.mA, 1.05, Math.sin(t * 1.2 + ph) * 0.05);
+      applyPredatorSharkSwimMotion(e.mB, 0.98, Math.sin(t * 1.15 + ph) * -0.045);
+      continue;
+    }
+
     if (t >= e.endT) {
-      releaseEscortSharksToAmbientPair(e.mA, e.mB);
-      rescueSharkEscorts.splice(i, 1);
+      const poseEnd = getRescueEscortBoatPose(e.playerId);
+      const bx = Number.isFinite(e.lastBoatX) ? e.lastBoatX : (poseEnd ? poseEnd.x : e.mA.position.x);
+      const bz = Number.isFinite(e.lastBoatZ) ? e.lastBoatZ : (poseEnd ? poseEnd.z : e.mA.position.z);
+      const mx = (e.mA.position.x + e.mB.position.x) * 0.5;
+      const mz = (e.mA.position.z + e.mB.position.z) * 0.5;
+      let dx = mx - bx, dz = mz - bz;
+      let len = Math.hypot(dx, dz);
+      if (len < 0.35) {
+        const ang = Math.random() * Math.PI * 2;
+        dx = Math.sin(ang);
+        dz = Math.cos(ang);
+        len = 1;
+      }
+      e.departDirX = dx / len;
+      e.departDirZ = dz / len;
+      e.phase = 'depart';
+      e.departEndT = t + (6.2 + Math.random() * 3.8);
       continue;
     }
     const pose = getRescueEscortBoatPose(e.playerId);
     if (!pose) continue;
     const { x, z, yaw } = pose;
+    e.lastBoatX = x;
+    e.lastBoatZ = z;
     const escortFloat = -0.02;
     const astern = 12;
     const side = 4.2;
@@ -8314,12 +8401,12 @@ function pushPlayerOutOfShipOverlaps() {
               }));
             } catch (e) {}
           }
-          if (stP.dmg > 0) {
-            G.player.health = Math.max(0, G.player.health - stP.dmg);
-            {
-              const rcx = (G.player.x + npc.x) * 0.5, rcz = (G.player.z + npc.z) * 0.5;
-              playShipDamageSound(0.75, rcx, SEA_LEVEL + 1.35, rcz);
-            }
+            if (stP.dmg > 0) {
+              G.player.health = Math.max(0, G.player.health - stP.dmg);
+              {
+                const hHit = playerShipAudioWorldXYZ();
+                playShipDamageSound(0.82, hHit.x, hHit.y, hHit.z);
+              }
             const rgP = ramRiggingLossFromBowDot(stP.bowDot, stP.closing);
             if (rgP > 0) {
               G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - rgP);
@@ -8350,8 +8437,8 @@ function pushPlayerOutOfShipOverlaps() {
             if (stP.dmg > 0) {
               G.player.health = Math.max(0, G.player.health - stP.dmg);
               {
-                const rcx = (G.player.x + op.x) * 0.5, rcz = (G.player.z + op.z) * 0.5;
-                playShipDamageSound(0.75, rcx, SEA_LEVEL + 1.35, rcz);
+                const hHit = playerShipAudioWorldXYZ();
+                playShipDamageSound(0.82, hHit.x, hHit.y, hHit.z);
               }
               const rgP = ramRiggingLossFromBowDot(stP.bowDot, stP.closing);
               if (rgP > 0) {
@@ -9302,8 +9389,6 @@ function removeCrewMemberAtWithFlavor(idx, overboard, killerLabel) {
   if (idx < 0 || idx >= G.player.crew.length) return;
   const c = G.player.crew[idx];
   if (!c || c.role === 'captain') return;
-  if (overboard) playCrewFallSound();
-  else playCrewDeathSound();
   if (overboard) {
     const thrown = {
       name: c.name, role: c.role, health: c.health, task: c.task || 'idle',
@@ -9314,6 +9399,7 @@ function removeCrewMemberAtWithFlavor(idx, overboard, killerLabel) {
     const r = G.player.rotation;
     const bx = G.player.x - Math.sin(r) * ast + (Math.random() - 0.5) * 2.5;
     const bz = G.player.z - Math.cos(r) * ast + (Math.random() - 0.5) * 2.5;
+    playCrewFallSoundAt(bx, bz);
     if (ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'swimmer_spawn', swimmers: [{ x: bx, z: bz, restore: thrown }] }));
     } else {
@@ -9321,6 +9407,8 @@ function removeCrewMemberAtWithFlavor(idx, overboard, killerLabel) {
     }
     notify(`${c.name} was knocked into the sea!`);
   } else {
+    const hull = playerShipAudioWorldXYZ();
+    playCrewDeathSoundAt(hull.x, hull.y, hull.z, 0.8);
     G.player.crew.splice(idx, 1);
     broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(G.player.x, G.player.z, 1, null, false));
     notify(`${c.name} was slain by ${killerLabel}!`);
@@ -9336,7 +9424,8 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
   const at = ammoType === 'grape' || ammoType === 'chain' ? ammoType : 'ball';
   markSeaBattleActivity();
   const hitY = SEA_LEVEL + 1.2;
-  playShipDamageSound(isPellet ? 0.45 : 0.82, hx, hitY, hz);
+  const hullAud = playerShipAudioWorldXYZ();
+  playShipDamageSound(isPellet ? 0.52 : 0.92, hullAud.x, hullAud.y, hullAud.z);
   spawnDamageChunks(hx, hitY, hz);
   if (ws?.readyState === 1) {
     try { ws.send(JSON.stringify({ type: 'ship_hit_fx', x: hx, y: hitY, z: hz })); } catch (e) {}
@@ -9392,7 +9481,7 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
     showCombatPopupWorld(pwx, pwz, `Chain shot · hull −6, sails −${rigLoss}% (${Math.round(G.player.riggingHealth)}%)`, { cssClass: 'chain' });
     if (Math.random() < 0.24) {
       const ix = pickNonCaptainCrewIndexForCasualty();
-      if (ix >= 0) removeCrewMemberAtWithFlavor(ix, true, 'falling spars');
+      if (ix >= 0) removeCrewMemberAtWithFlavor(ix, false, 'chain shot');
     }
   }
 }
@@ -10232,7 +10321,10 @@ function connectToServer() {
         if (!Number.isFinite(hx) || !Number.isFinite(hz)) break;
         const hy = msg.y != null && Number.isFinite(Number(msg.y)) ? Number(msg.y) : SEA_LEVEL + 1.2;
         spawnDamageChunks(hx, hy, hz);
-        playShipDamageSound(0.55, hx, hy, hz);
+        {
+          const hFx = playerShipAudioWorldXYZ();
+          playShipDamageSound(0.62, hFx.x, hFx.y, hFx.z);
+        }
         break;
       }
       case 'cannonball': {
@@ -11987,6 +12079,7 @@ let _shipTravelWABuffer = null;
 let _shipTravelWALoadPromise = null;
 let _shipTravelWASource = null;
 let _shipTravelWAGain = null;
+let _shipTravelWAPanner = null;
 /** Time between each gun in a broadside (movie-style ripple). */
 const BROADSIDE_GUN_STAGGER_SEC = 0.12;
 const SFX_URL = {
@@ -12085,6 +12178,10 @@ function fadeAndStopShipTravelWA() {
       try { _shipTravelWASource.disconnect(); } catch (e2) {}
       _shipTravelWASource = null;
     }
+    if (_shipTravelWAPanner) {
+      try { _shipTravelWAPanner.disconnect(); } catch (e) {}
+      _shipTravelWAPanner = null;
+    }
     if (_shipTravelWAGain) {
       try { _shipTravelWAGain.disconnect(); } catch (e) {}
       _shipTravelWAGain = null;
@@ -12094,9 +12191,9 @@ function fadeAndStopShipTravelWA() {
 function configureWorldPanner(panner) {
   panner.panningModel = 'equalpower';
   panner.distanceModel = 'inverse';
-  panner.refDistance = 12;
-  panner.maxDistance = 12000;
-  panner.rolloffFactor = 1.15;
+  panner.refDistance = 38;
+  panner.maxDistance = 85000;
+  panner.rolloffFactor = 0.48;
   panner.coneInnerAngle = 360;
   panner.coneOuterAngle = 360;
 }
@@ -12123,7 +12220,7 @@ function playWorldBufferOneShot(buffer, x, y, z, volMul, ctxTimeWhen) {
     configureWorldPanner(panner);
     setPannerWorldPosition(panner, x, y, z, when);
     const g = audioCtx.createGain();
-    g.gain.setValueAtTime(Math.max(0, Math.min(1, 0.62 * Math.max(0, Math.min(1, volMul)))), when);
+    g.gain.setValueAtTime(Math.max(0, Math.min(1, 0.94 * Math.max(0, Math.min(1, volMul)))), when);
     src.buffer = buffer;
     src.connect(panner);
     panner.connect(g);
@@ -12146,6 +12243,18 @@ function captainWorldPositionForShout() {
     y: deckY + h * 0.72,
     z: G.player.z - cosR * sternDist
   };
+}
+/** Hull-centered point for ship hit SFX and travel loop (spatial audio at the vessel). */
+function playerShipAudioWorldXYZ() {
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  const h = spec.hullH || 1.3;
+  const deckY = playerShipGroup && playerShipGroup.position ? playerShipGroup.position.y : worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD;
+  return { x: G.player.x, y: deckY + h * 0.42, z: G.player.z };
+}
+function syncShipTravelPannerToHull() {
+  if (!_shipTravelWAPanner || !audioCtx || !G.player) return;
+  const p = playerShipAudioWorldXYZ();
+  setPannerWorldPosition(_shipTravelWAPanner, p.x, p.y, p.z, audioCtx.currentTime);
 }
 function syncAudioListenerToCamera() {
   if (!audioCtx || typeof camera === 'undefined' || !camera) return;
@@ -12178,7 +12287,7 @@ function playWaGunshotAt(ctxTime, volMul = 1) {
   try {
     const srcN = audioCtx.createBufferSource();
     const g = audioCtx.createGain();
-    g.gain.value = Math.max(0, Math.min(1, 0.55 * Math.max(0, Math.min(1, volMul))));
+    g.gain.value = Math.max(0, Math.min(1, 0.78 * Math.max(0, Math.min(1, volMul))));
     srcN.buffer = _waGunshotBuffer;
     srcN.connect(g);
     g.connect(masterGain);
@@ -12261,8 +12370,26 @@ function playShipDamageSound(volMul = 0.95, wx, wy, wz) {
 function playCrewFallSound() {
   playSfxUrl(SFX_URL.fall, 0.75);
 }
+function playCrewFallSoundAt(wx, wz) {
+  const wy = worldSeaSurfaceY(wx, wz) + 0.5;
+  ensureAudio();
+  if (audioCtx) void audioCtx.resume();
+  void ensureSfxBuffer('fall', SFX_URL.fall).then(buf => {
+    if (buf && playWorldBufferOneShot(buf, wx, wy, wz, 0.9)) return;
+    playSfxUrl(SFX_URL.fall, 0.75);
+  });
+}
 function playCrewDeathSound() {
   playSfxUrl(SFX_URL.death, 0.7);
+}
+function playCrewDeathSoundAt(wx, wy, wz, volMul = 0.78) {
+  const y = wy != null ? wy : worldSeaSurfaceY(wx, wz) + 1.05;
+  ensureAudio();
+  if (audioCtx) void audioCtx.resume();
+  void ensureSfxBuffer('death', SFX_URL.death).then(buf => {
+    if (buf && playWorldBufferOneShot(buf, wx, y, wz, volMul)) return;
+    playSfxUrl(SFX_URL.death, volMul);
+  });
 }
 function playCaptainSinkDeathSound() {
   playSfxUrl(SFX_URL.death, 0.85);
@@ -12323,8 +12450,8 @@ function tryPlaySeagullSpatial() {
     return;
   }
   void ensureSfxBuffer('seagull', SFX_URL.seagull).then(buf => {
-    if (buf && playWorldBufferOneShot(buf, pick.position.x, pick.position.y, pick.position.z, 0.38)) return;
-    playSfxUrl(SFX_URL.seagull, 0.32);
+    if (buf && playWorldBufferOneShot(buf, pick.position.x, pick.position.y, pick.position.z, 0.58)) return;
+    playSfxUrl(SFX_URL.seagull, 0.42);
   });
 }
 function updateShipTravelWAAmbience(dt) {
@@ -12346,17 +12473,23 @@ function updateShipTravelWAAmbience(dt) {
       if (!_shipTravelWASource) {
         try {
           const src = audioCtx.createBufferSource();
+          const panner = audioCtx.createPanner();
+          configureWorldPanner(panner);
           const g = audioCtx.createGain();
           g.gain.value = Math.max(0.001, vol);
           src.buffer = buf;
           src.loop = true;
-          src.connect(g);
+          src.connect(panner);
+          panner.connect(g);
           g.connect(masterGain);
           src.start(0);
           _shipTravelWASource = src;
+          _shipTravelWAPanner = panner;
           _shipTravelWAGain = g;
+          syncShipTravelPannerToHull();
         } catch (e) {}
       }
+      syncShipTravelPannerToHull();
       if (_shipTravelWAGain) {
         _shipTravelWAGain.gain.setValueAtTime(vol, audioCtx.currentTime);
       }
@@ -12783,6 +12916,38 @@ function syncHudToastAnchors() {
   notif.style.transform = 'translateX(-50%)';
   notif.style.top = `${topPx}px`;
   notif.style.zIndex = '118';
+  syncDockPromptAnchor();
+}
+
+/** Dock prompt: fixed under top HUD (same band as toasts), PC + mobile. */
+function syncDockPromptAnchor() {
+  const dock = document.getElementById('dock-prompt');
+  if (!dock) return;
+  const dSt = window.getComputedStyle(dock);
+  if (dSt.display === 'none' || dock.style.display === 'none') return;
+  const gap = 10;
+  let bottom = 0;
+  const collect = (el) => {
+    if (!el) return;
+    const st = window.getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') < 0.02) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 && r.height < 2) return;
+    bottom = Math.max(bottom, r.bottom);
+  };
+  if (G.mode === 'playing') {
+    collect(document.getElementById('stats-ammo-stack'));
+    collect(document.getElementById('compass-stack'));
+    collect(document.getElementById('minimap'));
+    collect(document.getElementById('story-brief-hud'));
+  }
+  if (bottom <= 0) bottom = isMobile ? 72 : 88;
+  const topPx = Math.round(bottom + gap);
+  dock.style.top = `${topPx}px`;
+  dock.style.bottom = 'auto';
+  dock.style.left = '50%';
+  dock.style.transform = 'translateX(-50%)';
+  dock.style.zIndex = '60';
 }
 
 function notify(text, durationMs) {
@@ -14299,6 +14464,7 @@ function throwCrewOverboard(idx) {
   const r = G.player.rotation;
   const bx = G.player.x - Math.sin(r) * ast + (Math.random() - 0.5) * 2;
   const bz = G.player.z - Math.cos(r) * ast + (Math.random() - 0.5) * 2;
+  playCrewFallSoundAt(bx, bz);
   if (ws?.readyState === 1) {
     ws.send(JSON.stringify({ type: 'swimmer_spawn', swimmers: [{ x: bx, z: bz, restore: thrown }] }));
   } else {
@@ -17142,7 +17308,12 @@ function update(dt) {
           else if (at === 'grape') dh = 10;
           else if (at === 'chain') dh = 8;
           npc.health -= dh;
-          playShipDamageSound(isPellet ? 0.4 : 0.68, b.x, b.y, b.z);
+          {
+            const specN = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
+            const hN = specN.hullH || 1.3;
+            const ny = npc.mesh?.position?.y ?? worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
+            playShipDamageSound(isPellet ? 0.52 : 0.88, npc.x, ny + hN * 0.42, npc.z);
+          }
           npc.aggro = true;
           npc.underFireTimer = 4.6;
           let popMsg = `−${dh} hull`;
@@ -17332,6 +17503,7 @@ function update(dt) {
     const twLife = age - tLand;
     if (twLife >= SWIMMER_PREDATOR_PHASE_TOTAL && !u.eatenByPredator) {
       u.eatenByPredator = true;
+      playCrewDeathSoundAt(sw.position.x, sw.position.y, sw.position.z, 0.72);
       disposeSwimmerPredators(u);
       if (u.netId != null && isMultiplayerHost() && ws?.readyState === 1) {
         try { ws.send(JSON.stringify({ type: 'swimmer_collect', id: u.netId })); } catch (e) {}
