@@ -34,8 +34,8 @@ const WORLD_MAP_BACKUP_FILE = path.join(DATA_DIR, 'world_map.prev.json');
 const WORLD_MAP_SHADOW = path.join(__dirname, 'world_map.shadow.json');
 /** Optional extra copy next to server when DATA_DIR points elsewhere. */
 const WORLD_MAP_BESIDE = path.join(__dirname, 'world_map.json');
-/** How often to flush seed, leaderboard, clans, and (if due) world map to disk. */
-const SERVER_STATE_SAVE_INTERVAL_MS = Math.max(200, Number(process.env.SERVER_STATE_SAVE_INTERVAL_MS) || 1000);
+/** How often to flush seed, leaderboard, clans, captain accounts, and (if due) world map to disk. */
+const SERVER_STATE_SAVE_INTERVAL_MS = Math.max(200, Number(process.env.SERVER_STATE_SAVE_INTERVAL_MS) || 60000);
 /** Large chart payloads: re-save at most this often unless a new revision was published (override with env). */
 const WORLD_MAP_AUTOSAVE_MS = Math.max(SERVER_STATE_SAVE_INTERVAL_MS, Number(process.env.WORLD_MAP_AUTOSAVE_MS) || SERVER_STATE_SAVE_INTERVAL_MS);
 let lastWorldMapDiskWriteMs = 0;
