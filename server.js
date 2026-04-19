@@ -9,8 +9,23 @@ const PORT = process.env.PORT || 3000;
 const SERVER_WORLD_T0_MS = Date.now();
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
 const TICK_RATE = 45;
-/** Optional directory for persistent JSON (e.g. Docker volume). Defaults next to server.js. */
-const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+/**
+ * Persistent JSON directory (leaderboard, clans, world seed, map, bans, accounts).
+ * Prefer env `DATA_DIR`. If unset, use a mounted path when present (Render disks often use `/var/data`)
+ * so clans survive restarts even when the env var was forgotten.
+ */
+function resolveDataDir() {
+  const env = process.env.DATA_DIR;
+  if (env != null && String(env).trim() !== '') return path.resolve(String(env).trim());
+  for (const dir of ['/var/data', '/data']) {
+    try {
+      if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) return dir;
+    } catch (e) {}
+  }
+  return __dirname;
+}
+const DATA_DIR = resolveDataDir();
+console.log('[playground] persistent DATA_DIR =', DATA_DIR);
 const SEED_FILE = path.join(DATA_DIR, 'world_seed.json');
 const WORLD_MAP_FILE = path.join(DATA_DIR, 'world_map.json');
 /** Snapshot of the chart before the last successful publish — used for one-step revert. */
@@ -341,11 +356,19 @@ function savePartyStore() {
   const json = JSON.stringify(partyStore);
   try {
     writeFileAtomic(PARTIES_FILE, json);
+  } catch (e) {
+    console.error('[playground] parties save (primary) error:', PARTIES_FILE, e.message);
+  }
+  try {
     writeFileAtomic(PARTIES_SHADOW, json);
   } catch (e) {
-    console.error('[playground] parties save error:', e.message);
+    console.error('[playground] parties save (shadow) error:', PARTIES_SHADOW, e.message);
   }
-  persistWorldSeedFile();
+  try {
+    persistWorldSeedFile();
+  } catch (e) {
+    console.error('[playground] persistWorldSeedFile after parties error:', e.message);
+  }
 }
 
 /** Defer full disk flush to the next idle turn so 45Hz `state` + WS I/O are not blocked in the timer callback. */
@@ -1106,10 +1129,27 @@ setInterval(() => {
   } catch (e) {}
 }, SERVER_STATE_SAVE_INTERVAL_MS);
 
-process.on('beforeExit', () => {
+function flushAllPersistedStateSync() {
   try {
     savePartyStore();
-  } catch (e) {}
+    flushCaptainAccountsIfDirty();
+    saveBans();
+    if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
+      persistWorldMapToDisk();
+      lastWorldMapDiskWriteMs = Date.now();
+    }
+  } catch (e) {
+    console.error('[playground] flushAllPersistedStateSync:', e.message);
+  }
+}
+process.on('beforeExit', flushAllPersistedStateSync);
+process.on('SIGTERM', () => {
+  flushAllPersistedStateSync();
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  flushAllPersistedStateSync();
+  process.exit(0);
 });
 
 /** Keeps parties.json / shadows in lockstep with leaderboard.json (same bundle as persistWorldSeedFile). */
