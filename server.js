@@ -1362,6 +1362,69 @@ function setWorldSeedAndPersist(newSeed) {
   broadcastAll({ type: 'world_seed', seed: WORLD_SEED });
 }
 
+/** Static game assets (audio, models, maps). Render/VPS hosts must serve these; SPA fallback is only on Vercel. */
+const ASSETS_ROOT = path.resolve(__dirname, 'assets');
+function mimeTypeForFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const map = {
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.ogg': 'audio/ogg',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.glb': 'model/gltf-binary',
+    '.gltf': 'model/gltf+json',
+    '.json': 'application/json; charset=utf-8',
+    '.woff2': 'font/woff2',
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.ico': 'image/x-icon',
+    '.md': 'text/markdown; charset=utf-8'
+  };
+  return map[ext] || 'application/octet-stream';
+}
+function sendAssetFile(filePath, res) {
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(500, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
+      res.end('Error reading file');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': mimeTypeForFile(filePath),
+      'Cache-Control': 'public, max-age=3600',
+      ...CORS_HEADERS
+    });
+    res.end(data);
+  });
+}
+/** GET /assets/... only; blocks path traversal. */
+function tryServeGameAssets(reqPath, res) {
+  if (!reqPath.startsWith('/assets/')) return false;
+  const rel = reqPath.slice(1);
+  const resolved = path.resolve(__dirname, rel);
+  const prefix = ASSETS_ROOT + path.sep;
+  if (resolved !== ASSETS_ROOT && !resolved.startsWith(prefix)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
+    res.end('Forbidden');
+    return true;
+  }
+  fs.stat(resolved, (err, st) => {
+    if (err || !st.isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
+      res.end('Not found');
+      return;
+    }
+    sendAssetFile(resolved, res);
+  });
+  return true;
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, CORS_HEADERS);
@@ -1528,6 +1591,8 @@ const server = http.createServer((req, res) => {
     sendSvg(svg);
     return;
   }
+
+  if (req.method === 'GET' && tryServeGameAssets(reqPath, res)) return;
 
   if (req.url === '/' || req.url === '/index.html' || req.url.startsWith('/index.html?')) {
     fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {
