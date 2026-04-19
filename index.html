@@ -371,7 +371,8 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   box-shadow:0 8px 24px rgba(0,0,0,0.45),inset 0 1px 0 rgba(200,255,220,0.12);
 }
 #clan-invite-popup{
-  display:none;position:fixed;inset:0;z-index:130;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(20px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+  display:none;position:fixed;inset:0;z-index:130;flex-direction:column;align-items:center;justify-content:flex-start;
+  padding:max(calc(var(--ui-below-stats,96px) + 6px),16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(20px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
   background:rgba(4,10,6,0.55);pointer-events:auto;box-sizing:border-box;
 }
 #clan-invite-popup .clan-invite-popup-panel{
@@ -12132,7 +12133,9 @@ let audioCtx, masterGain;
 /** Player broadside: captain yell then 1s fuse before shot (see scheduleBroadsideSides). */
 let playerBroadsidePending = null;
 let _musicAudio = null;
-let _musicTrackIdx = 0;
+/** Shuffled indices into MUSIC_URLS; no repeat until all played, then reshuffle. */
+let _musicShuffled = [];
+let _musicShufflePos = 0;
 let _shipTravelVolSm = 0;
 let _nextSeagullGameTime = 0;
 /** Decoded cannon shot for Web Audio (delayed broadside + iOS-friendly playback). */
@@ -12276,12 +12279,19 @@ function setPannerWorldPosition(panner, x, y, z, when) {
   } catch (e) {}
 }
 /** One-shot 3D sound at world position (listener updated from camera each frame). */
-function playWorldBufferOneShot(buffer, x, y, z, volMul, ctxTimeWhen) {
+function playWorldBufferOneShot(buffer, x, y, z, volMul, ctxTimeWhen, opts) {
   if (!audioCtx || !masterGain || !buffer || masterSfxBusGain() <= 0.02) return false;
   try {
     void audioCtx.resume();
     const when = ctxTimeWhen != null ? ctxTimeWhen : audioCtx.currentTime;
     const src = audioCtx.createBufferSource();
+    if (opts && opts.playbackRate != null && Number.isFinite(opts.playbackRate)) {
+      try {
+        src.playbackRate.setValueAtTime(THREE.MathUtils.clamp(opts.playbackRate, 0.55, 1.65), when);
+      } catch (e) {
+        try { src.playbackRate.value = THREE.MathUtils.clamp(opts.playbackRate, 0.55, 1.65); } catch (e2) {}
+      }
+    }
     const panner = audioCtx.createPanner();
     configureWorldPanner(panner);
     setPannerWorldPosition(panner, x, y, z, when);
@@ -12348,10 +12358,17 @@ function syncAudioListenerToCamera() {
     }
   } catch (e) {}
 }
-function playWaGunshotAt(ctxTime, volMul = 1) {
+function playWaGunshotAt(ctxTime, volMul = 1, playbackRate) {
   if (!audioCtx || !_waGunshotBuffer || !masterGain || masterSfxBusGain() <= 0.02) return false;
   try {
     const srcN = audioCtx.createBufferSource();
+    if (playbackRate != null && Number.isFinite(playbackRate)) {
+      try {
+        srcN.playbackRate.setValueAtTime(THREE.MathUtils.clamp(playbackRate, 0.55, 1.65), ctxTime);
+      } catch (e) {
+        try { srcN.playbackRate.value = THREE.MathUtils.clamp(playbackRate, 0.55, 1.65); } catch (e2) {}
+      }
+    }
     const g = audioCtx.createGain();
     g.gain.value = Math.max(0, Math.min(1, 0.78 * Math.max(0, Math.min(1, volMul))));
     srcN.buffer = _waGunshotBuffer;
@@ -12387,29 +12404,37 @@ function ensureAudio() {
   masterGain.gain.value = masterSfxBusGain();
   masterGain.connect(audioCtx.destination);
 }
-function playSfxUrl(url, volMul = 1) {
+function playSfxUrl(url, volMul = 1, playbackRate) {
   if (masterSfxBusGain() <= 0.02 || !url) return;
   const src = resolveGameAssetUrl(url);
   try {
     const a = new Audio(src);
     a.volume = Math.max(0, Math.min(1, masterSfxBusGain() * Math.max(0, Math.min(1, volMul))));
+    if (playbackRate != null && Number.isFinite(playbackRate) && a.playbackRate != null) {
+      try { a.playbackRate = THREE.MathUtils.clamp(playbackRate, 0.55, 1.65); } catch (e) {}
+    }
     void a.play().catch(() => {});
   } catch (e) {}
 }
+/** Each gun gets its own spatial one-shot with slight pitch/loudness variation so broadsides don’t collapse to one boom. */
 function playCannonSound(volMul = 1, wx, wy, wz) {
+  const rate = 0.88 + Math.random() * 0.22;
+  const v = Math.max(0.08, Math.min(1.35, volMul * (0.88 + Math.random() * 0.22)));
   ensureAudio();
   if (audioCtx) void audioCtx.resume();
   if (wx != null && wy != null && wz != null && audioCtx && masterGain) {
+    const tOff = Math.random() * 0.012;
     void ensureSfxBuffer('cannon', SFX_URL.cannon).then(buf => {
-      if (buf && playWorldBufferOneShot(buf, wx, wy, wz, 0.88 * volMul)) return;
-      playSfxUrl(SFX_URL.cannon, 0.88 * volMul);
+      const when = audioCtx.currentTime + tOff;
+      if (buf && playWorldBufferOneShot(buf, wx, wy, wz, 0.88 * v, when, { playbackRate: rate })) return;
+      playSfxUrl(SFX_URL.cannon, 0.88 * v, rate);
     });
     return;
   }
   if (audioCtx && _waGunshotBuffer && masterGain) {
-    if (playWaGunshotAt(audioCtx.currentTime, 0.88 * volMul)) return;
+    if (playWaGunshotAt(audioCtx.currentTime + Math.random() * 0.01, 0.88 * v, rate)) return;
   }
-  playSfxUrl(SFX_URL.cannon, 0.88 * volMul);
+  playSfxUrl(SFX_URL.cannon, 0.88 * v, rate);
 }
 function playCaptainFireYell() {
   const p = captainWorldPositionForShout();
@@ -12463,10 +12488,24 @@ function playCaptainSinkDeathSound() {
 function syncMusicAndTravelVolume() {
   if (_musicAudio) _musicAudio.volume = masterMusicBusGain();
 }
+function shuffleMusicPlaylist() {
+  const n = MUSIC_URLS.length;
+  _musicShuffled = [];
+  for (let i = 0; i < n; i++) _musicShuffled.push(i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = _musicShuffled[i];
+    _musicShuffled[i] = _musicShuffled[j];
+    _musicShuffled[j] = t;
+  }
+  _musicShufflePos = 0;
+}
 function playNextMusicTrack() {
   if (!_musicAudio || !MUSIC_URLS.length) return;
-  _musicTrackIdx = (_musicTrackIdx + 1) % MUSIC_URLS.length;
-  _musicAudio.src = resolveGameAssetUrl(MUSIC_URLS[_musicTrackIdx]);
+  _musicShufflePos++;
+  if (_musicShufflePos >= _musicShuffled.length) shuffleMusicPlaylist();
+  const urlIdx = _musicShuffled[_musicShufflePos];
+  _musicAudio.src = resolveGameAssetUrl(MUSIC_URLS[urlIdx]);
   _musicAudio.volume = masterMusicBusGain();
   void _musicAudio.play().catch(() => {});
 }
@@ -12478,7 +12517,9 @@ function tryStartBackgroundMusic() {
     _musicAudio.addEventListener('ended', playNextMusicTrack);
   }
   if (!_musicSrcInitialized) {
-    _musicAudio.src = resolveGameAssetUrl(MUSIC_URLS[_musicTrackIdx % MUSIC_URLS.length]);
+    shuffleMusicPlaylist();
+    _musicAudio.src = resolveGameAssetUrl(MUSIC_URLS[_musicShuffled[0]]);
+    _musicShufflePos = 0;
     _musicSrcInitialized = true;
   }
   _musicAudio.volume = masterMusicBusGain();
@@ -12957,31 +12998,36 @@ function hideMobileControls() {
   }
 }
 
-/** Bottom edge of the top HUD band (stats + compass/quest column only — not minimap, which is bottom-anchored on PC). */
-function getTopHudBandBottomPx() {
+/** Bottom of `#stats-ammo-stack` only — dock, toasts, and clan popup sit just under the stats strip (PC + mobile). */
+function getStatsHudBottomPx() {
   let bottom = 0;
-  const collect = (el) => {
-    if (!el) return;
-    const st = window.getComputedStyle(el);
-    if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') < 0.02) return;
-    const r = el.getBoundingClientRect();
-    if (r.width < 2 && r.height < 2) return;
-    bottom = Math.max(bottom, r.bottom);
-  };
   if (G.mode === 'playing') {
-    collect(document.getElementById('stats-ammo-stack'));
-    collect(document.getElementById('compass-stack'));
+    const el = document.getElementById('stats-ammo-stack');
+    if (el) {
+      const st = window.getComputedStyle(el);
+      if (st.display !== 'none' && st.visibility !== 'hidden' && parseFloat(st.opacity || '1') >= 0.02) {
+        const r = el.getBoundingClientRect();
+        if (r.width >= 2 && r.height >= 2) bottom = r.bottom;
+      }
+    }
   }
   if (bottom <= 0) bottom = isMobile ? 72 : 88;
   return bottom;
 }
 
-/** Centered toasts: just under top stats / compass row (not minimap). */
+function syncUiBelowStatsCssVar(topPx) {
+  try {
+    document.documentElement.style.setProperty('--ui-below-stats', `${topPx}px`);
+  } catch (e) {}
+}
+
+/** Centered toasts: tight under stats strip. */
 function syncHudToastAnchors() {
   const notif = document.getElementById('notification');
   if (!notif) return;
-  const gap = 10;
-  const topPx = Math.round(getTopHudBandBottomPx() + gap);
+  const gap = 4;
+  const topPx = Math.round(getStatsHudBottomPx() + gap);
+  syncUiBelowStatsCssVar(topPx);
   notif.style.left = '50%';
   notif.style.transform = 'translateX(-50%)';
   notif.style.top = `${topPx}px`;
@@ -12989,14 +13035,15 @@ function syncHudToastAnchors() {
   syncDockPromptAnchor();
 }
 
-/** Dock prompt: directly under top stats row, PC + mobile (same metric as toasts). */
+/** Dock prompt: same anchor as notifications. */
 function syncDockPromptAnchor() {
   const dock = document.getElementById('dock-prompt');
   if (!dock) return;
   const dSt = window.getComputedStyle(dock);
   if (dSt.display === 'none' || dock.style.display === 'none') return;
-  const gap = 8;
-  const topPx = Math.round(getTopHudBandBottomPx() + gap);
+  const gap = 4;
+  const topPx = Math.round(getStatsHudBottomPx() + gap);
+  syncUiBelowStatsCssVar(topPx);
   dock.style.top = `${topPx}px`;
   dock.style.bottom = 'auto';
   dock.style.left = '50%';
@@ -13042,6 +13089,7 @@ function showClanInviteOnlinePopup() {
   if (!root || !txt || !G.partyInvite || G.party) return;
   const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   txt.innerHTML = `<strong style="color:#d4a848;">${esc(G.partyInvite.fromName)}</strong> invited you to join <strong style="color:#c8e8a8;">«${esc(G.partyInvite.tag)}»</strong>. Open chat (T) → Clan to respond, or use the buttons below.`;
+  syncHudToastAnchors();
   root.style.display = 'flex';
   root.setAttribute('aria-hidden', 'false');
 }
@@ -13107,6 +13155,17 @@ function updateCombatPopups(dt) {
       const d = Math.hypot(dx, dy) || 1;
       sx = pxScr + (dx / d) * (avoidR + 18);
       sy = pyScr + (dy / d) * (avoidR + 18);
+    }
+    if (G.mode === 'playing') {
+      const st = document.getElementById('stats-ammo-stack');
+      if (st) {
+        const rst = window.getComputedStyle(st);
+        if (rst.display !== 'none' && rst.visibility !== 'hidden') {
+          const br = st.getBoundingClientRect();
+          const pad = br.bottom + 6;
+          if (br.height >= 2 && sy < pad) sy = pad;
+        }
+      }
     }
     p.el.style.left = `${sx}px`;
     p.el.style.top = `${sy}px`;
