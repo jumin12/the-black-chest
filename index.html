@@ -600,10 +600,10 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .cargo-berths-grid{display:grid;gap:8px;padding:4px 2px 8px;box-sizing:border-box;pointer-events:auto;touch-action:none;}
 .cargo-berths-grid .cargo-slot-box{min-height:84px;border-radius:10px;padding:8px 6px;}
 .cargo-grid-hint{margin:0;font-size:10px;color:#7a6a58;text-align:center;line-height:1.45;letter-spacing:0.02em;}
-.cargo-purse-strip{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:12px 14px;border-radius:10px;background:linear-gradient(165deg,rgba(48,38,28,0.88),rgba(24,18,12,0.94));border:1px solid rgba(212,168,72,0.35);box-shadow:inset 0 1px 0 rgba(255,230,180,0.08),0 4px 12px rgba(0,0,0,0.25);}
-.cargo-purse-label{font-size:10px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#b89a58;}
-.cargo-purse-gold{font-size:15px;font-weight:bold;color:#e8c878;text-shadow:0 1px 2px rgba(0,0,0,0.4);}
-.cargo-purse-icon{display:inline-block;margin-right:6px;opacity:0.9;}
+.cargo-slot-icon-wrap{width:38px;height:38px;display:flex;align-items:center;justify-content:center;margin:0 auto 3px;flex-shrink:0;}
+.cargo-slot-icon-wrap svg{width:100%;height:100%;display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5));}
+.port-trade-icon{width:42px;height:42px;flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-right:10px;}
+.port-trade-icon svg{width:100%;height:100%;display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.35));}
 .cargo-screen-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(212,168,72,0.18);}
 .cargo-screen-headings{min-width:0;}
 .cargo-screen-title{margin:0;font-size:15px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:#e8d9b8;font-family:Georgia,serif;text-shadow:0 1px 2px rgba(0,0,0,0.4);}
@@ -630,7 +630,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .cargo-slot-box.filled{border-color:rgba(212,180,100,0.5);background:linear-gradient(165deg,rgba(58,44,28,0.88),rgba(28,22,14,0.94));box-shadow:inset 0 1px 0 rgba(255,220,160,0.12),0 2px 8px rgba(0,0,0,0.25);}
 .cargo-slot-box.dragging{opacity:0.55;cursor:grabbing;transform:scale(0.98);}
 .cargo-slot-vacant{font-size:clamp(6px,1.8vw,8px);color:#6a5a48;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;}
-.cargo-slot-icon{font-size:clamp(9px,2.5vw,13px);font-weight:bold;color:#e8c878;line-height:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);}
+.cargo-slot-icon{font-size:clamp(9px,2.5vw,13px);font-weight:bold;color:#e8c878;line-height:1;text-shadow:0 1px 2px rgba(0,0,0,0.5);display:none;}
 .cargo-slot-amt{font-size:clamp(6px,1.8vw,9px);color:#c8b898;font-weight:600;margin-top:1px;}
 .cargo-slot-name{font-size:clamp(6px,1.5vw,8px);color:#9a8a78;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:0;line-height:1.1;}
 @media(max-width:768px){
@@ -1301,7 +1301,6 @@ body > a[href="https://vibej.am/"][target="_blank"]{
       <div class="cargo-berths-panel">
         <div id="cargo-berths-grid-main" class="cargo-berths-grid" aria-label="Cargo berths"></div>
         <p class="cargo-grid-hint">Drag stacks between berths to reorder · Drag off the grid to jettison into the sea</p>
-        <div class="cargo-purse-strip" id="cargo-purse-strip" aria-label="Gold purse"></div>
       </div>
     </div>
     <div id="log-crew" class="log-content" style="display:none;"><div id="crew-list"></div></div>
@@ -2080,10 +2079,12 @@ function applyLocalNpcKillLootFromNet(msg) {
  */
 function runNpcSinkOutcome(npc, killerPlayerId) {
   if (!npc || npc.sinking) return;
+  const transportEscort = !!npc.isTransportEscort;
+  if (transportEscort) failTransportEscortMission(npc);
   const kid = killerPlayerId != null ? killerPlayerId : G.myId;
   const missionOwner = npc.missionOwnerPlayerId != null ? npc.missionOwnerPlayerId : (npc.isStoryBounty ? G.myId : null);
   const storyMission = !!(npc.isStoryBounty && missionOwner != null);
-  const goldLoot = storyMission ? 0 : 30;
+  const goldLoot = storyMission ? 0 : transportEscort ? 0 : 30;
   let storyOutcome = 'none';
   if (storyMission) {
     let ox, oz;
@@ -2276,6 +2277,13 @@ function huntQuestMatchesNpc(q, n) {
 const STORY_REWARDS = [55, 75, 100, 140, 200];
 /** NPC sync ids: pirates 0–7, story bounties per player (62000+), merchants from 200 (one per charted port). */
 const TRADE_NPC_SYNC_START = 200;
+function allocateNpcSyncId() {
+  let m = TRADE_NPC_SYNC_START;
+  for (const n of G.npcs || []) {
+    if (n && n.syncId != null && Number.isFinite(Number(n.syncId)) && Number(n.syncId) > m) m = Number(n.syncId);
+  }
+  return m + 1;
+}
 
 function storyProgressRankClient(st) {
   if (!st || typeof st !== 'object') return -1;
@@ -2744,12 +2752,28 @@ const ITEM_DEFS = {
   wood: { name: 'Wood Planks', icon: 'W' },
   cloth: { name: 'Sail Cloth', icon: 'C' },
   iron: { name: 'Iron Ingot', icon: 'Fe' },
-  gold: { name: 'Gold Coins', icon: 'Au' },
+  gold: { name: 'Gold Coins', icon: '' },
   rum: { name: 'Rum Barrels', icon: 'R' },
   gunpowder: { name: 'Gunpowder', icon: 'GP' }
 };
 function getItemMeta(id) {
   return ITEM_DEFS[id] || { name: String(id), icon: '?' };
+}
+/** Inline SVG (viewBox 0 0 32 32) for cargo UI and port trade rows. */
+function itemIconSvg(id) {
+  const g = {
+    food: '<svg viewBox="0 0 32 32" aria-hidden="true"><path fill="#8b5a2b" d="M6 10h20v14H6z"/><path fill="#c9a06c" d="M8 8h16l2 4H6z"/><ellipse fill="#6d4c2b" cx="16" cy="17" rx="7" ry="4"/></svg>',
+    cannonballs: '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="11" cy="12" r="5" fill="#2a2a2a"/><circle cx="21" cy="12" r="5" fill="#1a1a1a"/><circle cx="16" cy="20" r="5" fill="#333"/></svg>',
+    grapeshot: '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="10" cy="11" r="2.2" fill="#4a4038"/><circle cx="16" cy="9" r="2.4" fill="#3a3530"/><circle cx="22" cy="11" r="2.2" fill="#4a4038"/><circle cx="12" cy="17" r="2.3" fill="#3a3530"/><circle cx="20" cy="17" r="2.3" fill="#4a4038"/><circle cx="16" cy="22" r="2.5" fill="#2a2824"/></svg>',
+    chainshot: '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="11" cy="16" r="5.5" fill="#2c2a28"/><circle cx="21" cy="16" r="5.5" fill="#2c2a28"/><path stroke="#1a1814" stroke-width="1.8" fill="none" d="M14 16h4"/></svg>',
+    wood: '<svg viewBox="0 0 32 32" aria-hidden="true"><path fill="#a07040" d="M6 22 L16 6 L26 22 Z"/><path fill="#7a4a28" d="M10 22 L16 12 L22 22 Z"/></svg>',
+    cloth: '<svg viewBox="0 0 32 32" aria-hidden="true"><path fill="#d8c8b0" d="M5 14 Q16 8 27 14 L25 24 Q16 28 7 24 Z"/><path fill="#c0a890" d="M8 16 Q16 12 24 16" stroke="#a89078" fill="none"/></svg>',
+    iron: '<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="7" y="12" width="18" height="10" rx="1" fill="#6a7a88"/><rect x="9" y="10" width="14" height="4" fill="#8a9ca8"/></svg>',
+    gold: '<svg viewBox="0 0 32 32" aria-hidden="true"><ellipse cx="16" cy="18" rx="10" ry="5" fill="#c9a227"/><ellipse cx="16" cy="14" rx="9" ry="4.5" fill="#e8d060"/><ellipse cx="16" cy="11" rx="7.5" ry="3.5" fill="#f5e8a0"/></svg>',
+    rum: '<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="12" y="8" width="8" height="18" rx="1" fill="#5a3020"/><rect x="11" y="6" width="10" height="4" rx="1" fill="#8a5040"/><rect x="13" y="12" width="6" height="10" fill="#3a2018"/></svg>',
+    gunpowder: '<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="8" y="10" width="16" height="14" rx="2" fill="#4a4540"/><path fill="#2a2824" d="M10 8h12v4H10z"/><path fill="#e8a040" d="M16 14l1.2 3h3.2l-2.6 2 1 3.2L16 20l-1.8 2.2 1-3.2-2.6-2h3.2z"/></svg>'
+  };
+  return g[id] || '<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="8" y="8" width="16" height="16" rx="2" fill="#6a6058"/></svg>';
 }
 function getInvCount(id) {
   let t = 0;
@@ -7262,15 +7286,6 @@ function updateRemoteCrewDeckAnimations(dt, shipGroup, p, shipType) {
 function tryAddQuestCargo(id, count) {
   ensureCargoSlots();
   const c = Math.max(1, Math.floor(Number(count) || 0));
-  if (id === 'gold') {
-    const meta = getItemMeta(id);
-    const row = G.player.inventory.find(i => i.id === id);
-    if (!row) G.player.inventory.push({ id, name: meta.name, icon: meta.icon, count: c });
-    else row.count += c;
-    consolidateGoldPurse();
-    syncInventoryFromCargoSlots();
-    return true;
-  }
   if (!canFitStackInCargoSlots(id, c)) return false;
   const meta = getItemMeta(id);
   const row = G.player.inventory.find(i => i.id === id);
@@ -7290,7 +7305,7 @@ function removeInventoryAmount(id, amt) {
 /** Remove up to `amt` from ledger rows for id (no reconcile). Used when jettisoning overflow into the world. */
 function subtractFromInventoryLedger(id, amt) {
   let left = Math.max(0, Math.floor(Number(amt) || 0));
-  if (left <= 0 || id === 'gold') return;
+  if (left <= 0) return;
   const inv = G.player.inventory;
   if (!Array.isArray(inv)) return;
   for (let i = inv.length - 1; i >= 0 && left > 0; i--) {
@@ -7337,28 +7352,6 @@ function checkHuntQuestOnNpcSink(npc) {
   }
 }
 
-function checkExploreQuestProgress() {
-  if (G.mode !== 'playing' || G.playerSinking || G.player.health <= 0) return;
-  for (let i = G.quests.length - 1; i >= 0; i--) {
-    const q = G.quests[i];
-    if (!q.accepted || q.type !== 'explore') continue;
-    if (q.x == null || q.z == null) continue;
-    if (Math.hypot(G.player.x - q.x, G.player.z - q.z) > 42) continue;
-    const gi = G.player.inventory.find(x => x.id === 'gold');
-    if (gi) gi.count += q.reward;
-    bumpNotoriety({ gold: q.reward });
-    appendCompletedMission({ kind: 'side', title: 'Explore complete', detail: q.desc, reward: q.reward });
-    G.quests.splice(i, 1);
-    notify(`Charting complete: +${q.reward}g`);
-    reconcileSlotsWithInventory();
-    updateMissionsPanel();
-    updateStoryBriefHud();
-    saveProgress();
-    broadcastWorldQuestsToServer();
-    return;
-  }
-}
-
 function checkPortQuestProgress() {
   if (!G.docked || !G.nearDock) return;
   const cx = G.nearDock.cx, cz = G.nearDock.cz;
@@ -7381,6 +7374,160 @@ function checkPortQuestProgress() {
     saveProgress();
     broadcastWorldQuestsToServer();
   }
+}
+
+function findActiveTransportQuestForEscort(npc) {
+  if (!npc || npc.syncId == null) return null;
+  for (let i = 0; i < G.quests.length; i++) {
+    const q = G.quests[i];
+    if (q && q.accepted && q.type === 'transport' && Number(q.escortSyncId) === Number(npc.syncId)) return { q, idx: i };
+  }
+  return null;
+}
+function failTransportEscortMission(npc, detail) {
+  const hit = findActiveTransportQuestForEscort(npc);
+  if (!hit) return;
+  const { q, idx } = hit;
+  G.quests.splice(idx, 1);
+  appendCompletedMission({ kind: 'side', title: 'Escort failed', detail: detail || q.desc, reward: null });
+  notify('Contract failed — the merchant vessel was lost.');
+  updateMissionsPanel();
+  updateStoryBriefHud();
+  saveProgress();
+  broadcastWorldQuestsToServer();
+}
+function completeTransportEscortMission(npc) {
+  const hit = findActiveTransportQuestForEscort(npc);
+  if (!hit) return;
+  const { q, idx } = hit;
+  const rew = Math.max(0, Math.floor(Number(q.reward) || 0));
+  if (rew > 0) {
+    const row = G.player.inventory.find(x => x.id === 'gold');
+    if (row) row.count += rew;
+    else {
+      const gm = getItemMeta('gold');
+      G.player.inventory.push({ id: 'gold', name: gm.name, icon: gm.icon, count: rew });
+    }
+    bumpNotoriety({ gold: rew });
+  }
+  reconcileSlotsWithInventory();
+  appendCompletedMission({ kind: 'side', title: 'Escort complete', detail: q.desc, reward: rew || null });
+  G.quests.splice(idx, 1);
+  notify(`Escort complete — ${q.destTown || 'port'}: +${rew}g`);
+  updateMissionsPanel();
+  updateStoryBriefHud();
+  saveProgress();
+  broadcastWorldQuestsToServer();
+  npc.health = -999;
+  if (npc.mesh) {
+    try { scene.remove(npc.mesh); disposeObject3DSubtree(npc.mesh); } catch (e) {}
+    npc.mesh = null;
+  }
+}
+function spawnTransportRaiders(escort, q, sr) {
+  const nRaid = 1 + Math.floor(sr() * 5);
+  const x0 = escort.x, z0 = escort.z;
+  const x1 = q.destDockX, z1 = q.destDockZ;
+  for (let i = 0; i < nRaid; i++) {
+    const t = (i + 1) / (nRaid + 1);
+    let rx = x0 + (x1 - x0) * t + (sr() - 0.5) * 70;
+    let rz = z0 + (z1 - z0) * t + (sr() - 0.5) * 70;
+    rx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, rx));
+    rz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, rz));
+    if (isSeaObstructed(rx, rz) || (typeof hasMinClearanceFromLand === 'function' && !hasMinClearanceFromLand(rx, rz, 28))) {
+      rx = x0 + (x1 - x0) * t;
+      rz = z0 + (z1 - z0) * t;
+    }
+    const typePool = ['cutter', 'sloop', 'brigantine'];
+    const npcType = typePool[Math.floor(sr() * typePool.length)];
+    const sid = allocateNpcSyncId();
+    const npc = {
+      syncId: sid,
+      x: rx, z: rz,
+      rotation: sr() * Math.PI * 2, speed: 0,
+      health: 48 + sr() * 38, type: npcType,
+      name: `Raider ${i + 1}`,
+      wanderAngle: sr() * Math.PI * 2, wanderTimer: 2,
+      underFireTimer: 0, fireJitter: sr(),
+      riggingHealth: 100,
+      flagPosition: pickRandomAiFlagPosition(sr()),
+      transportRaiderTargetSyncId: escort.syncId,
+      aggro: true
+    };
+    const chunkX = Math.floor(rx / CHUNK_SIZE), chunkZ = Math.floor(rz / CHUNK_SIZE);
+    const pirateFaction = ((chunkX * 31 + chunkZ * 17 + sid * 3) & 0x7fffffff) % 4;
+    npc.factionId = pirateFaction;
+    npc.flagColor = FACTION_TRADE_COLORS[pirateFaction];
+    npc.sailBonus = 0.12;
+    npc.speed = npcMaxForwardSpeed(npc) * (0.18 + sr() * 0.12);
+    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name);
+    npc.crewData = ambientPirateCrewData((sid * 997) >>> 0);
+    buildCrewMeshes(mesh, npc.crewData, npc.type);
+    npc.mesh = mesh; scene.add(mesh);
+    applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+    G.npcs.push(npc);
+  }
+}
+function spawnTransportEscortForQuest(q, originPort) {
+  if (!q || !originPort || q.destCx == null) return false;
+  const sr = () => Math.random();
+  const spawn = findMerchantSpawnOffCoast(originPort, sr);
+  if (!spawn) {
+    notify('Could not place escort — try another contract.');
+    return false;
+  }
+  const allPorts = collectAllTradingPorts();
+  const st = ['cutter', 'sloop', 'brigantine'][Math.floor(sr() * 3)];
+  const sailPick = sr() > 0.5 ? 'silk' : 'basic';
+  const cannonPart = tradeShipCannonForType(st);
+  const syncId = allocateNpcSyncId();
+  const npc = {
+    syncId,
+    x: spawn.nx, z: spawn.nz,
+    rotation: 0,
+    speed: 0,
+    health: 52 + sr() * 40,
+    type: st,
+    tradeCannon: cannonPart,
+    name: '',
+    flagColor: FACTION_TRADE_COLORS[townFaction(originPort) % 4],
+    flagPosition: pickRandomAiFlagPosition(sr()),
+    isTradeShip: true,
+    isTransportEscort: true,
+    missionOwnerPlayerId: G.myId,
+    aggro: false,
+    homeDockX: originPort.dockX,
+    homeDockZ: originPort.dockZ,
+    homeCx: originPort.cx,
+    homeCz: originPort.cz,
+    sailPick,
+    sailBonus: sailPick === 'silk' ? 0.3 : 0,
+    wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
+    riggingHealth: 100
+  };
+  assignTradeRouteFromHome(npc, originPort, allPorts.length ? allPorts : [originPort], sr);
+  npc.destCx = q.destCx;
+  npc.destCz = q.destCz;
+  npc.tradeDestX = q.destDockX;
+  npc.tradeDestZ = q.destDockZ;
+  npc.cargoGood = q.item;
+  npc.cargoUnits = q.count;
+  syncTradeShipName(npc, originPort);
+  npc.rotation = Math.atan2(npc.tradeDestX - npc.x, npc.tradeDestZ - npc.z);
+  npc.tradePhase = 'to_dest';
+  npc.tradeTimer = 0;
+  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.3 + sr() * 0.12);
+  npc.tradeCruiseSpeed = npc.targetCruise;
+  const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true });
+  npc.crewData = merchantCrewFromRng(sr);
+  buildCrewMeshes(mesh, npc.crewData, npc.type);
+  npc.mesh = mesh;
+  scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  G.npcs.push(npc);
+  q.escortSyncId = syncId;
+  spawnTransportRaiders(npc, q, sr);
+  return true;
 }
 
 function processProvisionsDrain(dt) {
@@ -8454,7 +8601,69 @@ function npcFireBroadsideAtPlayer(npc) {
 
     kickShipBroadsideCannon(npc.mesh, side, g);
     spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
-    fireCannonball(wx, wz, dirX, dirZ, wy, 'npc', null, 'ball');
+    fireCannonball(wx, wz, dirX, dirZ, wy, 'npc', null, 'ball', npc.syncId);
+    if (npc.mesh) npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
+    if (ws?.readyState === 1 && isMultiplayerHost()) {
+      ws.send(JSON.stringify({ type: 'npc_cannon', x: wx, z: wz, dx: dirX, dz: dirZ, y: wy }));
+      ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
+    }
+  }
+}
+function npcFireBroadsideAtNpc(npc, tgt) {
+  if (!tgt || tgt.sinking) return;
+  const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
+  const cc = Math.max(1, npcSpec.cannonSlots || 2);
+  const perSide = Math.ceil(cc / 2);
+  const { vx: tvx, vz: tvz } = npcShipVelocityXZ(tgt);
+  let px = tgt.x, pz = tgt.z;
+  for (let iter = 0; iter < 4; iter++) {
+    const dx = px - npc.x, dz = pz - npc.z;
+    const dist = Math.hypot(dx, dz);
+    const t = dist / CANNONBALL_XY_SPEED;
+    px = tgt.x + tvx * t;
+    pz = tgt.z + tvz * t;
+  }
+  const dx = px - npc.x, dz = pz - npc.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist > 76 || dist < 2) return;
+  const toTargetAngle = Math.atan2(dx, dz);
+  const relAngle = toTargetAngle - npc.rotation;
+  const normRel = ((relAngle % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+  const absRel = Math.abs(normRel);
+  let side = absRel > Math.PI / 10 && absRel < Math.PI * 0.82 ? Math.sign(normRel) : 0;
+  if (side === 0 && absRel >= Math.PI * 0.82) side = Math.sign(normRel) || 1;
+  if (side === 0) return;
+  const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
+  const npcShipY = npc.mesh?.position.y || worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
+  const fallbackY = cannonWorldMuzzleYFromShip(npcShipY, npcSpec);
+  const aimDx0 = px - npc.x, aimDz0 = pz - npc.z;
+  const aimLen0 = Math.hypot(aimDx0, aimDz0) || 1;
+  const baseDirX = aimDx0 / aimLen0;
+  const baseDirZ = aimDz0 / aimLen0;
+  for (let g = 0; g < perSide; g++) {
+    if (Math.random() < 0.14) continue;
+    const jitter = (Math.random() - 0.5) * 0.62;
+    const wide = (Math.random() - 0.5) * (0.38 + Math.random() * 0.35);
+    const ang = jitter + wide;
+    const c = Math.cos(ang), s = Math.sin(ang);
+    let dirX = baseDirX * c - baseDirZ * s;
+    let dirZ = baseDirX * s + baseDirZ * c;
+    const nL = Math.hypot(dirX, dirZ) || 1;
+    dirX /= nL;
+    dirZ /= nL;
+    const localZ = (g - Math.floor(perSide / 2) + 0.5) * 1.45;
+    const localX = side * (npcSpec.hullW * 0.55 + 0.6);
+    const wx0 = npc.x + localX * cosR + localZ * sinR;
+    const wz0 = npc.z - localX * sinR + localZ * cosR;
+    let wx = wx0, wy = fallbackY, wz = wz0;
+    if (npc.mesh && getCannonMuzzleWorldPos(npc.mesh, side, g, _muzzleW)) {
+      wx = _muzzleW.x;
+      wy = _muzzleW.y;
+      wz = _muzzleW.z;
+    }
+    kickShipBroadsideCannon(npc.mesh, side, g);
+    spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ);
+    fireCannonball(wx, wz, dirX, dirZ, wy, 'npc', null, 'ball', npc.syncId);
     if (npc.mesh) npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
     if (ws?.readyState === 1 && isMultiplayerHost()) {
       ws.send(JSON.stringify({ type: 'npc_cannon', x: wx, z: wz, dx: dirX, dz: dirZ, y: wy }));
@@ -8556,7 +8765,9 @@ function updateNPCs(dt) {
             npc.rotation = Math.atan2(dx, dz);
           }
           if (npc.tradeTimer <= 0) {
-            if (phase === 'dock_dest') {
+            if (phase === 'dock_dest' && npc.isTransportEscort) {
+              completeTransportEscortMission(npc);
+            } else if (phase === 'dock_dest') {
               initTownStockpiles();
               const dq = npc.cargoUnits != null ? npc.cargoUnits : TRADE_DELIVERY_UNITS;
               const dk = portStockKey({ cx: npc.destCx, cz: npc.destCz, hasTown: true });
@@ -8589,13 +8800,60 @@ function updateNPCs(dt) {
         updateNpcEscapeMode(npc, dt);
         }
       } else {
+      const escortVictim = npc.transportRaiderTargetSyncId != null
+        ? G.npcs.find(n => n.syncId === npc.transportRaiderTargetSyncId && !n.sinking && (n.health == null || n.health > 0))
+        : null;
+      if (npc.transportRaiderTargetSyncId != null && !escortVictim) {
+        npc.transportRaiderTargetSyncId = null;
+        npc.aggro = false;
+      }
       if (!npc.fireCooldown) npc.fireCooldown = 0;
       npc.fireCooldown -= dt;
       if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
 
       const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
-      const sharp = npc.aggro && distToPlayer < 110 ? 2.55 : 2.05;
+      let sharp = npc.aggro && distToPlayer < 110 ? 2.55 : 2.05;
 
+      if (escortVictim) {
+        const distToTgt = Math.hypot(escortVictim.x - npc.x, escortVictim.z - npc.z);
+        sharp = distToTgt < 110 ? 2.55 : 2.05;
+        if (!npc.escapeMode) {
+          if (distToTgt < 125) {
+            const dx = escortVictim.x - npc.x, dz = escortVictim.z - npc.z;
+            const toT = Math.atan2(dx, dz);
+            const starboardBroadside = toT + Math.PI / 2;
+            const portBroadside = toT - Math.PI / 2;
+            const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+            const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+            const targetAngle = dStar < dPort ? starboardBroadside : portBroadside;
+            let diff = targetAngle - npc.rotation;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            npc.rotation += diff * 1.42 * dt;
+            if (npc.fireCooldown <= 0 && distToTgt < 74) {
+              npcFireBroadsideAtNpc(npc, escortVictim);
+              npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+            }
+          } else {
+            npc.wanderTimer -= dt;
+            if (npc.wanderTimer <= 0) {
+              npc.wanderAngle = Math.atan2(escortVictim.x - npc.x, escortVictim.z - npc.z) + (Math.random() - 0.5) * 0.5;
+              npc.wanderTimer = 2 + Math.random() * 4;
+            }
+            let diff = npc.wanderAngle - npc.rotation;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            npc.rotation += diff * 0.55 * dt;
+          }
+        }
+        steerNpcClearanceAhead(npc, dt, sharp);
+        if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+        const maxFr = npcMaxForwardSpeed(npc);
+        const tgtSpdR = distToTgt < 115 ? maxFr * 0.52 : maxFr * 0.3;
+        accelerateNpcToward(npc, dt, tgtSpdR);
+        applyNpcMoveWithIslandEscape(npc, dt, sharp);
+        updateNpcEscapeMode(npc, dt);
+      } else {
       if (!npc.escapeMode) {
         if (npc.aggro && distToPlayer < 110) {
           const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
@@ -8635,6 +8893,7 @@ function updateNPCs(dt) {
       accelerateNpcToward(npc, dt, tgtSpd);
       applyNpcMoveWithIslandEscape(npc, dt, sharp);
       updateNpcEscapeMode(npc, dt);
+      }
       }
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
@@ -8696,7 +8955,7 @@ function disposeCannonballGeometries(root) {
   root.traverse(ch => { if (ch.geometry) ch.geometry.dispose(); });
 }
 
-function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType) {
+function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType, firedByNpcSyncId) {
   const isPellet = ammoType === 'grape_pellet';
   const at = isPellet ? 'grape' : (ammoType === 'grape' || ammoType === 'chain' ? ammoType : 'ball');
   const sea = worldSeaSurfaceY(x, z);
@@ -8715,7 +8974,8 @@ function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType) {
     owner: owner || 'player',
     sourcePlayerId: sourcePlayerId != null ? sourcePlayerId : null,
     ammoType: at,
-    isPellet: !!isPellet
+    isPellet: !!isPellet,
+    firedByNpcSyncId: firedByNpcSyncId != null ? firedByNpcSyncId : null
   };
   G.cannonballs.push(b);
   markSeaBattleActivity();
@@ -12759,9 +13019,13 @@ function formatDebugTownQuestBlockHtml(p) {
       const tag = q.accepted ? 'Active delivery' : 'Posted at piers';
       lines.push(`${tag}: ${q.desc}`);
     }
+    if (q.type === 'transport') {
+      if (q.destCx === cx && q.destCz === cz) lines.push(`${q.accepted ? 'Active escort' : 'Contract'} destination: ${q.desc}`);
+      if (q.originCx === cx && q.originCz === cz && !q.accepted) lines.push(`Escort contract posted (sail cargo away): ${q.desc}`);
+    }
   }
   if (!lines.length) {
-    lines.push('No posted deliveries target this harbor right now. Open Quests while docked at any port to roll three contracts (includes hunts and explore jobs).');
+    lines.push('No posted deliveries target this harbor right now. Open Quests while docked at any port to roll three contracts (hunts, deliveries, and escorts).');
   }
   return lines.map(l => `<div class="debug-roster-inv">${escapeDebugHtml(l)}</div>`).join('');
 }
@@ -12987,11 +13251,6 @@ function updateCargoManifestAndBadges() {
   const badge = document.getElementById('cargo-hold-badge');
   if (meta) meta.textContent = `${G.player.shipName || 'Ship'} · ${spec.name}`;
   if (badge) badge.textContent = `${filledBerths} / ${nHold}`;
-  const ps = document.getElementById('cargo-purse-strip');
-  if (ps) {
-    const g = getInvCount('gold');
-    ps.innerHTML = `<span class="cargo-purse-label">Captain's purse</span><span class="cargo-purse-gold"><span class="cargo-purse-icon">Au</span>${g} gold</span>`;
-  }
 }
 function refreshCargoPanelIfOpen() {
   if (G.mode !== 'playing') return;
@@ -13020,9 +13279,8 @@ function slotSumById(id) {
   (G.player.cargoSlots || []).forEach(s => { if (s && s.id === id) t += s.count; });
   return t;
 }
-/** True if `addAmount` more of `type` can fit in cargo berths (gold uses purse only — always true). */
+/** True if `addAmount` more of `type` can fit in cargo berths. */
 function canFitStackInCargoSlots(type, addAmount) {
-  if (type === 'gold') return true;
   ensureCargoSlots();
   const add = Math.max(0, Math.floor(Number(addAmount) || 0));
   if (add <= 0) return true;
@@ -13071,7 +13329,8 @@ function normalizeInventoryMergeStacks() {
     next.push({ id, name: m.name, icon: m.icon, count });
   }
   if (goldTotal > 0) {
-    next.push({ id: 'gold', name: 'Gold Coins', icon: 'Au', count: goldTotal });
+    const gm = getItemMeta('gold');
+    next.push({ id: 'gold', name: gm.name, icon: gm.icon, count: goldTotal });
   }
   G.player.inventory = next;
 }
@@ -13081,28 +13340,11 @@ function syncInventoryFromCargoSlots() {
   slots.forEach(s => {
     if (s && s.count > 0) fromSlots.set(s.id, (fromSlots.get(s.id) || 0) + s.count);
   });
-  let goldTotal = 0;
-  for (const row of G.player.inventory || []) {
-    if (!row || row.count <= 0) continue;
-    const c = Math.max(0, Math.floor(Number(row.count) || 0));
-    if (row.id === 'gold') goldTotal += c;
-  }
-  const slotGold = fromSlots.get('gold') || 0;
-  if (slotGold > 0) {
-    goldTotal += slotGold;
-    fromSlots.delete('gold');
-    for (let i = 0; i < slots.length; i++) {
-      if (slots[i] && slots[i].id === 'gold') slots[i] = null;
-    }
-  }
   const next = [];
   for (const [id, count] of fromSlots) {
     if (count <= 0) continue;
     const m = getItemMeta(id);
     next.push({ id, name: m.name, icon: m.icon, count });
-  }
-  if (goldTotal > 0) {
-    next.push({ id: 'gold', name: 'Gold Coins', icon: 'Au', count: goldTotal });
   }
   G.player.inventory = next;
 }
@@ -13133,7 +13375,6 @@ function ensureCargoSlots() {
     G.player.inventory.forEach(it => { if (it.count > 0) map.set(it.id, (map.get(it.id) || 0) + it.count); });
     let idx = 0;
     for (const id of map.keys()) {
-      if (id === 'gold') continue;
       const total = map.get(id);
       const m = getItemMeta(id);
       let left = total;
@@ -13205,44 +13446,17 @@ function reconcileSlotsAfterPickup(itemId) {
   normalizeInventoryMergeStacks();
 }
 
-function consolidateGoldPurse() {
-  let total = 0;
-  const inv = G.player.inventory;
-  if (!Array.isArray(inv)) return;
-  for (let i = inv.length - 1; i >= 0; i--) {
-    const row = inv[i];
-    if (row && row.id === 'gold' && row.count > 0) {
-      total += Math.max(0, Math.floor(Number(row.count) || 0));
-      inv.splice(i, 1);
-    }
-  }
-  const slots = G.player.cargoSlots;
-  if (Array.isArray(slots)) {
-    for (let i = 0; i < slots.length; i++) {
-      const s = slots[i];
-      if (s && s.id === 'gold') {
-        total += Math.max(0, Math.floor(Number(s.count) || 0));
-        slots[i] = null;
-      }
-    }
-  }
-  if (total > 0) {
-    inv.push({ id: 'gold', name: 'Gold Coins', icon: 'Au', count: total });
-  }
-}
 function reconcileSlotsWithInventory() {
   ensureCargoSlots();
-  consolidateGoldPurse();
   const want = new Map();
   G.player.inventory.forEach(row => {
     if (!row || row.count <= 0) return;
     const c = Math.max(0, Math.floor(Number(row.count) || 0));
     want.set(row.id, (want.get(row.id) || 0) + c);
   });
-  want.delete('gold');
   const slotBackedIds = new Set();
   (G.player.cargoSlots || []).forEach(s => {
-    if (s && s.id && s.id !== 'gold' && s.count > 0) slotBackedIds.add(s.id);
+    if (s && s.id && s.count > 0) slotBackedIds.add(s.id);
   });
   // Slots must follow the ledger: if an item was fully sold/consumed (no row in `want`), clear
   // those stacks instead of re-adding the slot total (which undid the last sale / cannon shot).
@@ -13266,7 +13480,6 @@ function reconcileSlotsWithInventory() {
     }
   }
   for (const [id, target] of want) {
-    if (id === 'gold') continue;
     let cur = slotSumById(id);
     if (cur >= target) continue;
     let need = target - cur;
@@ -13336,9 +13549,20 @@ function jettisonCargoSlot(slotIdx) {
   ensureCargoSlots();
   const s = G.player.cargoSlots[slotIdx];
   if (!s || s.count <= 0) return;
-  const qty = s.count;
   const id = s.id;
-  G.player.cargoSlots[slotIdx] = null;
+  let qty = s.count;
+  if (s.count > 1) {
+    const raw = window.prompt(`Jettison how many ${getItemMeta(id).name}? (1–${s.count})`, String(s.count));
+    if (raw == null) return;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1 || n > s.count) {
+      notify('Invalid amount.');
+      return;
+    }
+    qty = n;
+  }
+  s.count -= qty;
+  if (s.count <= 0) G.player.cargoSlots[slotIdx] = null;
   syncInventoryFromCargoSlots();
   const ast = 19;
   const jx = G.player.x - Math.sin(G.player.rotation) * ast;
@@ -13461,7 +13685,7 @@ function renderCargoSlotsOverlay() {
   for (let i = 0; i < n; i++) {
     const it = G.player.cargoSlots[i];
     if (it && it.count > 0) {
-      html += `<div class="cargo-slot-box filled" data-slot="${i}" data-empty="0"><span class="cargo-slot-icon">${it.icon}</span><span class="cargo-slot-amt">×${it.count}</span><span class="cargo-slot-name">${it.name}</span></div>`;
+      html += `<div class="cargo-slot-box filled" data-slot="${i}" data-empty="0"><span class="cargo-slot-icon-wrap">${itemIconSvg(it.id)}</span><span class="cargo-slot-icon">${it.icon || ''}</span><span class="cargo-slot-amt">×${it.count}</span><span class="cargo-slot-name">${it.name}</span></div>`;
     } else {
       html += `<div class="cargo-slot-box empty" data-slot="${i}" data-empty="1"><span class="cargo-slot-vacant">Vacant</span></div>`;
     }
@@ -14149,7 +14373,7 @@ function updateMissionsPanel() {
       let details = '';
       if (q.type === 'hunt') details = `Target: ${q.target}`;
       else if (q.type === 'delivery') details = `Deliver ${q.count} ${getItemMeta(q.item).name} to ${q.destTown || 'destination port'}`;
-      else if (q.type === 'explore') details = `Location: (${q.x}, ${q.z})`;
+      else if (q.type === 'transport') details = `Defend the merchant to ${q.destTown || 'destination'} (${q.count}× ${getItemMeta(q.item).name})`;
       d.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${q.desc}</div>
         <div style="color:#8a7a60;font-size:10px;margin-top:4px;">${details}</div>
         <div style="color:#d4a848;font-size:11px;margin-top:4px;">Reward: ${q.reward} gold</div>`;
@@ -14297,7 +14521,7 @@ function portSellPriceForId(itemId) {
 const QUEST_TEMPLATES = [
   { type: 'hunt', desc: 'Sink {target}', reward: 40, target: '' },
   { type: 'delivery', desc: 'Deliver {count} {item} to {dest}', reward: 30, item: '', count: 0 },
-  { type: 'explore', desc: 'Explore coordinates ({x}, {z})', reward: 25, x: 0, z: 0 }
+  { type: 'transport', desc: 'Escort merchant cargo to {dest}', reward: 45, item: '', count: 0 }
 ];
 
 const RECRUIT_NAMES = ['Barnacle Bob','Jolly Roger','Peg-Leg Pete','Scarlet Jane','Ironjaw Mike','Black Beth','Cutlass Charlie','Storm Sarah'];
@@ -14378,7 +14602,6 @@ function dockAtPort() {
 function prepareTradeInventoryView() {
   if (G.mode !== 'playing') return;
   ensureCargoSlots();
-  consolidateGoldPurse();
   syncInventoryFromCargoSlots();
 }
 function leavePort() {
@@ -14421,11 +14644,22 @@ function showPortTab(tab) {
       const canBuy = wh != null && wh >= 1 && gHave >= g.buy;
       const d = document.createElement('div');
       d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
-      d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${g.name}</div><div style="color:#8a7a60;font-size:10px;">Have: ${haveCt} · ${stockLine}</div></div>
-        <div style="display:flex;gap:6px;">
-          <button type="button" class="port-buy-good-btn" data-good="${g.id}" data-price="${g.buy}" ${canBuy ? '' : 'disabled'} style="background:${canBuy ? 'rgba(40,80,40,0.4)' : 'rgba(40,50,40,0.25)'};border:1px solid ${canBuy ? 'rgba(80,160,80,0.4)' : 'rgba(80,100,80,0.2)'};color:${canBuy ? '#88cc88' : '#666'};padding:4px 10px;border-radius:4px;cursor:${canBuy ? 'pointer' : 'not-allowed'};font-size:11px;font-family:Georgia,serif;">Buy ${g.buy}g</button>
-          <button onclick="portSell('${g.id}',${g.sell})" style="background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Sell ${g.sell}g</button>
-        </div>`;
+      const left = document.createElement('div');
+      left.style.cssText = 'display:flex;align-items:center;min-width:0;flex:1;';
+      const ic = document.createElement('div');
+      ic.className = 'port-trade-icon';
+      ic.innerHTML = itemIconSvg(g.id);
+      const txt = document.createElement('div');
+      txt.style.minWidth = '0';
+      txt.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${g.name}</div><div style="color:#8a7a60;font-size:10px;">Have: ${haveCt} · ${stockLine}</div>`;
+      left.appendChild(ic);
+      left.appendChild(txt);
+      const btns = document.createElement('div');
+      btns.style.cssText = 'display:flex;gap:6px;flex-shrink:0;';
+      btns.innerHTML = `<button type="button" class="port-buy-good-btn" data-good="${g.id}" data-price="${g.buy}" ${canBuy ? '' : 'disabled'} style="background:${canBuy ? 'rgba(40,80,40,0.4)' : 'rgba(40,50,40,0.25)'};border:1px solid ${canBuy ? 'rgba(80,160,80,0.4)' : 'rgba(80,100,80,0.2)'};color:${canBuy ? '#88cc88' : '#666'};padding:4px 10px;border-radius:4px;cursor:${canBuy ? 'pointer' : 'not-allowed'};font-size:11px;font-family:Georgia,serif;">Buy ${g.buy}g</button>
+        <button type="button" onclick="portSell('${g.id}',${g.sell})" style="background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Sell ${g.sell}g</button>`;
+      d.appendChild(left);
+      d.appendChild(btns);
       content.appendChild(d);
     });
     content.querySelectorAll('.port-buy-good-btn').forEach(btn => {
@@ -14448,7 +14682,15 @@ function showPortTab(tab) {
         const d = document.createElement('div');
         d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.45);border:1px solid rgba(140,100,40,0.18);border-radius:6px;margin-bottom:6px;';
         const left = document.createElement('div');
-        left.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${im.name || it.id}</div><div style="color:#8a7a60;font-size:10px;">Have: ${it.count}</div>`;
+        left.style.cssText = 'display:flex;align-items:center;min-width:0;flex:1;';
+        const ic2 = document.createElement('div');
+        ic2.className = 'port-trade-icon';
+        ic2.innerHTML = itemIconSvg(it.id);
+        const txt2 = document.createElement('div');
+        txt2.style.minWidth = '0';
+        txt2.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${im.name || it.id}</div><div style="color:#8a7a60;font-size:10px;">Have: ${it.count}</div>`;
+        left.appendChild(ic2);
+        left.appendChild(txt2);
         const b = document.createElement('button');
         b.type = 'button';
         b.style.cssText = 'background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
@@ -14531,6 +14773,7 @@ function showPortTab(tab) {
       d.style.cssText = `padding:10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;${q.accepted ? 'border-color:rgba(80,160,80,0.4);' : ''}`;
       d.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${q.desc}</div>
         ${q.type === 'delivery' && q.destTown ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Deliver to: <strong style="color:#c4a878;">${q.destTown}</strong> (gold harbor marker on chart)</div>` : ''}
+        ${q.type === 'transport' && q.destTown ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Escort to: <strong style="color:#c8a8e8;">${q.destTown}</strong> — violet rings on chart (merchant + port)</div>` : ''}
         <div style="display:flex;justify-content:space-between;margin-top:6px;">
           <span style="color:#d4a848;font-size:11px;">Reward: ${q.reward} gold</span>
           ${q.accepted ? '<span style="color:#88cc88;font-size:11px;">ACTIVE</span>' : `<button onclick="acceptQuest(${qi})" style="background:rgba(60,50,20,0.5);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:3px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Accept</button>`}
@@ -14845,9 +15088,8 @@ function generateQuests() {
       const dest = pool.length ? pool[Math.floor(rnd() * pool.length)] : null;
       const inm = getItemMeta(item);
       if (!dest) {
-        const x = Math.floor((rnd() * 2 - 1) * lim * 0.55);
-        const z = Math.floor((rnd() * 2 - 1) * lim * 0.55);
-        G.quests.push({ type: 'explore', desc: `Explore coordinates (${x}, ${z})`, reward: 20 + Math.floor(rnd() * 20), x, z, accepted: false });
+        const target = npcNames[Math.floor(rnd() * npcNames.length)];
+        G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 25), target, accepted: false });
       } else {
         G.quests.push({
           type: 'delivery',
@@ -14861,9 +15103,33 @@ function generateQuests() {
         });
       }
     } else {
-      const x = Math.floor((rnd() * 2 - 1) * lim * 0.55);
-      const z = Math.floor((rnd() * 2 - 1) * lim * 0.55);
-      G.quests.push({ type: 'explore', desc: `Explore coordinates (${x}, ${z})`, reward: 20 + Math.floor(rnd() * 20), x, z, accepted: false });
+      const tItems = ['wood', 'cloth', 'iron', 'rum', 'food'];
+      const item = tItems[Math.floor(rnd() * tItems.length)];
+      const count = 2 + Math.floor(rnd() * 6);
+      const inm = getItemMeta(item);
+      if (pool.length < 2) {
+        const target = npcNames[Math.floor(rnd() * npcNames.length)];
+        G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 25), target, accepted: false });
+      } else {
+        let dest = pool[Math.floor(rnd() * pool.length)];
+        let origin = pool[Math.floor(rnd() * pool.length)];
+        let guard = 0;
+        while (dest && origin && dest.cx === origin.cx && dest.cz === origin.cz && guard++ < 16) {
+          dest = pool[Math.floor(rnd() * pool.length)];
+          origin = pool[Math.floor(rnd() * pool.length)];
+        }
+        G.quests.push({
+          type: 'transport',
+          desc: `Escort the merchant carrying ${count}× ${inm.name} to ${dest.townName}`,
+          reward: 38 + count * 4 + Math.floor(rnd() * 28),
+          item, count,
+          destCx: dest.cx, destCz: dest.cz,
+          destTown: dest.townName,
+          destDockX: dest.dockX, destDockZ: dest.dockZ,
+          originCx: origin.cx, originCz: origin.cz,
+          accepted: false
+        });
+      }
     }
   }
   if (ws?.readyState === 1 && isMultiplayerHost()) broadcastWorldQuestsToServer();
@@ -14879,6 +15145,18 @@ window.acceptQuest = function(idx) {
     }
     q.accepted = true;
     notify(`Contract cargo loaded — deliver to ${q.destTown || 'the port marked on your chart'}.`);
+  } else if (q.type === 'transport') {
+    if (!G.nearDock || G.nearDock.cx == null) {
+      notify('Dock at a port to accept this escort contract.');
+      return;
+    }
+    if (q.destCx === G.nearDock.cx && q.destCz === G.nearDock.cz) {
+      notify('This run ends here — take a different contract.');
+      return;
+    }
+    if (!spawnTransportEscortForQuest(q, G.nearDock)) return;
+    q.accepted = true;
+    notify(`Merchant is underway — defend them to ${q.destTown || 'the destination'}. Raiders incoming!`);
   } else {
     q.accepted = true;
     notify('Quest accepted!');
@@ -15384,6 +15662,14 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
       ctx.beginPath(); ctx.arc(sx, sy, merchant ? 11 : 12, 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
     }
+    if (mapChartLayers.missions && n.isTransportEscort && n.missionOwnerPlayerId != null && G.myId != null && Number(n.missionOwnerPlayerId) === Number(G.myId)) {
+      ctx.strokeStyle = 'rgba(186, 130, 255, 0.95)';
+      ctx.lineWidth = 2.65; ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.arc(sx, sy, 13.5, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(220, 190, 255, 0.92)'; ctx.font = '9px Georgia,serif'; ctx.textAlign = 'center';
+      ctx.fillText('ESCORT', sx, sy - 14);
+    }
   });
 
   G.otherPlayers.forEach(p => {
@@ -15409,14 +15695,14 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
 
   if (mapChartLayers.missions) {
   G.quests.filter(q => q.accepted).forEach(q => {
-    if (q.type === 'explore') {
-      const qx = wx2sx(q.x), qy = wz2sy(q.z);
+    if (q.type === 'transport' && q.destDockX != null && q.destDockZ != null) {
+      const qx = wx2sx(q.destDockX), qy = wz2sy(q.destDockZ);
       if (qx > -10 && qx < w + 10 && qy > -10 && qy < h + 10) {
-        ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
-        ctx.beginPath(); ctx.arc(qx, qy, 8, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = 'rgba(186, 130, 255, 0.88)'; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.arc(qx, qy, 9, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = '#ffdd44'; ctx.font = '10px Georgia'; ctx.textAlign = 'center';
-        ctx.fillText('QUEST', qx, qy - 12);
+        ctx.fillStyle = 'rgba(220, 190, 255, 0.9)'; ctx.font = '9px Georgia,serif'; ctx.textAlign = 'center';
+        ctx.fillText('Deliver', qx, qy - 11);
       }
     }
     if (q.type === 'hunt') {
@@ -15734,6 +16020,11 @@ function drawMinimap() {
       const mc = n.flagColor || (n.isTradeShip ? '#3a9a90' : '#cc3333');
       ctx.fillStyle = mc; ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 0.6; ctx.stroke();
+      if (mapChartLayers.missions && n.isTransportEscort && n.missionOwnerPlayerId != null && G.myId != null && Number(n.missionOwnerPlayerId) === Number(G.myId)) {
+        ctx.strokeStyle = 'rgba(186, 130, 255, 0.95)'; ctx.lineWidth = 1.65; ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.arc(sx, sy, 7, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
   });
   G.otherPlayers.forEach(p => {
@@ -15791,14 +16082,14 @@ function drawMinimap() {
       });
     }
     (G.quests || []).filter(q => q.accepted).forEach(q => {
-      if (q.type === 'explore' && q.x != null && q.z != null) {
-        const qx = wx2sx(q.x), qy = wz2sy(q.z);
+      if (q.type === 'transport' && q.destDockX != null && q.destDockZ != null) {
+        const qx = wx2sx(q.destDockX), qy = wz2sy(q.destDockZ);
         if (qx > 0 && qx < w && qy > 0 && qy < h) {
-          ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.7; ctx.setLineDash([3, 3]);
-          ctx.beginPath(); ctx.arc(qx, qy, 7, 0, Math.PI * 2); ctx.stroke();
+          ctx.strokeStyle = 'rgba(186, 130, 255, 0.9)'; ctx.lineWidth = 1.65; ctx.setLineDash([4, 3]);
+          ctx.beginPath(); ctx.arc(qx, qy, 6.5, 0, Math.PI * 2); ctx.stroke();
           ctx.setLineDash([]);
-          ctx.fillStyle = '#ffdd44'; ctx.font = (w >= 220 ? '7px' : '6px') + ' Georgia'; ctx.textAlign = 'center';
-          ctx.fillText('Quest', qx, qy - 9);
+          ctx.fillStyle = 'rgba(220, 190, 255, 0.95)'; ctx.font = (w >= 220 ? '7px' : '6px') + ' Georgia'; ctx.textAlign = 'center';
+          ctx.fillText('Port', qx, qy - 8);
         }
       }
       if (q.type === 'hunt') {
@@ -16030,7 +16321,6 @@ function update(dt) {
   if (G.captainWalk.active && !canUseCaptainWalk()) setCaptainWalkActive(false);
   updateSeaDebrisBattleClock(dt);
   tickTownEconomy(dt);
-  checkExploreQuestProgress();
   const wHere = getWindAt(G.player.x, G.player.z);
   G.wind.angle = wHere.angle;
   G.wind.speed = wHere.speed;
@@ -16522,6 +16812,43 @@ function update(dt) {
         } else {
           spawnDamageChunks(b.x, b.y, b.z);
         }
+        b.life = 0;
+      });
+    }
+
+    if (mpHost && b.owner === 'npc' && b.firedByNpcSyncId != null && b.life > 0) {
+      const pxx = b.x - b.dx * dt, pzz = b.z - b.dz * dt;
+      G.npcs.forEach(victim => {
+        if (b.life <= 0) return;
+        if (victim.syncId === b.firedByNpcSyncId) return;
+        if (victim.sinking || victim.health <= 0) return;
+        const at2 = b.ammoType || 'ball';
+        const isPellet2 = !!b.isPellet;
+        let hitRv = cannonballStrikeHitRadius(victim.type, at2, isPellet2);
+        if (at2 === 'ball' && !isPellet2) hitRv *= 1.15;
+        const vyaw = victim.rotation != null ? victim.rotation : 0;
+        const distV = distSegmentToShipHullOBB(pxx, pzz, b.x, b.z, victim.x, victim.z, vyaw, victim.type);
+        if (distV >= hitRv || b.y < SEA_LEVEL - 4) return;
+        let dh2 = 15;
+        if (isPellet2) dh2 = 4 + Math.floor(Math.random() * 3);
+        else if (at2 === 'grape') dh2 = 10;
+        else if (at2 === 'chain') dh2 = 8;
+        victim.health -= dh2;
+        victim.aggro = true;
+        victim.underFireTimer = 4.6;
+        let pop2 = `−${dh2} hull`;
+        if (at2 === 'chain') pop2 = `Chain · −${dh2} hull · sails`;
+        else if (at2 === 'grape') pop2 = isPellet2 ? `Grape · −${dh2}` : `Grapeshot · −${dh2}`;
+        else if (at2 === 'ball') pop2 = `Round shot · −${dh2}`;
+        showCombatPopupWorld(victim.x, victim.z, `${victim.name}: ${pop2} (${Math.max(0, Math.round(victim.health))} HP)`, { cssClass: at2 === 'chain' ? 'chain' : at2 === 'grape' ? 'grape' : '', life: 2.1 });
+        spawnDamageChunks(b.x, b.y, b.z);
+        spawnSeaDebrisFromHit(b.x, b.z, at2 === 'chain' ? 8 : at2 === 'grape' ? (isPellet2 ? 2 : 5) : 4);
+        if (at2 === 'chain') {
+          const rigB = victim.riggingHealth != null ? victim.riggingHealth : getNpcRiggingHealth(victim);
+          victim.riggingHealth = Math.max(0, rigB - (30 + Math.random() * 14));
+          if (victim.mesh) applyRiggingVisualToGroup(victim.mesh, victim.riggingHealth);
+        }
+        if (victim.health <= 0) runNpcSinkOutcome(victim, null);
         b.life = 0;
       });
     }
@@ -18019,7 +18346,6 @@ function saveProgress() {
   try {
     ensurePlayerStats();
     normalizeInventoryMergeStacks();
-    consolidateGoldPurse();
     ensureCargoSlots();
     if (G.mode === 'playing') reconcileSlotsWithInventory();
     else syncInventoryFromCargoSlots();
@@ -18094,7 +18420,7 @@ function loadProgress() {
     }
     G.player.cargoSlots = Array.isArray(data.cargoSlots) ? data.cargoSlots : [];
     if (data.crew) G.player.crew = data.crew;
-    if (data.quests) G.quests = data.quests;
+    if (data.quests) G.quests = data.quests.filter(q => q && q.type !== 'explore');
     if (data.completedMissionLog && Array.isArray(data.completedMissionLog)) G.completedMissionLog = data.completedMissionLog.slice(0, 40);
     else G.completedMissionLog = [];
     if (data.storyQuest && typeof data.storyQuest === 'object') {
@@ -18291,7 +18617,6 @@ document.getElementById('start-btn').onclick = () => {
     { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z); }
     rebuildPlayerShip();
     normalizeInventoryMergeStacks();
-    consolidateGoldPurse();
     ensureCargoSlots();
     reconcileSlotsWithInventory();
     saveProgress();

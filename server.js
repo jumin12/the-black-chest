@@ -1690,7 +1690,7 @@ function sanitizeWorldQuests(arr) {
   for (let i = 0; i < arr.length && out.length < 12; i++) {
     const q = arr[i];
     if (!q || typeof q !== 'object') continue;
-    const type = q.type === 'hunt' || q.type === 'explore' || q.type === 'delivery' ? q.type : null;
+    const type = q.type === 'hunt' || q.type === 'delivery' || q.type === 'transport' ? q.type : null;
     if (!type) continue;
     const row = {
       type,
@@ -1699,10 +1699,6 @@ function sanitizeWorldQuests(arr) {
       accepted: !!q.accepted
     };
     if (type === 'hunt') row.target = String(q.target != null ? q.target : '').slice(0, 48);
-    if (type === 'explore') {
-      row.x = q.x != null ? Math.round(Number(q.x)) : 0;
-      row.z = q.z != null ? Math.round(Number(q.z)) : 0;
-    }
     if (type === 'delivery') {
       row.item = String(q.item != null ? q.item : 'wood').slice(0, 24);
       row.count = Math.max(1, Math.min(99, Math.floor(Number(q.count) || 1)));
@@ -1711,6 +1707,18 @@ function sanitizeWorldQuests(arr) {
       row.destTown = q.destTown != null ? String(q.destTown).slice(0, 48) : '';
       row.destDockX = q.destDockX != null ? Number(q.destDockX) : null;
       row.destDockZ = q.destDockZ != null ? Number(q.destDockZ) : null;
+    }
+    if (type === 'transport') {
+      row.item = String(q.item != null ? q.item : 'wood').slice(0, 24);
+      row.count = Math.max(1, Math.min(99, Math.floor(Number(q.count) || 1)));
+      row.destCx = q.destCx != null ? Math.floor(Number(q.destCx)) : null;
+      row.destCz = q.destCz != null ? Math.floor(Number(q.destCz)) : null;
+      row.destTown = q.destTown != null ? String(q.destTown).slice(0, 48) : '';
+      row.destDockX = q.destDockX != null ? Number(q.destDockX) : null;
+      row.destDockZ = q.destDockZ != null ? Number(q.destDockZ) : null;
+      row.originCx = q.originCx != null ? Math.floor(Number(q.originCx)) : null;
+      row.originCz = q.originCz != null ? Math.floor(Number(q.originCz)) : null;
+      row.escortSyncId = q.escortSyncId != null ? Math.floor(Number(q.escortSyncId)) : null;
     }
     out.push(row);
   }
