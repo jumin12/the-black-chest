@@ -1644,6 +1644,8 @@ const ISLAND_HEIGHT_FALLOFF_POW = 1.48;
 /** Land vs sea — same thresholds for collision, dock tests, and terrain mesh (no phantom “coastal” shelves). */
 const PROC_LAND_HT_MIN = 0.22;
 const PROC_LAND_WARP_MAX = 0.865;
+/** Procedural terrain: strip far “open sea” quads only — keeps coastal underwater slopes without a chunk-sized square tint. */
+const PROC_TERRAIN_STRIP_SEA_WARP = PROC_LAND_WARP_MAX + 0.11;
 /** Stricter than `dryLandSampleForMeta`: keeps ships / dock tips in water while the shore mesh can still dip slightly. */
 const PROC_COLLIDE_LAND_EXTRA_HT = 0.11;
 const PROC_COLLIDE_WARP_SHRINK = 0.034;
@@ -2132,6 +2134,8 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
   npc.sinking = true;
   npc.sinkTimer = 0;
   npc.speed = 0;
+  npc.health = -1;
+  npc.collisionHullActive = false;
   const swN = 2 + Math.floor(Math.random() * 3);
   broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(npc.x, npc.z, swN, null, false));
   const lootTypes = goldLoot > 0
@@ -2768,16 +2772,16 @@ function itemIconSvg(id, uid) {
   const grape = `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><radialGradient id="ico-g1-${u}" cx="34%" cy="30%" r="68%"><stop offset="0%" stop-color="#d8d8d8"/><stop offset="0.45" stop-color="#5a5a5a"/><stop offset="1" stop-color="#0e0e0e"/></radialGradient><radialGradient id="ico-g2-${u}" cx="40%" cy="26%" r="58%"><stop offset="0%" stop-color="#ececec"/><stop offset="0.5" stop-color="#6e6e6e"/><stop offset="1" stop-color="#141414"/></radialGradient></defs><circle cx="7.8" cy="24.8" r="1.05" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="10.8" cy="25.1" r="1.15" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="13.9" cy="25.4" r="1.2" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="17.1" cy="25.2" r="1.22" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="20.2" cy="25.0" r="1.15" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="23.1" cy="24.6" r="1.05" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="25.4" cy="23.8" r="0.95" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.2"/><circle cx="9.0" cy="22.4" r="1.12" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="11.8" cy="22.1" r="1.25" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="15.0" cy="21.9" r="1.32" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="18.2" cy="22.0" r="1.28" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="21.2" cy="22.2" r="1.18" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="24.0" cy="21.6" r="1.02" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="8.2" cy="20.0" r="1.08" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="11.0" cy="19.6" r="1.22" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="14.0" cy="19.4" r="1.35" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="17.2" cy="19.5" r="1.32" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="20.4" cy="19.7" r="1.22" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="23.2" cy="19.2" r="1.08" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="10.2" cy="17.1" r="1.18" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="13.2" cy="16.8" r="1.32" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="16.4" cy="16.6" r="1.38" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="19.6" cy="16.9" r="1.28" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="22.4" cy="17.2" r="1.12" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="12.0" cy="14.8" r="1.22" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="15.0" cy="14.4" r="1.35" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="18.2" cy="14.6" r="1.3" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="21.0" cy="15.0" r="1.15" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="13.6" cy="12.6" r="1.18" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="16.2" cy="11.9" r="1.42" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="18.8" cy="12.5" r="1.22" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="15.0" cy="10.4" r="1.12" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.22"/><circle cx="17.0" cy="9.6" r="1.05" fill="url(#ico-g1-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.2"/><circle cx="19.4" cy="10.2" r="0.98" fill="url(#ico-g2-${u})" stroke="#000" stroke-opacity="0.38" stroke-width="0.2"/></svg>`;
   const chain = `<svg viewBox="0 0 32 32" aria-hidden="true" stroke-linecap="round" stroke-linejoin="round"><defs><radialGradient id="ico-ch-b-${u}" cx="32%" cy="30%" r="68%"><stop offset="0%" stop-color="#9a9a98"/><stop offset="0.5" stop-color="#4a4844"/><stop offset="1" stop-color="#141210"/></radialGradient><linearGradient id="ico-ch-l-${u}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#8a8580"/><stop offset="1" stop-color="#3a3632"/></linearGradient></defs><circle cx="10.2" cy="16" r="5" fill="url(#ico-ch-b-${u})" stroke="#0a0908" stroke-width="0.75"/><circle cx="21.8" cy="16" r="5" fill="url(#ico-ch-b-${u})" stroke="#0a0908" stroke-width="0.75"/><ellipse cx="10.2" cy="14.2" rx="2.1" ry="1.2" fill="#d8d4c8" opacity="0.35"/><ellipse cx="21.8" cy="14.2" rx="2.1" ry="1.2" fill="#d8d4c8" opacity="0.35"/><path d="M15.2 12.2c0.9-1.1 2.6-1.15 3.6-0.2" fill="none" stroke="url(#ico-ch-l-${u})" stroke-width="1.5"/><ellipse cx="16.2" cy="12.5" rx="1.35" ry="0.85" fill="none" stroke="#5a5448" stroke-width="0.95" transform="rotate(-12 16.2 12.5)"/><path d="M15.8 15.2c1.15 0.85 2.5 0.85 3.65 0" fill="none" stroke="url(#ico-ch-l-${u})" stroke-width="1.45"/><ellipse cx="16.6" cy="15.35" rx="1.4" ry="0.82" fill="none" stroke="#5a5448" stroke-width="0.9"/><path d="M15.4 18.1c0.95 1.05 2.55 1.1 3.55 0.15" fill="none" stroke="url(#ico-ch-l-${u})" stroke-width="1.5"/><ellipse cx="16.15" cy="18.35" rx="1.35" ry="0.85" fill="none" stroke="#5a5448" stroke-width="0.95" transform="rotate(10 16.15 18.35)"/></svg>`;
   const g = {
-    food: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-food-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c4a070"/><stop offset="0.55" stop-color="#8b5a2b"/><stop offset="1" stop-color="#5a3a18"/></linearGradient><linearGradient id="ico-food2-${u}" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#6d4c2b"/><stop offset="1" stop-color="#a07848"/></linearGradient></defs><path fill="url(#ico-food-${u})" stroke="#3d2810" stroke-width="0.45" d="M7 11c0-2 2.2-3.2 9-3.2S25 9 25 11v11c0 1.6-1.8 2.8-8 2.8S7 23.6 7 22V11z"/><ellipse cx="16" cy="11" rx="8.2" ry="2.35" fill="url(#ico-food2-${u})" stroke="#3d2810" stroke-width="0.35"/><path fill="none" stroke="#d8c8a8" stroke-opacity="0.35" stroke-width="0.5" d="M9.5 15.5h13M10 18.5h11"/></svg>`,
+    food: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-food-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#d4b078"/><stop offset="0.5" stop-color="#9a6838"/><stop offset="1" stop-color="#4a3010"/></linearGradient><radialGradient id="ico-food-a-${u}" cx="35%" cy="35%" r="55%"><stop offset="0%" stop-color="#e89868"/><stop offset="0.7" stop-color="#a04028"/><stop offset="1" stop-color="#501808"/></radialGradient><radialGradient id="ico-food-b-${u}" cx="40%" cy="38%" r="50%"><stop offset="0%" stop-color="#c8e090"/><stop offset="1" stop-color="#4a7830"/></radialGradient></defs><path fill="url(#ico-food-${u})" stroke="#2a1a08" stroke-width="0.42" d="M6.2 10.5c0-1.8 2.4-3 9.8-3s9.8 1.2 9.8 3v10.8c0 1.5-2.2 2.6-9.8 2.6S6.2 22.8 6.2 21.3V10.5z"/><ellipse cx="16" cy="10.5" rx="9" ry="2.5" fill="#6a4830" stroke="#2a1a08" stroke-width="0.35"/><circle cx="11.5" cy="17" r="3.2" fill="url(#ico-food-a-${u})" stroke="#301008" stroke-width="0.28"/><circle cx="19.8" cy="16.2" r="2.85" fill="url(#ico-food-b-${u})" stroke="#203018" stroke-width="0.26"/><ellipse cx="15.2" cy="20.5" rx="2.4" ry="2.1" fill="#b88850" stroke="#402010" stroke-width="0.24" transform="rotate(-8 15.2 20.5)"/><path fill="none" stroke="#f0e0c8" stroke-opacity="0.25" stroke-width="0.4" d="M8 14h16"/></svg>`,
     cannonballs: ball,
     grapeshot: grape,
     chainshot: chain,
-    wood: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-wd-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c49060"/><stop offset="1" stop-color="#6a4020"/></linearGradient></defs><path fill="url(#ico-wd-${u})" stroke="#4a2810" stroke-width="0.4" d="M5.5 20.5 L9 9h14l3.5 11.5z"/><path fill="none" stroke="#5a3018" stroke-opacity="0.55" stroke-width="0.45" d="M8 13h16M7.5 16.5h17M7 20h18"/><path fill="#7a5030" opacity="0.5" d="M10 9.5 L11 22h10l1-12.5z"/></svg>`,
-    cloth: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-cl-${u}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f2e8d8"/><stop offset="0.5" stop-color="#d8c8b0"/><stop offset="1" stop-color="#a89078"/></linearGradient></defs><path fill="url(#ico-cl-${u})" stroke="#8a7860" stroke-width="0.45" d="M6 12l10-4 10 4v12l-10 4-10-4V12z"/><path fill="none" stroke="#b8a890" stroke-width="0.5" d="M8.5 13.5 L16 10l7.5 3.5"/><path fill="none" stroke="#9a8870" stroke-width="0.4" d="M9 17.5h14M10 21h12"/></svg>`,
-    iron: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-fe-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#b8c4d0"/><stop offset="0.45" stop-color="#6a7a88"/><stop offset="1" stop-color="#3a4550"/></linearGradient></defs><path fill="url(#ico-fe-${u})" stroke="#2a3438" stroke-width="0.5" d="M8 14.5c0-1.2 1.4-2 8-2s8 0.8 8 2v6c0 1.3-1.5 2.2-8 2.2S8 21.8 8 20.5v-6z"/><ellipse cx="16" cy="14.5" rx="7.8" ry="1.9" fill="#9aacb8" stroke="#2a3438" stroke-width="0.35"/><path fill="#fff" opacity="0.22" d="M10 15.5h12v1.5H10z"/></svg>`,
-    gold: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><radialGradient id="ico-au1-${u}" cx="35%" cy="30%" r="65%"><stop offset="0%" stop-color="#fff8d0"/><stop offset="0.35" stop-color="#e8d060"/><stop offset="1" stop-color="#a87810"/></radialGradient><radialGradient id="ico-au2-${u}" cx="40%" cy="35%" r="60%"><stop offset="0%" stop-color="#f5e8a0"/><stop offset="1" stop-color="#c9a227"/></radialGradient></defs><ellipse cx="16" cy="20" rx="9.5" ry="4.2" fill="url(#ico-au2-${u})" stroke="#6a5010" stroke-width="0.4"/><ellipse cx="16" cy="16.5" rx="8.8" ry="3.8" fill="url(#ico-au1-${u})" stroke="#5a4810" stroke-width="0.35"/><ellipse cx="16" cy="13.2" rx="7.5" ry="3.2" fill="#f8f0c0" stroke="#8a7020" stroke-width="0.3"/><ellipse cx="13.5" cy="12.5" rx="2.2" ry="1.1" fill="#fff" opacity="0.35"/></svg>`,
-    rum: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-rum-${u}" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#4a2010"/><stop offset="0.5" stop-color="#7a4030"/><stop offset="100%" stop-color="#3a1808"/></linearGradient><radialGradient id="ico-rum2-${u}" cx="40%" cy="35%" r="70%"><stop offset="0%" stop-color="#a06040"/><stop offset="1" stop-color="#2a1008"/></radialGradient></defs><path fill="url(#ico-rum-${u})" stroke="#2a1008" stroke-width="0.45" d="M11 8.5h10c0.8 0 1.5 0.7 1.5 1.5v1.2c0 1.6-0.8 2.4-0.8 2.4L20 25c0 1.1-0.9 2-2 2h-4c-1.1 0-2-0.9-2-2l-1.7-11.4s-0.8-0.8-0.8-2.4V10c0-0.8 0.7-1.5 1.5-1.5z"/><ellipse cx="16" cy="9.8" rx="5" ry="1.35" fill="#5a2820" stroke="#2a1008" stroke-width="0.35"/><rect x="12.5" y="13" width="7" height="10" rx="0.8" fill="url(#ico-rum2-${u})" opacity="0.92"/><path fill="none" stroke="#c8a070" stroke-opacity="0.35" stroke-width="0.5" d="M12.2 15.5h7.6M12 19h8"/></svg>`,
-    gunpowder: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-gp-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#6a6460"/><stop offset="1" stop-color="#2a2824"/></linearGradient></defs><rect x="7.5" y="11" width="17" height="14" rx="2.2" fill="url(#ico-gp-${u})" stroke="#1a1814" stroke-width="0.55"/><rect x="9" y="8.5" width="14" height="4" rx="1" fill="#3a3632" stroke="#1a1814" stroke-width="0.4"/><path fill="#e87820" stroke="#5a3010" stroke-width="0.35" d="M16 14.5l1.1 2.6h2.7l-2.2 1.7 0.85 2.7L16 19.8l-2.35 1.7 0.85-2.7-2.2-1.7h2.7z"/><path fill="none" stroke="#f5a040" stroke-width="0.45" opacity="0.85" d="M11.5 17h9"/></svg>`
+    wood: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-wd1-${u}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#d8a878"/><stop offset="1" stop-color="#784018"/></linearGradient><linearGradient id="ico-wd2-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c89868"/><stop offset="1" stop-color="#5a3018"/></linearGradient><linearGradient id="ico-wd3-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#e0b888"/><stop offset="1" stop-color="#8a5830"/></linearGradient></defs><path fill="url(#ico-wd1-${u})" stroke="#3a2010" stroke-width="0.4" d="M4.5 19.5 L10.5 7.5 L23 9.2 L17 21.2z"/><path fill="none" stroke="#4a2818" stroke-width="0.35" opacity="0.7" d="M8 11l11 1.6M6.5 15.5l12 1.8"/><path fill="url(#ico-wd2-${u})" stroke="#3a2010" stroke-width="0.38" d="M7 22.5 L14.5 12 L26.5 14 L19 24.5z"/><path fill="none" stroke="#3a2010" stroke-width="0.32" opacity="0.65" d="M11.5 14.5l10 1.5M9.5 18.5l11 1.6"/><path fill="url(#ico-wd3-${u})" stroke="#3a2010" stroke-width="0.36" d="M2.5 25.5 L12 16.5 L24 18.5 L14.5 27.5z"/><path fill="none" stroke="#502818" stroke-width="0.3" d="M7.5 20.5l12 1.3"/></svg>`,
+    cloth: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-cl-${u}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#fffaf0"/><stop offset="0.45" stop-color="#e8dcc8"/><stop offset="1" stop-color="#a89078"/></linearGradient><linearGradient id="ico-cl2-${u}" x1="0" y1="1" x2="1" y2="0"><stop offset="0%" stop-color="#c8b8a0"/><stop offset="1" stop-color="#e8d8c8"/></linearGradient></defs><path fill="url(#ico-cl-${u})" stroke="#7a6858" stroke-width="0.42" d="M5.5 11.5C9 8.5 12.5 7 16 8.2c3.5-1.2 7 0.3 10.5 3.3v11c-3.2 2.8-6.8 4.2-10.5 3-3.7 1.2-7.3-0.2-10.5-3v-11z"/><path fill="url(#ico-cl2-${u})" opacity="0.55" d="M8 14c2.5-1.8 5-2.5 8-1.8 3-0.7 5.5 0 8 1.8v2.2c-2.5 1.5-5 2-8 1.3-3 0.7-5.5 0.2-8-1.3V14z"/><path fill="none" stroke="#988878" stroke-width="0.38" d="M7.5 18.5 Q16 15.5 24.5 18.5"/><path fill="none" stroke="#8a7a68" stroke-width="0.32" d="M9 22 Q16 19.5 23 22"/><ellipse cx="22" cy="12" rx="1.1" ry="0.85" fill="none" stroke="#6a5848" stroke-width="0.35"/></svg>`,
+    iron: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-fe-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#d0dce8"/><stop offset="0.4" stop-color="#7a8a98"/><stop offset="1" stop-color="#283038"/></linearGradient><linearGradient id="ico-fe2-${u}" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#586878"/><stop offset="1" stop-color="#98a8b8"/></linearGradient></defs><path fill="url(#ico-fe-${u})" stroke="#1a2028" stroke-width="0.48" d="M7 19.5 L11 12h10l4 7.5 L21 24H11L7 19.5z"/><path fill="url(#ico-fe2-${u})" stroke="#1a2028" stroke-width="0.35" d="M9.5 14.5 L12.5 9.5h7l3 5h-13z"/><path fill="#fff" opacity="0.28" d="M10.5 16.5 L14 14h4l3.5 2.5v1.5L14 21l-3.5-3.5v-1z"/><path fill="none" stroke="#1a2028" stroke-width="0.28" opacity="0.5" d="M11 20.5h10"/></svg>`,
+    gold: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><radialGradient id="ico-au1-${u}" cx="32%" cy="28%" r="62%"><stop offset="0%" stop-color="#fffef8"/><stop offset="0.25" stop-color="#f8e890"/><stop offset="0.7" stop-color="#d4a820"/><stop offset="1" stop-color="#886010"/></radialGradient><radialGradient id="ico-au2-${u}" cx="45%" cy="40%" r="55%"><stop offset="0%" stop-color="#fff8c8"/><stop offset="1" stop-color="#b88820"/></radialGradient><linearGradient id="ico-au3-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f0d060"/><stop offset="1" stop-color="#886018"/></linearGradient></defs><ellipse cx="16" cy="22.5" rx="10" ry="4.5" fill="url(#ico-au3-${u})" stroke="#5a4010" stroke-width="0.38"/><ellipse cx="14.5" cy="19.5" rx="8.8" ry="3.9" fill="url(#ico-au2-${u})" stroke="#6a4810" stroke-width="0.34"/><ellipse cx="16" cy="16.2" rx="7.8" ry="3.4" fill="url(#ico-au1-${u})" stroke="#5a4010" stroke-width="0.32"/><ellipse cx="17.2" cy="13.5" rx="6.2" ry="2.7" fill="#fff8d0" stroke="#8a7020" stroke-width="0.28"/><path fill="none" stroke="#fff" stroke-opacity="0.45" stroke-width="0.55" d="M11 14.5 Q16 12 21 14.5"/><circle cx="12.5" cy="12.8" r="1.35" fill="#fff" opacity="0.4"/></svg>`,
+    rum: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-rum-${u}" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#3a1808"/><stop offset="0.5" stop-color="#8a4830"/><stop offset="100%" stop-color="#280808"/></linearGradient><radialGradient id="ico-rum2-${u}" cx="45%" cy="40%" r="65%"><stop offset="0%" stop-color="#c07050"/><stop offset="1" stop-color="#180808"/></radialGradient><linearGradient id="ico-rum3-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#5a2820"/><stop offset="1" stop-color="#1a0806"/></linearGradient></defs><path fill="url(#ico-rum3-${u})" stroke="#140404" stroke-width="0.4" d="M7.5 14 L9.5 9h5.5l0.6-1.8h4.8l0.6 1.8H26l2 5v11c0 1-0.8 1.8-1.8 1.8H9.3c-1 0-1.8-0.8-1.8-1.8V14z"/><rect x="11" y="10.5" width="10" height="2.2" rx="0.4" fill="#4a2018" stroke="#140404" stroke-width="0.3"/><rect x="9.5" y="15.2" width="13" height="9.5" rx="1" fill="url(#ico-rum2-${u})" stroke="#140404" stroke-width="0.35"/><path fill="url(#ico-rum-${u})" stroke="#140404" stroke-width="0.35" d="M8.2 22.5 L10 18h12l1.8 4.5"/><ellipse cx="23.5" cy="17" rx="3.2" ry="4.5" fill="url(#ico-rum-${u})" stroke="#140404" stroke-width="0.38" transform="rotate(-6 23.5 17)"/><ellipse cx="23.5" cy="16.3" rx="2.5" ry="1.1" fill="#5a2820"/><path fill="none" stroke="#d8a878" stroke-opacity="0.35" stroke-width="0.45" d="M11 18h10M10.5 21h11"/></svg>`,
+    gunpowder: `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="ico-gp-${u}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#7a7468"/><stop offset="0.5" stop-color="#4a4540"/><stop offset="1" stop-color="#1c1a18"/></linearGradient><linearGradient id="ico-gp2-${u}" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#5a5048"/><stop offset="1" stop-color="#2a2824"/></linearGradient></defs><rect x="6.5" y="12" width="19" height="13.5" rx="2.4" fill="url(#ico-gp-${u})" stroke="#0e0c0a" stroke-width="0.52"/><rect x="8" y="8.5" width="16" height="4.5" rx="1.1" fill="url(#ico-gp2-${u})" stroke="#0e0c0a" stroke-width="0.4"/><rect x="7" y="14.5" width="18" height="2.8" rx="0.4" fill="#3a3632" opacity="0.85"/><path fill="none" stroke="#c8a030" stroke-width="0.65" d="M9 11.5h14"/><path fill="#f0a028" stroke="#704010" stroke-width="0.32" d="M16 16.2l1 2.4h2.4l-2 1.5 0.75 2.4L16 20.8l-2.15 1.7 0.75-2.4-2-1.5h2.4z"/><path fill="#e03020" stroke="#501010" stroke-width="0.28" d="M16 23.2 L17.8 27h-3.6L16 23.2z"/><circle cx="16" cy="25.1" r="0.55" fill="#301010"/></svg>`
   };
   return g[id] || `<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="8" y="8" width="16" height="16" rx="2" fill="#6a6058"/></svg>`;
 }
@@ -5099,6 +5103,7 @@ function generateIsland(cx, cz) {
   const positions = terrainGeo.attributes.position;
   const colors = new Float32Array(positions.count * 3);
   const waterMask = new Uint8Array(positions.count);
+  const stripFarSea = new Uint8Array(positions.count);
 
   const islandNoise = new SimplexNoise(cx * 777 + cz * 333);
   for (let i = 0; i < positions.count; i++) {
@@ -5130,6 +5135,7 @@ function generateIsland(cx, cz) {
     }
     positions.setY(i, y);
     waterMask[i] = !isLand ? 1 : 0;
+    stripFarSea[i] = !isLand && warpedDist > PROC_TERRAIN_STRIP_SEA_WARP ? 1 : 0;
 
     const landPeakForColor = isLand ? Math.max(PROC_LAND_HT_MIN, rawLandHt) : 0;
     const nh = landPeakForColor / islandHeight;
@@ -5165,6 +5171,7 @@ function generateIsland(cx, cz) {
   }
   positions.needsUpdate = true;
   terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  stripIslandTerrainOpenSeaTriangles(terrainGeo, stripFarSea);
   terrainGeo.computeVertexNormals();
 
   const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
@@ -7434,6 +7441,7 @@ function completeTransportEscortMission(npc) {
   saveProgress();
   broadcastWorldQuestsToServer();
   npc.health = -999;
+  npc.collisionHullActive = false;
   if (npc.mesh) {
     try { scene.remove(npc.mesh); disposeObject3DSubtree(npc.mesh); } catch (e) {}
     npc.mesh = null;
@@ -7518,6 +7526,7 @@ function spawnTransportEscortForQuest(q, originPort) {
     sailPick,
     sailBonus: sailPick === 'silk' ? 0.3 : 0,
     wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
+    escortRaidersTimer: 0, escortPlayerTimer: 0,
     riggingHealth: 100
   };
   assignTradeRouteFromHome(npc, originPort, allPorts.length ? allPorts : [originPort], sr);
@@ -8204,7 +8213,7 @@ function pushPlayerOutOfShipOverlaps() {
     pPos.z = G.player.z;
     let moved = false;
     G.npcs.forEach(npc => {
-      if (npc.sinking || npc.health <= 0) return;
+      if (npc.sinking || npc.health <= 0 || npc.collisionHullActive === false) return;
       const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, npc.type, margin);
       if (!sep) return;
       {
@@ -8293,7 +8302,7 @@ function separateHostNpcsFromLocalPlayer() {
   const px = G.player.x, pz = G.player.z;
   const margin = 0.92;
   G.npcs.forEach(npc => {
-    if (npc.sinking || npc.health <= 0) return;
+    if (npc.sinking || npc.health <= 0 || npc.collisionHullActive === false) return;
     const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, npc.type, px, pz, G.player.rotation, G.player.shipType, margin);
     if (!sep) return;
     const push = sep.depth * 0.6;
@@ -8305,7 +8314,7 @@ function separateHostNpcsFromLocalPlayer() {
 }
 
 function relaxHostNpcNpcOverlaps() {
-  const list = G.npcs.filter(n => !n.sinking && n.health > 0);
+  const list = G.npcs.filter(n => !n.sinking && n.health > 0 && n.collisionHullActive !== false);
   const margin = 0.9;
   for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < list.length; i++) {
@@ -8698,38 +8707,106 @@ function updateNPCs(dt) {
         npc.fireCooldown -= dt;
         if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
         const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
-        if (npc.aggro && (G.playerSinking || G.player.health <= 0 || distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) {
-          npc.aggro = false;
-        }
-        const fighting = npc.aggro && distToPlayer < 135 && !G.playerSinking && G.player.health > 0;
-        if (fighting) {
-          const sharp = distToPlayer < 110 ? 2.55 : 2.05;
-          if (!npc.escapeMode) {
-            const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
-            const toPlayer = Math.atan2(dx, dz);
-            const starboardBroadside = toPlayer + Math.PI / 2;
-            const portBroadside = toPlayer - Math.PI / 2;
-            const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-            const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-            const targetAngle = dStar < dPort ? starboardBroadside : portBroadside;
-            let diff = targetAngle - npc.rotation;
-            while (diff > Math.PI) diff -= Math.PI * 2;
-            while (diff < -Math.PI) diff += Math.PI * 2;
-            const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.35;
-            npc.rotation += diff * turnMul * dt;
-            if (npc.fireCooldown <= 0 && distToPlayer < 72) {
-              npcFireBroadsideAtPlayer(npc);
-              npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
-            }
+        let fighting = false;
+        if (npc.isTransportEscort) {
+          if ((npc.escortRaidersTimer || 0) > 0) npc.escortRaidersTimer -= dt;
+          if ((npc.escortPlayerTimer || 0) > 0) npc.escortPlayerTimer -= dt;
+          let escortTgt = null, distEsc = 1e9;
+          for (let ni = 0; ni < G.npcs.length; ni++) {
+            const n = G.npcs[ni];
+            if (!n || n === npc || n.sinking || !(n.health > 0)) continue;
+            if (Number(n.transportRaiderTargetSyncId) !== Number(npc.syncId)) continue;
+            const d = Math.hypot(n.x - npc.x, n.z - npc.z);
+            if (d < distEsc) { distEsc = d; escortTgt = n; }
           }
-          steerNpcClearanceAhead(npc, dt, sharp);
-          if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
-          const maxF = npcMaxForwardSpeed(npc);
-          const tgtSpd = npc.underFireTimer > 0 && distToPlayer < 92 ? maxF * 0.06 : maxF * 0.16;
-          accelerateNpcToward(npc, dt, tgtSpd);
-          applyNpcMoveWithIslandEscape(npc, dt, sharp);
-          updateNpcEscapeMode(npc, dt);
+          if (escortTgt && (npc.escortRaidersTimer || 0) > 0) {
+            fighting = true;
+            const sharp = distEsc < 110 ? 2.55 : 2.05;
+            if (!npc.escapeMode) {
+              const dx = escortTgt.x - npc.x, dz = escortTgt.z - npc.z;
+              const toT = Math.atan2(dx, dz);
+              const starboardBroadside = toT + Math.PI / 2;
+              const portBroadside = toT - Math.PI / 2;
+              const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+              const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+              const targetAngle = dStar < dPort ? starboardBroadside : portBroadside;
+              let diff = targetAngle - npc.rotation;
+              while (diff > Math.PI) diff -= Math.PI * 2;
+              while (diff < -Math.PI) diff += Math.PI * 2;
+              npc.rotation += diff * 1.85 * dt;
+              if (npc.fireCooldown <= 0 && distEsc < 72) {
+                npcFireBroadsideAtNpc(npc, escortTgt);
+                npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+              }
+            }
+            steerNpcClearanceAhead(npc, dt, sharp);
+            if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+            const maxF = npcMaxForwardSpeed(npc);
+            accelerateNpcToward(npc, dt, distEsc < 92 ? maxF * 0.07 : maxF * 0.16);
+            applyNpcMoveWithIslandEscape(npc, dt, sharp);
+            updateNpcEscapeMode(npc, dt);
+          } else if ((npc.escortPlayerTimer || 0) > 0 && distToPlayer < 135 && !G.playerSinking && G.player.health > 0) {
+            fighting = true;
+            const sharp = distToPlayer < 110 ? 2.55 : 2.05;
+            if (!npc.escapeMode) {
+              const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
+              const toPlayer = Math.atan2(dx, dz);
+              const starboardBroadside = toPlayer + Math.PI / 2;
+              const portBroadside = toPlayer - Math.PI / 2;
+              const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+              const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+              const targetAngle = dStar < dPort ? starboardBroadside : portBroadside;
+              let diff = targetAngle - npc.rotation;
+              while (diff > Math.PI) diff -= Math.PI * 2;
+              while (diff < -Math.PI) diff += Math.PI * 2;
+              npc.rotation += diff * 1.65 * dt;
+              if (npc.fireCooldown <= 0 && distToPlayer < 72) {
+                npcFireBroadsideAtPlayer(npc);
+                npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+              }
+            }
+            steerNpcClearanceAhead(npc, dt, sharp);
+            if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+            const maxF = npcMaxForwardSpeed(npc);
+            accelerateNpcToward(npc, dt, distToPlayer < 92 ? maxF * 0.08 : maxF * 0.16);
+            applyNpcMoveWithIslandEscape(npc, dt, sharp);
+            updateNpcEscapeMode(npc, dt);
+          }
         } else {
+          if (npc.aggro && (G.playerSinking || G.player.health <= 0 || distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) {
+            npc.aggro = false;
+          }
+          fighting = npc.aggro && distToPlayer < 135 && !G.playerSinking && G.player.health > 0;
+          if (fighting) {
+            const sharp = distToPlayer < 110 ? 2.55 : 2.05;
+            if (!npc.escapeMode) {
+              const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
+              const toPlayer = Math.atan2(dx, dz);
+              const starboardBroadside = toPlayer + Math.PI / 2;
+              const portBroadside = toPlayer - Math.PI / 2;
+              const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+              const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+              const targetAngle = dStar < dPort ? starboardBroadside : portBroadside;
+              let diff = targetAngle - npc.rotation;
+              while (diff > Math.PI) diff -= Math.PI * 2;
+              while (diff < -Math.PI) diff += Math.PI * 2;
+              const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.35;
+              npc.rotation += diff * turnMul * dt;
+              if (npc.fireCooldown <= 0 && distToPlayer < 72) {
+                npcFireBroadsideAtPlayer(npc);
+                npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+              }
+            }
+            steerNpcClearanceAhead(npc, dt, sharp);
+            if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+            const maxF = npcMaxForwardSpeed(npc);
+            const tgtSpd = npc.underFireTimer > 0 && distToPlayer < 92 ? maxF * 0.06 : maxF * 0.16;
+            accelerateNpcToward(npc, dt, tgtSpd);
+            applyNpcMoveWithIslandEscape(npc, dt, sharp);
+            updateNpcEscapeMode(npc, dt);
+          }
+        }
+        if (!fighting) {
         if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
         const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.35;
         const phase = npc.tradePhase || 'to_dest';
@@ -16861,7 +16938,7 @@ function update(dt) {
       const px = b.x - b.dx * dt, pz = b.z - b.dz * dt;
       G.npcs.forEach(npc => {
         if (b.life <= 0) return;
-        if (npc.sinking || npc.health <= 0) return;
+        if (npc.sinking || npc.health <= 0 || npc.collisionHullActive === false) return;
         const at = b.ammoType || 'ball';
         const isPellet = !!b.isPellet;
         let hitR = cannonballStrikeHitRadius(npc.type, at, isPellet);
@@ -16875,8 +16952,18 @@ function update(dt) {
           else if (at === 'grape') dh = 10;
           else if (at === 'chain') dh = 8;
           npc.health -= dh;
-          npc.aggro = true;
-          npc.underFireTimer = 4.6;
+          if (npc.isTransportEscort) {
+            if (b.owner === 'player' || b.owner === 'other_player') npc.escortPlayerTimer = Math.max(npc.escortPlayerTimer || 0, 9);
+            else if (b.firedByNpcSyncId != null) {
+              const shooter = G.npcs.find(n => n.syncId === b.firedByNpcSyncId);
+              if (shooter && Number(shooter.transportRaiderTargetSyncId) === Number(npc.syncId)) {
+                npc.escortRaidersTimer = Math.max(npc.escortRaidersTimer || 0, 11);
+              }
+            }
+          } else {
+            npc.aggro = true;
+            npc.underFireTimer = 4.6;
+          }
           let popMsg = `−${dh} hull`;
           if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
           else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
@@ -16907,7 +16994,7 @@ function update(dt) {
       G.npcs.forEach(victim => {
         if (b.life <= 0) return;
         if (victim.syncId === b.firedByNpcSyncId) return;
-        if (victim.sinking || victim.health <= 0) return;
+        if (victim.sinking || victim.health <= 0 || victim.collisionHullActive === false) return;
         const at2 = b.ammoType || 'ball';
         const isPellet2 = !!b.isPellet;
         let hitRv = cannonballStrikeHitRadius(victim.type, at2, isPellet2);
@@ -16920,8 +17007,15 @@ function update(dt) {
         else if (at2 === 'grape') dh2 = 10;
         else if (at2 === 'chain') dh2 = 8;
         victim.health -= dh2;
-        victim.aggro = true;
-        victim.underFireTimer = 4.6;
+        if (victim.isTransportEscort) {
+          const shooter = G.npcs.find(n => n.syncId === b.firedByNpcSyncId);
+          if (shooter && Number(shooter.transportRaiderTargetSyncId) === Number(victim.syncId)) {
+            victim.escortRaidersTimer = Math.max(victim.escortRaidersTimer || 0, 11);
+          }
+        } else {
+          victim.aggro = true;
+          victim.underFireTimer = 4.6;
+        }
         let pop2 = `−${dh2} hull`;
         if (at2 === 'chain') pop2 = `Chain · −${dh2} hull · sails`;
         else if (at2 === 'grape') pop2 = isPellet2 ? `Grape · −${dh2}` : `Grapeshot · −${dh2}`;
