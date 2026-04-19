@@ -3884,6 +3884,41 @@ function ensurePlayerInOpenOcean() {
   clampPlayerIntoWorldBounds();
 }
 
+/**
+ * Saved positions from a server/custom heightmap usually have no procedural island nearby after we
+ * fall back to seed-only terrain — `ensurePlayerInOpenOcean` then leaves the ship in empty sea
+ * (all blue). Snap near a deterministic island when we know the chart was dropped.
+ */
+function relocatePlayerNearProceduralArchipelago() {
+  if (G.mode !== 'playing' || G.customMap) return;
+  const st = G.player.shipType || 'sloop';
+  const yaw = G.player.rotation || 0;
+  for (let cx = -WORLD_CHUNK_HALF; cx <= WORLD_CHUNK_HALF; cx++) {
+    for (let cz = -WORLD_CHUNK_HALF; cz <= WORLD_CHUNK_HALF; cz++) {
+      const meta = getProceduralIslandMeta(cx, cz);
+      if (!meta) continue;
+      let ang;
+      if (meta.hasTown && meta.dockAngle != null && Number.isFinite(meta.dockAngle)) {
+        ang = meta.dockAngle + Math.PI;
+      } else {
+        ang = Math.atan2(-meta.worldX, -meta.worldZ);
+      }
+      const pad = Math.max(40, meta.radius * 0.58);
+      const nx = meta.worldX + Math.sin(ang) * pad;
+      const nz = meta.worldZ + Math.cos(ang) * pad;
+      const ncx = Math.floor(nx / CHUNK_SIZE), ncz = Math.floor(nz / CHUNK_SIZE);
+      if (!isChunkInWorld(ncx, ncz)) continue;
+      if (!shipFootprintOverlapsLand(nx, nz, yaw, st)) {
+        G.player.x = nx;
+        G.player.z = nz;
+        clampPlayerIntoWorldBounds();
+        return;
+      }
+    }
+  }
+  ensurePlayerInOpenOcean();
+}
+
 /** After server spawn or NPC init, slide the captain away from overlapping hulls. */
 function nudgePlayerSpawnClearOfShips() {
   if (G.mode !== 'playing') return;
@@ -8918,9 +8953,19 @@ function queueFetchServerWorldMap(rev) {
     .then(r => {
       if (r.status === 404) {
         knownServerWorldMapRev = 0;
-        if (appliedServerWorldMapRev > 0 && G.mode === 'playing') {
-          appliedServerWorldMapRev = 0;
-          applySharedWorldFromServerSeed(G.worldSeed >>> 0, { skipServerMapReapply: true });
+        if (G.mode === 'playing') {
+          if (appliedServerWorldMapRev > 0) {
+            appliedServerWorldMapRev = 0;
+            applySharedWorldFromServerSeed(G.worldSeed >>> 0, {
+              skipServerMapReapply: true,
+              relocateAfterDroppingServerChart: true
+            });
+          } else if (!G.customMap) {
+            relocatePlayerNearProceduralArchipelago();
+            updateChunks();
+            nudgePlayerSpawnClearOfShips();
+            flushGameViewRender();
+          }
         }
         return Promise.reject(new Error('map missing'));
       }
@@ -8935,7 +8980,14 @@ function queueFetchServerWorldMap(rev) {
         notify('Live world chart from server.');
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      if (runId !== serverWorldMapFetchToken) return;
+      if (G.mode !== 'playing' || G.customMap || knownServerWorldMapRev <= 0) return;
+      relocatePlayerNearProceduralArchipelago();
+      updateChunks();
+      nudgePlayerSpawnClearOfShips();
+      flushGameViewRender();
+    });
 }
 
 function tryApplyServerWorldMapIfNeeded() {
@@ -9206,6 +9258,9 @@ function applySharedWorldFromServerSeed(s, opts) {
   G.townFlagMeshes = [];
   destroyAmbientWildlife();
   ensurePlayerInOpenOcean();
+  if (opts.relocateAfterDroppingServerChart && G.mode === 'playing') {
+    relocatePlayerNearProceduralArchipelago();
+  }
   updateChunks();
   spawnNPCs();
   nudgePlayerSpawnClearOfShips();
@@ -9356,7 +9411,8 @@ function connectToServer() {
         if (msg.seed != null) {
           const s = Number(msg.seed) >>> 0;
           if (G.mode === 'playing' && (G.playWorldAwaitingNetInit || (G.worldSeed >>> 0) !== s)) {
-            applySharedWorldFromServerSeed(s);
+            const hadServerOrCustomChart = !!(G.customMap && G.customMap.heights) || appliedServerWorldMapRev > 0;
+            applySharedWorldFromServerSeed(s, { relocateAfterDroppingServerChart: hadServerOrCustomChart });
           } else {
             G.worldSeed = s;
             G.seed = s;
@@ -9373,7 +9429,10 @@ function connectToServer() {
             knownServerWorldMapRev = 0;
             if (appliedServerWorldMapRev > 0 && G.mode === 'playing') {
               appliedServerWorldMapRev = 0;
-              applySharedWorldFromServerSeed(G.worldSeed >>> 0, { skipServerMapReapply: true });
+              applySharedWorldFromServerSeed(G.worldSeed >>> 0, {
+                skipServerMapReapply: true,
+                relocateAfterDroppingServerChart: true
+              });
             }
           }
         }
@@ -9675,8 +9734,10 @@ function connectToServer() {
       case 'world_seed': {
         if (msg.seed == null) break;
         const ns = Number(msg.seed) >>> 0;
-        if (G.mode === 'playing') applySharedWorldFromServerSeed(ns);
-        else {
+        if (G.mode === 'playing') {
+          const hadServerOrCustomChart = !!(G.customMap && G.customMap.heights) || appliedServerWorldMapRev > 0;
+          applySharedWorldFromServerSeed(ns, { relocateAfterDroppingServerChart: hadServerOrCustomChart });
+        } else {
           G.worldSeed = ns;
           G.seed = ns;
           noise = new SimplexNoise(G.worldSeed);
@@ -9696,7 +9757,10 @@ function connectToServer() {
           knownServerWorldMapRev = 0;
           if (appliedServerWorldMapRev > 0 && G.mode === 'playing') {
             appliedServerWorldMapRev = 0;
-            applySharedWorldFromServerSeed(G.worldSeed >>> 0, { skipServerMapReapply: true });
+            applySharedWorldFromServerSeed(G.worldSeed >>> 0, {
+              skipServerMapReapply: true,
+              relocateAfterDroppingServerChart: true
+            });
           }
         }
         break;
