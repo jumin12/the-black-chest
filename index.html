@@ -762,7 +762,6 @@ body > a[href="https://vibej.am/"][target="_blank"]{
     max-width:min(320px,calc(100vw - 16px));
     padding:8px 12px;
     font-size:11px;
-    z-index:125;
   }
 }
 /* Very narrow phones: tighter top HUD band so compass, stats, and minimap do not collide */
@@ -3237,18 +3236,16 @@ const sky = new THREE.Mesh(
         float st = stars(dir) * night * smoothstep(0.05, 0.42, y);
         skyCol += vec3(0.92, 0.95, 1.0) * st * 1.45;
 
-        vec3 cw = dir * 1.35 + vec3(uTime * 0.009, uTime * 0.0065, uTime * 0.0045);
+        vec3 cw = dir * 1.55 + vec3(uTime * 0.011, uTime * 0.0075, uTime * 0.0045);
         float c1 = fbm(cw);
         float c2 = fbm(cw * 1.65 + 10.0);
-        float c3 = fbm(cw * 0.55 + vec3(3.0, 1.0, 2.0));
-        float clouds = smoothstep(0.38, 0.78, c1 * 0.55 + c2 * 0.32 + c3 * 0.13);
-        clouds *= smoothstep(-0.28, 0.62, dir.y);
-        clouds *= smoothstep(-0.15, 0.5, sU.y);
-        clouds *= (0.28 + 0.72 * uDayFactor);
-        vec3 cloudCol = mix(vec3(0.88, 0.9, 0.98), vec3(0.96, 0.98, 1.0), 0.55 + 0.45 * uDayFactor);
-        float cloudShade = 0.72 + 0.28 * fbm(cw * 2.2 + 4.0);
-        skyCol = mix(skyCol, cloudCol * cloudShade, clouds * 0.78);
-        skyCol = mix(skyCol, skyCol * 0.86 + cloudCol * 0.14, clouds * 0.22 * uDayFactor);
+        float c3 = fbm(cw * 0.55 + vec3(3.0, 1.0, 7.0));
+        float clouds = smoothstep(0.36, 0.76, c1 * 0.58 + c2 * 0.34 + c3 * 0.14);
+        clouds *= smoothstep(-0.28, 0.55, sU.y);
+        clouds *= (0.4 + 0.6 * uDayFactor);
+        vec3 cloudCol = vec3(0.94, 0.96, 1.0);
+        skyCol = mix(skyCol, cloudCol, clouds * 0.74);
+        skyCol = mix(skyCol, skyCol * 0.86 + cloudCol * 0.14, clouds * 0.2 * uDayFactor);
 
         gl_FragColor = vec4(skyCol, 1.0);
       }`
@@ -3626,6 +3623,54 @@ seabed.renderOrder = -2;
 seabed.receiveShadow = !isMobile;
 scene.add(seabed);
 
+/** Soft billboard puffs above the horizon (day only); complements procedural sky clouds. */
+let _horizonCloudBillboards = null;
+let _horizonCloudGroup = null;
+function ensureHorizonCloudLayer() {
+  if (_horizonCloudBillboards) return;
+  _horizonCloudGroup = new THREE.Group();
+  _horizonCloudBillboards = [];
+  const geo = new THREE.PlaneGeometry(1, 1);
+  for (let i = 0; i < 16; i++) {
+    const opBase = 0.16 + Math.random() * 0.2;
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color().setHSL(0.58, 0.07, 0.93),
+      transparent: true,
+      opacity: opBase,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: true
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.userData.opBase = opBase;
+    m.userData.baseAng = Math.random() * Math.PI * 2;
+    m.userData.dist = 1350 + Math.random() * 2500;
+    m.userData.y = 120 + Math.random() * 170;
+    const w = 65 + Math.random() * 155;
+    m.userData.w = w;
+    m.userData.h = w * (0.3 + Math.random() * 0.24);
+    m.scale.set(m.userData.w, m.userData.h, 1);
+    m.renderOrder = 1;
+    _horizonCloudBillboards.push(m);
+    _horizonCloudGroup.add(m);
+  }
+  scene.add(_horizonCloudGroup);
+}
+function updateHorizonCloudBillboards(camX, camZ, dayFactor) {
+  ensureHorizonCloudLayer();
+  const t = typeof G.time === 'number' ? G.time : 0;
+  const drift = t * 0.0001;
+  const vis = THREE.MathUtils.clamp(0.06 + dayFactor * 0.94, 0, 1);
+  for (let i = 0; i < _horizonCloudBillboards.length; i++) {
+    const m = _horizonCloudBillboards[i];
+    const ang = m.userData.baseAng + drift * (0.82 + (i % 5) * 0.06);
+    const d = m.userData.dist;
+    m.position.set(camX + Math.sin(ang) * d, m.userData.y, camZ + Math.cos(ang) * d);
+    m.quaternion.copy(camera.quaternion);
+    if (m.material) m.material.opacity = m.userData.opBase * vis;
+  }
+}
+
 function syncDayNightVisuals(camX, camZ) {
   const p = (G.time % DAY_CYCLE_SECONDS) / DAY_CYCLE_SECONDS;
   const theta = p * Math.PI * 2 - Math.PI * 0.5;
@@ -3678,6 +3723,8 @@ function syncDayNightVisuals(camX, camZ) {
 
   sky.position.copy(camera.position);
   renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
+
+  updateHorizonCloudBillboards(camX, camZ, dayFactor);
 }
 
 let windParticles, windParticleGeo;
@@ -7922,40 +7969,39 @@ function updatePlayerShipNametagOnly() {
 
 /* ============================== CANNON VFX (smoke) ======================= */
 const cannonSmokePuffs = [];
-/** `carry`: optional world XZ velocity of firing ship so puffs don't lag behind when moving. */
-function spawnCannonMuzzleSmoke(x, y, z, dx, dz, carry) {
+/** Optional inheritVel { vx, vz } = shooter world velocity so puffs stay with the hull while drifting. */
+function spawnCannonMuzzleSmoke(x, y, z, dx, dz, inheritVel) {
   const sg = new THREE.Group();
-  const cv = carry || null;
-  const shipVx = cv && Number.isFinite(cv.vx) ? cv.vx : 0;
-  const shipVz = cv && Number.isFinite(cv.vz) ? cv.vz : 0;
-  sg.userData.carryVx = shipVx;
-  sg.userData.carryVz = shipVz;
   const len = Math.hypot(dx, dz) || 1;
   const ndx = dx / len, ndz = dz / len;
   const sx = x;
   const sy = y;
   const sz = z;
+  const ivx = inheritVel && Number.isFinite(inheritVel.vx) ? inheritVel.vx : 0;
+  const ivz = inheritVel && Number.isFinite(inheritVel.vz) ? inheritVel.vz : 0;
+  sg.userData.inheritVx = ivx;
+  sg.userData.inheritVz = ivz;
   const flashMat = (color, op) => new THREE.MeshBasicMaterial({
     color, transparent: true, opacity: op, depthWrite: false, blending: THREE.AdditiveBlending
   });
   const flashOuter = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), flashMat(0xffaa44, 0.85));
   flashOuter.userData.isMuzzleFlash = true;
-  flashOuter.userData.life = 0.12;
-  flashOuter.userData.life0 = 0.12;
+  flashOuter.userData.life = 0.1;
+  flashOuter.userData.life0 = 0.1;
   flashOuter.userData.flashOp0 = 0.85;
   flashOuter.renderOrder = 2;
   sg.add(flashOuter);
   const flashMid = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), flashMat(0xffeecc, 0.95));
   flashMid.userData.isMuzzleFlash = true;
-  flashMid.userData.life = 0.1;
-  flashMid.userData.life0 = 0.1;
+  flashMid.userData.life = 0.085;
+  flashMid.userData.life0 = 0.085;
   flashMid.userData.flashOp0 = 0.95;
   flashMid.renderOrder = 3;
   sg.add(flashMid);
   const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), flashMat(0xffffff, 1));
   flashCore.userData.isMuzzleFlash = true;
-  flashCore.userData.life = 0.068;
-  flashCore.userData.life0 = 0.068;
+  flashCore.userData.life = 0.055;
+  flashCore.userData.life0 = 0.055;
   flashCore.userData.flashOp0 = 1;
   flashCore.renderOrder = 4;
   sg.add(flashCore);
@@ -7998,10 +8044,10 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz, carry) {
     sm.userData.vx = ndx * fwdSp + perpX * (r5 - 0.5) * (isJet ? 0.06 : 0.14);
     sm.userData.vy = 0.05 + r6 * (isJet ? 0.16 : 0.26);
     sm.userData.vz = ndz * fwdSp + perpZ * (r7 - 0.5) * (isJet ? 0.06 : 0.14);
-    const lf = ((isJet ? 0.95 : 1.35) + fxHash01(qx, qy, qz, i * 5 + 20) * (isJet ? 0.35 : 1.05)) * 1.32;
+    const lf = (isJet ? 0.95 : 1.72) + fxHash01(qx, qy, qz, i * 5 + 20) * (isJet ? 0.35 : 1.38);
     sm.userData.life = lf;
     sm.userData.life0 = lf;
-    sm.userData.drag = isJet ? 0.91 : 0.93;
+    sm.userData.drag = isJet ? 0.86 : 0.93;
     sm.userData.smokeOp0 = isJet ? 0.56 : 0.46;
     sg.add(sm);
   }
@@ -8012,11 +8058,14 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz, carry) {
 function updateCannonSmoke(dt) {
   for (let i = cannonSmokePuffs.length - 1; i >= 0; i--) {
     const g = cannonSmokePuffs[i];
-    const cdx = g.userData.carryVx || 0;
-    const cdz = g.userData.carryVz || 0;
-    if (cdx || cdz) {
-      g.position.x += cdx * dt;
-      g.position.z += cdz * dt;
+    let ivx = g.userData.inheritVx || 0;
+    let ivz = g.userData.inheritVz || 0;
+    if (ivx || ivz) {
+      g.position.x += ivx * dt;
+      g.position.z += ivz * dt;
+      const damp = Math.exp(-dt * 1.15);
+      g.userData.inheritVx = ivx * damp;
+      g.userData.inheritVz = ivz * damp;
     }
     let any = false;
     g.children.forEach(ch => {
@@ -8816,7 +8865,8 @@ function npcFireBroadsideAtPlayer(npc) {
       if (G.mode !== 'playing') return;
       if (!npc.mesh || npc.sinking || npc.health <= 0) return;
       kickShipBroadsideCannon(npc.mesh, shot.side, shot.g);
-      spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ, npcShipVelocityXZ(npc));
+      const nVel = (!npc.anchored && Math.abs(npc.speed || 0) > 0.04) ? npcShipVelocityXZ(npc) : { vx: 0, vz: 0 };
+      spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ, nVel);
       fireCannonball(shot.wx, shot.wz, shot.dirX, shot.dirZ, shot.wy, 'npc', null, 'ball');
       npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
       if (ws?.readyState === 1 && isMultiplayerHost()) {
@@ -12698,7 +12748,7 @@ function executeBroadsideVolley(info, opts) {
       if (G.mode !== 'playing' || G.spectate) return;
       kickShipBroadsideCannon(playerShipGroup, g.physSide, g.i);
       const wx = g.wx, wy = g.wy, wz = g.wz;
-      const carryV = getPlayerWorldVelocityXZ();
+      const smokeVel = (!G.player.anchored && Math.abs(G.player.speed || 0) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
       if (ammoKind === 'grape') {
         const pelletsPerGun = 10;
         for (let p = 0; p < pelletsPerGun; p++) {
@@ -12706,7 +12756,7 @@ function executeBroadsideVolley(info, opts) {
           const c = Math.cos(spread), s = Math.sin(spread);
           const pdx = dirX * c - dirZ * s;
           const pdz = dirX * s + dirZ * c;
-          if (p === 0) spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ, carryV);
+          if (p === 0) spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ, smokeVel);
           fireCannonball(wx, wz, pdx, pdz, wy, 'player', G.myId, 'grape_pellet');
           if (ws?.readyState === 1) {
             ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: pdx, dz: pdz, ammoType: 'grape_pellet', shooterId: G.myId }));
@@ -12716,7 +12766,7 @@ function executeBroadsideVolley(info, opts) {
           ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
         }
       } else {
-        spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ, carryV);
+        spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ, smokeVel);
         fireCannonball(wx, wz, dirX, dirZ, wy, 'player', G.myId, ammoKind);
         if (ws?.readyState === 1) {
           ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind, shooterId: G.myId }));
@@ -12907,11 +12957,8 @@ function hideMobileControls() {
   }
 }
 
-/**
- * Bottom edge (viewport px) of the top HUD band. On desktop the minimap is anchored to the
- * lower-right corner — including it here pushed the dock prompt and toasts to the bottom of the screen.
- */
-function getTopHudStackBottomPx() {
+/** Bottom edge of the top HUD band (stats + compass/quest column only — not minimap, which is bottom-anchored on PC). */
+function getTopHudBandBottomPx() {
   let bottom = 0;
   const collect = (el) => {
     if (!el) return;
@@ -12924,19 +12971,17 @@ function getTopHudStackBottomPx() {
   if (G.mode === 'playing') {
     collect(document.getElementById('stats-ammo-stack'));
     collect(document.getElementById('compass-stack'));
-    collect(document.getElementById('story-brief-hud'));
-    if (isMobile) collect(document.getElementById('minimap'));
   }
   if (bottom <= 0) bottom = isMobile ? 72 : 88;
   return bottom;
 }
 
-/** Centered toasts/popups: sit just under stats/compass (and minimap on mobile), under story-brief when visible. */
+/** Centered toasts: just under top stats / compass row (not minimap). */
 function syncHudToastAnchors() {
   const notif = document.getElementById('notification');
   if (!notif) return;
   const gap = 10;
-  const topPx = Math.round(getTopHudStackBottomPx() + gap);
+  const topPx = Math.round(getTopHudBandBottomPx() + gap);
   notif.style.left = '50%';
   notif.style.transform = 'translateX(-50%)';
   notif.style.top = `${topPx}px`;
@@ -12944,13 +12989,14 @@ function syncHudToastAnchors() {
   syncDockPromptAnchor();
 }
 
-/** Dock prompt: fixed under top HUD (same band as toasts), PC + mobile. */
+/** Dock prompt: directly under top stats row, PC + mobile (same metric as toasts). */
 function syncDockPromptAnchor() {
   const dock = document.getElementById('dock-prompt');
   if (!dock) return;
-  const gap = 10;
-  let topPx = Math.round(getTopHudStackBottomPx() + gap);
-  if (isMobile) topPx = Math.max(8, topPx - 22);
+  const dSt = window.getComputedStyle(dock);
+  if (dSt.display === 'none' || dock.style.display === 'none') return;
+  const gap = 8;
+  const topPx = Math.round(getTopHudBandBottomPx() + gap);
   dock.style.top = `${topPx}px`;
   dock.style.bottom = 'auto';
   dock.style.left = '50%';
