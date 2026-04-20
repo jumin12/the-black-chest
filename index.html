@@ -435,7 +435,16 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   padding-bottom:0;
 }
 @media(max-width:768px){
-  /* Visual rail only; real scrolling + thumb drags use .crew-roster-scroll-outer (JS assists gutter on iOS). */
+  /* Hide OS scrollbar (often static on iOS); faux track + JS-synced thumb show real scroll position. */
+  #log-panel.log-panel--crew .crew-roster-scroll-outer{
+    scrollbar-width:none;
+  }
+  #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{
+    display:none;
+    width:0;
+    height:0;
+    background:transparent;
+  }
   #log-panel.log-panel--crew .crew-roster-scroll-outer::after{
     content:'';
     position:absolute;
@@ -451,20 +460,25 @@ body > a[href="https://vibej.am/"][target="_blank"]{
     border:1px solid rgba(140,110,65,0.55);
     box-shadow:inset 0 1px 0 rgba(255,230,200,0.12),inset 0 -1px 8px rgba(0,0,0,0.45);
   }
+  #log-panel.log-panel--crew .crew-roster-scroll-outer::before{
+    content:'';
+    position:absolute;
+    top:calc(4px + var(--crew-thumb-off, 0px));
+    right:calc(3px + max(0px, env(safe-area-inset-right, 0px)));
+    width:8px;
+    height:var(--crew-thumb-len, 36px);
+    max-height:calc(100% - 18px);
+    border-radius:6px;
+    pointer-events:none;
+    z-index:4;
+    box-sizing:border-box;
+    background:linear-gradient(180deg,rgba(245,215,150,0.98),rgba(175,120,48,0.95) 42%,rgba(95,62,26,0.96));
+    border:1px solid rgba(36,26,16,0.9);
+    box-shadow:inset 0 1px 0 rgba(255,248,220,0.45),0 1px 4px rgba(0,0,0,0.35);
+    opacity:var(--crew-thumb-op, 1);
+  }
   #log-panel.log-panel--crew #crew-list.crew-roster-scroll{
     padding-right:max(20px, calc(14px + env(safe-area-inset-right, 0px)));
-  }
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{width:12px;}
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar-track{
-    background:rgba(22,16,12,0.92);
-    border-radius:8px;
-    border:1px solid rgba(100,80,48,0.5);
-  }
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar-thumb{
-    border-radius:8px;
-    border:2px solid rgba(24,18,12,0.95);
-    background:linear-gradient(180deg,rgba(220,190,120,0.95),rgba(140,95,40,0.92));
-    min-height:48px;
   }
 }
 #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{width:14px;}
@@ -2295,7 +2309,10 @@ const G = {
   selectedAmmoType: 'ball',
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
   deathSpawnX: null, deathSpawnZ: null, lastBroadsideSide: 1,
-  nearDock: null, docked: false, quests: [],
+  nearDock: null, docked: false,
+  dockingAnim: null,
+  undockingAnim: null,
+  quests: [],
   /** Recent finished contracts & story beats for Captains Log (newest first). */
   completedMissionLog: [],
   storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
@@ -3846,9 +3863,12 @@ const sky = new THREE.Mesh(
         float c1 = fbm(cw);
         float c2 = fbm(cw * 1.65 + 10.0);
         float c3 = fbm(cw * 0.55 + vec3(3.0, 1.0, 7.0));
-        float clouds = smoothstep(0.36, 0.76, c1 * 0.58 + c2 * 0.34 + c3 * 0.14);
+        float cRaw = c1 * 0.58 + c2 * 0.34 + c3 * 0.14;
+        float clouds = smoothstep(0.36, 0.76, cRaw);
+        clouds = pow(max(clouds, 0.001), 1.18);
         clouds *= smoothstep(-0.28, 0.55, sU.y);
         clouds *= (0.4 + 0.6 * uDayFactor);
+        clouds *= smoothstep(0.08, 0.55, cRaw);
         vec3 cloudCol = vec3(0.94, 0.96, 1.0);
         skyCol = mix(skyCol, cloudCol, clouds * 0.74);
         skyCol = mix(skyCol, skyCol * 0.86 + cloudCol * 0.14, clouds * 0.2 * uDayFactor);
@@ -4232,31 +4252,56 @@ scene.add(seabed);
 /** Soft billboard puffs above the horizon (day only); complements procedural sky clouds. */
 let _horizonCloudBillboards = null;
 let _horizonCloudGroup = null;
+let _horizonCloudAlphaMap = null;
+function horizonCloudRadialAlphaMap() {
+  if (_horizonCloudAlphaMap) return _horizonCloudAlphaMap;
+  const s = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s * 0.5, s * 0.5, 0, s * 0.5, s * 0.5, s * 0.52);
+  g.addColorStop(0, 'rgba(255,255,255,0.95)');
+  g.addColorStop(0.35, 'rgba(255,255,255,0.42)');
+  g.addColorStop(0.72, 'rgba(255,255,255,0.08)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  if ('colorSpace' in tex && THREE.NoColorSpace) tex.colorSpace = THREE.NoColorSpace;
+  _horizonCloudAlphaMap = tex;
+  return _horizonCloudAlphaMap;
+}
 function ensureHorizonCloudLayer() {
   if (_horizonCloudBillboards) return;
   _horizonCloudGroup = new THREE.Group();
   _horizonCloudBillboards = [];
   const geo = new THREE.PlaneGeometry(1, 1);
+  const alphaMap = horizonCloudRadialAlphaMap();
   for (let i = 0; i < 16; i++) {
-    const opBase = 0.16 + Math.random() * 0.2;
+    const opBase = 0.1 + Math.random() * 0.14;
     const mat = new THREE.MeshBasicMaterial({
       color: new THREE.Color().setHSL(0.58, 0.07, 0.93),
       transparent: true,
       opacity: opBase,
+      alphaMap,
+      alphaTest: 0.001,
       depthWrite: false,
+      depthTest: false,
       side: THREE.DoubleSide,
-      fog: true
+      fog: false
     });
     const m = new THREE.Mesh(geo, mat);
     m.userData.opBase = opBase;
     m.userData.baseAng = Math.random() * Math.PI * 2;
     m.userData.dist = 1350 + Math.random() * 2500;
     m.userData.y = 120 + Math.random() * 170;
-    const w = 65 + Math.random() * 155;
+    const w = 38 + Math.random() * 72;
     m.userData.w = w;
-    m.userData.h = w * (0.3 + Math.random() * 0.24);
+    m.userData.h = w * (0.28 + Math.random() * 0.2);
     m.scale.set(m.userData.w, m.userData.h, 1);
-    m.renderOrder = 1;
+    m.renderOrder = 0;
     _horizonCloudBillboards.push(m);
     _horizonCloudGroup.add(m);
   }
@@ -4927,7 +4972,7 @@ function shipFootprintOverlapsLand(wx, wz, yaw, shipType) {
   return false;
 }
 function nudgePlayerOffLand() {
-  if (G.docked || G.dockingAnim || G.spectate || G.playerSinking || G.captainWalk?.active) return;
+  if (G.docked || G.dockingAnim || G.undockingAnim || G.spectate || G.playerSinking || G.captainWalk?.active) return;
   if (!shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, G.player.shipType)) return;
   const st = G.player.shipType || 'sloop';
   const step = Math.max(1.15, shipHullRadius(st) * 0.2);
@@ -5224,9 +5269,13 @@ function minDistToAnyPortDock(wx, wz) {
   }
   return best === Infinity ? 1e9 : best;
 }
-/** Within ~2× hull length of a port berth: no ship–ship ram resolution / separation (harbor approach). */
+/** Near port (same band as dock prompt): no ship–ship ram / overlap resolution; used for harbor PvP truce. */
 function playerInHarborRamExemptZone(wx, wz, shipType) {
-  return minDistToAnyPortDock(wx, wz) <= getShipHullLenForType(shipType) * 2;
+  return minDistToAnyPortDock(wx, wz) <= DOCK_TRIGGER_RADIUS + 8;
+}
+/** Both ships must be in the harbor band — avoids PvP between captains maneuvering at the docks. */
+function harborPvpTruceBetween(px, pz, pShip, ox, oz, oShip) {
+  return playerInHarborRamExemptZone(px, pz, pShip) && playerInHarborRamExemptZone(ox, oz, oShip);
 }
 
 /** Towns each export one commodity (deterministic from chunk + seed); AI traders run routes to other ports. */
@@ -9206,7 +9255,7 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
 
 function pushPlayerOutOfShipOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
-  if (G.dockingAnim) return;
+  if (G.dockingAnim || G.undockingAnim) return;
   const px = G.player.x, pz = G.player.z;
   const margin = 0.92;
   const pPos = { x: G.player.x, z: G.player.z };
@@ -15767,6 +15816,7 @@ function updateCrewPanel() {
   });
   _crewPanelRefreshSig = getCrewPanelRefreshSig();
   queueRefreshCrewPortraits();
+  requestAnimationFrame(() => syncCrewRosterScrollbarThumb());
 }
 
 function lbRowGold(e) {
@@ -16529,6 +16579,21 @@ function prepareTradeInventoryView() {
   reconcileSlotsWithInventory();
 }
 function leavePort() {
+  const dock = G.nearDock;
+  let ex = G.player.x, ez = G.player.z, eRot = G.player.rotation;
+  if (dock && dock.dockX != null) {
+    const slots = computeDockBerthSlots(dock);
+    const bi = G.player.dockBerthIndex;
+    const berth = bi != null && slots[bi] ? slots[bi] : slots[0];
+    if (berth) {
+      const da = dock.dockAngle || 0;
+      const longX = Math.sin(da), longZ = Math.cos(da);
+      const slip = 12 + getShipHullLenForType(G.player.shipType) * 0.42;
+      ex = berth.x + longX * slip;
+      ez = berth.z + longZ * slip;
+      eRot = da;
+    }
+  }
   G.docked = false; G.player.anchored = false;
   G.anchorDropping = false;
   G.player.speed = 0;
@@ -16536,7 +16601,9 @@ function leavePort() {
   resetMobileCameraChase();
   syncAnchorToolbarButton();
   syncAnchorStatusHud();
-  G.dockingAnim = null; G.sailsFurled = false;
+  G.dockingAnim = null;
+  G.undockingAnim = { targetX: ex, targetZ: ez, targetRot: eRot };
+  G.sailsFurled = false;
   disposeYardShipPreview();
   disposePortVista();
   dockRopes.forEach(r => { scene.remove(r); r.geometry.dispose(); r.material.dispose(); });
@@ -18176,7 +18243,54 @@ function update(dt) {
     G.player.morale = Math.min(100, (G.player.morale != null ? G.player.morale : 100) + morRegen * dt);
   }
 
-  if (!G.player.anchored && !G.spectate && !G.playerSinking && G.player.health > 0 && !G.captainWalk.active) {
+  if (G.undockingAnim) {
+    const u = G.undockingAnim;
+    const stU = G.player.shipType || 'sloop';
+    const txu = u.targetX, tzu = u.targetZ;
+    const tRot = u.targetRot;
+    let dxu = txu - G.player.x, dzu = tzu - G.player.z;
+    const distU = Math.hypot(dxu, dzu);
+    if (distU < 0.38) {
+      G.player.x = txu;
+      G.player.z = tzu;
+      if (tRot != null) G.player.rotation = tRot;
+      G.undockingAnim = null;
+      G.player.speed = Math.max(G.player.speed, 2);
+      G.sailsFurled = false;
+    } else {
+      const stepU = Math.min(6.8 * dt, distU);
+      dxu = (dxu / distU) * stepU;
+      dzu = (dzu / distU) * stepU;
+      const nxa = G.player.x + dxu;
+      const nza = G.player.z + dzu;
+      if (!shipFootprintOverlapsLand(nxa, nza, G.player.rotation, stU)) {
+        G.player.x = nxa;
+        G.player.z = nza;
+      } else {
+        let lo = 0, hi = 1, best = 0;
+        for (let ku = 0; ku < 10; ku++) {
+          const mid = (lo + hi) * 0.5;
+          const mx = G.player.x + dxu * mid;
+          const mz = G.player.z + dzu * mid;
+          if (!shipFootprintOverlapsLand(mx, mz, G.player.rotation, stU)) {
+            best = mid;
+            lo = mid;
+          } else hi = mid;
+        }
+        if (best > 0.02) {
+          G.player.x += dxu * best;
+          G.player.z += dzu * best;
+        }
+      }
+      if (tRot != null) {
+        let dru = tRot - G.player.rotation;
+        while (dru > Math.PI) dru -= Math.PI * 2;
+        while (dru < -Math.PI) dru += Math.PI * 2;
+        G.player.rotation += dru * Math.min(1, 2.1 * dt);
+      }
+    }
+    clampPlayerIntoWorldBounds();
+  } else if (!G.player.anchored && !G.spectate && !G.playerSinking && G.player.health > 0 && !G.captainWalk.active) {
     const spec = SHIP_TYPES[G.player.shipType];
     const speedMult = playerSpeedMultFromShipParts();
     const windDot = Math.cos(G.wind.angle - G.player.rotation);
@@ -18326,7 +18440,7 @@ function update(dt) {
     ensureStoryBountyNpcPresent();
   }
   resolvePlayerShipCollisionsAfterNpcs();
-  if (!G.docked && !G.dockingAnim && !G.spectate && !G.playerSinking && !G.captainWalk?.active) nudgePlayerOffLand();
+  if (!G.docked && !G.dockingAnim && !G.undockingAnim && !G.spectate && !G.playerSinking && !G.captainWalk?.active) nudgePlayerOffLand();
   updateTownFlagWindAnimation();
   updateSeagulls(dt);
   updateFish(dt);
@@ -18341,25 +18455,58 @@ function update(dt) {
   const shipWaves = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation);
   const shipTilt = dampShipWaveTilt(shipWaves.wavePitch, shipWaves.waveRoll);
   if (G.dockingAnim) {
-    G.dockingAnim.timer += dt;
-    const t = Math.min(G.dockingAnim.timer / 2.0, 1);
-    const ease = t * t * (3 - 2 * t);
-    G.player.x += (G.dockingAnim.targetX - G.player.x) * ease * 1.5 * dt;
-    G.player.z += (G.dockingAnim.targetZ - G.player.z) * ease * 1.5 * dt;
-    G.player.speed *= 0.85;
-    if (G.dockingAnim.targetRot != null) {
-      let dr = G.dockingAnim.targetRot - G.player.rotation;
-      while (dr > Math.PI) dr -= Math.PI * 2;
-      while (dr < -Math.PI) dr += Math.PI * 2;
-      G.player.rotation += dr * ease * 1.35 * dt;
+    const da = G.dockingAnim;
+    const stDock = G.player.shipType || 'sloop';
+    const txd = da.targetX, tzd = da.targetZ;
+    const trDock = da.targetRot;
+    let dxd = txd - G.player.x, dzd = tzd - G.player.z;
+    const distD = Math.hypot(dxd, dzd);
+    if (distD < 0.2) {
+      G.player.x = txd;
+      G.player.z = tzd;
+      if (trDock != null) G.player.rotation = trDock;
+      G.dockingAnim = null;
+    } else {
+      const stepD = Math.min(6.8 * dt, distD);
+      dxd = (dxd / distD) * stepD;
+      dzd = (dzd / distD) * stepD;
+      const nxD = G.player.x + dxd;
+      const nzD = G.player.z + dzd;
+      if (!shipFootprintOverlapsLand(nxD, nzD, G.player.rotation, stDock)) {
+        G.player.x = nxD;
+        G.player.z = nzD;
+      } else {
+        let lo = 0, hi = 1, best = 0;
+        for (let kd = 0; kd < 10; kd++) {
+          const mid = (lo + hi) * 0.5;
+          const mx = G.player.x + dxd * mid;
+          const mz = G.player.z + dzd * mid;
+          if (!shipFootprintOverlapsLand(mx, mz, G.player.rotation, stDock)) {
+            best = mid;
+            lo = mid;
+          } else hi = mid;
+        }
+        if (best > 0.02) {
+          G.player.x += dxd * best;
+          G.player.z += dzd * best;
+        }
+      }
+      G.player.speed *= 0.88;
+      if (trDock != null) {
+        let drd = trDock - G.player.rotation;
+        while (drd > Math.PI) drd -= Math.PI * 2;
+        while (drd < -Math.PI) drd += Math.PI * 2;
+        const align = Math.min(1, distD / 5);
+        G.player.rotation += drd * Math.min(1, 2.35 * dt) * (0.5 + 0.5 * align);
+      }
     }
-    const clx0 = G.dockingAnim.cleatLX, clz0 = G.dockingAnim.cleatLZ;
-    const clx1 = G.dockingAnim.cleatRX, clz1 = G.dockingAnim.cleatRZ;
+    const clx0 = da.cleatLX, clz0 = da.cleatLZ;
+    const clx1 = da.cleatRX, clz1 = da.cleatRZ;
     dockRopes.forEach((r, ri) => {
       const tcx = ri === 0 ? clx0 : clx1;
       const tcz = ri === 0 ? clz0 : clz1;
-      const ax = tcx != null ? tcx : G.dockingAnim.dockX + (ri === 0 ? -2 : 2) * Math.cos(G.nearDock?.dockAngle || 0);
-      const az = tcz != null ? tcz : G.dockingAnim.dockZ + (ri === 0 ? -2 : 2) * Math.sin(G.nearDock?.dockAngle || 0);
+      const ax = tcx != null ? tcx : da.dockX + (ri === 0 ? -2 : 2) * Math.cos(G.nearDock?.dockAngle || 0);
+      const az = tcz != null ? tcz : da.dockZ + (ri === 0 ? -2 : 2) * Math.sin(G.nearDock?.dockAngle || 0);
       const pts = [
         new THREE.Vector3(G.player.x, SEA_LEVEL + 1.5, G.player.z),
         new THREE.Vector3(ax, SEA_LEVEL + 1, az)
@@ -18667,7 +18814,14 @@ function update(dt) {
       const distP = distSegmentToShipHullOBB(ppx, ppz, b.x, b.z, G.player.x, G.player.z, plYaw, G.player.shipType);
       let hitR = cannonballStrikeHitRadius(G.player.shipType, at, isPellet);
       if (at === 'ball' && !isPellet) hitR *= 1.12;
-      if (distP < hitR && b.y > SEA_LEVEL - 1) {
+      let skipPvpHarbor = false;
+      if (b.owner === 'other_player' && b.sourcePlayerId != null && G.otherPlayers.has(b.sourcePlayerId)) {
+        const shooter = G.otherPlayers.get(b.sourcePlayerId);
+        if (shooter && shooter.x != null && shooter.z != null) {
+          skipPvpHarbor = harborPvpTruceBetween(G.player.x, G.player.z, G.player.shipType, shooter.x, shooter.z, shooter.shipType || 'sloop');
+        }
+      }
+      if (distP < hitR && b.y > SEA_LEVEL - 1 && !skipPvpHarbor) {
         if (b.owner === 'other_player') {
           G.lastAttackerId = b.sourcePlayerId != null ? b.sourcePlayerId : null;
           if (b.sourcePlayerId != null && G.otherPlayers.has(b.sourcePlayerId)) {
@@ -18698,6 +18852,7 @@ function update(dt) {
       const isPellet = !!b.isPellet;
       G.otherPlayers.forEach((op, opId) => {
         if (op.docked) return;
+        if (harborPvpTruceBetween(G.player.x, G.player.z, G.player.shipType, op.x, op.z, op.shipType || 'sloop')) return;
         const hitR = cannonballStrikeHitRadius(op.shipType || 'sloop', at, isPellet);
         const opx0 = b.x - b.dx * dt, opz0 = b.z - b.dz * dt;
         const oYaw = op.rotation != null ? op.rotation : 0;
@@ -18902,6 +19057,7 @@ function update(dt) {
     G.playerSinking = true; G.playerSinkTimer = 0;
     G.playerSinkY = playerShipGroup.position.y;
     G.dockingAnim = null;
+    G.undockingAnim = null;
     setCaptainWalkActive(false);
     G.anchorDropping = false;
     G.player.speed = 0; G.player.anchored = true;
@@ -21078,6 +21234,30 @@ function isCrewSeaDrop(clientX, clientY) {
   root.addEventListener('pointerup', endCrewDrag);
   root.addEventListener('pointercancel', endCrewDrag);
 })();
+/** Mobile: faux scrollbar thumb (::before) tracks scrollTop because native thumb is hidden. */
+function syncCrewRosterScrollbarThumb() {
+  const el = document.querySelector('#log-crew .crew-roster-scroll-outer');
+  if (!el) return;
+  const sh = el.scrollHeight;
+  const ch = el.clientHeight;
+  const st = el.scrollTop;
+  const inset = 18;
+  const usable = Math.max(0, ch - inset);
+  if (sh <= ch + 2 || usable < 24) {
+    el.style.setProperty('--crew-thumb-op', '0');
+    el.style.setProperty('--crew-thumb-len', '24px');
+    el.style.setProperty('--crew-thumb-off', '0px');
+    return;
+  }
+  const ratio = ch / sh;
+  const thumbLen = Math.max(22, Math.min(usable * ratio, usable - 6));
+  const maxScroll = sh - ch;
+  const travel = Math.max(0, usable - thumbLen);
+  const off = maxScroll > 0 ? (st / maxScroll) * travel : 0;
+  el.style.setProperty('--crew-thumb-op', '1');
+  el.style.setProperty('--crew-thumb-len', `${thumbLen}px`);
+  el.style.setProperty('--crew-thumb-off', `${off}px`);
+}
 (function bindCrewRosterScrollGutterTouch() {
   const scrollHost = document.querySelector('#log-crew .crew-roster-scroll-outer');
   if (!scrollHost) return;
@@ -21086,6 +21266,8 @@ function isCrewSeaDrop(clientX, clientY) {
     const r = scrollHost.getBoundingClientRect();
     return clientX >= r.right - 32;
   }
+  scrollHost.addEventListener('scroll', () => syncCrewRosterScrollbarThumb(), { passive: true });
+  window.addEventListener('resize', () => syncCrewRosterScrollbarThumb());
   scrollHost.addEventListener('touchstart', e => {
     if (!isMobile || G.mode !== 'playing') return;
     if (e.touches.length !== 1) return;
@@ -21098,6 +21280,7 @@ function isCrewSeaDrop(clientX, clientY) {
     const dy = rail.y - t.clientY;
     rail.y = t.clientY;
     scrollHost.scrollTop += dy;
+    syncCrewRosterScrollbarThumb();
   }, { passive: true });
   function endRail() { rail = null; }
   scrollHost.addEventListener('touchend', endRail, { passive: true });
