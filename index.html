@@ -262,7 +262,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   --log-tab-body-max-h:calc(75vh - 118px);
   position:relative;
   overflow:hidden;
-  display:flex;
+  display:none;
   flex-direction:column;
   min-height:0;
   background:
@@ -8555,7 +8555,32 @@ function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex 
   const sprite = new THREE.Sprite(mat);
   sprite.scale.set(8, h > 85 ? 1.32 : 1.2, 1);
   sprite.renderOrder = 100;
+  sprite.userData.isFloatingNametag = true;
+  sprite.visible = isFloatingNametagVisibleNow();
   return sprite;
+}
+
+function isPortPanelShown() {
+  const pp = document.getElementById('port-panel');
+  if (!pp) return false;
+  const st = pp.style.display;
+  if (st === 'none') return false;
+  if (st && st !== '') return true;
+  return window.getComputedStyle(pp).display !== 'none';
+}
+function isFloatingNametagVisibleNow() {
+  if (G.mode !== 'playing') return false;
+  if (isPortPanelShown()) return false;
+  return true;
+}
+let _nametagVisCache = null;
+function syncFloatingNametagVisibility() {
+  const want = isFloatingNametagVisibleNow();
+  if (_nametagVisCache === want) return;
+  _nametagVisCache = want;
+  scene.traverse(obj => {
+    if (obj instanceof THREE.Sprite && obj.userData && obj.userData.isFloatingNametag) obj.visible = want;
+  });
 }
 
 function ensurePlayerCrewTasks() {
@@ -11648,7 +11673,7 @@ window.addEventListener('keydown', e => {
     const vis = panel.style.display !== 'none' && panel.style.display !== '';
     closeAllPanels();
     if (!vis) {
-      panel.style.display = 'block';
+      panel.style.display = 'flex';
       switchLogTab(k === 'b' || k === 'tab' ? 'ship' : k === 'i' ? 'inv' : 'crew');
       startCaptainsLogLiveRefresh();
       hideMobileControls();
@@ -15292,7 +15317,7 @@ function ensurePortVista() {
   portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), isMobile ? 1.25 : 1.75));
   portVistaRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   container.appendChild(portVistaRenderer.domElement);
-  portVistaCamera = new THREE.PerspectiveCamera(48, w / h, 0.5, 8000);
+  portVistaCamera = new THREE.PerspectiveCamera(54, w / h, 0.5, 8000);
   bindPortVistaOrbit(wrap);
 }
 function resizePortVista() {
@@ -15307,8 +15332,9 @@ function resizePortVista() {
   portVistaCamera.aspect = w / h;
   portVistaCamera.updateProjectionMatrix();
 }
-function positionHarborVistaCamera(cam, dock, viewPx, viewPz, yawOffset, time) {
+function positionHarborVistaCamera(cam, dock, viewPx, viewPz, yawOffset, time, vistaOpts) {
   if (!cam || !dock) return;
+  const mult = vistaOpts && vistaOpts.distanceMult != null ? vistaOpts.distanceMult : 1;
   const shoreX = dock.worldX != null ? dock.worldX : dock.dockX;
   const shoreZ = dock.worldZ != null ? dock.worldZ : dock.dockZ;
   const ddx = shoreX - dock.dockX, ddz = shoreZ - dock.dockZ;
@@ -15317,24 +15343,24 @@ function positionHarborVistaCamera(cam, dock, viewPx, viewPz, yawOffset, time) {
   const px = viewPx, pz = viewPz;
   const orbit = yawOffset + time * 0.052;
   const perpX = -uz, perpZ = ux;
-  const side = 14 * Math.sin(orbit);
-  const camAlong = 40;
+  const side = 14 * mult * Math.sin(orbit);
+  const camAlong = 40 * mult;
   const cx = px - ux * camAlong * 0.44 + perpX * side;
   const cz = pz - uz * camAlong * 0.44 + perpZ * side;
   const sea = worldSeaSurfaceY(cx, cz);
-  const cy = sea + 21;
+  const cy = sea + 21 + 12 * (mult - 1);
   cam.position.set(cx, cy, cz);
-  const mix = 0.55;
+  const mix = Math.max(0.42, 0.55 - (mult - 1) * 0.11);
   const lookX = shoreX * mix + px * (1 - mix);
   const lookZ = shoreZ * mix + pz * (1 - mix);
-  const lookY = worldSeaSurfaceY(lookX, lookZ) + 5;
+  const lookY = worldSeaSurfaceY(lookX, lookZ) + 5 + 6 * (mult - 1);
   cam.lookAt(lookX, lookY, lookZ);
 }
 function updatePortVistaCamera(dt) {
   if (!portVistaCamera || !G.nearDock || G.mode !== 'playing') return;
   const pp = document.getElementById('port-panel');
   if (!pp || pp.style.display === 'none' || pp.style.display === '') return;
-  positionHarborVistaCamera(portVistaCamera, G.nearDock, G.player.x, G.player.z, portVistaYaw, G.time);
+  positionHarborVistaCamera(portVistaCamera, G.nearDock, G.player.x, G.player.z, portVistaYaw, G.time, { distanceMult: 1.62 });
 }
 function renderPortVistaIfOpen() {
   if (!portVistaRenderer || !portVistaCamera || G.mode !== 'playing') return;
@@ -16166,7 +16192,7 @@ document.getElementById('btn-log').onclick = () => {
   const vis = panel.style.display !== 'none' && panel.style.display !== '';
   closeAllPanels();
   if (!vis) {
-    panel.style.display = 'block';
+    panel.style.display = 'flex';
     switchLogTab('ship');
     startCaptainsLogLiveRefresh();
     hideMobileControls();
@@ -18992,6 +19018,7 @@ function update(dt) {
 }
 
 function render() {
+  syncFloatingNametagVisibility();
   updateWaterWakeUniforms(waterFollowCamX, waterFollowCamZ);
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
