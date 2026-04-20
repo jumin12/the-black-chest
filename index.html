@@ -410,6 +410,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   scrollbar-gutter:stable;
 }
 .log-tab-body{display:flex;flex-direction:column;gap:0;min-height:0;overflow:hidden;max-height:var(--log-tab-body-max-h, calc(75vh - 118px));}
+#log-crew.crew-screen{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
 .crew-screen-header{margin-bottom:8px;padding-bottom:8px;flex-shrink:0;}
 #pirates-list{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:0 2px 6px 0;margin-right:-2px;}
 #pirates-list::-webkit-scrollbar{width:5px;}
@@ -435,7 +436,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   padding-bottom:0;
 }
 @media(max-width:768px){
-  /* Hide OS scrollbar (often static on iOS); faux track + JS-synced thumb show real scroll position. */
+  /* Hide OS scrollbar (often static on iOS); faux track + JS-synced thumb span full scroller height. */
   #log-panel.log-panel--crew .crew-roster-scroll-outer{
     scrollbar-width:none;
   }
@@ -448,9 +449,9 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   #log-panel.log-panel--crew .crew-roster-scroll-outer::after{
     content:'';
     position:absolute;
-    top:2px;
+    top:0;
+    bottom:0;
     right:max(2px, env(safe-area-inset-right, 0px));
-    bottom:max(10px, env(safe-area-inset-bottom, 0px));
     width:12px;
     border-radius:8px;
     pointer-events:none;
@@ -463,11 +464,10 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   #log-panel.log-panel--crew .crew-roster-scroll-outer::before{
     content:'';
     position:absolute;
-    top:calc(4px + var(--crew-thumb-off, 0px));
+    top:var(--crew-thumb-off, 0px);
     right:calc(3px + max(0px, env(safe-area-inset-right, 0px)));
     width:8px;
     height:var(--crew-thumb-len, 36px);
-    max-height:calc(100% - 18px);
     border-radius:6px;
     pointer-events:none;
     z-index:4;
@@ -479,6 +479,18 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   }
   #log-panel.log-panel--crew #crew-list.crew-roster-scroll{
     padding-right:max(20px, calc(14px + env(safe-area-inset-right, 0px)));
+  }
+  body.mobile-port-ui-open .toolbar,
+  body.mobile-port-ui-open #touch-controls,
+  body.mobile-port-ui-open #touch-zoom,
+  body.mobile-port-ui-open #touch-broadsides-layer,
+  body.mobile-port-ui-open #minimap,
+  body.mobile-port-ui-open #stats-ammo-stack,
+  body.mobile-port-ui-open #combat-shot-wrap,
+  body.mobile-port-ui-open #compass-stack{
+    display:none!important;
+    visibility:hidden!important;
+    pointer-events:none!important;
   }
 }
 #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{width:14px;}
@@ -4249,80 +4261,31 @@ seabed.renderOrder = -2;
 seabed.receiveShadow = !isMobile;
 scene.add(seabed);
 
-/** Soft billboard puffs above the horizon (day only); complements procedural sky clouds. */
+/** Legacy horizon billboards were removed — they read as sky “blocks”; procedural sky + water are enough. */
 let _horizonCloudBillboards = null;
 let _horizonCloudGroup = null;
-let _horizonCloudAlphaMap = null;
-function horizonCloudRadialAlphaMap() {
-  if (_horizonCloudAlphaMap) return _horizonCloudAlphaMap;
-  const s = 128;
-  const c = document.createElement('canvas');
-  c.width = c.height = s;
-  const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(s * 0.5, s * 0.5, 0, s * 0.5, s * 0.5, s * 0.52);
-  g.addColorStop(0, 'rgba(255,255,255,0.95)');
-  g.addColorStop(0.35, 'rgba(255,255,255,0.42)');
-  g.addColorStop(0.72, 'rgba(255,255,255,0.08)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, s, s);
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  if ('colorSpace' in tex && THREE.NoColorSpace) tex.colorSpace = THREE.NoColorSpace;
-  _horizonCloudAlphaMap = tex;
-  return _horizonCloudAlphaMap;
-}
-function ensureHorizonCloudLayer() {
-  if (_horizonCloudBillboards) return;
-  _horizonCloudGroup = new THREE.Group();
-  _horizonCloudBillboards = [];
-  const geo = new THREE.PlaneGeometry(1, 1);
-  const alphaMap = horizonCloudRadialAlphaMap();
-  for (let i = 0; i < 16; i++) {
-    const opBase = 0.1 + Math.random() * 0.14;
-    const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color().setHSL(0.58, 0.07, 0.93),
-      transparent: true,
-      opacity: opBase,
-      alphaMap,
-      alphaTest: 0.001,
-      depthWrite: false,
-      depthTest: false,
-      side: THREE.DoubleSide,
-      fog: false
-    });
-    const m = new THREE.Mesh(geo, mat);
-    m.userData.opBase = opBase;
-    m.userData.baseAng = Math.random() * Math.PI * 2;
-    m.userData.dist = 1350 + Math.random() * 2500;
-    m.userData.y = 120 + Math.random() * 170;
-    const w = 38 + Math.random() * 72;
-    m.userData.w = w;
-    m.userData.h = w * (0.28 + Math.random() * 0.2);
-    m.scale.set(m.userData.w, m.userData.h, 1);
-    m.renderOrder = 0;
-    _horizonCloudBillboards.push(m);
-    _horizonCloudGroup.add(m);
-  }
-  scene.add(_horizonCloudGroup);
-}
-function updateHorizonCloudBillboards(camX, camZ, dayFactor) {
-  ensureHorizonCloudLayer();
-  const t = typeof G.time === 'number' ? G.time : 0;
-  const drift = t * 0.0001;
-  const vis = THREE.MathUtils.clamp(0.06 + dayFactor * 0.94, 0, 1);
-  for (let i = 0; i < _horizonCloudBillboards.length; i++) {
-    const m = _horizonCloudBillboards[i];
-    const ang = m.userData.baseAng + drift * (0.82 + (i % 5) * 0.06);
-    const d = m.userData.dist;
-    m.position.set(camX + Math.sin(ang) * d, m.userData.y, camZ + Math.cos(ang) * d);
-    m.quaternion.copy(camera.quaternion);
-    if (m.material) m.material.opacity = m.userData.opBase * vis;
-  }
+function removeHorizonCloudBillboardsIfPresent() {
+  if (!_horizonCloudGroup) return;
+  try {
+    scene.remove(_horizonCloudGroup);
+    if (_horizonCloudBillboards) {
+      for (const m of _horizonCloudBillboards) {
+        if (!m) continue;
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) {
+          if (m.material.map) m.material.map.dispose();
+          if (m.material.alphaMap) m.material.alphaMap.dispose();
+          m.material.dispose();
+        }
+      }
+    }
+  } catch (e) { /* noop */ }
+  _horizonCloudBillboards = null;
+  _horizonCloudGroup = null;
 }
 
 function syncDayNightVisuals(camX, camZ) {
+  removeHorizonCloudBillboardsIfPresent();
   const p = (G.time % DAY_CYCLE_SECONDS) / DAY_CYCLE_SECONDS;
   const theta = p * Math.PI * 2 - Math.PI * 0.5;
   /** −cos: sunrise at +X (east), sunset at −X (west); +cos was reversed for this world. */
@@ -4374,8 +4337,6 @@ function syncDayNightVisuals(camX, camZ) {
 
   sky.position.copy(camera.position);
   renderer.toneMappingExposure = 0.88 + dayFactor * 0.28;
-
-  updateHorizonCloudBillboards(camX, camZ, dayFactor);
 }
 
 let windParticles, windParticleGeo;
@@ -11729,7 +11690,9 @@ function collectMobileOrbitExcludeRects() {
     'joystick-zone', 'touch-port', 'touch-starboard', 'touch-zoom',
     'touch-edge-left', 'touch-edge-right', 'compass-stack', 'stats-ammo-stack', 'combat-shot-wrap', 'pc-combat-hud-bar',
     'minimap', 'toolbar', 'btn-deck-walk', 'deck-spyglass-btn', 'story-brief-hud', 'anchor-status', 'dock-prompt',
-    'notification', 'spectate-return-btn', 'spectate-hud'
+    'notification', 'spectate-return-btn', 'spectate-hud',
+    'log-panel', 'port-panel', 'port-vista-3d-wrap', 'fullmap', 'tutorial-overlay', 'mobile-layout-picker',
+    'create-screen', 'settings-modal', 'credits-modal', 'game-hud-modal', 'death-overlay', 'clan-invite-popup'
   ];
   if (shouldDockChatPanel() && G.mode === 'playing') ids.push('chat-box');
   const rects = [];
@@ -12680,6 +12643,7 @@ window.addEventListener('mousemove', e => {
 });
 window.addEventListener('touchstart', e => {
   if (!isMobile || G.mode !== 'playing' || G.docked || G.playerSinking) return;
+  if (isCaptainHudObscured()) return;
   if (typeof fullmapOpen !== 'undefined' && fullmapOpen) return;
   if (e.touches.length >= 2) {
     mobileOrbitTouchId = null;
@@ -13791,6 +13755,8 @@ function syncTouchZoomLayer() {
 }
 function restoreMobileGameControls() {
   if (!isMobile || G.mode !== 'playing') return;
+  const pp = document.getElementById('port-panel');
+  if (pp && pp.style.display !== 'none' && pp.style.display !== '') return;
   const tc = document.getElementById('touch-controls');
   if (tc) {
     tc.style.display = 'block';
@@ -13821,6 +13787,7 @@ function closeAllPanels() {
   if (dm) { stopDebugAdminPolling(); dm.style.display = 'none'; dm.setAttribute('aria-hidden', 'true'); }
   closeDebugPasswordModal();
   document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
+  invalidateMainCanvasOcclusionCache();
   restoreMobileGameControls();
   syncAnchorToolbarButton();
   syncCaptainWalkToolbar();
@@ -15455,7 +15422,7 @@ function ensurePortVista() {
   portVistaRenderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false });
   if (portVistaRenderer.outputColorSpace !== undefined) portVistaRenderer.outputColorSpace = THREE.SRGBColorSpace;
   portVistaRenderer.setSize(w, h);
-  portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), isMobile ? 1.25 : 1.75));
+  portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), isMobile ? 1 : 1.75));
   portVistaRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   container.appendChild(portVistaRenderer.domElement);
   portVistaCamera = new THREE.PerspectiveCamera(60, w / h, 0.5, 8000);
@@ -15468,7 +15435,7 @@ function resizePortVista() {
   const w = Math.max(120, container.clientWidth);
   const h = Math.max(120, container.clientHeight);
   if (w < 8 || h < 8) return;
-  portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), isMobile ? 1.25 : 1.75));
+  portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), isMobile ? 1 : 1.75));
   portVistaRenderer.setSize(w, h);
   portVistaCamera.aspect = w / h;
   portVistaCamera.updateProjectionMatrix();
@@ -16555,6 +16522,7 @@ function dockAtPort() {
   }, 800);
   setTimeout(() => {
     document.getElementById('port-panel').style.display = 'block';
+    if (isMobile) document.body.classList.add('mobile-port-ui-open');
     const pt = document.getElementById('port-title');
     if (pt && G.nearDock) {
       const fid = townFaction(G.nearDock);
@@ -16609,6 +16577,8 @@ function leavePort() {
   dockRopes.forEach(r => { scene.remove(r); r.geometry.dispose(); r.material.dispose(); });
   dockRopes.length = 0;
   document.getElementById('port-panel').style.display = 'none';
+  if (isMobile) document.body.classList.remove('mobile-port-ui-open');
+  invalidateMainCanvasOcclusionCache();
   restoreMobileGameControls();
   updateStoryBriefHud();
 }
@@ -19279,12 +19249,25 @@ function update(dt) {
   updatePortVistaCamera(dt);
 }
 
+let _mainCanvasOcclusionCacheT = 0;
+let _mainCanvasOcclusionCache = false;
+function shouldSkipMainGameCanvasRender() {
+  if (!isMobile || G.mode !== 'playing') return false;
+  const now = performance.now();
+  if (now - _mainCanvasOcclusionCacheT < 42) return _mainCanvasOcclusionCache;
+  _mainCanvasOcclusionCache = isCaptainHudObscured();
+  _mainCanvasOcclusionCacheT = now;
+  return _mainCanvasOcclusionCache;
+}
+function invalidateMainCanvasOcclusionCache() {
+  _mainCanvasOcclusionCacheT = 0;
+}
 function render() {
   syncFloatingNametagVisibility();
   updateWaterWakeUniforms(waterFollowCamX, waterFollowCamZ);
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
-  renderer.render(scene, camera);
+  if (!shouldSkipMainGameCanvasRender()) renderer.render(scene, camera);
   renderCargoPreviewIfOpen();
   renderYardShipPreviewIfOpen();
   renderPortVistaIfOpen();
@@ -19334,6 +19317,7 @@ function warmUpGameView() {
 /** After world swaps or leaving menus, one rAF later can still present black; paint twice into the compositor. */
 function flushGameViewRender() {
   warmUpGameView();
+  if (isMobile) return;
   requestAnimationFrame(() => { warmUpGameView(); });
 }
 
@@ -19343,6 +19327,13 @@ function flushGameViewRender() {
  */
 function revealGameHudAfterFirstStableFrame(fn) {
   flushGameViewRender();
+  if (isMobile) {
+    requestAnimationFrame(() => {
+      warmUpGameView();
+      if (typeof fn === 'function') fn();
+    });
+    return;
+  }
   requestAnimationFrame(() => {
     warmUpGameView();
     requestAnimationFrame(() => {
@@ -19517,7 +19508,7 @@ function gameLoop(time) {
       drawDebugWorldMap();
       updateDebugRoster();
     }
-    drawMinimap();
+    if (!shouldSkipMainGameCanvasRender()) drawMinimap();
     if (fullmapOpen) drawFullmap();
     if (Math.floor(G.time * 4) !== Math.floor((G.time - dt) * 4)) updateHUD();
     syncHudToastAnchors();
@@ -21241,19 +21232,18 @@ function syncCrewRosterScrollbarThumb() {
   const sh = el.scrollHeight;
   const ch = el.clientHeight;
   const st = el.scrollTop;
-  const inset = 18;
-  const usable = Math.max(0, ch - inset);
-  if (sh <= ch + 2 || usable < 24) {
+  const trackH = Math.max(0, ch);
+  if (sh <= ch + 1 || trackH < 28) {
     el.style.setProperty('--crew-thumb-op', '0');
     el.style.setProperty('--crew-thumb-len', '24px');
     el.style.setProperty('--crew-thumb-off', '0px');
     return;
   }
   const ratio = ch / sh;
-  const thumbLen = Math.max(22, Math.min(usable * ratio, usable - 6));
-  const maxScroll = sh - ch;
-  const travel = Math.max(0, usable - thumbLen);
-  const off = maxScroll > 0 ? (st / maxScroll) * travel : 0;
+  const thumbLen = Math.max(24, Math.min(ratio * trackH, trackH - 2));
+  const maxScroll = Math.max(0.5, sh - ch);
+  const travel = Math.max(0, trackH - thumbLen);
+  const off = travel > 0 ? (st / maxScroll) * travel : 0;
   el.style.setProperty('--crew-thumb-op', '1');
   el.style.setProperty('--crew-thumb-len', `${thumbLen}px`);
   el.style.setProperty('--crew-thumb-off', `${off}px`);
@@ -21264,7 +21254,7 @@ function syncCrewRosterScrollbarThumb() {
   let rail = null;
   function gutterX(clientX) {
     const r = scrollHost.getBoundingClientRect();
-    return clientX >= r.right - 32;
+    return clientX >= r.right - 48;
   }
   scrollHost.addEventListener('scroll', () => syncCrewRosterScrollbarThumb(), { passive: true });
   window.addEventListener('resize', () => syncCrewRosterScrollbarThumb());
