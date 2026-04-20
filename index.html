@@ -2126,6 +2126,10 @@ function clampNpcIntoWorldBounds(npc) {
   npc.z = Math.max(-lim, Math.min(lim, npc.z));
 }
 const RENDER_DIST = 3;
+/** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload + wildlife hide use the same band). */
+const CHUNK_UNLOAD_MARGIN = 2;
+const WILDLIFE_CULL_RADIUS = CHUNK_SIZE * (RENDER_DIST + CHUNK_UNLOAD_MARGIN + 1.1);
+const WILDLIFE_CULL_R2 = WILDLIFE_CULL_RADIUS * WILDLIFE_CULL_RADIUS;
 function mainCanvasPixelRatio() {
   const raw = window.devicePixelRatio || 1;
   const cap = isMobile ? 1.52 : 1.65;
@@ -6371,21 +6375,45 @@ const seagulls = [];
 /** When set, fish/sharks/seagulls use server-aligned time so all clients match. */
 let _wildlifeSyncedT0 = null;
 let _wildlifeSyncedPerf0 = null;
+/** Absorbs small per-tick network jitter without snapping fish motion (deterministic paths stay aligned). */
+let _wildlifeSmoothOff = 0;
 function getWildlifeWorldTime() {
   if (_wildlifeSyncedT0 != null && _wildlifeSyncedPerf0 != null) {
-    return _wildlifeSyncedT0 + (performance.now() - _wildlifeSyncedPerf0) / 1000;
+    return _wildlifeSyncedT0 + (performance.now() - _wildlifeSyncedPerf0) / 1000 + _wildlifeSmoothOff;
   }
   return G.time;
 }
 function resetWildlifeSyncedClock() {
   _wildlifeSyncedT0 = null;
   _wildlifeSyncedPerf0 = null;
+  _wildlifeSmoothOff = 0;
 }
 function anchorWildlifeClockFromServer(worldT) {
   const w = Number(worldT);
   if (!Number.isFinite(w)) return;
-  _wildlifeSyncedT0 = w;
-  _wildlifeSyncedPerf0 = performance.now();
+  const now = performance.now();
+  if (_wildlifeSyncedT0 == null || _wildlifeSyncedPerf0 == null) {
+    _wildlifeSyncedT0 = w;
+    _wildlifeSyncedPerf0 = now;
+    _wildlifeSmoothOff = 0;
+    return;
+  }
+  const predicted = _wildlifeSyncedT0 + (now - _wildlifeSyncedPerf0) / 1000 + _wildlifeSmoothOff;
+  let err = w - predicted;
+  err = Math.max(-0.55, Math.min(0.55, err));
+  _wildlifeSmoothOff += err * 0.28;
+  _wildlifeSmoothOff = Math.max(-0.75, Math.min(0.75, _wildlifeSmoothOff));
+}
+function wildlifeCullCenterXZ() {
+  if (G.spectate) {
+    const t = resolveSpectateTargetXZR();
+    if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) return { x: t.x, z: t.z };
+  }
+  return { x: camera.position.x, z: camera.position.z };
+}
+function wildlifeIsNearCullCenter(wx, wz, cx, cz) {
+  const dx = wx - cx, dz = wz - cz;
+  return dx * dx + dz * dz <= WILDLIFE_CULL_R2;
 }
 /** Open-ocean predator pairs (deterministic motion from synced world time). */
 const ambientSharkPairs = [];
@@ -6519,6 +6547,7 @@ function smoothstep01(u) {
 }
 function updateAmbientSharkPairs(dt) {
   const t = getWildlifeWorldTime();
+  const cc = wildlifeCullCenterXZ();
   for (const pair of ambientSharkPairs) {
     const t0 = pair.orbitT0 != null ? pair.orbitT0 : t;
     const orbitRamp = smoothstep01((t - t0) / 9);
@@ -6548,6 +6577,10 @@ function updateAmbientSharkPairs(dt) {
     const vzb = Math.cos(a2);
     pair.mB.rotation.y = Math.atan2(vxb, vzb);
     applyPredatorSharkSwimMotion(pair.mB, 0.92, -Math.sin(a2) * 0.085);
+    const mx = (ax + bx) * 0.5, mz = (az + bz) * 0.5;
+    const vis = wildlifeIsNearCullCenter(mx, mz, cc.x, cc.z);
+    pair.mA.visible = vis;
+    pair.mB.visible = vis;
   }
 }
 
@@ -6647,6 +6680,8 @@ function updateRescueSharkEscorts(dt) {
   const t = getWildlifeWorldTime();
   for (let i = rescueSharkEscorts.length - 1; i >= 0; i--) {
     const e = rescueSharkEscorts[i];
+    e.mA.visible = true;
+    e.mB.visible = true;
     const phase = e.phase || 'follow';
 
     if (phase === 'depart') {
@@ -6930,9 +6965,9 @@ const FISH_SPECIES = [
   { color: 0x20b2aa, size: 0.055, len: 0.2, name: 'pilchard' }
 ];
 
-const WILDLIFE_FISH_CAP = isMobile ? 1000 : 2800;
-const WILDLIFE_SEAGULL_CAP = isMobile ? 380 : 900;
-const WILDLIFE_SHARK_PAIR_CAP = isMobile ? 55 : 140;
+const WILDLIFE_FISH_CAP = 2800;
+const WILDLIFE_SEAGULL_CAP = 900;
+const WILDLIFE_SHARK_PAIR_CAP = 140;
 /** Stable tie-break for multiplayer: everyone drops the same schools / gulls / sharks when over cap. */
 function wildlifePruneKey(wx, wz, salt) {
   return swimmerStreamHash(wx, wz, (salt ^ (G.worldSeed & 0xffff)) | 0);
@@ -7009,7 +7044,9 @@ function spawnFish(wx, wz, count, rng) {
     floatOffset,
     pruneKey: wildlifePruneKey(wx, wz, 0x71ad),
     x: wx,
-    z: wz
+    z: wz,
+    lastOkX: wx,
+    lastOkZ: wz
   };
   schoolLeaders.push(leader);
   for (let i = 0; i < count; i++) {
@@ -7035,6 +7072,7 @@ function spawnFish(wx, wz, count, rng) {
 
 function updateFish(dt) {
   const t = getWildlifeWorldTime();
+  const cc = wildlifeCullCenterXZ();
   schoolLeaders.forEach(l => {
     if (l.anchorX == null) {
       const ax = l.x != null ? l.x : 0;
@@ -7047,6 +7085,8 @@ function updateFish(dt) {
       l.amp = 26 + g(503) * 92;
       l.wA = 0.088 + g(504) * 0.072;
       l.wB = 0.068 + g(505) * 0.058;
+      if (l.lastOkX == null) l.lastOkX = ax;
+      if (l.lastOkZ == null) l.lastOkZ = az;
     }
     const a = t * l.wA + l.phA;
     const b = t * l.wB + l.phB;
@@ -7059,9 +7099,13 @@ function updateFish(dt) {
         if (!isSeaObstructed(nx, nz)) break;
       }
       if (isSeaObstructed(nx, nz)) {
-        nx = l.anchorX;
-        nz = l.anchorZ;
+        nx = l.lastOkX != null ? l.lastOkX : l.anchorX;
+        nz = l.lastOkZ != null ? l.lastOkZ : l.anchorZ;
       }
+    }
+    if (!isSeaObstructed(nx, nz)) {
+      l.lastOkX = nx;
+      l.lastOkZ = nz;
     }
     l.x = nx;
     l.z = nz;
@@ -7073,6 +7117,7 @@ function updateFish(dt) {
     f.position.x = tx;
     f.position.z = tz;
     f.position.y = worldSeaSurfaceY(f.position.x, f.position.z) + l.floatOffset + Math.sin(t * 3 + f.userData.wiggle) * 0.08;
+    f.visible = wildlifeIsNearCullCenter(tx, tz, cc.x, cc.z);
     const a = t * l.wA + l.phA;
     const b = t * l.wB + l.phB;
     const vx = Math.cos(a) * l.wA * l.amp + Math.cos(b * 1.17) * l.wB * 1.17 * l.amp * 0.38;
@@ -7085,6 +7130,7 @@ function updateFish(dt) {
 
 function updateSeagulls(dt) {
   const wt = getWildlifeWorldTime();
+  const cc = wildlifeCullCenterXZ();
   seagulls.forEach(sg => {
     const p = (sg.userData.t0Phase != null ? sg.userData.t0Phase : 0) + wt * sg.userData.speed;
     sg.position.x = sg.userData.cx + Math.cos(p) * sg.userData.radius;
@@ -7094,6 +7140,7 @@ function updateSeagulls(dt) {
     const wingFlap = Math.sin(wt * 2.6 + p * 3) * 0.4;
     sg.userData.wingL.rotation.z = wingFlap;
     sg.userData.wingR.rotation.z = -wingFlap;
+    sg.visible = wildlifeIsNearCullCenter(sg.position.x, sg.position.z, cc.x, cc.z);
   });
 }
 
@@ -7175,7 +7222,6 @@ function isObjectDescendantOf(obj, ancestor) {
   return false;
 }
 /** Unload terrain far from the player so mobile GPUs do not OOM after long voyages (islands never freed otherwise). */
-const CHUNK_UNLOAD_MARGIN = 2;
 function pruneDistantIslandChunks(wx, wz) {
   if (G.mode !== 'playing') return;
   const pcx = Math.floor(wx / CHUNK_SIZE), pcz = Math.floor(wz / CHUNK_SIZE);
@@ -11093,7 +11139,12 @@ function connectToServer() {
             G.seed = s;
             noise = new SimplexNoise(G.worldSeed);
           }
-        } else if (G.playWorldAwaitingNetInit && G.mode === 'playing') {
+        }
+        {
+          const wT0 = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
+          if (wT0 != null) anchorWildlifeClockFromServer(wT0);
+        }
+        if (msg.seed == null && G.playWorldAwaitingNetInit && G.mode === 'playing') {
           applySharedWorldFromServerSeed(G.fallbackWorldSeed >>> 0);
         }
         if (msg.worldMapRevision != null) {
@@ -11201,8 +11252,9 @@ function connectToServer() {
         removeRemotePeer(lid);
         break;
       }
-      case 'state':
-        if (msg.worldT != null) anchorWildlifeClockFromServer(msg.worldT);
+      case 'state': {
+        const wT = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
+        if (wT != null) anchorWildlifeClockFromServer(wT);
         if (!Array.isArray(msg.players)) break;
         const myIdForState = netPlayerId(G.myId);
         if (myIdForState == null) break;
@@ -11222,6 +11274,7 @@ function connectToServer() {
           if (!activeRemote.has(pid)) removeRemotePeer(pid);
         }
         break;
+      }
       case 'ship_update': {
         const sid = netPlayerId(msg.id);
         if (sid == null) break;
@@ -11480,6 +11533,10 @@ function connectToServer() {
         notify(msg.error || 'Captain name not allowed on this server.');
         break;
       case 'world_seed': {
+        {
+          const wTs = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
+          if (wTs != null) anchorWildlifeClockFromServer(wTs);
+        }
         if (msg.seed == null) break;
         const ns = Number(msg.seed) >>> 0;
         if (G.mode === 'playing') {
@@ -18573,7 +18630,7 @@ function update(dt) {
   updateAmbientSharkPairs(dt);
   updateRescueSharkEscorts(dt);
   wildlifePruneAcc += dt;
-  if (wildlifePruneAcc >= (isMobile ? 1.15 : 2.1)) {
+  if (wildlifePruneAcc >= 2.1) {
     wildlifePruneAcc = 0;
     pruneWildlifeAwayFromPlayer();
   }
