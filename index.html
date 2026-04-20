@@ -2127,7 +2127,9 @@ function clampNpcIntoWorldBounds(npc) {
 }
 const RENDER_DIST = 3;
 function mainCanvasPixelRatio() {
-  return Math.min(window.devicePixelRatio || 1, 1.65);
+  const raw = window.devicePixelRatio || 1;
+  const cap = isMobile ? 1.52 : 1.65;
+  return Math.min(raw, cap);
 }
 const ISLAND_CHANCE = 0.25;
 /** Gentler dome than falloff² — smoother procedural islands (matches map-editor). */
@@ -6928,9 +6930,9 @@ const FISH_SPECIES = [
   { color: 0x20b2aa, size: 0.055, len: 0.2, name: 'pilchard' }
 ];
 
-const WILDLIFE_FISH_CAP = 2800;
-const WILDLIFE_SEAGULL_CAP = 900;
-const WILDLIFE_SHARK_PAIR_CAP = 140;
+const WILDLIFE_FISH_CAP = isMobile ? 1000 : 2800;
+const WILDLIFE_SEAGULL_CAP = isMobile ? 380 : 900;
+const WILDLIFE_SHARK_PAIR_CAP = isMobile ? 55 : 140;
 /** Stable tie-break for multiplayer: everyone drops the same schools / gulls / sharks when over cap. */
 function wildlifePruneKey(wx, wz, salt) {
   return swimmerStreamHash(wx, wz, (salt ^ (G.worldSeed & 0xffff)) | 0);
@@ -7149,6 +7151,69 @@ function fxHash01(qx, qy, qz, salt) {
   return (h >>> 0) / 4294967296;
 }
 
+/** Drop GPU buffers for a removed island / chunk group (textures, geoms, materials). */
+function disposeObject3DResources(root) {
+  if (!root) return;
+  root.traverse(obj => {
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (let mi = 0; mi < mats.length; mi++) {
+        const m = mats[mi];
+        if (m && m.map) m.map.dispose();
+        if (m) m.dispose();
+      }
+    }
+  });
+}
+function isObjectDescendantOf(obj, ancestor) {
+  let p = obj;
+  while (p) {
+    if (p === ancestor) return true;
+    p = p.parent;
+  }
+  return false;
+}
+/** Unload terrain far from the player so mobile GPUs do not OOM after long voyages (islands never freed otherwise). */
+const CHUNK_UNLOAD_MARGIN = 2;
+function pruneDistantIslandChunks(wx, wz) {
+  if (G.mode !== 'playing') return;
+  const pcx = Math.floor(wx / CHUNK_SIZE), pcz = Math.floor(wz / CHUNK_SIZE);
+  const limit = RENDER_DIST + CHUNK_UNLOAD_MARGIN;
+  for (let i = islandGroup.children.length - 1; i >= 0; i--) {
+    const ch = islandGroup.children[i];
+    const ud = ch.userData;
+    if (!ud || ud.cx == null || ud.cz == null) continue;
+    if (Math.max(Math.abs(ud.cx - pcx), Math.abs(ud.cz - pcz)) <= limit) continue;
+    for (let fi = G.floatingItems.length - 1; fi >= 0; fi--) {
+      const item = G.floatingItems[fi];
+      if (item.lootVisual && isObjectDescendantOf(item.lootVisual, ch)) {
+        removeFloatingLootVisuals(item);
+        if (item.netId != null) G.lootByNetId.delete(item.netId);
+        G.floatingItems.splice(fi, 1);
+      }
+    }
+    islandGroup.remove(ch);
+    disposeObject3DResources(ch);
+    const ii = G.islands.indexOf(ud);
+    if (ii >= 0) G.islands.splice(ii, 1);
+    G.chunks.delete(`${ud.cx},${ud.cz}`);
+    wildlifeChunkKeys.delete(`${ud.cx},${ud.cz}`);
+  }
+  for (const key of Array.from(G.chunks.keys())) {
+    const parts = key.split(',');
+    const cx = parseInt(parts[0], 10), cz = parseInt(parts[1], 10);
+    if (!Number.isFinite(cx) || !Number.isFinite(cz)) {
+      G.chunks.delete(key);
+      continue;
+    }
+    if (Math.max(Math.abs(cx - pcx), Math.abs(cz - pcz)) > limit) {
+      G.chunks.delete(key);
+      wildlifeChunkKeys.delete(key);
+    }
+  }
+}
+
 function updateChunks() {
   let wx = G.player.x, wz = G.player.z;
   if (G.spectate) {
@@ -7163,6 +7228,7 @@ function updateChunks() {
       ensureCanonicalWildlifeForChunk(cx, cz);
     }
   }
+  pruneDistantIslandChunks(wx, wz);
 }
 
 /* ============================== SHIPS ==================================== */
@@ -18507,7 +18573,7 @@ function update(dt) {
   updateAmbientSharkPairs(dt);
   updateRescueSharkEscorts(dt);
   wildlifePruneAcc += dt;
-  if (wildlifePruneAcc >= 2.1) {
+  if (wildlifePruneAcc >= (isMobile ? 1.15 : 2.1)) {
     wildlifePruneAcc = 0;
     pruneWildlifeAwayFromPlayer();
   }
