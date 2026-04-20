@@ -265,6 +265,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   display:none;
   flex-direction:column;
   min-height:0;
+  touch-action:manipulation;
   background:
     linear-gradient(180deg, rgba(48,32,22,0.08), transparent 28%),
     repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 3px),
@@ -402,6 +403,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   position:relative;
   display:flex;
   flex-direction:column;
+  touch-action:pan-y;
 }
 .log-tab-body{display:flex;flex-direction:column;gap:0;min-height:0;overflow:hidden;max-height:var(--log-tab-body-max-h, calc(75vh - 118px));}
 .crew-screen-header{margin-bottom:8px;padding-bottom:8px;flex-shrink:0;}
@@ -412,7 +414,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .crew-roster-scroll::-webkit-scrollbar{width:5px;}
 .crew-roster-scroll::-webkit-scrollbar-thumb{background:rgba(180,140,80,0.35);border-radius:4px;}
 #log-panel.log-panel--crew .crew-roster-scroll{
-  touch-action:pan-y;
+  touch-action:pan-y pinch-zoom;
   overscroll-behavior:contain;
   scrollbar-gutter:stable;
   padding:2px 6px 8px 2px;
@@ -15401,7 +15403,7 @@ function ensurePortVista() {
   portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), isMobile ? 1.25 : 1.75));
   portVistaRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   container.appendChild(portVistaRenderer.domElement);
-  portVistaCamera = new THREE.PerspectiveCamera(54, w / h, 0.5, 8000);
+  portVistaCamera = new THREE.PerspectiveCamera(60, w / h, 0.5, 8000);
   bindPortVistaOrbit(wrap);
 }
 function resizePortVista() {
@@ -15444,7 +15446,7 @@ function updatePortVistaCamera(dt) {
   if (!portVistaCamera || !G.nearDock || G.mode !== 'playing') return;
   const pp = document.getElementById('port-panel');
   if (!pp || pp.style.display === 'none' || pp.style.display === '') return;
-  positionHarborVistaCamera(portVistaCamera, G.nearDock, G.player.x, G.player.z, portVistaYaw, G.time, { distanceMult: 1.62 });
+  positionHarborVistaCamera(portVistaCamera, G.nearDock, G.player.x, G.player.z, portVistaYaw, G.time, { distanceMult: 2.05 });
 }
 function renderPortVistaIfOpen() {
   if (!portVistaRenderer || !portVistaCamera || G.mode !== 'playing') return;
@@ -20984,8 +20986,18 @@ function isCrewSeaDrop(clientX, clientY) {
 (function bindCrewCardPointerDrag() {
   const root = document.getElementById('crew-list');
   if (!root) return;
-  const TH = 9;
+  const TH = isMobile ? 16 : 9;
   const crewPtr = { active: false, dragging: false, crewIdx: -1, sx: 0, sy: 0, x: 0, y: 0, pointerId: null, card: null, portraitTap: false };
+  function resetCrewPointerNoAction() {
+    try {
+      if (crewPtr.pointerId != null) root.releasePointerCapture(crewPtr.pointerId);
+    } catch (err) {}
+    crewPtr.card?.classList.remove('dragging');
+    crewPtr.active = false;
+    crewPtr.dragging = false;
+    crewPtr.pointerId = null;
+    crewPtr.card = null;
+  }
   function endCrewDrag(e) {
     if (!crewPtr.active) return;
     if (e && e.pointerId != null && crewPtr.pointerId != null && e.pointerId !== crewPtr.pointerId) return;
@@ -21041,8 +21053,15 @@ function isCrewSeaDrop(clientX, clientY) {
     crewPtr.x = e.clientX;
     crewPtr.y = e.clientY;
     if (!crewPtr.dragging) {
-      const d = Math.hypot(crewPtr.x - crewPtr.sx, crewPtr.y - crewPtr.sy);
+      const dx = Math.abs(crewPtr.x - crewPtr.sx);
+      const dy = Math.abs(crewPtr.y - crewPtr.sy);
+      const d = Math.hypot(dx, dy);
       if (d > TH) {
+        /* Let vertical drags scroll the roster; only horizontal-dominant moves start a card drag. */
+        if (dy > dx * 1.06) {
+          resetCrewPointerNoAction();
+          return;
+        }
         crewPtr.dragging = true;
         crewPtr.card?.classList.add('dragging');
         try { root.setPointerCapture(e.pointerId); } catch (e2) {}
