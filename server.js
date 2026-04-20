@@ -1359,7 +1359,8 @@ const CORS_HEADERS = {
 function setWorldSeedAndPersist(newSeed) {
   WORLD_SEED = Number(newSeed) >>> 0;
   persistWorldSeedFile();
-  broadcastAll({ type: 'world_seed', seed: WORLD_SEED });
+  const wt = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
+  broadcastAll({ type: 'world_seed', seed: WORLD_SEED, worldT: wt, wildlifeWorldT: wt });
 }
 
 /** Static game assets (audio, models, maps). Render/VPS hosts must serve these; SPA fallback is only on Vercel. */
@@ -1870,10 +1871,13 @@ wss.on('connection', (ws, req) => {
     const pr = getPartyForCaptainKey(myCkInit);
     if (pr) partyPayload = buildPartySyncPayload(pr);
   }
+  const initWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   ws.send(JSON.stringify({
     type: 'init',
     id,
     seed: WORLD_SEED,
+    worldT: initWorldT,
+    wildlifeWorldT: initWorldT,
     worldMapRevision: WORLD_MAP_REVISION >>> 0,
     player: playerData,
     players: Array.from(players.values()).filter(p => p.id !== id),
@@ -2968,7 +2972,8 @@ setInterval(() => {
     morale: p.morale != null ? p.morale : 100,
     deckWalk: p.deckWalk || null
   }));
-  broadcast({ type: 'state', players: snapshot, worldT: (Date.now() - SERVER_WORLD_T0_MS) / 1000 });
+  const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
+  broadcast({ type: 'state', players: snapshot, worldT: tickWorldT, wildlifeWorldT: tickWorldT });
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, '0.0.0.0', () => {
