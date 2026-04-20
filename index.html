@@ -520,12 +520,53 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 }
 .crew-card-v2{
   display:block;
+  position:relative;
   border-radius:10px;padding:0;
   background:linear-gradient(165deg,rgba(44,34,24,0.92),rgba(22,16,12,0.96));
   border:1px solid rgba(140,110,70,0.38);
   box-shadow:0 2px 8px rgba(0,0,0,0.28),inset 0 1px 0 rgba(255,230,200,0.06);
   box-sizing:border-box;touch-action:manipulation;
   user-select:none;-webkit-user-select:none;
+}
+.crew-card-drag-handle{
+  display:none;
+  position:absolute;
+  left:3px;
+  top:50%;
+  transform:translateY(-50%);
+  z-index:6;
+  width:30px;
+  min-height:52px;
+  margin:0;padding:0 2px;
+  align-items:center;
+  justify-content:center;
+  border:none;border-radius:9px;
+  background:linear-gradient(180deg,rgba(55,44,32,0.92),rgba(28,22,16,0.95));
+  border:1px solid rgba(160,120,70,0.45);
+  color:#d4a848;
+  font-size:14px;
+  line-height:1;
+  letter-spacing:-0.12em;
+  cursor:grab;
+  touch-action:none;
+  -webkit-tap-highlight-color:transparent;
+  box-shadow:inset 0 1px 0 rgba(255,230,200,0.08),0 2px 6px rgba(0,0,0,0.25);
+}
+.crew-card-drag-handle:active{cursor:grabbing;filter:brightness(1.08);}
+@media(max-width:768px){
+  #log-panel.log-panel--crew .crew-card-drag-handle{display:flex;}
+  #log-panel.log-panel--crew .crew-card-v2:not(.crew-card-v2--prisoner) .crew-card-main{padding-left:34px;}
+  #log-panel.log-panel--crew .crew-card-v2,
+  #log-panel.log-panel--crew .crew-card-portrait{
+    touch-action:pan-y;
+  }
+  #log-panel.log-panel--crew .crew-roster-hint,
+  #log-panel.log-panel--crew .crew-stations-grid,
+  #log-panel.log-panel--crew .crew-bench,
+  #log-panel.log-panel--crew .crew-slot-empty,
+  #log-panel.log-panel--crew .crew-bench-cards{
+    touch-action:pan-y;
+  }
 }
 .crew-card-v2.dragging{opacity:0.88;box-shadow:0 6px 18px rgba(0,0,0,0.45);}
 .crew-card-v2--prisoner{border-color:rgba(90,90,90,0.45);opacity:0.97;}
@@ -15634,7 +15675,6 @@ function crewPanelRenderCard(m, mi) {
   editBtn.setAttribute('aria-label', 'Customize appearance');
   const openEdit = () => openGameCrewCustomizer(mi);
   editBtn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); openEdit(); });
-  cvs.addEventListener('click', () => openEdit());
   portWrap.appendChild(cvs);
   portWrap.appendChild(editBtn);
   const body = document.createElement('div');
@@ -15656,6 +15696,15 @@ function crewPanelRenderCard(m, mi) {
   body.querySelector('.crew-card-role').textContent = (m.role || '').replace(/_/g, ' ');
   main.appendChild(portWrap);
   main.appendChild(body);
+  if (canStation) {
+    const dgh = document.createElement('button');
+    dgh.type = 'button';
+    dgh.className = 'crew-card-drag-handle';
+    dgh.textContent = '\u22EE';
+    dgh.title = 'Drag to reassign station or berth';
+    dgh.setAttribute('aria-label', 'Drag to reassign station or berth');
+    wrap.appendChild(dgh);
+  }
   wrap.appendChild(main);
   return wrap;
 }
@@ -15665,13 +15714,17 @@ function updateCrewPanel() {
   l.innerHTML = '';
   const spec = SHIP_TYPES[G.player.shipType];
   const metaEl = document.getElementById('crew-log-meta');
-  if (metaEl) metaEl.textContent = 'Drag a sailor card to a station or the berth. Drag off the log toward open water to heave them over the rail.';
+  if (metaEl) metaEl.textContent = isMobile
+    ? 'Use the \u22EE grip to drag sailors on phone. Drag off the log over the sea to heave someone overboard.'
+    : 'Drag a sailor card to a station or the berth. Drag off the log toward open water to heave them over the rail.';
   const badge = document.getElementById('crew-berth-badge');
   if (badge) badge.textContent = `${countSailorCrew()} / ${spec.maxCrew} \u00B7 ${countPrisonerCrew()} / ${spec.maxPrisoners}`;
 
   const hint = document.createElement('p');
   hint.className = 'crew-roster-hint';
-  hint.textContent = 'Portrait shows your deck appearance. Tap it or the quill to edit coat, hat, and colors. Scroll this roster to see every hand.';
+  hint.textContent = isMobile
+    ? 'Scroll anywhere outside cards, or use the right edge. On phones: drag sailors only from the grip (\u22EE) at left; tap portrait or quill to edit.'
+    : 'Portrait shows your deck appearance. Tap it or the quill to edit coat, hat, and colors. Scroll this roster to see every hand.';
   l.appendChild(hint);
 
   const stationsRow = document.createElement('div');
@@ -20986,8 +21039,9 @@ function isCrewSeaDrop(clientX, clientY) {
 (function bindCrewCardPointerDrag() {
   const root = document.getElementById('crew-list');
   if (!root) return;
-  const TH = isMobile ? 16 : 9;
-  const crewPtr = { active: false, dragging: false, crewIdx: -1, sx: 0, sy: 0, x: 0, y: 0, pointerId: null, card: null, portraitTap: false };
+  const TH = isMobile ? 12 : 9;
+  let portraitTouchPending = null;
+  const crewPtr = { active: false, dragging: false, fromHandle: false, crewIdx: -1, sx: 0, sy: 0, x: 0, y: 0, pointerId: null, card: null, portraitTap: false };
   function resetCrewPointerNoAction() {
     try {
       if (crewPtr.pointerId != null) root.releasePointerCapture(crewPtr.pointerId);
@@ -20995,12 +21049,22 @@ function isCrewSeaDrop(clientX, clientY) {
     crewPtr.card?.classList.remove('dragging');
     crewPtr.active = false;
     crewPtr.dragging = false;
+    crewPtr.fromHandle = false;
     crewPtr.pointerId = null;
     crewPtr.card = null;
   }
   function endCrewDrag(e) {
+    const pid = e && e.pointerId != null ? e.pointerId : null;
+    if (e && e.type === 'pointerup' && portraitTouchPending && pid != null && portraitTouchPending.id === pid && !crewPtr.active) {
+      const p = portraitTouchPending;
+      portraitTouchPending = null;
+      const d = Math.hypot(e.clientX - p.x, e.clientY - p.y);
+      if (d < 14 && G.mode === 'playing' && Number.isFinite(p.idx)) openGameCrewCustomizer(p.idx);
+    } else if (portraitTouchPending && pid != null && portraitTouchPending.id === pid) {
+      portraitTouchPending = null;
+    }
     if (!crewPtr.active) return;
-    if (e && e.pointerId != null && crewPtr.pointerId != null && e.pointerId !== crewPtr.pointerId) return;
+    if (pid != null && crewPtr.pointerId != null && pid !== crewPtr.pointerId) return;
     const px = crewPtr.x;
     const py = crewPtr.y;
     const wasDrag = crewPtr.dragging;
@@ -21012,6 +21076,7 @@ function isCrewSeaDrop(clientX, clientY) {
     crewPtr.card?.classList.remove('dragging');
     crewPtr.active = false;
     crewPtr.dragging = false;
+    crewPtr.fromHandle = false;
     crewPtr.pointerId = null;
     crewPtr.card = null;
     if (G.mode !== 'playing') return;
@@ -21033,12 +21098,40 @@ function isCrewSeaDrop(clientX, clientY) {
     if (G.mode !== 'playing') return;
     if (e.button != null && e.button !== 0) return;
     if (e.target.closest('.crew-overboard-btn2') || e.target.closest('.crew-recruit-btn2') || e.target.closest('.crew-card-edit')) return;
+    const fromGrip = !!e.target.closest('.crew-card-drag-handle');
     const card = e.target.closest('.crew-card-v2');
+    if (e.pointerType === 'touch') {
+      if (fromGrip && card && card.dataset.crewDraggable !== '0') {
+        const idx = +card.dataset.crewIdx;
+        if (!Number.isFinite(idx)) return;
+        crewPtr.active = true;
+        crewPtr.dragging = false;
+        crewPtr.fromHandle = true;
+        crewPtr.crewIdx = idx;
+        crewPtr.sx = e.clientX;
+        crewPtr.sy = e.clientY;
+        crewPtr.x = e.clientX;
+        crewPtr.y = e.clientY;
+        crewPtr.pointerId = e.pointerId;
+        crewPtr.card = card;
+        crewPtr.portraitTap = false;
+        try { e.preventDefault(); } catch (err) {}
+        return;
+      }
+      if (card) {
+        const pw = e.target.closest('.crew-card-portrait-wrap');
+        if (pw && !e.target.closest('button')) {
+          portraitTouchPending = { id: e.pointerId, x: e.clientX, y: e.clientY, idx: +card.dataset.crewIdx };
+        }
+      }
+      return;
+    }
     if (!card || card.dataset.crewDraggable === '0') return;
     const idx = +card.dataset.crewIdx;
     if (!Number.isFinite(idx)) return;
     crewPtr.active = true;
     crewPtr.dragging = false;
+    crewPtr.fromHandle = false;
     crewPtr.crewIdx = idx;
     crewPtr.sx = e.clientX;
     crewPtr.sy = e.clientY;
@@ -21057,8 +21150,7 @@ function isCrewSeaDrop(clientX, clientY) {
       const dy = Math.abs(crewPtr.y - crewPtr.sy);
       const d = Math.hypot(dx, dy);
       if (d > TH) {
-        /* Let vertical drags scroll the roster; only horizontal-dominant moves start a card drag. */
-        if (dy > dx * 1.06) {
+        if (!crewPtr.fromHandle && dy > dx * 1.06) {
           resetCrewPointerNoAction();
           return;
         }
