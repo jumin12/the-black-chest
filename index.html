@@ -397,7 +397,16 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 }
 #log-crew{display:flex;flex-direction:column;min-height:0;flex:1;}
 #log-panel.log-panel--crew #log-crew{flex:1;min-height:0;}
-/* Invisible legacy node kept in DOM; faux bar is ::before/::after on .crew-roster-scroll-outer. */
+/* Non-scrolling wrapper so mobile faux track (::before/::after) spans full tab height (not clipped to scrollport). */
+#log-panel.log-panel--crew .crew-roster-scroll-frame{
+  flex:1;
+  min-height:0;
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  width:100%;
+}
+/* Invisible legacy node kept in DOM. */
 .crew-mobile-scrollbar-track{display:none!important;}
 #log-crew .crew-roster-scroll-outer{
   flex:1;
@@ -438,10 +447,9 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   padding-bottom:0;
 }
 @media(max-width:768px){
-  /* iOS/Safari often show no styled native bar — use same faux track+thumb as PC (pointer-events:none so content still scrolls). */
+  /* Faux track+thumb on .crew-roster-scroll-frame (full tab body height); scroller is child. */
   #log-panel.log-panel--crew .crew-roster-scroll-outer{
     scrollbar-width:none;
-    min-height:min(52vh, 460px);
     touch-action:pan-y;
   }
   #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{
@@ -450,7 +458,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
     height:0;
     background:transparent;
   }
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::after{
+  #log-panel.log-panel--crew .crew-roster-scroll-frame::after{
     content:'';
     position:absolute;
     top:0;
@@ -466,7 +474,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
     margin:0;
     box-shadow:inset 0 0 8px rgba(0,0,0,0.35);
   }
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::before{
+  #log-panel.log-panel--crew .crew-roster-scroll-frame::before{
     content:'';
     position:absolute;
     top:var(--crew-thumb-off, 0px);
@@ -1748,9 +1756,11 @@ body > a[href="https://vibej.am/"][target="_blank"]{
         </div>
         <div class="cargo-hold-badge" id="crew-berth-badge" title="Sailors / brig">0 / 0</div>
       </header>
-      <div class="crew-roster-scroll-outer">
-        <div id="crew-list" class="crew-roster-scroll"></div>
-        <div class="crew-mobile-scrollbar-track" aria-hidden="true"></div>
+      <div class="crew-roster-scroll-frame">
+        <div class="crew-roster-scroll-outer">
+          <div id="crew-list" class="crew-roster-scroll"></div>
+          <div class="crew-mobile-scrollbar-track" aria-hidden="true"></div>
+        </div>
       </div>
     </div>
     <div id="log-missions" class="log-content" style="display:none;"><div id="missions-list"></div></div>
@@ -19203,8 +19213,10 @@ function update(dt) {
   }
   G.nearDock = nearestDock;
   const dockPrompt = document.getElementById('dock-prompt');
+  const logPanelEl = document.getElementById('log-panel');
+  const captainsLogOpen = logPanelEl ? window.getComputedStyle(logPanelEl).display !== 'none' : false;
   const showDockPrompt = nearestDock && !G.docked && G.mode === 'playing' && !G.spectate && !G.playerSinking
-    && G.player.health > 0 && !(G.captainWalk && G.captainWalk.active);
+    && G.player.health > 0 && !(G.captainWalk && G.captainWalk.active) && !captainsLogOpen;
   if (dockPrompt) {
     if (showDockPrompt) {
       dockPrompt.style.display = 'block';
@@ -21264,13 +21276,15 @@ function isCrewSeaDrop(clientX, clientY) {
 function syncCrewRosterScrollbarThumb() {
   const el = document.querySelector('#log-crew .crew-roster-scroll-outer');
   if (!el) return;
+  const frame = document.querySelector('#log-crew .crew-roster-scroll-frame');
+  const styleTarget = (isMobile && frame) ? frame : el;
   const sh = el.scrollHeight;
   const ch = el.clientHeight;
   const st = el.scrollTop;
   if (sh <= ch + 2 || ch < 32) {
-    el.style.setProperty('--crew-thumb-op', '0');
-    el.style.setProperty('--crew-thumb-len', '32px');
-    el.style.setProperty('--crew-thumb-off', '0px');
+    styleTarget.style.setProperty('--crew-thumb-op', '0');
+    styleTarget.style.setProperty('--crew-thumb-len', '32px');
+    styleTarget.style.setProperty('--crew-thumb-off', '0px');
     return;
   }
   const maxScroll = sh - ch;
@@ -21279,9 +21293,9 @@ function syncCrewRosterScrollbarThumb() {
   const thumbLen = Math.max(32, Math.min((ch / sh) * usable, usable - 8));
   const travel = Math.max(0, usable - thumbLen);
   const off = maxScroll > 0 ? (st / maxScroll) * travel : 0;
-  el.style.setProperty('--crew-thumb-op', '1');
-  el.style.setProperty('--crew-thumb-len', `${thumbLen}px`);
-  el.style.setProperty('--crew-thumb-off', `${inset + off}px`);
+  styleTarget.style.setProperty('--crew-thumb-op', '1');
+  styleTarget.style.setProperty('--crew-thumb-len', `${thumbLen}px`);
+  styleTarget.style.setProperty('--crew-thumb-off', `${inset + off}px`);
 }
 (function bindCrewRosterScrollGutterTouch() {
   const scrollHost = document.querySelector('#log-crew .crew-roster-scroll-outer');
