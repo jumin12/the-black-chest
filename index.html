@@ -437,31 +437,56 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   padding-bottom:0;
 }
 @media(max-width:768px){
-  /* Native overlay scrollbar + wide gutter: faux track overlapped content and broke touch scrolling on many devices. */
+  /* iOS/Safari ignore styled ::-webkit-scrollbar — paint PC-like track+thumb in pseudo-elements (pointer-events:none so pan-scroll still works). */
   #log-panel.log-panel--crew .crew-roster-scroll-outer{
-    scrollbar-width:thin;
-    scrollbar-color:rgba(212,168,72,0.9) rgba(18,12,8,0.85);
+    scrollbar-width:none;
     min-height:min(52vh, 460px);
     touch-action:pan-y;
   }
   #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{
-    width:11px;
+    display:none;
+    width:0;
+    height:0;
+    background:transparent;
   }
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar-track{
-    background:rgba(18,12,8,0.75);
-    border-radius:8px;
-    margin:4px 0;
+  #log-panel.log-panel--crew .crew-roster-scroll-outer::after{
+    content:'';
+    position:absolute;
+    top:6px;
+    bottom:6px;
+    right:max(2px, env(safe-area-inset-right, 0px));
+    width:14px;
+    border-radius:10px;
+    pointer-events:none;
+    z-index:3;
+    box-sizing:border-box;
+    background:linear-gradient(90deg,rgba(40,28,18,0.25),rgba(14,10,6,0.92));
+    border:1px solid rgba(100,80,48,0.45);
+    margin:0;
+    box-shadow:inset 0 0 8px rgba(0,0,0,0.35);
   }
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar-thumb{
-    background:linear-gradient(180deg,rgba(235,205,140,0.95),rgba(120,80,35,0.92));
-    border-radius:8px;
-    border:2px solid rgba(24,18,12,0.95);
+  #log-panel.log-panel--crew .crew-roster-scroll-outer::before{
+    content:'';
+    position:absolute;
+    top:calc(6px + var(--crew-thumb-off, 0px));
+    right:calc(4px + max(0px, env(safe-area-inset-right, 0px)));
+    width:8px;
+    height:var(--crew-thumb-len, 36px);
+    max-height:calc(100% - 14px);
+    border-radius:10px;
+    pointer-events:none;
+    z-index:4;
+    box-sizing:border-box;
+    border:2px solid rgba(30,20,12,0.95);
+    background:linear-gradient(180deg,rgba(235,205,140,0.95),rgba(160,110,45,0.92) 40%,rgba(90,58,22,0.95));
+    box-shadow:inset 0 1px 0 rgba(255,245,220,0.45),0 2px 6px rgba(0,0,0,0.35);
+    opacity:var(--crew-thumb-op, 1);
   }
   #log-panel.log-panel--crew .crew-mobile-scrollbar-track{
     display:none!important;
   }
   #log-panel.log-panel--crew #crew-list.crew-roster-scroll{
-    padding-right:max(8px, env(safe-area-inset-right, 0px));
+    padding-right:max(22px, calc(18px + env(safe-area-inset-right, 0px)));
   }
 }
 #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{width:14px;}
@@ -21233,23 +21258,29 @@ function isCrewSeaDrop(clientX, clientY) {
   root.addEventListener('pointerup', endCrewDrag);
   root.addEventListener('pointercancel', endCrewDrag);
 })();
-/** Desktop-only faux thumb (mobile uses native thin scrollbar in CSS). */
+/** Mobile: sync faux thumb (--crew-thumb-*) for ::before; PC uses native styled ::-webkit-scrollbar only. */
 function syncCrewRosterScrollbarThumb() {
-  if (isMobile) return;
   const el = document.querySelector('#log-crew .crew-roster-scroll-outer');
   if (!el) return;
+  if (!isMobile) {
+    el.style.removeProperty('--crew-thumb-op');
+    el.style.removeProperty('--crew-thumb-len');
+    el.style.removeProperty('--crew-thumb-off');
+    return;
+  }
   const sh = el.scrollHeight;
   const ch = el.clientHeight;
   const st = el.scrollTop;
-  if (sh <= ch + 2 || ch < 36) {
+  const usable = Math.max(0, ch - 12);
+  if (sh <= ch + 2 || ch < 36 || usable < 28) {
     el.style.setProperty('--crew-thumb-op', '0');
     el.style.setProperty('--crew-thumb-len', '28px');
     el.style.setProperty('--crew-thumb-off', '0px');
     return;
   }
   const maxScroll = sh - ch;
-  const thumbLen = Math.max(28, Math.min((ch / sh) * ch, ch - 6));
-  const travel = Math.max(0, ch - thumbLen);
+  const thumbLen = Math.max(28, Math.min((ch / sh) * ch, usable - 6));
+  const travel = Math.max(0, usable - thumbLen);
   const off = maxScroll > 0 ? (st / maxScroll) * travel : 0;
   el.style.setProperty('--crew-thumb-op', '1');
   el.style.setProperty('--crew-thumb-len', `${thumbLen}px`);
