@@ -437,61 +437,31 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   padding-bottom:0;
 }
 @media(max-width:768px){
-  /* Hide OS scrollbar (often static on iOS); faux track + JS-synced thumb show real scroll position. */
+  /* Native overlay scrollbar + wide gutter: faux track overlapped content and broke touch scrolling on many devices. */
   #log-panel.log-panel--crew .crew-roster-scroll-outer{
-    scrollbar-width:none;
+    scrollbar-width:thin;
+    scrollbar-color:rgba(212,168,72,0.9) rgba(18,12,8,0.85);
+    min-height:min(52vh, 460px);
+    touch-action:pan-y;
   }
   #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{
-    display:none;
-    width:0;
-    height:0;
-    background:transparent;
+    width:11px;
   }
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::after{
-    content:'';
-    position:absolute;
-    top:0;
-    right:max(0px, env(safe-area-inset-right, 0px));
-    bottom:0;
-    width:12px;
+  #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar-track{
+    background:rgba(18,12,8,0.75);
     border-radius:8px;
-    pointer-events:none;
-    z-index:3;
-    box-sizing:border-box;
-    background:linear-gradient(180deg,rgba(52,40,26,0.97),rgba(24,18,12,0.99));
-    border:1px solid rgba(140,110,65,0.55);
-    box-shadow:inset 0 1px 0 rgba(255,230,200,0.12),inset 0 -1px 8px rgba(0,0,0,0.45);
+    margin:4px 0;
   }
-  #log-panel.log-panel--crew .crew-roster-scroll-outer::before{
-    content:'';
-    position:absolute;
-    top:var(--crew-thumb-off, 0px);
-    right:calc(2px + max(0px, env(safe-area-inset-right, 0px)));
-    width:8px;
-    height:var(--crew-thumb-len, 36px);
-    border-radius:6px;
-    pointer-events:none;
-    z-index:4;
-    box-sizing:border-box;
-    background:linear-gradient(180deg,rgba(245,215,150,0.98),rgba(175,120,48,0.95) 42%,rgba(95,62,26,0.96));
-    border:1px solid rgba(36,26,16,0.9);
-    box-shadow:inset 0 1px 0 rgba(255,248,220,0.45),0 1px 4px rgba(0,0,0,0.35);
-    opacity:var(--crew-thumb-op, 1);
+  #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar-thumb{
+    background:linear-gradient(180deg,rgba(235,205,140,0.95),rgba(120,80,35,0.92));
+    border-radius:8px;
+    border:2px solid rgba(24,18,12,0.95);
   }
   #log-panel.log-panel--crew .crew-mobile-scrollbar-track{
-    display:block;
-    position:absolute;
-    top:0;
-    right:0;
-    bottom:0;
-    width:max(14px, calc(12px + env(safe-area-inset-right, 0px)));
-    z-index:5;
-    pointer-events:auto;
-    touch-action:none;
-    background:transparent;
+    display:none!important;
   }
   #log-panel.log-panel--crew #crew-list.crew-roster-scroll{
-    padding-right:max(20px, calc(14px + env(safe-area-inset-right, 0px)));
+    padding-right:max(8px, env(safe-area-inset-right, 0px));
   }
 }
 #log-panel.log-panel--crew .crew-roster-scroll-outer::-webkit-scrollbar{width:14px;}
@@ -15435,14 +15405,27 @@ function ensurePortVista() {
   const wrap = document.getElementById('port-vista-3d-wrap');
   const h = Math.max(160, container.clientHeight || 260);
   const w = Math.max(200, container.clientWidth || 320);
-  portVistaRenderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false });
-  if (portVistaRenderer.outputColorSpace !== undefined) portVistaRenderer.outputColorSpace = THREE.SRGBColorSpace;
-  portVistaRenderer.setSize(w, h);
-  portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), isMobile ? 1 : 1.75));
-  portVistaRenderer.toneMapping = THREE.ACESFilmicToneMapping;
-  container.appendChild(portVistaRenderer.domElement);
-  portVistaCamera = new THREE.PerspectiveCamera(60, w / h, 0.5, 8000);
-  bindPortVistaOrbit(wrap);
+  try {
+    portVistaRenderer = new THREE.WebGLRenderer({
+      antialias: !isMobile,
+      alpha: false,
+      powerPreference: isMobile ? 'low-power' : 'high-performance',
+      failIfMajorPerformanceCaveat: false
+    });
+    if (portVistaRenderer.outputColorSpace !== undefined) portVistaRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    portVistaRenderer.setSize(w, h);
+    portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), isMobile ? 1 : 1.75));
+    portVistaRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    container.appendChild(portVistaRenderer.domElement);
+    portVistaRenderer.domElement.addEventListener('webglcontextlost', e => {
+      try { e.preventDefault(); } catch (err) {}
+      disposePortVista();
+    }, false);
+    portVistaCamera = new THREE.PerspectiveCamera(60, w / h, 0.5, 8000);
+    bindPortVistaOrbit(wrap);
+  } catch (err) {
+    disposePortVista();
+  }
 }
 function resizePortVista() {
   if (!portVistaRenderer || !portVistaCamera) return;
@@ -15490,7 +15473,11 @@ function renderPortVistaIfOpen() {
   if (!portVistaRenderer || !portVistaCamera || G.mode !== 'playing') return;
   const pp = document.getElementById('port-panel');
   if (!pp || pp.style.display === 'none' || pp.style.display === '') return;
-  portVistaRenderer.render(scene, portVistaCamera);
+  try {
+    portVistaRenderer.render(scene, portVistaCamera);
+  } catch (err) {
+    disposePortVista();
+  }
 }
 
 function updateInventoryPanel() {
@@ -16521,39 +16508,52 @@ function dockAtPort() {
   document.getElementById('dock-prompt').style.display = 'none';
   hideMobileControls();
   setTimeout(() => {
-    const da = G.nearDock?.dockAngle || 0;
-    for (let ri = 0; ri < 2; ri++) {
-      const tcx = ri === 0 ? G.dockingAnim?.cleatLX : G.dockingAnim?.cleatRX;
-      const tcz = ri === 0 ? G.dockingAnim?.cleatLZ : G.dockingAnim?.cleatRZ;
-      const ax = tcx != null ? tcx : G.nearDock.dockX + (ri === 0 ? -2 : 2) * Math.cos(da);
-      const az = tcz != null ? tcz : G.nearDock.dockZ + (ri === 0 ? -2 : 2) * Math.sin(da);
-      const ropeMat = new THREE.LineBasicMaterial({ color: 0x8a7a5a });
-      const ropeGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(G.player.x, SEA_LEVEL + 1.5, G.player.z),
-        new THREE.Vector3(ax, SEA_LEVEL + 1, az)
-      ]);
-      const rope = new THREE.Line(ropeGeo, ropeMat);
-      scene.add(rope); dockRopes.push(rope);
-    }
+    try {
+      if (!G.docked || !G.nearDock) return;
+      const nd = G.nearDock;
+      const da = nd.dockAngle || 0;
+      for (let ri = 0; ri < 2; ri++) {
+        const tcx = ri === 0 ? G.dockingAnim?.cleatLX : G.dockingAnim?.cleatRX;
+        const tcz = ri === 0 ? G.dockingAnim?.cleatLZ : G.dockingAnim?.cleatRZ;
+        const ax = tcx != null ? tcx : nd.dockX + (ri === 0 ? -2 : 2) * Math.cos(da);
+        const az = tcz != null ? tcz : nd.dockZ + (ri === 0 ? -2 : 2) * Math.sin(da);
+        const ropeMat = new THREE.LineBasicMaterial({ color: 0x8a7a5a });
+        const ropeGeo = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(G.player.x, SEA_LEVEL + 1.5, G.player.z),
+          new THREE.Vector3(ax, SEA_LEVEL + 1, az)
+        ]);
+        const rope = new THREE.Line(ropeGeo, ropeMat);
+        scene.add(rope); dockRopes.push(rope);
+      }
+    } catch (e) {}
   }, 800);
   setTimeout(() => {
-    document.body.classList.add('port-panel-open');
-    document.getElementById('port-panel').style.display = 'block';
-    const pt = document.getElementById('port-title');
-    if (pt && G.nearDock) {
-      const fid = townFaction(G.nearDock);
-      const fc = FACTION_TRADE_COLORS[fid % 4];
-      pt.innerHTML = `${G.nearDock.townName || 'Port'}<div style="font-size:11px;font-weight:normal;color:${fc};opacity:0.95;margin-top:5px;letter-spacing:0.04em;">${factionLabel(fid)}</div>`;
-    }
-    showPortTab('trade');
-    checkPortQuestProgress();
-    requestAnimationFrame(() => {
-      ensurePortVista();
-      requestAnimationFrame(() => {
-        resizePortVista();
-        updatePortVistaCamera(0);
-      });
-    });
+    try {
+      if (!G.docked || G.mode !== 'playing') return;
+      document.body.classList.add('port-panel-open');
+      document.getElementById('port-panel').style.display = 'block';
+      const pt = document.getElementById('port-title');
+      if (pt && G.nearDock) {
+        const fid = townFaction(G.nearDock);
+        const fc = FACTION_TRADE_COLORS[fid % 4];
+        pt.innerHTML = `${G.nearDock.townName || 'Port'}<div style="font-size:11px;font-weight:normal;color:${fc};opacity:0.95;margin-top:5px;letter-spacing:0.04em;">${factionLabel(fid)}</div>`;
+      }
+      showPortTab('trade');
+      checkPortQuestProgress();
+      const bootVista = () => {
+        try {
+          ensurePortVista();
+          requestAnimationFrame(() => {
+            try {
+              resizePortVista();
+              updatePortVistaCamera(0);
+            } catch (e2) {}
+          });
+        } catch (e) {}
+      };
+      if (isMobile) setTimeout(bootVista, 100);
+      else requestAnimationFrame(bootVista);
+    } catch (e) {}
   }, 2000);
 }
 
@@ -18485,19 +18485,24 @@ function update(dt) {
         G.player.rotation += drd * Math.min(1, 2.35 * dt) * (0.5 + 0.5 * align);
       }
     }
-    const clx0 = da.cleatLX, clz0 = da.cleatLZ;
-    const clx1 = da.cleatRX, clz1 = da.cleatRZ;
-    dockRopes.forEach((r, ri) => {
-      const tcx = ri === 0 ? clx0 : clx1;
-      const tcz = ri === 0 ? clz0 : clz1;
-      const ax = tcx != null ? tcx : da.dockX + (ri === 0 ? -2 : 2) * Math.cos(G.nearDock?.dockAngle || 0);
-      const az = tcz != null ? tcz : da.dockZ + (ri === 0 ? -2 : 2) * Math.sin(G.nearDock?.dockAngle || 0);
-      const pts = [
-        new THREE.Vector3(G.player.x, SEA_LEVEL + 1.5, G.player.z),
-        new THREE.Vector3(ax, SEA_LEVEL + 1, az)
-      ];
-      r.geometry.setFromPoints(pts);
-    });
+    try {
+      const clx0 = da.cleatLX, clz0 = da.cleatLZ;
+      const clx1 = da.cleatRX, clz1 = da.cleatRZ;
+      dockRopes.forEach((r, ri) => {
+        try {
+          if (!r || !r.geometry || typeof r.geometry.setFromPoints !== 'function') return;
+          const tcx = ri === 0 ? clx0 : clx1;
+          const tcz = ri === 0 ? clz0 : clz1;
+          const ax = tcx != null ? tcx : da.dockX + (ri === 0 ? -2 : 2) * Math.cos(G.nearDock?.dockAngle || 0);
+          const az = tcz != null ? tcz : da.dockZ + (ri === 0 ? -2 : 2) * Math.sin(G.nearDock?.dockAngle || 0);
+          const pts = [
+            new THREE.Vector3(G.player.x, SEA_LEVEL + 1.5, G.player.z),
+            new THREE.Vector3(ax, SEA_LEVEL + 1, az)
+          ];
+          r.geometry.setFromPoints(pts);
+        } catch (e) { /* rope update must never break the frame */ }
+      });
+    } catch (e) {}
   }
   if (!G.playerSinking) {
     playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z);
@@ -21228,8 +21233,9 @@ function isCrewSeaDrop(clientX, clientY) {
   root.addEventListener('pointerup', endCrewDrag);
   root.addEventListener('pointercancel', endCrewDrag);
 })();
-/** Mobile: faux scrollbar thumb (::before) tracks scrollTop because native thumb is hidden. */
+/** Desktop-only faux thumb (mobile uses native thin scrollbar in CSS). */
 function syncCrewRosterScrollbarThumb() {
+  if (isMobile) return;
   const el = document.querySelector('#log-crew .crew-roster-scroll-outer');
   if (!el) return;
   const sh = el.scrollHeight;
@@ -21251,57 +21257,9 @@ function syncCrewRosterScrollbarThumb() {
 }
 (function bindCrewRosterScrollGutterTouch() {
   const scrollHost = document.querySelector('#log-crew .crew-roster-scroll-outer');
-  const track = document.querySelector('#log-crew .crew-mobile-scrollbar-track');
   if (!scrollHost) return;
   scrollHost.addEventListener('scroll', () => syncCrewRosterScrollbarThumb(), { passive: true });
   window.addEventListener('resize', () => syncCrewRosterScrollbarThumb());
-  if (!isMobile || !track) return;
-  function crewScrollMetrics() {
-    const sh = scrollHost.scrollHeight, ch = scrollHost.clientHeight, st = scrollHost.scrollTop;
-    const maxS = Math.max(0, sh - ch);
-    const thumbLen = maxS <= 0 ? ch : Math.max(28, Math.min((ch / sh) * ch, ch - 6));
-    const travel = Math.max(0, ch - thumbLen);
-    return { maxS, thumbLen, travel, st, sh, ch };
-  }
-  let drag = null;
-  function onPtrMove(e) {
-    if (!drag) return;
-    const m = drag.metrics;
-    const dy = e.clientY - drag.ptrY;
-    const dScroll = m.travel > 0 ? (dy / m.travel) * m.maxS : 0;
-    const next = drag.scroll0 + dScroll;
-    scrollHost.scrollTop = Math.max(0, Math.min(m.maxS, next));
-    syncCrewRosterScrollbarThumb();
-  }
-  function endPtr(e) {
-    if (!drag) return;
-    drag = null;
-    try { if (e && e.pointerId != null) track.releasePointerCapture(e.pointerId); } catch (err) {}
-    track.removeEventListener('pointermove', onPtrMove);
-    track.removeEventListener('pointerup', endPtr);
-    track.removeEventListener('pointercancel', endPtr);
-  }
-  track.addEventListener('pointerdown', e => {
-    if (G.mode !== 'playing' || e.button !== 0) return;
-    const m = crewScrollMetrics();
-    if (m.maxS <= 0) return;
-    const rect = track.getBoundingClientRect();
-    const yIn = e.clientY - rect.top;
-    const thumbTop = (scrollHost.scrollTop / m.maxS) * m.travel;
-    const onThumb = yIn >= thumbTop - 4 && yIn <= thumbTop + m.thumbLen + 4;
-    if (!onThumb) {
-      const ny = Math.max(0, Math.min(m.travel, yIn - m.thumbLen * 0.5));
-      scrollHost.scrollTop = (ny / m.travel) * m.maxS;
-      syncCrewRosterScrollbarThumb();
-      return;
-    }
-    drag = { ptrY: e.clientY, scroll0: scrollHost.scrollTop, metrics: m };
-    try { track.setPointerCapture(e.pointerId); } catch (err) {}
-    track.addEventListener('pointermove', onPtrMove);
-    track.addEventListener('pointerup', endPtr);
-    track.addEventListener('pointercancel', endPtr);
-    e.preventDefault();
-  });
 })();
 
 requestAnimationFrame(gameLoop);
