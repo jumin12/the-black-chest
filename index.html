@@ -608,17 +608,28 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   position:relative;
   height:6px;border-radius:2px;background:rgba(0,0,0,0.45);
   border:1px solid rgba(80,65,50,0.5);overflow:hidden;box-shadow:inset 0 1px 3px rgba(0,0,0,0.35);
+  cursor:default;
 }
 .crew-skill-bar-ticks{
   position:absolute;inset:0;z-index:0;pointer-events:none;border-radius:2px;
   background:repeating-linear-gradient(90deg,
-    transparent 0,
-    transparent calc(20% - 1px),
-    rgba(0,0,0,0.55) calc(20% - 1px),
-    rgba(0,0,0,0.55) calc(20% - 0.5px),
-    transparent calc(20% - 0.5px),
-    transparent 20%);
-  opacity:0.92;
+    rgba(0,0,0,0.25) 0,
+    rgba(0,0,0,0.25) calc(20% - 2.5px),
+    rgba(255,248,220,0.42) calc(20% - 2.5px),
+    rgba(255,248,220,0.42) calc(20% - 1px),
+    rgba(10,8,6,0.92) calc(20% - 1px),
+    rgba(10,8,6,0.92) calc(20% + 0.5px),
+    rgba(255,248,220,0.35) calc(20% + 0.5px),
+    rgba(255,248,220,0.35) calc(20% + 1.5px),
+    rgba(0,0,0,0.28) calc(20% + 1.5px),
+    rgba(0,0,0,0.28) 20%);
+  opacity:1;
+}
+@media (min-width:769px){
+  .crew-skill-bar[title]:hover{
+    border-color:rgba(212,168,72,0.55);
+    box-shadow:0 0 0 1px rgba(212,168,72,0.22),inset 0 1px 3px rgba(0,0,0,0.35);
+  }
 }
 .crew-skill-fill{
   position:relative;z-index:1;
@@ -2159,6 +2170,7 @@ body.game-help-mobile-minimal #game-help-panel{
         <button type="button" class="game-help-tab active" role="tab" aria-selected="true" data-help-tab="basics" id="game-help-tab-basics">Basics</button>
         <button type="button" class="game-help-tab" role="tab" aria-selected="false" data-help-tab="combat" id="game-help-tab-combat">Combat &amp; shots</button>
         <button type="button" class="game-help-tab" role="tab" aria-selected="false" data-help-tab="trade" id="game-help-tab-trade">Trade &amp; port</button>
+        <button type="button" class="game-help-tab" role="tab" aria-selected="false" data-help-tab="skills" id="game-help-tab-skills">Crew &amp; skills</button>
       </div>
       <div class="game-help-body">
         <div class="game-help-body-scroll">
@@ -2206,6 +2218,18 @@ body.game-help-mobile-minimal #game-help-panel{
           <p>Buy and sell for gold. Towns have limited <strong>warehouse stock</strong>. Free cargo space before buying bulk.</p>
           <h3>Repairs &amp; upgrades</h3>
           <p>Shipyard for hull, rigging, and class upgrades. Story and bounties start with the <strong>harbormaster</strong>.</p>
+          <h3>Emergency repairs at sea</h3>
+          <p>In the Captain&rsquo;s Log <strong>Ship</strong> tab you can spend <strong>wood planks</strong> from cargo to patch the hull. Higher captain <strong>sailing</strong> skill yields more HP per plank. Shoals and rocks can hole the hull—keep wood or limp to port.</p>
+        </div>
+        <div class="game-help-pane" data-help-pane="skills" id="game-help-pane-skills">
+          <h3>Crew skills (levels 1–5)</h3>
+          <p>Each sailor has four skills shown as bars in the <strong>Crew</strong> log. Bars are divided into five segments (like FTL). Hover a bar on PC for a full tooltip.</p>
+          <p><strong>Gunning</strong> — Faster broadside reloads and slightly better accuracy when that crewman is stationed to the guns.</p>
+          <p><strong>Sailing</strong> — More speed from the wind at the helm, and <strong>more hull repaired per wood plank</strong> when you use cargo repairs in the Ship tab.</p>
+          <p><strong>Navigation</strong> — Stronger bonus from sailing with the wind on the chart; station bonuses at the map table.</p>
+          <p><strong>Commanding</strong> — Morale and efficiency aura for stations while that officer is on deck.</p>
+          <h3>Hazards</h3>
+          <p class="game-help-note">Jagged <strong>reefs</strong> ring many islands in shallow water. Speed worsens the grinding damage—for you and for AI ships.</p>
         </div>
         </div>
       </div>
@@ -2350,7 +2374,7 @@ function mainCanvasPixelRatio() {
   const cap = isMobile ? 1.52 : 1.65;
   return Math.min(raw, cap);
 }
-const ISLAND_CHANCE = 0.25;
+const ISLAND_CHANCE = 0.31;
 /** Gentler dome than falloff² — smoother procedural islands (matches map-editor). */
 const ISLAND_HEIGHT_FALLOFF_POW = 1.48;
 /** Land vs sea — same thresholds for collision, dock tests, and terrain mesh (no phantom “coastal” shelves). */
@@ -2363,6 +2387,15 @@ const PROC_SEABED_Y = -4;
 const PROC_EDGE_WARP_AMP1 = 0.10;
 const PROC_EDGE_WARP_AMP2 = 0.038;
 const PROC_COAST_WOBBLE = 0.045;
+/** Matched on terrain mesh, flora samples, and ship blocking — extra jagged coastline detail. */
+const PROC_COAST_MICRO_WARP = 0.034;
+function proceduralCoastMicro(islandNoise, worldX, worldZ, px, pz) {
+  return islandNoise.noise2D((worldX + px) * 0.067, (worldZ + pz) * 0.07) * PROC_COAST_MICRO_WARP
+    + islandNoise.noise2D(px * 0.135, pz * 0.135) * (PROC_COAST_MICRO_WARP * 0.52);
+}
+/** Procedural shoals: narrow band just outside the visible shore (world XZ). */
+const REEF_SHOAL_INNER = 0.9;
+const REEF_SHOAL_OUTER = 1.26;
 const SEA_LEVEL = 0;
 /**
  * Vertex color for island terrain quads where heightmap is “sea” — must approximate the same hue as the main ocean
@@ -4908,12 +4941,12 @@ function dryLandSampleForMeta(wx, wz, meta) {
   const combined = n1 * 0.6 + n2 + ridges;
   const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
   const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
-  const warpedDist = dist + edgeWarp + coastWobble;
+  const warpedDist = dist + edgeWarp + coastWobble + proceduralCoastMicro(islandNoise, worldX, worldZ, px, pz);
   const falloff = Math.max(0, 1 - warpedDist * warpedDist);
   const ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
   return ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
 }
-/** Stricter than rendered mesh so ships/NPCs/fish stay in water while waves animate the shore visually. */
+/** Dock / clearance probes — same coastline as the mesh; slightly stricter height so pier tips stay wet. */
 function dryLandCollisionSampleForMeta(wx, wz, meta) {
   const worldX = meta.worldX, worldZ = meta.worldZ;
   const islandRadius = meta.radius, islandHeight = meta.maxH;
@@ -4927,11 +4960,12 @@ function dryLandCollisionSampleForMeta(wx, wz, meta) {
   const combined = n1 * 0.6 + n2 + ridges;
   const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
   const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
-  const warpedDist = dist + edgeWarp + coastWobble;
+  const warpedDist = dist + edgeWarp + coastWobble + proceduralCoastMicro(islandNoise, worldX, worldZ, px, pz);
   const falloff = Math.max(0, 1 - warpedDist * warpedDist);
   const ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
   return ht > PROC_LAND_HT_MIN + PROC_COLLIDE_LAND_EXTRA_HT && warpedDist < PROC_LAND_WARP_MAX - PROC_COLLIDE_WARP_SHRINK;
 }
+/** Ship / NPC / fish blocking — aligned with island terrain vertices (`dryLandSampleForMeta`) so hulls cannot pass through the visible coast. */
 function dryLandAtWorldPosition(wx, wz) {
   if (G.customMap && G.customMap.heights && G.customMap.gridN) {
     return sampleCustomMapLand(wx, wz);
@@ -4941,10 +4975,104 @@ function dryLandAtWorldPosition(wx, wz) {
     for (let dr = -1; dr <= 1; dr++) {
       const meta = getProceduralIslandMeta(cxi + dc, czi + dr);
       if (!meta) continue;
-      if (dryLandCollisionSampleForMeta(wx, wz, meta)) return true;
+      if (dryLandSampleForMeta(wx, wz, meta)) return true;
     }
   }
   return false;
+}
+
+function customMapReefSeverityAt(wx, wz) {
+  const cm = G.customMap;
+  if (!cm || !cm.heights || !cm.gridN) return 0;
+  if (sampleCustomMapLand(wx, wz)) return 0;
+  const thr = cm.waterThreshold != null ? cm.waterThreshold : 0.12;
+  const h0 = sampleCustomMapHeight01(wx, wz);
+  if (h0 > thr + 0.045) return 0;
+  const e = 5.5;
+  const g =
+    Math.abs(sampleCustomMapHeight01(wx + e, wz) - sampleCustomMapHeight01(wx - e, wz)) +
+    Math.abs(sampleCustomMapHeight01(wx, wz + e) - sampleCustomMapHeight01(wx, wz - e));
+  if (g < 0.088) return 0;
+  const hFac = h0 <= thr ? 1 : Math.max(0, 1 - (h0 - thr) / 0.12);
+  return Math.max(0, Math.min(1, (g * 1.12 - 0.07) * hFac));
+}
+
+function reefShoalSeverityAt(wx, wz) {
+  if (G.customMap && G.customMap.heights && G.customMap.gridN) {
+    return customMapReefSeverityAt(wx, wz);
+  }
+  let best = 0;
+  const cxi = Math.floor(wx / CHUNK_SIZE), czi = Math.floor(wz / CHUNK_SIZE);
+  for (let dc = -2; dc <= 2; dc++) {
+    for (let dr = -2; dr <= 2; dr++) {
+      const meta = getProceduralIslandMeta(cxi + dc, czi + dr);
+      if (!meta) continue;
+      const dx = wx - meta.worldX, dz = wz - meta.worldZ;
+      const dist = Math.hypot(dx, dz);
+      const R = meta.radius;
+      if (dist < R * REEF_SHOAL_INNER || dist > R * REEF_SHOAL_OUTER) continue;
+      if (dryLandSampleForMeta(wx, wz, meta)) continue;
+      const islandNoise = getCachedIslandNoise(meta.cx, meta.cz);
+      const j1 = islandNoise.noise2D(wx * 0.11, wz * 0.11);
+      const j2 = islandNoise.noise2D(wx * 0.24, wz * 0.21);
+      const j3 = islandNoise.noise2D(wx * 0.055, wz * 0.055);
+      const jag = Math.abs(j1) * 0.5 + Math.abs(j2) * 0.4 + Math.abs(j3) * 0.26;
+      const gate = 0.35 + fxHash01(meta.cx, meta.cz, 0, 77) * 0.2;
+      if (jag < gate) continue;
+      const ring = (dist - R * REEF_SHOAL_INNER) / Math.max(1e-3, R * (REEF_SHOAL_OUTER - REEF_SHOAL_INNER));
+      const sev = Math.min(1, (jag - gate) / (1.02 - gate)) * (0.52 + 0.48 * Math.sin(Math.PI * Math.max(0, Math.min(1, ring))));
+      if (sev > best) best = sev;
+    }
+  }
+  return best;
+}
+
+function sinkNpcOnReef(npc) {
+  if (!npc || npc.sinking) return;
+  npc.sinking = true;
+  npc.sinkTimer = 0;
+  npc.speed = 0;
+  notify(`${npc.name || 'Ship'} wrecked on the rocks!`);
+  const swN = 1 + Math.floor(Math.random() * 2);
+  broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(npc.x, npc.z, swN, null, false));
+  for (let li = 0; li < 2; li++) {
+    const t = li === 0 ? 'wood' : 'iron';
+    const c = 2 + Math.floor(Math.random() * 4);
+    const lx = npc.x + (Math.random() - 0.5) * 7, lz = npc.z + (Math.random() - 0.5) * 7;
+    if (ws?.readyState === 1) spawnWorldLootAt(lx, lz, t, c, 0.5);
+    else addFloatingLootMesh(lx, lz, t, c);
+  }
+}
+
+function tickReefAndShoalDamage(dt) {
+  if (G.mode !== 'playing' || dt <= 0) return;
+  const sevP = reefShoalSeverityAt(G.player.x, G.player.z);
+  if (!G.docked && !G.playerSinking && G.player.health > 0 && sevP > 0.2) {
+    const spd = Math.abs(G.player.speed || 0);
+    const dps = (5.5 + sevP * 36) * (0.38 + Math.min(1.05, spd * 0.4));
+    G.player.health = Math.max(0, G.player.health - dps * dt);
+    G._reefWarnT = (G._reefWarnT || 0) + dt;
+    if (G._reefWarnT > 0.9) {
+      G._reefWarnT = 0;
+      notify('Hull grinding on the shoals—bear away!', 2600);
+    }
+    if (G.player.health <= 0) G.lastAttacker = 'Jagged reef';
+  } else {
+    G._reefWarnT = 0;
+  }
+  G.npcs.forEach(npc => {
+    if (!npc.mesh || npc.sinking) return;
+    let nh = npc.health;
+    if (nh == null || !Number.isFinite(nh)) nh = 100;
+    if (nh <= 0) return;
+    const sev = reefShoalSeverityAt(npc.x, npc.z);
+    if (sev < 0.18) return;
+    const spd = Math.abs(npc.speed || 0);
+    const dps = (4.5 + sev * 30) * (0.34 + Math.min(1, spd * 0.44));
+    nh -= dps * dt;
+    npc.health = nh;
+    if (npc.health <= 0) sinkNpcOnReef(npc);
+  });
 }
 
 function decodeCustomMapHeightsB64(b64) {
@@ -5164,12 +5292,21 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
   const jz = (hashChunk(cx - 19, cz + 83, worldSeedOpt) * 2 - 1) * jitter;
   const worldX = cx * CHUNK_SIZE + jx, worldZ = cz * CHUNK_SIZE + jz;
   const wsU = worldSeedOpt !== undefined ? (Number(worldSeedOpt) >>> 0) : (G.worldSeed >>> 0);
-  // Hash-based size (do not allocate SimplexNoise here — this runs millions of times during trade-ship port search).
-  const sizeFactor = (hashChunk(cx + 11, cz + 29, worldSeedOpt) * 0.55 + hashChunk(cx - 17, cz + 41, worldSeedOpt) * 0.45);
-  const islandRadius = 15 + sizeFactor * 100 + h * 30;
-  const islandHeight = 2.2 + sizeFactor * 12 + h * 5.5;
+  const sizeBlend = (hashChunk(cx + 11, cz + 29, worldSeedOpt) * 0.55 + hashChunk(cx - 17, cz + 41, worldSeedOpt) * 0.45);
+  let islandRadius, islandHeight;
+  if (sizeBlend < 0.26) {
+    islandRadius = 12 + h * 30 + sizeBlend * 24;
+    islandHeight = 1.4 + h * 3.6 + sizeBlend * 2.1;
+  } else if (sizeBlend > 0.72) {
+    islandRadius = 48 + h * 46 + sizeBlend * 44;
+    islandHeight = 3.5 + sizeBlend * 13 + h * 6;
+  } else {
+    const mid = (sizeBlend - 0.26) / 0.46;
+    islandRadius = 20 + mid * 64 + h * 34;
+    islandHeight = 1.95 + mid * 9.5 + h * 5.2;
+  }
   const meta = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
-  if (islandRadius > 50 && h < 0.12) {
+  if (islandRadius > 46 && islandRadius >= 34 && h < 0.13) {
     meta.hasTown = true;
     meta.faction = ((cx * 7919 ^ cz * 9341 ^ wsU) >>> 0) % 4;
     let th = (cx * 73856093 ^ cz * 19349663 ^ wsU ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
@@ -5209,15 +5346,31 @@ function nudgePlayerOffLand() {
   if (G.docked || G.dockingAnim || G.undockingAnim || G.spectate || G.playerSinking || G.captainWalk?.active) return;
   if (!shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, G.player.shipType)) return;
   const st = G.player.shipType || 'sloop';
-  const step = Math.max(1.15, shipHullRadius(st) * 0.2);
-  for (let ring = 1; ring <= 16; ring++) {
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2 + ring * 0.31;
+  const pv = (!G.player.anchored && Math.abs(G.player.speed) > 0.06) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
+  const vlen = Math.hypot(pv.vx, pv.vz);
+  if (vlen > 0.08) {
+    const ux = -pv.vx / vlen, uz = -pv.vz / vlen;
+    for (let t = 1; t <= 14; t++) {
+      const tx = G.player.x + ux * t * 0.95;
+      const tz = G.player.z + uz * t * 0.95;
+      if (!shipFootprintOverlapsLand(tx, tz, G.player.rotation, st)) {
+        G.player.x = tx;
+        G.player.z = tz;
+        G.player.speed *= 0.55;
+        return;
+      }
+    }
+  }
+  const step = Math.max(1.2, shipHullRadius(st) * 0.21);
+  for (let ring = 1; ring <= 24; ring++) {
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * Math.PI * 2 + ring * 0.29;
       const tx = G.player.x + Math.cos(a) * step * ring;
       const tz = G.player.z + Math.sin(a) * step * ring;
       if (!shipFootprintOverlapsLand(tx, tz, G.player.rotation, st)) {
         G.player.x = tx;
         G.player.z = tz;
+        G.player.speed *= 0.62;
         return;
       }
     }
@@ -6102,7 +6255,7 @@ function sampleIslandLandHeight(px, pz, worldX, worldZ, islandRadius, islandHeig
   const combined = n1 * 0.6 + n2 + ridges;
   const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
   const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
-  const warpedDist = dist + edgeWarp + coastWobble;
+  const warpedDist = dist + edgeWarp + coastWobble + proceduralCoastMicro(islandNoise, worldX, worldZ, px, pz);
   const falloff = Math.max(0, 1 - warpedDist * warpedDist);
   let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
   const isLand = ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
@@ -6570,7 +6723,7 @@ function generateIsland(cx, cz) {
 
     const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
     const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
-    const warpedDist = dist + edgeWarp + coastWobble;
+    const warpedDist = dist + edgeWarp + coastWobble + proceduralCoastMicro(islandNoise, worldX, worldZ, px, pz);
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
     const isLand = ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
@@ -6621,6 +6774,18 @@ function generateIsland(cx, cz) {
   terrain.position.set(worldX, SEA_LEVEL, worldZ);
   terrain.renderOrder = 1;
   group.add(terrain);
+
+  const nReefRocks = Math.min(48, Math.floor(5 + islandRadius * 0.1));
+  for (let ri = 0; ri < nReefRocks; ri++) {
+    const ang = rng() * Math.PI * 2;
+    const dist = islandRadius * (REEF_SHOAL_INNER + rng() * (REEF_SHOAL_OUTER - REEF_SHOAL_INNER));
+    const rx = Math.cos(ang) * dist, rz = Math.sin(ang) * dist;
+    const wwx = worldX + rx, wwz = worldZ + rz;
+    if (dryLandSampleForMeta(wwx, wwz, meta0)) continue;
+    if (Math.abs(islandNoise.noise2D(wwx * 0.11, wwz * 0.11)) < 0.34) continue;
+    const scal = 0.5 + rng() * 1.25;
+    group.add(createRock(wwx, SEA_LEVEL - 0.2 + rng() * 0.35, wwz, scal, rng));
+  }
 
   const ln = new SimplexNoise(cx * 1000 + cz);
   const treeCount = Math.floor(16 + h * 58);
@@ -6708,7 +6873,7 @@ function generateIsland(cx, cz) {
       const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
       const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
       const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
-      const warpedDist = dist + edgeWarp + coastWobble;
+      const warpedDist = dist + edgeWarp + coastWobble + proceduralCoastMicro(islandNoise, worldX, worldZ, px, pz);
       const falloff = Math.max(0, 1 - warpedDist * warpedDist);
       const n1 = noise.fbm(wx * 0.015, wz * 0.015, 4);
       const n2 = islandNoise.noise2D(wx * 0.025, wz * 0.025) * 0.25;
@@ -14947,6 +15112,10 @@ function updateShipPanel() {
   ensureCargoSlots();
   const nHold = spec.cargoSlots || 8;
   const filledBerths = (G.player.cargoSlots || []).filter(s => s && s.count > 0).length;
+  const woodN = slotSumById('wood');
+  const perWood = hullHpPerWoodFromCaptainSailing();
+  const canWoodRepair = G.mode === 'playing' && !G.docked && !G.playerSinking && !G.spectate
+    && G.player.health < 100 && woodN >= 1;
   info.innerHTML = `
     <div style="text-align:center;color:#d4a848;font-size:16px;font-weight:bold;margin-bottom:4px;">${G.player.shipName}</div>
     <div style="text-align:center;color:#8a7a60;font-size:11px;margin-bottom:10px;">${spec.name} - ${spec.desc}</div>
@@ -14986,7 +15155,15 @@ function updateShipPanel() {
           <div style="color:#4a8a4a;font-size:9px;">${current?.id === 'none' || current?.id === 'basic' ? '' : 'EQUIPPED'}</div>
         </div>`;
       }).join('')}
+    </div>
+    <div style="margin-top:12px;padding:11px;background:rgba(28,18,12,0.58);border:1px solid rgba(140,100,40,0.28);border-radius:8px;">
+      <div style="color:#c9a860;font-size:10px;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px;">Emergency hull repair</div>
+      <p style="margin:0 0 9px;font-size:11px;color:#9a8a78;line-height:1.45;">Use <strong style="color:#d4a848;">wood planks</strong> from cargo while at sea. You have <strong style="color:#e8dcc8;">${woodN}</strong> wood; each plank restores about <strong style="color:#e8dcc8;">${perWood.toFixed(1)}</strong> HP (captain <strong>sailing</strong> skill).</p>
+      <button type="button" id="ship-repair-wood-btn" style="width:100%;padding:10px 12px;border-radius:8px;cursor:pointer;font-family:Georgia,serif;font-size:13px;border:1px solid rgba(160,120,60,0.55);background:linear-gradient(180deg,#6a5020,#3a280e);color:#f0e8d8;" ${canWoodRepair ? '' : 'disabled'}>Repair hull with wood</button>
+      ${G.docked ? '<p style="margin:8px 0 0;font-size:10px;color:#7a6a58;">In port, use the shipyard for full repairs.</p>' : ''}
     </div>`;
+  const rw = document.getElementById('ship-repair-wood-btn');
+  if (rw) rw.onclick = () => tryRepairHullWithCargoWood();
 }
 window.debugSpawnItem = function (id, qty) {
   const q = Math.max(1, Math.min(ITEM_MAX_STACK, Math.floor(Number(qty) || 10)));
@@ -15451,6 +15628,37 @@ function slotSumById(id) {
   let t = 0;
   (G.player.cargoSlots || []).forEach(s => { if (s && s.id === id) t += s.count; });
   return t;
+}
+/** Hull HP restored per wood plank when patching at sea — scales with captain sailing skill (1–5). */
+function hullHpPerWoodFromCaptainSailing() {
+  const cap = getCaptainDisplayCrew();
+  const sk = clampSkillLv(cap && cap.skills ? cap.skills.sailing : 2);
+  return 4 + sk * 2.8;
+}
+function tryRepairHullWithCargoWood() {
+  if (G.mode !== 'playing' || G.docked || G.playerSinking || G.spectate) return;
+  ensureCargoSlots();
+  const miss = Math.max(0, 100 - G.player.health);
+  if (miss < 0.5) {
+    notify('Hull is already sound.');
+    return;
+  }
+  const woodHave = slotSumById('wood');
+  if (woodHave < 1) {
+    notify('No wood planks in the hold — salvage or buy some cargo.');
+    return;
+  }
+  const per = hullHpPerWoodFromCaptainSailing();
+  const needWood = Math.min(woodHave, Math.max(1, Math.ceil(miss / per)));
+  if (!removeInventoryAmount('wood', needWood)) {
+    notify('Could not use cargo wood.');
+    return;
+  }
+  const gain = Math.min(miss, needWood * per);
+  G.player.health = Math.min(100, G.player.health + gain);
+  notify(`Patched hull for +${Math.round(gain)} HP using ${needWood} wood (~${per.toFixed(1)} HP/plank with your sailing skill).`, 4200);
+  updateShipPanel();
+  refreshCargoPanelIfOpen();
 }
 /** True if `addAmount` more of `type` can fit in cargo berths. */
 function canFitStackInCargoSlots(type, addAmount) {
@@ -16281,10 +16489,18 @@ function showJettisonCargoModal(maxDrop, itemLabel, onConfirm) {
     closeGameHudModal();
   });
 })();
+const CREW_SKILL_BAR_TITLES = {
+  Gunning: 'Gunnery (1–5): faster cannon reloads and slightly better shot control when this crewman is stationed to the guns.',
+  Sailing: 'Sailing (1–5): more speed from the wind at the helm; more hull HP restored per wood plank when patching in the Ship log at sea.',
+  Navigation: 'Navigation (1–5): stronger chart wind bonus; station bonuses at the map table.',
+  Commanding: 'Commanding (1–5): crew morale and station efficiency aura on deck.'
+};
 function crewPanelSkillBarMarkup(label, level) {
   const lv = clampSkillLv(level);
   const pct = lv / 5 * 100;
-  return `<div class="crew-skill-row"><span class="crew-skill-name">${label}</span><div class="crew-skill-bar"><span class="crew-skill-bar-ticks" aria-hidden="true"></span><div class="crew-skill-fill" style="width:${pct}%"></div></div></div>`;
+  const tipRaw = CREW_SKILL_BAR_TITLES[label] || `${label}: skill level ${lv} of 5.`;
+  const tip = String(tipRaw).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return `<div class="crew-skill-row"><span class="crew-skill-name">${label}</span><div class="crew-skill-bar" title="${tip}"><span class="crew-skill-bar-ticks" aria-hidden="true"></span><div class="crew-skill-fill" style="width:${pct}%"></div></div></div>`;
 }
 function crewPanelRenderCard(m, mi) {
   const sk = m.skills || defaultCrewSkills();
@@ -19100,6 +19316,7 @@ function update(dt) {
     ensureStoryBountyNpcPresent();
   }
   resolvePlayerShipCollisionsAfterNpcs();
+  tickReefAndShoalDamage(dt);
   if (!G.docked && !G.dockingAnim && !G.undockingAnim && !G.spectate && !G.playerSinking && !G.captainWalk?.active) nudgePlayerOffLand();
   updateTownFlagWindAnimation();
   updateSeagulls(dt);
