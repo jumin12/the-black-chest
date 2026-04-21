@@ -571,7 +571,20 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   box-sizing:border-box;touch-action:manipulation;
   user-select:none;-webkit-user-select:none;
 }
-.crew-card-v2.dragging{opacity:0.88;box-shadow:0 6px 18px rgba(0,0,0,0.45);}
+#log-panel.log-panel--crew .crew-card-v2.dragging{opacity:0.35;filter:grayscale(0.15);}
+.crew-card-v2.dragging{box-shadow:0 6px 18px rgba(0,0,0,0.45);}
+#drag-ghost-root{position:fixed;inset:0;pointer-events:none;z-index:60000;}
+.ui-drag-ghost{
+  position:fixed;margin:0;padding:0;pointer-events:none;z-index:60001;
+  box-shadow:0 10px 28px rgba(0,0,0,0.5),0 0 0 1px rgba(212,168,72,0.45);
+  border-radius:10px;overflow:hidden;opacity:0.94;will-change:transform;
+  transform:translate(-50%,-50%) scale(0.98);
+}
+.ui-drag-ghost--cargo{
+  min-width:72px;min-height:72px;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(165deg,rgba(44,34,24,0.96),rgba(22,16,12,0.98));
+  border:1px solid rgba(140,110,70,0.5);
+}
 .crew-card-v2--prisoner{border-color:rgba(90,90,90,0.45);opacity:0.97;}
 .crew-card-main{
   display:grid;grid-template-columns:var(--crew-portrait-size, 60px) minmax(0,1fr);gap:6px;padding:6px;min-width:0;align-items:start;
@@ -974,7 +987,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
  background:linear-gradient(165deg,rgba(48,38,28,0.82),rgba(20,16,12,0.92));border:1px solid rgba(160,130,80,0.22);box-shadow:inset 0 1px 0 rgba(255,245,220,0.06),0 2px 6px rgba(0,0,0,0.2);}
 .cargo-slot-box.empty{border:1px dashed rgba(120,100,70,0.35);background:linear-gradient(165deg,rgba(30,24,18,0.45),rgba(16,12,10,0.55));cursor:default;opacity:0.92;}
 .cargo-slot-box.filled{border-color:rgba(212,180,100,0.5);background:linear-gradient(165deg,rgba(58,44,28,0.88),rgba(28,22,14,0.94));box-shadow:inset 0 1px 0 rgba(255,220,160,0.12),0 2px 8px rgba(0,0,0,0.25);}
-.cargo-slot-box.dragging{opacity:0.55;cursor:grabbing;transform:scale(0.98);}
+.cargo-slot-box.dragging{opacity:0.38;cursor:grabbing;transform:scale(0.97);}
 .cargo-slot-vacant{font-size:clamp(6px,1.8vw,8px);color:#6a5a48;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;}
 .cargo-slot-amt{font-size:clamp(6px,1.8vw,9px);color:#c8b898;font-weight:600;margin-top:1px;}
 .cargo-slot-name{font-size:clamp(6px,1.5vw,8px);color:#9a8a78;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:0;line-height:1.1;}
@@ -2682,7 +2695,8 @@ try {
   const _ps = localStorage.getItem('pirates_mobile_scheme');
   if (_ps != null) G.mobileControlScheme = Math.max(0, Math.min(3, parseInt(_ps, 10)));
   const _pfa = localStorage.getItem('pirates_show_firing_arches');
-  if (_pfa != null) G.showFiringArches = _pfa === '1';
+  /* Default on: only an explicit '0' disables (older saves used '1' to enable). */
+  G.showFiringArches = _pfa !== '0';
 } catch (e) {}
 
 /** One active play session per browser profile (shared localStorage): block second tab from entering the voyage. */
@@ -4976,10 +4990,32 @@ function ensureSeaReefsPopulated() {
           geo.computeVertexNormals();
           const rock = new THREE.Mesh(geo, matReefRock);
           const surf = worldSeaSurfaceY(lx, lz, G.time);
-          rock.position.set(lx, surf - 0.55 + h * 0.38, lz);
+          const rockCy = surf - 0.55 + h * 0.38;
+          rock.position.set(lx, rockCy, lz);
           rock.rotation.set((rng() - 0.5) * 0.5, rng() * Math.PI * 2, (rng() - 0.5) * 0.55);
           rock.castShadow = true;
           rock.receiveShadow = true;
+          const coneBaseY = rockCy - h * 0.5;
+          const floorY = SEABED_VISUAL_Y + 0.2 + (rng() - 0.5) * 0.12;
+          if (coneBaseY > floorY + 0.15) {
+            const stalkH = coneBaseY - floorY;
+            const stalkR0 = 0.1 + rng() * 0.06;
+            const stalkR1 = 0.16 + rng() * 0.1;
+            const stalkGeo = new THREE.CylinderGeometry(stalkR0, stalkR1, stalkH, 5);
+            const sp = stalkGeo.attributes.position;
+            for (let vi = 0; vi < sp.count; vi++) {
+              sp.setX(vi, sp.getX(vi) + (rng() - 0.5) * 0.08);
+              sp.setZ(vi, sp.getZ(vi) + (rng() - 0.5) * 0.08);
+            }
+            sp.needsUpdate = true;
+            stalkGeo.computeVertexNormals();
+            const stalk = new THREE.Mesh(stalkGeo, matReefRock);
+            stalk.position.set(lx, (coneBaseY + floorY) * 0.5, lz);
+            stalk.rotation.set((rng() - 0.5) * 0.12, rng() * Math.PI * 2, (rng() - 0.5) * 0.12);
+            stalk.castShadow = true;
+            stalk.receiveShadow = true;
+            group.add(stalk);
+          }
           group.add(rock);
           const hitR = 0.65 + rng() * 0.55;
           G.seaReefs.push({ x: lx, z: lz, r: hitR * 0.72 });
@@ -7985,7 +8021,7 @@ function syncBroadsideArcSectorGeometry(halfAngle) {
   arcSectorGeo.setIndex(indices);
   arcSectorGeo.computeVertexNormals();
 }
-const arcHudMatPort = new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false, depthTest: false });
+const arcHudMatPort = new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false, depthTest: false });
 const arcHudMatStar = arcHudMatPort.clone();
 const arcLeft = new THREE.Mesh(arcSectorGeo, arcHudMatPort);
 arcLeft.rotation.y = Math.PI / 2;
@@ -15196,6 +15232,24 @@ function addChatMessage(name, text, chatId, channel, partyTag, clanTag) {
   }
 }
 
+/** Captain’s Log ship tab: match hull battery + broadside volley (see `executeBroadsideVolley` / `buildShipMesh`). */
+function getPlayerShipCannonReadout() {
+  const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
+  const partId = G.player.shipParts && G.player.shipParts.cannon;
+  const cp = SHIP_PARTS.cannon.find(c => c.id === partId);
+  const slots = spec.cannonSlots | 0;
+  if (!partId || partId === 'none' || !cp || (cp.damage | 0) <= 0) {
+    return { armed: false, gunsLine: '—', gunsSub: 'No cannon mount fitted' };
+  }
+  const perSalvo = Math.max(1, Math.ceil(slots / 2));
+  const deckBarrels = slots <= 1 ? 2 : slots;
+  return {
+    armed: true,
+    gunsLine: `${deckBarrels} gun decks · ${perSalvo} fire per broadside`,
+    gunsSub: `${cp.name} · class ${slots}-port battery`
+  };
+}
+
 function updateShipPanel() {
   const info = document.getElementById('ship-info');
   const spec = SHIP_TYPES[G.player.shipType];
@@ -15208,6 +15262,7 @@ function updateShipPanel() {
   const mor = getCrewMoraleEfficiency();
   const hpPerWood = Math.max(2.2, (4.2 + sailLv * 1.05) * (0.9 + mor * 0.1));
   const canWood = G.mode === 'playing' && !G.docked && G.player.health < mh && woodN > 0;
+  const gunRo = getPlayerShipCannonReadout();
   info.innerHTML = `
     <div style="text-align:center;color:#d4a848;font-size:16px;font-weight:bold;margin-bottom:4px;">${G.player.shipName}</div>
     <div style="text-align:center;color:#8a7a60;font-size:11px;margin-bottom:10px;">${spec.name} - ${spec.desc}</div>
@@ -15234,7 +15289,8 @@ function updateShipPanel() {
       </div>
       <div style="background:rgba(30,20,12,0.5);padding:8px;border-radius:5px;border:1px solid rgba(140,100,40,0.15);">
         <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;">Cannons</div>
-        <div style="color:#e0d6c2;font-size:12px;">${spec.cannonSlots} guns</div>
+        <div style="color:#e0d6c2;font-size:12px;line-height:1.35;">${gunRo.gunsLine}</div>
+        <div style="color:#7a6a58;font-size:9px;margin-top:3px;line-height:1.3;">${gunRo.gunsSub}</div>
       </div>
     </div>
     <div style="margin-top:10px;">
@@ -15701,7 +15757,7 @@ function updateDebugBuilder() {
 }
 
 let cargoRenderer, cargoScene, cargoCamera, cargoShipPreview;
-let cargoPtrDrag = { active: false, from: -1, x: 0, y: 0, pointerId: null };
+let cargoPtrDrag = { active: false, from: -1, x: 0, y: 0, sx: 0, sy: 0, pointerId: null, ghost: false };
 let yardShipRenderer, yardShipScene, yardShipCamera, yardShipGroup;
 let yardShipPreviewType = null;
 let yardShipYaw = 0;
@@ -19549,8 +19605,8 @@ function update(dt) {
       G.player.z - lxStar * sinR
     );
     arcRight.rotation.y = G.player.rotation + Math.PI / 2;
-    arcHudMatPort.opacity = G.portCooldown > 0 ? 0.04 : 0.12;
-    arcHudMatStar.opacity = G.starboardCooldown > 0 ? 0.04 : 0.12;
+    arcHudMatPort.opacity = G.portCooldown > 0 ? 0.07 : 0.18;
+    arcHudMatStar.opacity = G.starboardCooldown > 0 ? 0.07 : 0.18;
     arcHudMatPort.color.set(G.portCooldown > 0 ? 0x666666 : 0xff4444);
     arcHudMatStar.color.set(G.starboardCooldown > 0 ? 0x666666 : 0xff4444);
   }
@@ -22167,11 +22223,65 @@ document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(tab => {
   };
 });
 
+/* Drag preview ghosts (crew roster, cargo); root is created on first use. */
+let uiDragGhostEl = null;
+function ensureUiDragGhostRoot() {
+  let r = document.getElementById('drag-ghost-root');
+  if (!r) {
+    r = document.createElement('div');
+    r.id = 'drag-ghost-root';
+    document.body.appendChild(r);
+  }
+  return r;
+}
+function clearUiDragGhost() {
+  if (uiDragGhostEl && uiDragGhostEl.parentNode) uiDragGhostEl.parentNode.removeChild(uiDragGhostEl);
+  uiDragGhostEl = null;
+}
+function copyCanvasesRecursive(srcRoot, dstRoot) {
+  const sc = srcRoot.querySelectorAll('canvas');
+  const dc = dstRoot.querySelectorAll('canvas');
+  const n = Math.min(sc.length, dc.length);
+  for (let i = 0; i < n; i++) {
+    const s = sc[i], d = dc[i];
+    try {
+      d.width = s.width;
+      d.height = s.height;
+      d.getContext('2d').drawImage(s, 0, 0);
+    } catch (e) {}
+  }
+}
+function showUiDragGhostFromElement(el, clientX, clientY, kind) {
+  clearUiDragGhost();
+  if (!el) return;
+  const r = ensureUiDragGhostRoot();
+  const rect = el.getBoundingClientRect();
+  const g = el.cloneNode(true);
+  g.classList.add('ui-drag-ghost');
+  if (kind === 'cargo') g.classList.add('ui-drag-ghost--cargo');
+  const maxW = kind === 'cargo' ? 118 : 268;
+  const sc = Math.min(1, maxW / Math.max(1, rect.width));
+  g.style.width = rect.width + 'px';
+  g.style.transform = 'translate(-50%,-50%) scale(' + sc + ')';
+  r.appendChild(g);
+  copyCanvasesRecursive(el, g);
+  uiDragGhostEl = g;
+  uiDragGhostEl.style.left = clientX + 'px';
+  uiDragGhostEl.style.top = clientY + 'px';
+}
+function moveUiDragGhost(clientX, clientY) {
+  if (!uiDragGhostEl) return;
+  uiDragGhostEl.style.left = clientX + 'px';
+  uiDragGhostEl.style.top = clientY + 'px';
+}
+
 (function bindCargoSlotDrag() {
   const overlay = document.getElementById('cargo-berths-grid-main');
   if (!overlay) return;
   function endDrag(e) {
     if (!cargoPtrDrag.active) return;
+    clearUiDragGhost();
+    cargoPtrDrag.ghost = false;
     overlay.querySelectorAll('.cargo-slot-box.dragging').forEach(b => b.classList.remove('dragging'));
     const from = cargoPtrDrag.from;
     cargoPtrDrag.active = false;
@@ -22215,6 +22325,9 @@ document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(tab => {
     cargoPtrDrag.from = +box.dataset.slot;
     cargoPtrDrag.x = e.clientX;
     cargoPtrDrag.y = e.clientY;
+    cargoPtrDrag.sx = e.clientX;
+    cargoPtrDrag.sy = e.clientY;
+    cargoPtrDrag.ghost = false;
     cargoPtrDrag.pointerId = e.pointerId;
     box.classList.add('dragging');
     try { overlay.setPointerCapture(e.pointerId); } catch (err2) {}
@@ -22225,6 +22338,14 @@ document.querySelectorAll('#create-mob-tabs .mob-tab').forEach(tab => {
     if (!cargoPtrDrag.active) return;
     cargoPtrDrag.x = e.clientX;
     cargoPtrDrag.y = e.clientY;
+    if (!cargoPtrDrag.ghost && Math.hypot(e.clientX - cargoPtrDrag.sx, e.clientY - cargoPtrDrag.sy) > 10) {
+      const box = overlay.querySelector('.cargo-slot-box.dragging');
+      if (box) {
+        cargoPtrDrag.ghost = true;
+        showUiDragGhostFromElement(box, e.clientX, e.clientY, 'cargo');
+      }
+    }
+    if (cargoPtrDrag.ghost) moveUiDragGhost(e.clientX, e.clientY);
   });
   overlay.addEventListener('pointerup', endDrag);
   overlay.addEventListener('pointercancel', endDrag);
@@ -22250,29 +22371,31 @@ function isCrewSeaDrop(clientX, clientY) {
 }
 (function bindCrewCardPointerDrag() {
   const root = document.getElementById('crew-list');
-  const scrollHost = document.querySelector('#log-crew .crew-roster-scroll-outer');
-  if (!root || !scrollHost) return;
-  const TH = isMobile ? 16 : 9;
-  const crewPtr = { active: false, dragging: false, crewIdx: -1, sx: 0, sy: 0, x: 0, y: 0, pointerId: null, card: null, portraitTap: false, docBound: false };
-  function unbindDocPointer() {
-    if (!crewPtr.docBound) return;
-    document.removeEventListener('pointermove', onDocPointerMove);
-    document.removeEventListener('pointerup', endCrewDrag);
-    document.removeEventListener('pointercancel', endCrewDrag);
-    crewPtr.docBound = false;
+  if (!root) return;
+  const TH = isMobile ? 14 : 8;
+  const CREW_MOVE_OPTS = { capture: true, passive: false };
+  const CREW_END_OPTS = { capture: true };
+  const crewPtr = { active: false, dragging: false, crewIdx: -1, sx: 0, sy: 0, x: 0, y: 0, pointerId: null, card: null, portraitTap: false, winBound: false };
+  function unbindWinPointer() {
+    if (!crewPtr.winBound) return;
+    window.removeEventListener('pointermove', onWinPointerMove, CREW_MOVE_OPTS);
+    window.removeEventListener('pointerup', endCrewDrag, CREW_END_OPTS);
+    window.removeEventListener('pointercancel', endCrewDrag, CREW_END_OPTS);
+    crewPtr.winBound = false;
   }
   function resetCrewPointerNoAction() {
     try {
       if (crewPtr.pointerId != null && crewPtr.card) crewPtr.card.releasePointerCapture(crewPtr.pointerId);
     } catch (err) {}
-    unbindDocPointer();
+    clearUiDragGhost();
+    unbindWinPointer();
     crewPtr.card?.classList.remove('dragging');
     crewPtr.active = false;
     crewPtr.dragging = false;
     crewPtr.pointerId = null;
     crewPtr.card = null;
   }
-  function onDocPointerMove(e) {
+  function onWinPointerMove(e) {
     if (!crewPtr.active || crewPtr.pointerId == null || e.pointerId !== crewPtr.pointerId) return;
     crewPtr.x = e.clientX;
     crewPtr.y = e.clientY;
@@ -22281,15 +22404,19 @@ function isCrewSeaDrop(clientX, clientY) {
       const dy = Math.abs(crewPtr.y - crewPtr.sy);
       const d = Math.hypot(dx, dy);
       if (d > TH) {
-        /* Strong vertical intent: treat as roster scroll, not a card drag. */
-        if (dy > dx * 1.15) {
+        const vetoScroll = isMobile ? dy > dx * 2.45 : dy > dx * 1.06;
+        if (vetoScroll) {
           resetCrewPointerNoAction();
           return;
         }
         crewPtr.dragging = true;
         crewPtr.card.classList.add('dragging');
         try { crewPtr.card.setPointerCapture(e.pointerId); } catch (e2) {}
+        showUiDragGhostFromElement(crewPtr.card, crewPtr.x, crewPtr.y, 'crew');
       }
+    } else if (crewPtr.dragging) {
+      if (e.cancelable) e.preventDefault();
+      moveUiDragGhost(crewPtr.x, crewPtr.y);
     }
   }
   function endCrewDrag(e) {
@@ -22303,7 +22430,8 @@ function isCrewSeaDrop(clientX, clientY) {
     try {
       if (crewPtr.pointerId != null && crewPtr.card) crewPtr.card.releasePointerCapture(crewPtr.pointerId);
     } catch (err) {}
-    unbindDocPointer();
+    clearUiDragGhost();
+    unbindWinPointer();
     crewPtr.card?.classList.remove('dragging');
     crewPtr.active = false;
     crewPtr.dragging = false;
@@ -22332,6 +22460,7 @@ function isCrewSeaDrop(clientX, clientY) {
     if (!card || card.dataset.crewDraggable === '0') return;
     const idx = +card.dataset.crewIdx;
     if (!Number.isFinite(idx)) return;
+    if (crewPtr.active) resetCrewPointerNoAction();
     crewPtr.active = true;
     crewPtr.dragging = false;
     crewPtr.crewIdx = idx;
@@ -22342,13 +22471,13 @@ function isCrewSeaDrop(clientX, clientY) {
     crewPtr.pointerId = e.pointerId;
     crewPtr.card = card;
     crewPtr.portraitTap = !!(e.target.closest('.crew-card-portrait-wrap') && !e.target.closest('button'));
-    if (!crewPtr.docBound) {
-      crewPtr.docBound = true;
-      document.addEventListener('pointermove', onDocPointerMove);
-      document.addEventListener('pointerup', endCrewDrag);
-      document.addEventListener('pointercancel', endCrewDrag);
+    if (!crewPtr.winBound) {
+      crewPtr.winBound = true;
+      window.addEventListener('pointermove', onWinPointerMove, CREW_MOVE_OPTS);
+      window.addEventListener('pointerup', endCrewDrag, CREW_END_OPTS);
+      window.addEventListener('pointercancel', endCrewDrag, CREW_END_OPTS);
     }
-  });
+  }, true);
 })();
 /** Faux scrollbar thumb position (PC + mobile; native bar hidden on phones). */
 function syncCrewRosterScrollbarThumb() {
