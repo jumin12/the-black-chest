@@ -569,7 +569,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   box-sizing:border-box;touch-action:manipulation;
   user-select:none;-webkit-user-select:none;
 }
-.crew-card-v2.dragging{opacity:0.88;box-shadow:0 6px 18px rgba(0,0,0,0.45);}
+.crew-card-v2.dragging{opacity:0.88;box-shadow:0 6px 18px rgba(0,0,0,0.45);touch-action:none;}
 .crew-card-v2--prisoner{border-color:rgba(90,90,90,0.45);opacity:0.97;}
 .crew-card-main{
   display:grid;grid-template-columns:var(--crew-portrait-size, 60px) minmax(0,1fr);gap:6px;padding:6px;min-width:0;align-items:start;
@@ -609,21 +609,6 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   height:6px;border-radius:2px;background:rgba(0,0,0,0.45);
   border:1px solid rgba(80,65,50,0.5);overflow:hidden;box-shadow:inset 0 1px 3px rgba(0,0,0,0.35);
   cursor:default;
-}
-.crew-skill-bar-ticks{
-  position:absolute;inset:0;z-index:0;pointer-events:none;border-radius:2px;
-  background:repeating-linear-gradient(90deg,
-    rgba(0,0,0,0.25) 0,
-    rgba(0,0,0,0.25) calc(20% - 2.5px),
-    rgba(255,248,220,0.42) calc(20% - 2.5px),
-    rgba(255,248,220,0.42) calc(20% - 1px),
-    rgba(10,8,6,0.92) calc(20% - 1px),
-    rgba(10,8,6,0.92) calc(20% + 0.5px),
-    rgba(255,248,220,0.35) calc(20% + 0.5px),
-    rgba(255,248,220,0.35) calc(20% + 1.5px),
-    rgba(0,0,0,0.28) calc(20% + 1.5px),
-    rgba(0,0,0,0.28) 20%);
-  opacity:1;
 }
 @media (min-width:769px){
   .crew-skill-bar[title]:hover{
@@ -3826,6 +3811,28 @@ function getSailingStationMult() {
 function getGunneryStationMult() {
   return crewStationSkillMult('gunner', 'gunning');
 }
+/** Broadside arc width & shot dispersion from the stationed gunner's gunning skill (higher = tighter). */
+const BROADSIDE_ARC_ANGLE_MAX = Math.PI * 0.22;
+const BROADSIDE_ARC_ANGLE_MIN = Math.PI * 0.085;
+function getStationedGunnerySkillLevel() {
+  const g = G.player?.crew?.find(c => c && c.role === 'gunner');
+  if (!g || !g.skills) return 1;
+  return clampSkillLv(g.skills.gunning);
+}
+function playerBroadsideHalfAngleRad() {
+  const lv = getStationedGunnerySkillLevel();
+  const t = Math.max(0, Math.min(1, (lv - 1) / 4));
+  return BROADSIDE_ARC_ANGLE_MAX - (BROADSIDE_ARC_ANGLE_MAX - BROADSIDE_ARC_ANGLE_MIN) * t;
+}
+function playerBroadsideGrapeSpreadScale() {
+  return playerBroadsideHalfAngleRad() / BROADSIDE_ARC_ANGLE_MAX;
+}
+function playerBroadsideRoundShotYawJitterRad() {
+  const lv = getStationedGunnerySkillLevel();
+  const t = Math.max(0, Math.min(1, (lv - 1) / 4));
+  const maxJ = 0.095 * (1 - t) + 0.016 * t;
+  return (Math.random() - 0.5) * 2 * maxJ;
+}
 function getNavigationStationMult() {
   return crewStationSkillMult('navigator', 'navigation');
 }
@@ -4927,14 +4934,32 @@ function getCachedIslandNoise(cx, cz) {
   if (!G._chunkIslandNoise[key]) G._chunkIslandNoise[key] = new SimplexNoise(cx * 777 + cz * 333);
   return G._chunkIslandNoise[key];
 }
+/** Normalized radial distance in ellipse-scaled island space (matches a circle when aspect = 1). */
+function proceduralIslandNormDist(meta, px, pz) {
+  const R = meta.radius;
+  const asp = meta.ellAspect != null && meta.ellAspect > 0.08 ? meta.ellAspect : 1;
+  const ang = meta.ellAng != null ? meta.ellAng : 0;
+  const c = Math.cos(ang), s = Math.sin(ang);
+  const qx = c * px + s * pz;
+  const qz = -s * px + c * pz;
+  const a = R * Math.sqrt(asp);
+  const b = R / Math.sqrt(asp);
+  return Math.hypot(qx / Math.max(1e-4, a), qz / Math.max(1e-4, b));
+}
+function proceduralIslandOuterBound(meta) {
+  const R = meta.radius;
+  const asp = meta.ellAspect != null && meta.ellAspect > 0.08 ? meta.ellAspect : 1;
+  return R * Math.max(Math.sqrt(asp), 1 / Math.sqrt(asp)) * 1.48;
+}
 /** Land mask aligned with generateIsland terrain vertices (not the old circular0.85·R shortcut). */
 function dryLandSampleForMeta(wx, wz, meta) {
   const worldX = meta.worldX, worldZ = meta.worldZ;
   const islandRadius = meta.radius, islandHeight = meta.maxH;
   const px = wx - worldX, pz = wz - worldZ;
-  if (px * px + pz * pz > islandRadius * islandRadius * 1.45 * 1.45) return false;
+  const bound = proceduralIslandOuterBound(meta);
+  if (px * px + pz * pz > bound * bound) return false;
   const islandNoise = getCachedIslandNoise(meta.cx, meta.cz);
-  const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+  const dist = proceduralIslandNormDist(meta, px, pz);
   const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
   const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
   const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
@@ -4951,9 +4976,10 @@ function dryLandCollisionSampleForMeta(wx, wz, meta) {
   const worldX = meta.worldX, worldZ = meta.worldZ;
   const islandRadius = meta.radius, islandHeight = meta.maxH;
   const px = wx - worldX, pz = wz - worldZ;
-  if (px * px + pz * pz > islandRadius * islandRadius * 1.45 * 1.45) return false;
+  const bound = proceduralIslandOuterBound(meta);
+  if (px * px + pz * pz > bound * bound) return false;
   const islandNoise = getCachedIslandNoise(meta.cx, meta.cz);
-  const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+  const dist = proceduralIslandNormDist(meta, px, pz);
   const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
   const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
   const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
@@ -5007,10 +5033,9 @@ function reefShoalSeverityAt(wx, wz) {
     for (let dr = -2; dr <= 2; dr++) {
       const meta = getProceduralIslandMeta(cxi + dc, czi + dr);
       if (!meta) continue;
-      const dx = wx - meta.worldX, dz = wz - meta.worldZ;
-      const dist = Math.hypot(dx, dz);
-      const R = meta.radius;
-      if (dist < R * REEF_SHOAL_INNER || dist > R * REEF_SHOAL_OUTER) continue;
+      const px = wx - meta.worldX, pz = wz - meta.worldZ;
+      const norm = proceduralIslandNormDist(meta, px, pz);
+      if (norm < REEF_SHOAL_INNER || norm > REEF_SHOAL_OUTER) continue;
       if (dryLandSampleForMeta(wx, wz, meta)) continue;
       const islandNoise = getCachedIslandNoise(meta.cx, meta.cz);
       const j1 = islandNoise.noise2D(wx * 0.11, wz * 0.11);
@@ -5019,7 +5044,7 @@ function reefShoalSeverityAt(wx, wz) {
       const jag = Math.abs(j1) * 0.5 + Math.abs(j2) * 0.4 + Math.abs(j3) * 0.26;
       const gate = 0.35 + fxHash01(meta.cx, meta.cz, 0, 77) * 0.2;
       if (jag < gate) continue;
-      const ring = (dist - R * REEF_SHOAL_INNER) / Math.max(1e-3, R * (REEF_SHOAL_OUTER - REEF_SHOAL_INNER));
+      const ring = (norm - REEF_SHOAL_INNER) / Math.max(1e-3, REEF_SHOAL_OUTER - REEF_SHOAL_INNER);
       const sev = Math.min(1, (jag - gate) / (1.02 - gate)) * (0.52 + 0.48 * Math.sin(Math.PI * Math.max(0, Math.min(1, ring))));
       if (sev > best) best = sev;
     }
@@ -5306,6 +5331,10 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
     islandHeight = 1.95 + mid * 9.5 + h * 5.2;
   }
   const meta = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
+  const aspH = hashChunk(cx + 61, cz - 23, worldSeedOpt);
+  const angH = hashChunk(cx - 41, cz + 91, worldSeedOpt);
+  meta.ellAspect = 0.58 + aspH * 0.88;
+  meta.ellAng = angH * Math.PI * 2;
   if (islandRadius > 46 && islandRadius >= 34 && h < 0.13) {
     meta.hasTown = true;
     meta.faction = ((cx * 7919 ^ cz * 9341 ^ wsU) >>> 0) % 4;
@@ -6247,8 +6276,10 @@ function createDriftwood(x, y, z, rng) {
 }
 
 /** Land surface height (m above flat sea bed) at local island coords — must match terrain mesh vertex logic. */
-function sampleIslandLandHeight(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise) {
-  const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+function sampleIslandLandHeight(px, pz, meta, islandNoise) {
+  const worldX = meta.worldX, worldZ = meta.worldZ;
+  const islandRadius = meta.radius, islandHeight = meta.maxH;
+  const dist = proceduralIslandNormDist(meta, px, pz);
   const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
   const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
   const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
@@ -6349,7 +6380,7 @@ function addTownBuildingFootprint(group, bx, bz, baseY, bW, bD, bH, wallHex, rng
   }
 }
 
-function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints) {
+function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints, relax) {
   const r = decoRand(rng);
   let bW, bD, bH, wallHex, roofStyle;
   if (type === 'church') {
@@ -6364,14 +6395,15 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
     roofStyle = 'hip';
   }
   const half = Math.max(bW, bD) * 0.5 + 0.04;
-  const footprintR = half + (type === 'house' ? 1.45 : 2.15);
+  const footprintRFull = half + (type === 'house' ? 1.45 : 2.15);
+  const footprintR = footprintRFull * (relax ? 0.64 : 1);
   if (footprints && footprints.length) {
     for (let fi = 0; fi < footprints.length; fi++) {
       const fp = footprints[fi];
       if (Math.hypot(bx - fp.x, bz - fp.z) < fp.r + footprintR) return false;
     }
   }
-  const maxSlope = type === 'house' ? 0.52 : 0.36;
+  const maxSlope = type === 'house' ? (relax ? 0.82 : 0.52) : (relax ? 0.64 : 0.36);
   const cornerE = half * 0.82;
   const samplePts = [
     [0, 0], [cornerE, cornerE], [cornerE, -cornerE], [-cornerE, cornerE], [-cornerE, -cornerE],
@@ -6384,7 +6416,9 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
     gyMax = Math.max(gyMax, g);
     gyMin = Math.min(gyMin, g);
   }
-  if (gyMax < minGyMax || gyMin < minGyMin) return false;
+  const gMaxNeed = relax ? minGyMax * 0.86 : minGyMax;
+  const gMinNeed = relax ? minGyMin * 0.78 : minGyMin;
+  if (gyMax < gMaxNeed || gyMin < gMinNeed) return false;
   if (gyMax - gyMin > maxSlope) return false;
   if (!landOk(bx - cornerE, bz - cornerE)) return false;
   if (!landOk(bx + cornerE, bz - cornerE)) return false;
@@ -6417,7 +6451,7 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
     cross.castShadow = true;
     group.add(cross);
   }
-  if (footprints) footprints.push({ x: bx, z: bz, r: footprintR });
+  if (footprints) footprints.push({ x: bx, z: bz, r: footprintRFull });
   return true;
 }
 
@@ -6490,6 +6524,19 @@ function addTownSettlementForChunk(group, dockX, dockZ, dockAngle, centerWX, cen
         if (tryPlaceTownLandmark(group, 'house', bx + (rng() - 0.5) * 2.8, bz + (rng() - 0.5) * 2.8, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints)) {
           houses++;
         }
+      }
+    }
+  }
+  for (const s of signatures) {
+    if (placedTypes.has(s.type)) continue;
+    for (let attempt = 0; attempt < 240; attempt++) {
+      const along = 5.2 + (attempt % 32) * 1.12 + rng() * 2.8;
+      const spread = Math.sin(attempt * 0.29 + rng() * 2.1) * (3.8 + rng() * 12);
+      const bx = dockX + ux * along + dockWidX * spread;
+      const bz = dockZ + uz * along + dockWidZ * spread;
+      if (tryPlaceTownLandmark(group, s.type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints, true)) {
+        placedTypes.add(s.type);
+        break;
       }
     }
   }
@@ -6714,7 +6761,7 @@ function generateIsland(cx, cz) {
   const islandNoise = new SimplexNoise(cx * 777 + cz * 333);
   for (let i = 0; i < positions.count; i++) {
     const px = positions.getX(i), pz = positions.getZ(i);
-    const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+    const dist = proceduralIslandNormDist(meta0, px, pz);
 
     const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
     const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
@@ -6776,10 +6823,18 @@ function generateIsland(cx, cz) {
   group.add(terrain);
 
   const nReefRocks = Math.min(48, Math.floor(5 + islandRadius * 0.1));
+  const asp0 = meta0.ellAspect != null ? meta0.ellAspect : 1;
+  const eAng0 = meta0.ellAng != null ? meta0.ellAng : 0;
+  const aEll = islandRadius * Math.sqrt(asp0);
+  const bEll = islandRadius / Math.sqrt(asp0);
+  const ce = Math.cos(eAng0), se = Math.sin(eAng0);
   for (let ri = 0; ri < nReefRocks; ri++) {
     const ang = rng() * Math.PI * 2;
-    const dist = islandRadius * (REEF_SHOAL_INNER + rng() * (REEF_SHOAL_OUTER - REEF_SHOAL_INNER));
-    const rx = Math.cos(ang) * dist, rz = Math.sin(ang) * dist;
+    const norm = REEF_SHOAL_INNER + rng() * (REEF_SHOAL_OUTER - REEF_SHOAL_INNER);
+    const qx = aEll * norm * Math.cos(ang);
+    const qz = bEll * norm * Math.sin(ang);
+    const rx = ce * qx - se * qz;
+    const rz = se * qx + ce * qz;
     const wwx = worldX + rx, wwz = worldZ + rz;
     if (dryLandSampleForMeta(wwx, wwz, meta0)) continue;
     if (Math.abs(islandNoise.noise2D(wwx * 0.11, wwz * 0.11)) < 0.34) continue;
@@ -6793,10 +6848,12 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(t * 0.7, 0) * Math.PI * 2;
     const rad = (0.15 + Math.abs(ln.noise2D(t * 0.3, 1)) * 0.72) * islandRadius;
     const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
-    const d = Math.sqrt(tx * tx + tz * tz) / islandRadius;
+    const d = proceduralIslandNormDist(meta0, tx, tz);
     if (d > 0.93) continue;
-    const ty = sampleIslandLandHeight(tx, tz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
-    if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.06, worldZ + tz, rng));
+    const ty = sampleIslandLandHeight(tx, tz, meta0, islandNoise);
+    const twx = worldX + tx, twz = worldZ + tz;
+    if (ty < 0 || !dryLandSampleForMeta(twx, twz, meta0)) continue;
+    if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(twx, SEA_LEVEL + ty + 0.06, twz, rng));
   }
 
   const bushCount = Math.floor(14 + h * 38);
@@ -6804,11 +6861,12 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(bi * 0.88, 50) * Math.PI * 2;
     const rad = (0.18 + Math.abs(ln.noise2D(bi * 0.33, 51)) * 0.68) * islandRadius;
     const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
-    const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
+    const d = proceduralIslandNormDist(meta0, bx, bz);
     if (d > 0.94 || d < 0.12) continue;
-    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
-    if (by < 0.2 || by > islandHeight * 0.78) continue;
-    group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, 0.28 + rng() * 0.42, rng));
+    const by = sampleIslandLandHeight(bx, bz, meta0, islandNoise);
+    const bwx = worldX + bx, bwz = worldZ + bz;
+    if (by < 0.2 || by > islandHeight * 0.78 || !dryLandSampleForMeta(bwx, bwz, meta0)) continue;
+    group.add(createBush(bwx, SEA_LEVEL + by + 0.02, bwz, 0.28 + rng() * 0.42, rng));
   }
 
   const rockCount = Math.floor(7 + h * 22);
@@ -6816,11 +6874,12 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(r * 0.5, 10) * Math.PI * 2;
     const rad = (0.3 + Math.abs(ln.noise2D(r * 0.4, 11)) * 0.65) * islandRadius;
     const rx = Math.cos(a) * rad, rz = Math.sin(a) * rad;
-    const d = Math.sqrt(rx * rx + rz * rz) / islandRadius;
+    const d = proceduralIslandNormDist(meta0, rx, rz);
     if (d > 0.96) continue;
-    const ry = sampleIslandLandHeight(rx, rz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
-    if (ry < 0.12) continue;
-    group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.08, worldZ + rz, 0.4 + rng() * 1.2, rng));
+    const ry = sampleIslandLandHeight(rx, rz, meta0, islandNoise);
+    const rwx = worldX + rx, rwz = worldZ + rz;
+    if (ry < 0.12 || !dryLandSampleForMeta(rwx, rwz, meta0)) continue;
+    group.add(createRock(rwx, SEA_LEVEL + ry + 0.08, rwz, 0.4 + rng() * 1.2, rng));
   }
 
   const driftN = Math.floor(3 + h * 10 + islandRadius * 0.06);
@@ -6828,11 +6887,12 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(di * 0.6, 60) * Math.PI * 2;
     const rad = (0.72 + Math.abs(ln.noise2D(di * 0.4, 61)) * 0.22) * islandRadius;
     const dx = Math.cos(a) * rad, dz = Math.sin(a) * rad;
-    const d = Math.sqrt(dx * dx + dz * dz) / islandRadius;
+    const d = proceduralIslandNormDist(meta0, dx, dz);
     if (d < 0.62 || d > 0.98) continue;
-    const dy = sampleIslandLandHeight(dx, dz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
-    if (dy < 0.08) continue;
-    group.add(createDriftwood(worldX + dx, SEA_LEVEL + Math.max(0.12, dy * 0.45) + 0.06, worldZ + dz, rng));
+    const dy = sampleIslandLandHeight(dx, dz, meta0, islandNoise);
+    const dwx = worldX + dx, dwz = worldZ + dz;
+    if (dy < 0.18 || !dryLandSampleForMeta(dwx, dwz, meta0)) continue;
+    group.add(createDriftwood(dwx, SEA_LEVEL + Math.max(0.12, dy * 0.45) + 0.06, dwz, rng));
   }
 
   const barrelN = Math.floor(2 + h * 5 + (meta0.hasTown ? 5 : 0));
@@ -6840,11 +6900,12 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(bi * 1.1, 70) * Math.PI * 2;
     const rad = (0.2 + Math.abs(ln.noise2D(bi * 0.5, 71)) * 0.5) * islandRadius;
     const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
-    const d = Math.sqrt(bx * bx + bz * bz) / islandRadius;
+    const d = proceduralIslandNormDist(meta0, bx, bz);
     if (d > 0.88) continue;
-    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
-    if (by < 0.08 || by > islandHeight * 0.42) continue;
-    group.add(createBarrel(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, rng));
+    const by = sampleIslandLandHeight(bx, bz, meta0, islandNoise);
+    const bwx = worldX + bx, bwz = worldZ + bz;
+    if (by < 0.12 || by > islandHeight * 0.42 || !dryLandSampleForMeta(bwx, bwz, meta0)) continue;
+    group.add(createBarrel(bwx, SEA_LEVEL + by + 0.02, bwz, rng));
   }
 
   if (ln.noise2D(cx, cz) > 0.2) {
@@ -6870,7 +6931,7 @@ function generateIsland(cx, cz) {
 
     const terrainYWorld = (wx, wz) => {
       const px = wx - worldX, pz = wz - worldZ;
-      const dist = Math.sqrt(px * px + pz * pz) / islandRadius;
+      const dist = proceduralIslandNormDist(meta0, px, pz);
       const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
       const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
       const warpedDist = dist + edgeWarp + coastWobble + proceduralCoastMicro(islandNoise, worldX, worldZ, px, pz);
@@ -7886,7 +7947,6 @@ const playerShipGroup = new THREE.Group();
 scene.add(playerShipGroup);
 const otherShipGroups = new Map();
 
-const BROADSIDE_ANGLE = Math.PI * 0.22;
 const BROADSIDE_RANGE = 40;
 
 /** World Y for broadside spawn, smoke/flash, and deck firing-arc placement (gun-port height, below old 0.6·hullH). */
@@ -7895,29 +7955,45 @@ function cannonWorldMuzzleYFromShip(shipWorldY, spec) {
   return shipWorldY + spec.hullH * 0.52 - 0.1;
 }
 
-function createArcMesh(color) {
-  const geo = new THREE.BufferGeometry();
+function createFiringArcMesh(color) {
   const segments = 16;
-  const arcH = -0.12;
-  const verts = [0, arcH, 0];
-  for (let i = 0; i <= segments; i++) {
-    const a = -BROADSIDE_ANGLE + (i / segments) * BROADSIDE_ANGLE * 2;
-    verts.push(Math.sin(a) * BROADSIDE_RANGE, arcH, Math.cos(a) * BROADSIDE_RANGE);
-  }
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array((segments + 2) * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const indices = [];
-  for (let i = 0; i < segments; i++) { indices.push(0, i + 1, i + 2); }
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  for (let i = 0; i < segments; i++) indices.push(0, i + 1, i + 2);
   geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false, depthTest: false }));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false, depthTest: false }));
+  mesh.userData.arcSegments = segments;
+  syncFiringArcMeshGeometry(mesh, playerBroadsideHalfAngleRad(), BROADSIDE_RANGE);
+  return mesh;
+}
+function syncFiringArcMeshGeometry(mesh, halfAngleRad, range) {
+  const hk = (halfAngleRad * 8192) | 0, rk = (range * 32) | 0;
+  if (mesh.userData._arcHk === hk && mesh.userData._arcRk === rk) return;
+  mesh.userData._arcHk = hk;
+  mesh.userData._arcRk = rk;
+  const segments = mesh.userData.arcSegments | 0 || 16;
+  const arcH = -0.12;
+  const attr = mesh.geometry.attributes.position;
+  const arr = attr.array;
+  arr[0] = 0; arr[1] = arcH; arr[2] = 0;
+  for (let i = 0; i <= segments; i++) {
+    const a = -halfAngleRad + (i / segments) * halfAngleRad * 2;
+    arr[(i + 1) * 3] = Math.sin(a) * range;
+    arr[(i + 1) * 3 + 1] = arcH;
+    arr[(i + 1) * 3 + 2] = Math.cos(a) * range;
+  }
+  attr.needsUpdate = true;
+  mesh.geometry.computeVertexNormals();
 }
 
-const arcLeft = createArcMesh(0xff4444);
+const arcLeft = createFiringArcMesh(0xff4444);
 arcLeft.rotation.y = Math.PI / 2;
 arcLeft.visible = false;
 scene.add(arcLeft);
 
-const arcRight = createArcMesh(0xff4444);
+const arcRight = createFiringArcMesh(0xff4444);
 arcRight.rotation.y = -Math.PI / 2;
 arcRight.visible = false;
 scene.add(arcRight);
@@ -14376,7 +14452,7 @@ function executeBroadsideVolley(info, opts) {
   const physSide = -fireSide;
 
   const broadsideAngle = rot + physSide * Math.PI / 2;
-  const dirX = Math.sin(broadsideAngle), dirZ = Math.cos(broadsideAngle);
+  let dirX = Math.sin(broadsideAngle), dirZ = Math.cos(broadsideAngle);
   const guns = [];
   for (let i = 0; i < perSide; i++) {
     const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
@@ -14400,8 +14476,9 @@ function executeBroadsideVolley(info, opts) {
       const smokeVel = (!G.player.anchored && Math.abs(G.player.speed || 0) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
       if (ammoKind === 'grape') {
         const pelletsPerGun = 10;
+        const gSpread = playerBroadsideGrapeSpreadScale();
         for (let p = 0; p < pelletsPerGun; p++) {
-          const spread = (Math.random() - 0.5) * 0.58 + (Math.random() - 0.5) * 0.28;
+          const spread = ((Math.random() - 0.5) * 0.58 + (Math.random() - 0.5) * 0.28) * gSpread;
           const c = Math.cos(spread), s = Math.sin(spread);
           const pdx = dirX * c - dirZ * s;
           const pdz = dirX * s + dirZ * c;
@@ -14415,11 +14492,15 @@ function executeBroadsideVolley(info, opts) {
           ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
         }
       } else {
-        spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ, smokeVel);
-        fireCannonball(wx, wz, dirX, dirZ, wy, 'player', G.myId, ammoKind);
+        const yawJ = playerBroadsideRoundShotYawJitterRad();
+        const cj = Math.cos(yawJ), sj = Math.sin(yawJ);
+        const fjx = dirX * cj - dirZ * sj;
+        const fjz = dirX * sj + dirZ * cj;
+        spawnCannonMuzzleSmoke(wx, wy, wz, fjx, fjz, smokeVel);
+        fireCannonball(wx, wz, fjx, fjz, wy, 'player', G.myId, ammoKind);
         if (ws?.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind, shooterId: G.myId }));
-          ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
+          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: fjx, dz: fjz, ammoType: ammoKind, shooterId: G.myId }));
+          ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: fjx, dz: fjz }));
         }
       }
       if (masterSfxBusGain() > 0.02) playCannonSound(1.05, wx, wy, wz);
@@ -16500,7 +16581,7 @@ function crewPanelSkillBarMarkup(label, level) {
   const pct = lv / 5 * 100;
   const tipRaw = CREW_SKILL_BAR_TITLES[label] || `${label}: skill level ${lv} of 5.`;
   const tip = String(tipRaw).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  return `<div class="crew-skill-row"><span class="crew-skill-name">${label}</span><div class="crew-skill-bar" title="${tip}"><span class="crew-skill-bar-ticks" aria-hidden="true"></span><div class="crew-skill-fill" style="width:${pct}%"></div></div></div>`;
+  return `<div class="crew-skill-row"><span class="crew-skill-name">${label}</span><div class="crew-skill-bar" title="${tip}"><div class="crew-skill-fill" style="width:${pct}%"></div></div></div>`;
 }
 function crewPanelRenderCard(m, mi) {
   const sk = m.skills || defaultCrewSkills();
@@ -19451,6 +19532,9 @@ function update(dt) {
       G.player.z - lxStar * sinR
     );
     arcRight.rotation.y = G.player.rotation + Math.PI / 2;
+    const arcHalf = playerBroadsideHalfAngleRad();
+    syncFiringArcMeshGeometry(arcLeft, arcHalf, BROADSIDE_RANGE);
+    syncFiringArcMeshGeometry(arcRight, arcHalf, BROADSIDE_RANGE);
     arcLeft.material.opacity = G.portCooldown > 0 ? 0.04 : 0.12;
     arcRight.material.opacity = G.starboardCooldown > 0 ? 0.04 : 0.12;
     arcLeft.material.color.set(G.portCooldown > 0 ? 0x666666 : 0xff4444);
@@ -22157,7 +22241,7 @@ function isCrewSeaDrop(clientX, clientY) {
   const crewPtr = { active: false, dragging: false, crewIdx: -1, sx: 0, sy: 0, x: 0, y: 0, pointerId: null, card: null, portraitTap: false };
   function resetCrewPointerNoAction() {
     try {
-      if (crewPtr.pointerId != null) scrollHost.releasePointerCapture(crewPtr.pointerId);
+      if (crewPtr.pointerId != null && crewPtr.card) crewPtr.card.releasePointerCapture(crewPtr.pointerId);
     } catch (err) {}
     crewPtr.card?.classList.remove('dragging');
     crewPtr.active = false;
@@ -22174,7 +22258,7 @@ function isCrewSeaDrop(clientX, clientY) {
     const idx = crewPtr.crewIdx;
     const pTap = crewPtr.portraitTap;
     try {
-      if (crewPtr.pointerId != null) scrollHost.releasePointerCapture(crewPtr.pointerId);
+      if (crewPtr.pointerId != null && crewPtr.card) crewPtr.card.releasePointerCapture(crewPtr.pointerId);
     } catch (err) {}
     crewPtr.card?.classList.remove('dragging');
     crewPtr.active = false;
@@ -22224,14 +22308,9 @@ function isCrewSeaDrop(clientX, clientY) {
       const dy = Math.abs(crewPtr.y - crewPtr.sy);
       const d = Math.hypot(dx, dy);
       if (d > TH) {
-        /* Let vertical drags scroll the roster; only horizontal-dominant moves start a card drag. */
-        if (dy > dx * 1.06) {
-          resetCrewPointerNoAction();
-          return;
-        }
         crewPtr.dragging = true;
         crewPtr.card?.classList.add('dragging');
-        try { scrollHost.setPointerCapture(e.pointerId); } catch (e2) {}
+        try { crewPtr.card?.setPointerCapture(e.pointerId); } catch (e2) {}
       }
     }
   });
