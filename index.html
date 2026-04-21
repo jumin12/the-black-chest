@@ -1202,7 +1202,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   background:linear-gradient(180deg,rgba(100,72,32,0.95),rgba(52,38,18,0.98));
   box-shadow:0 0 0 1px rgba(212,168,72,0.25),inset 0 1px 0 rgba(255,230,200,0.12);
 }
-.game-help-body{flex:1;min-height:0;overflow-y:auto;padding:14px 18px 16px;-webkit-overflow-scrolling:touch;}
+.game-help-body{flex:1;min-height:0;overflow-y:auto;padding:14px 18px 16px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;}
 .game-help-pane{display:none;font-size:13px;line-height:1.55;color:#e4dcc8;}
 .game-help-pane.active{display:block;}
 .game-help-pane h3{margin:0 0 10px;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:#c9a050;}
@@ -1237,6 +1237,19 @@ body.game-help-mobile-minimal #game-help-modal .game-help-backdrop{
 }
 body.game-help-mobile-minimal #game-help-panel{
   max-height: min(78vh, calc(100vh - 120px - env(safe-area-inset-bottom, 0px)));
+  min-height:0;
+}
+#game-help-modal.game-help--mobile #game-help-panel{
+  min-height:0;
+}
+#game-help-modal.game-help--mobile .game-help-body{
+  flex:1 1 0%;
+  min-height:0;
+  overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
+  touch-action:pan-y;
+  overscroll-behavior:contain;
+  max-height:none;
 }
 /* Narrow phones: hide joystick, zoom, and other HUD so only the bottom toolbar shows with the help panel. */
 @media(max-width:768px){
@@ -4840,6 +4853,8 @@ const islandGroup = new THREE.Group();
 scene.add(islandGroup);
 const matTrunk = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
 const matPalm = new THREE.MeshLambertMaterial({ color: 0x4a9e3f });
+const matPalmFrond = new THREE.MeshLambertMaterial({ color: 0x5cb048 });
+const matPalmCrown = new THREE.MeshLambertMaterial({ color: 0x3d7a32 });
 const matRock = new THREE.MeshLambertMaterial({ color: 0x7a7a7a });
 
 function hashChunk(cx, cz, worldSeedOpt) {
@@ -5932,20 +5947,57 @@ function decoRand(rng) {
 function createPalmTree(x, y, z, rng, yawOverride) {
   const r = decoRand(rng);
   const g = new THREE.Group();
-  const height = 4 + r() * 3;
+  const height = 4.2 + r() * 2.8;
   const pts = [];
-  for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push(new THREE.Vector3(Math.sin(t * 1.5) * 0.7, t * height, Math.cos(t * 0.5) * 0.25)); }
-  const trunk = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 6, 0.13, 5, false), matTrunk);
-  trunk.castShadow = true; g.add(trunk);
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2 + r() * 0.5;
-    const lg = new THREE.PlaneGeometry(0.5, 2 + r(), 1, 3);
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10;
+    const lean = Math.sin(t * 1.35) * 0.55;
+    pts.push(new THREE.Vector3(lean, t * height, Math.cos(t * 0.42) * 0.22 * (1 - t * 0.35)));
+  }
+  const trunk = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 8, 0.14 + r() * 0.03, 6, false), matTrunk);
+  trunk.castShadow = true;
+  g.add(trunk);
+  const crownY = height * 0.96;
+  const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42 + r() * 0.12, 1), matPalmCrown);
+  crown.position.set(0, crownY + 0.18, 0);
+  const cp = crown.geometry.attributes.position;
+  for (let i = 0; i < cp.count; i++) {
+    cp.setY(i, cp.getY(i) * (1.15 + r() * 0.2));
+    cp.setX(i, cp.getX(i) * (1.05 + r() * 0.08));
+    cp.setZ(i, cp.getZ(i) * (1.05 + r() * 0.08));
+  }
+  cp.needsUpdate = true;
+  crown.geometry.computeVertexNormals();
+  crown.castShadow = true;
+  g.add(crown);
+  const frondN = 9;
+  for (let i = 0; i < frondN; i++) {
+    const a = (i / frondN) * Math.PI * 2 + r() * 0.35;
+    const tier = i % 3;
+    const yLift = crownY - 0.15 - tier * 0.35;
+    const len = 1.85 + r() * 1.1 - tier * 0.25;
+    const lg = new THREE.PlaneGeometry(0.42 + r() * 0.12, len, 1, 5);
     const lp = lg.attributes.position;
-    for (let v = 0; v < lp.count; v++) { const vy = lp.getY(v); lp.setZ(v, lp.getZ(v) - (vy * vy) * 0.4); }
-    lp.needsUpdate = true; lg.computeVertexNormals();
-    const leaf = new THREE.Mesh(lg, matPalm);
-    leaf.position.set(Math.sin(a) * 0.3, height, Math.cos(a) * 0.3);
-    leaf.rotation.set(0, a, Math.cos(a) * 0.8); leaf.castShadow = true; g.add(leaf);
+    for (let v = 0; v < lp.count; v++) {
+      const vy = (lp.getY(v) + len * 0.5) / len;
+      const droop = vy * vy * 0.85;
+      lp.setZ(v, lp.getZ(v) - droop * len * 0.22);
+    }
+    lp.needsUpdate = true;
+    lg.computeVertexNormals();
+    const mat = (i + tier) % 3 === 0 ? matPalmFrond : matPalm;
+    const leaf = new THREE.Mesh(lg, mat);
+    const out = 0.35 + tier * 0.12;
+    leaf.position.set(Math.sin(a) * out, yLift, Math.cos(a) * out);
+    leaf.rotation.order = 'YXZ';
+    leaf.rotation.y = a + r() * 0.08;
+    leaf.rotation.x = -0.65 - r() * 0.35 - tier * 0.08;
+    leaf.rotation.z = Math.sin(a * 2) * 0.12;
+    leaf.castShadow = true;
+    g.add(leaf);
+    const leaf2 = leaf.clone();
+    leaf2.rotation.y = a + Math.PI * 0.52;
+    g.add(leaf2);
   }
   const yaw = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
     ? Number(yawOverride)
@@ -6050,6 +6102,170 @@ function ensureCanonicalWildlifeForChunk(cx, cz) {
     if (!isSeaObstructed(ox, oz)) spawnFish(ox, oz, 5 + Math.floor(rng() * 12), rng);
   }
   if (rng() < 0.48) spawnAmbientSharkPair(cwx + (rng() - 0.5) * 105, cwz + (rng() - 0.5) * 105, rng);
+}
+
+function addTownBuildingFootprint(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle) {
+  const r = decoRand(rng);
+  const foundation = new THREE.Mesh(
+    new THREE.BoxGeometry(bW + 0.55, 0.42, bD + 0.55),
+    new THREE.MeshLambertMaterial({ color: 0x5a4a38 })
+  );
+  foundation.position.set(bx, baseY - 0.1, bz);
+  foundation.castShadow = true;
+  group.add(foundation);
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(bW, bH, bD),
+    new THREE.MeshLambertMaterial({ color: wallHex })
+  );
+  body.position.set(bx, baseY + bH / 2, bz);
+  body.castShadow = true;
+  group.add(body);
+  if (roofStyle === 'hip') {
+    const roof = new THREE.Mesh(
+      new THREE.ConeGeometry(Math.hypot(bW, bD) * 0.42, 1.35 + r() * 0.35, 4),
+      new THREE.MeshLambertMaterial({ color: 0x8b3a1a })
+    );
+    roof.position.set(bx, baseY + bH + 0.62, bz);
+    roof.rotation.y = Math.PI / 4;
+    roof.castShadow = true;
+    group.add(roof);
+  } else if (roofStyle === 'slate') {
+    const roof = new THREE.Mesh(
+      new THREE.ConeGeometry(Math.hypot(bW, bD) * 0.38, 1.05, 4),
+      new THREE.MeshLambertMaterial({ color: 0x4a5568 })
+    );
+    roof.position.set(bx, baseY + bH + 0.48, bz);
+    roof.rotation.y = Math.PI / 4;
+    roof.castShadow = true;
+    group.add(roof);
+  } else if (roofStyle === 'flat') {
+    const roof = new THREE.Mesh(
+      new THREE.BoxGeometry(bW * 1.04, 0.38, bD * 1.04),
+      new THREE.MeshLambertMaterial({ color: 0x353330 })
+    );
+    roof.position.set(bx, baseY + bH + 0.2, bz);
+    roof.castShadow = true;
+    group.add(roof);
+    const ped = new THREE.Mesh(
+      new THREE.BoxGeometry(bW * 0.42, 0.65, 0.28),
+      new THREE.MeshLambertMaterial({ color: 0xe2dcd4 })
+    );
+    ped.position.set(bx, baseY + bH * 0.38, bz + bD * 0.48);
+    ped.castShadow = true;
+    group.add(ped);
+  }
+}
+
+function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin) {
+  const r = decoRand(rng);
+  let bW, bD, bH, wallHex, roofStyle;
+  if (type === 'church') {
+    bW = 2.75; bD = 5.5; bH = 5.1; wallHex = 0xd8d4cc; roofStyle = 'slate';
+  } else if (type === 'tavern') {
+    bW = 5.7; bD = 4.5; bH = 3.5; wallHex = 0x8f6e4e; roofStyle = 'hip';
+  } else if (type === 'governor') {
+    bW = 6.9; bD = 5.7; bH = 4.9; wallHex = 0xeee6da; roofStyle = 'flat';
+  } else {
+    bW = 2.5 + r() * 1.8; bD = bW * (0.88 + r() * 0.14); bH = 2.35 + r() * 1.35;
+    wallHex = [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868][Math.floor(r() * 5)];
+    roofStyle = 'hip';
+  }
+  const half = Math.max(bW, bD) * 0.5 + 0.04;
+  const maxFlat = (gx, gz, h) => Math.max(
+    terrainYWorld(gx - h, gz - h), terrainYWorld(gx + h, gz - h),
+    terrainYWorld(gx - h, gz + h), terrainYWorld(gx + h, gz + h));
+  const minFlat = (gx, gz, h) => Math.min(
+    terrainYWorld(gx - h, gz - h), terrainYWorld(gx + h, gz - h),
+    terrainYWorld(gx - h, gz + h), terrainYWorld(gx + h, gz + h));
+  const gyMax = maxFlat(bx, bz, half);
+  const gyMin = minFlat(bx, bz, half);
+  if (gyMax < minGyMax || gyMin < minGyMin) return false;
+  const cornerE = half * 0.82;
+  if (!landOk(bx - cornerE, bz - cornerE)) return false;
+  if (!landOk(bx + cornerE, bz - cornerE)) return false;
+  if (!landOk(bx - cornerE, bz + cornerE)) return false;
+  if (!landOk(bx + cornerE, bz + cornerE)) return false;
+  const baseY = SEA_LEVEL + gyMax + 0.06;
+  addTownBuildingFootprint(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
+  if (type === 'church') {
+    const steepleX = bx + bW * 0.15;
+    const steepleZ = bz - bD * 0.38;
+    const stBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.48, 0.58, bH * 0.42, 8),
+      new THREE.MeshLambertMaterial({ color: 0xc8c4bc })
+    );
+    stBase.position.set(steepleX, baseY + bH + bH * 0.2, steepleZ);
+    stBase.castShadow = true;
+    group.add(stBase);
+    const spire = new THREE.Mesh(
+      new THREE.ConeGeometry(0.52, 1.55, 8),
+      new THREE.MeshLambertMaterial({ color: 0x5a5852 })
+    );
+    spire.position.set(steepleX, baseY + bH + bH * 0.42 + 0.78, steepleZ);
+    spire.castShadow = true;
+    group.add(spire);
+    const cross = new THREE.Mesh(
+      new THREE.BoxGeometry(0.12, 0.55, 0.12),
+      new THREE.MeshLambertMaterial({ color: 0xd8d0c8 })
+    );
+    cross.position.set(steepleX, baseY + bH + bH * 0.42 + 1.55 + 0.28, steepleZ);
+    cross.castShadow = true;
+    group.add(cross);
+  }
+  return true;
+}
+
+function addTownSettlementForChunk(group, dockX, dockZ, dockAngle, centerWX, centerWZ, islandRadius, rng, opts) {
+  const terrainYWorld = opts.terrainYWorld;
+  const landOk = opts.landOk;
+  const minGyMax = opts.minGyMax != null ? opts.minGyMax : PROC_LAND_HT_MIN * 0.92;
+  const minGyMin = opts.minGyMin != null ? opts.minGyMin : PROC_LAND_HT_MIN * 0.72;
+  const toInX = centerWX - dockX, toInZ = centerWZ - dockZ;
+  const inLen = Math.hypot(toInX, toInZ) || 1;
+  const ux = toInX / inLen, uz = toInZ / inLen;
+  const dockWidX = Math.cos(dockAngle), dockWidZ = -Math.sin(dockAngle);
+  const signatures = [
+    { type: 'church', al: 0.14, sp: -0.38 },
+    { type: 'tavern', al: 0.11, sp: 0.36 },
+    { type: 'governor', al: 0.24, sp: 0.05 },
+  ];
+  let sigPlaced = 0;
+  for (const s of signatures) {
+    let placedSig = false;
+    for (let attempt = 0; attempt < 32 && !placedSig; attempt++) {
+      const along = 11 + islandRadius * (0.08 + s.al) + (attempt % 6) * 2.2 + rng() * 3.5;
+      const spread = s.sp * (7 + rng() * 5) + (rng() - 0.5) * (1.2 + attempt * 0.12);
+      const bx = dockX + ux * along + dockWidX * spread;
+      const bz = dockZ + uz * along + dockWidZ * spread;
+      if (tryPlaceTownLandmark(group, s.type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin)) {
+        placedSig = true;
+        sigPlaced++;
+      }
+    }
+  }
+  const houseGoal = 8 + Math.floor(rng() * 4);
+  let houses = 0;
+  for (let attempt = 0; attempt < 130 && houses < houseGoal; attempt++) {
+    const along = 7.5 + rng() * Math.min(islandRadius * 0.64, 70);
+    const spread = (rng() * 2 - 1) * (5 + rng() * 9);
+    const bx = dockX + ux * along + dockWidX * spread;
+    const bz = dockZ + uz * along + dockWidZ * spread;
+    if (tryPlaceTownLandmark(group, 'house', bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin)) houses++;
+  }
+  if (sigPlaced < 3 || houses < 5) {
+    for (let k = 0; k < 55 && (sigPlaced < 3 || houses < 6); k++) {
+      const ang = dockAngle + Math.PI * 0.4 + k * 0.36;
+      const dist = 5.8 + (k % 14) * 2.15;
+      const bx = dockX + Math.cos(ang) * dist;
+      const bz = dockZ + Math.sin(ang) * dist;
+      if (houses < 7 && tryPlaceTownLandmark(group, 'house', bx + (rng() - 0.5) * 3, bz + (rng() - 0.5) * 3, rng, terrainYWorld, landOk, minGyMax, minGyMin)) {
+        houses++;
+      } else if (sigPlaced < 3) {
+        const ty = signatures[sigPlaced % 3].type;
+        if (tryPlaceTownLandmark(group, ty, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin)) sigPlaced++;
+      }
+    }
+  }
 }
 
 function generateCustomMapChunk(cx, cz) {
@@ -6206,6 +6422,31 @@ function generateCustomMapChunk(cx, cz) {
     } else if (e.type === 'driftwood') {
       group.add(createDriftwood(e.x, surf + 0.1, e.z, er));
     }
+  }
+  const townsCm = cm.towns || [];
+  for (let ti = 0; ti < townsCm.length; ti++) {
+    const t = townsCm[ti];
+    if (!t || !t.hasTown || t.dockX == null || t.dockZ == null) continue;
+    const ddx = Number(t.dockX), ddz = Number(t.dockZ);
+    const dockCx = Math.floor(ddx / CHUNK_SIZE);
+    const dockCz = Math.floor(ddz / CHUNK_SIZE);
+    if (dockCx !== cx || dockCz !== cz) continue;
+    const twx = t.worldX != null ? Number(t.worldX) : cwx;
+    const twz = t.worldZ != null ? Number(t.worldZ) : cwz;
+    const tcx = t.cx != null ? t.cx | 0 : dockCx;
+    const tcz = t.cz != null ? t.cz | 0 : dockCz;
+    const dAng = t.dockAngle != null ? Number(t.dockAngle) : 0;
+    const rngT = islandRng(tcx + 313, tcz + 727);
+    const terrainYWorldCM = (wx, wz) => {
+      const sh = samp(wx, wz);
+      return sh <= wThr ? 0 : sh * maxH;
+    };
+    addTownSettlementForChunk(group, ddx, ddz, dAng, twx, twz, CHUNK_SIZE * 1.45, rngT, {
+      terrainYWorld: terrainYWorldCM,
+      landOk: dryLandAtWorldPosition,
+      minGyMax: 0.32,
+      minGyMin: 0.14
+    });
   }
   islandGroup.add(group);
   G.islands.push(group.userData);
@@ -6404,12 +6645,6 @@ function generateIsland(cx, cz) {
       if (!isLand) return 0;
       return Math.max(PROC_LAND_HT_MIN, ht);
     };
-    const maxFlatGround = (gx, gz, half) => Math.max(
-      terrainYWorld(gx - half, gz - half),
-      terrainYWorld(gx + half, gz - half),
-      terrainYWorld(gx - half, gz + half),
-      terrainYWorld(gx + half, gz + half)
-    );
 
     const dockLongX = Math.sin(dockAngle), dockLongZ = Math.cos(dockAngle);
     const dockWidX = Math.cos(dockAngle), dockWidZ = -Math.sin(dockAngle);
@@ -6448,63 +6683,12 @@ function generateIsland(cx, cz) {
     const inLen = Math.hypot(toInX, toInZ) || 1;
     const ux = toInX / inLen, uz = toInZ / inLen;
 
-    let buildingsPlaced = 0;
-    const bColors = [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868];
-    const tryAddTownBuilding = (bx, bz, colorIdx) => {
-      const bH = 2.5 + rng() * 1.5;
-      const bW = 2.5 + rng() * 2;
-      const half = bW * 0.5 + 0.02;
-      const gyMax = maxFlatGround(bx, bz, half);
-      const gyMin = Math.min(
-        terrainYWorld(bx - half, bz - half),
-        terrainYWorld(bx + half, bz - half),
-        terrainYWorld(bx - half, bz + half),
-        terrainYWorld(bx + half, bz + half)
-      );
-      if (gyMax < PROC_LAND_HT_MIN * 0.92 || gyMin < PROC_LAND_HT_MIN * 0.72) return false;
-      if (!dryLandCollisionSampleForMeta(bx, bz, meta0)) return false;
-      const cornerE = half * 0.82;
-      if (!dryLandCollisionSampleForMeta(bx - cornerE, bz - cornerE, meta0)) return false;
-      if (!dryLandCollisionSampleForMeta(bx + cornerE, bz - cornerE, meta0)) return false;
-      if (!dryLandCollisionSampleForMeta(bx - cornerE, bz + cornerE, meta0)) return false;
-      if (!dryLandCollisionSampleForMeta(bx + cornerE, bz + cornerE, meta0)) return false;
-      const ci = ((colorIdx % 5) + 5) % 5;
-      const baseY = SEA_LEVEL + gyMax + 0.06;
-      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW),
-        new THREE.MeshLambertMaterial({ color: bColors[ci] }));
-      bldg.position.set(bx, baseY + bH / 2, bz); bldg.castShadow = true;
-      group.add(bldg);
-      const foundation = new THREE.Mesh(new THREE.BoxGeometry(bW + 0.55, 0.45, bW + 0.55), new THREE.MeshLambertMaterial({ color: 0x5a4a38 }));
-      foundation.position.set(bx, baseY - 0.08, bz); group.add(foundation);
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(bW * 0.8, 1.5, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
-      roof.position.set(bx, baseY + bH + 0.75, bz); roof.rotation.y = Math.PI / 4; group.add(roof);
-      buildingsPlaced++;
-      return true;
-    };
-
-    for (let bi = 0; bi < 5; bi++) {
-      const ba = dockAngle + Math.PI + (bi - 2) * 0.3;
-      const bOff = (bi % 2 === 0 ? 1 : -1) * (2 + bi * 1.5);
-      const bx = dockX + Math.cos(ba) * (8 + bi * 4) + Math.cos(ba + Math.PI / 2) * bOff;
-      const bz = dockZ + Math.sin(ba) * (8 + bi * 4) + Math.sin(ba + Math.PI / 2) * bOff;
-      tryAddTownBuilding(bx, bz, bi);
-    }
-    for (let attempt = 0; buildingsPlaced < 3 && attempt < 72; attempt++) {
-      const along = 7.5 + rng() * Math.min(islandRadius * 0.55, 62);
-      const spread = (rng() * 2 - 1) * (4.5 + rng() * 7.5);
-      const bx = dockX + ux * along + dockWidX * spread;
-      const bz = dockZ + uz * along + dockWidZ * spread;
-      tryAddTownBuilding(bx, bz, buildingsPlaced + attempt * 3);
-    }
-    if (buildingsPlaced < 3) {
-      for (let k = 0; k < 40 && buildingsPlaced < 3; k++) {
-        const ang = dockAngle + Math.PI * 0.4 + k * 0.41;
-        const dist = 5.2 + (k % 10) * 2.35;
-        const bx = dockX + Math.cos(ang) * dist;
-        const bz = dockZ + Math.sin(ang) * dist;
-        tryAddTownBuilding(bx, bz, 90 + k);
-      }
-    }
+    addTownSettlementForChunk(group, dockX, dockZ, dockAngle, worldX, worldZ, islandRadius, rng, {
+      terrainYWorld,
+      landOk: (wx, wz) => dryLandCollisionSampleForMeta(wx, wz, meta0),
+      minGyMax: PROC_LAND_HT_MIN * 0.92,
+      minGyMin: PROC_LAND_HT_MIN * 0.72
+    });
 
     const tf = townFaction(meta0) % 4;
     const townLabel = makeTextSprite(group.userData.townName, '#e8d090', FACTION_NAMES[tf] + ' · Port', FACTION_TRADE_COLORS[tf]);
@@ -20393,7 +20577,7 @@ function buildCreationUI() {
 let tutorialStepIndex = 0;
 let tutorialSteps = [];
 
-function buildTutorialSteps() {
+function buildTutorialStepsDesktop() {
   const steps = [];
   steps.push({
     sel: null,
@@ -20403,50 +20587,22 @@ function buildTutorialSteps() {
   steps.push({
     sel: '#compass',
     title: 'Compass and wind',
-        body: 'North, east, south, and west stay fixed on the card. The gold needle shows your ship\'s heading; the blue arrow is the wind. The green arc and numbers at the bottom are your speed over ground (knots) and the breeze strength. On the full chart (M), a matching compass sits in the chart frame\'s top-left — it does not drift when you pan the map.'
+    body: 'North, east, south, and west stay fixed on the card. The gold needle shows your ship\'s heading; the blue arrow is the wind. The green arc and numbers at the bottom are your speed over ground (knots) and the breeze strength. On the full chart (M), a matching compass sits in the chart frame\'s top-left — it does not drift when you pan the map.'
   });
   steps.push({
     sel: '#minimap',
     title: 'Chart',
     body: 'Open the full sea chart from here (or press M). Spy other captains and isles on it.'
   });
-  if (isMobile) {
-    steps.push({
-      sel: '#joystick-zone',
-      title: 'Helm',
-      body: 'Drag the stick to fill your sails and swing the rudder. The camera follows your stern.'
-    });
-    if (G.mobileControlScheme === 3) {
-      steps.push({
-        sel: '#touch-edge-left',
-        title: 'Edge broadsides',
-        body: 'Tap the left and right strips of open sea (between the compass and the bottom helm)—not on buttons or the chart. Left edge fires port, right edge starboard (same as PC). In battle those strips pulse for about three seconds as a reminder; you can still fire when they are hidden.'
-      });
-    } else {
-      const bb = 'Port (left button) and starboard (right) match PC. Short reload per battery—you can steer and tap fire with two fingers at once.';
-      steps.push({
-        sel: '#touch-port',
-        title: 'Broadsides',
-        body: bb
-      });
-    }
-    steps.push({
-      sel: '#touch-zoom',
-      emphasizeZoom: true,
-      title: 'Spyglass',
-      body: 'Pinch the sea or use + and − (highlighted) to bring the camera from horizon view down to the deck.'
-    });
-  } else {
-    steps.push({
-      sel: '#btn-help',
-      title: 'Keyboard',
-      body: 'W and S trim sail, A and D turn. Z and X fire port and starboard; Space fires both. Q and E swing the camera; scroll from horizon to deck view.'
-    });
-  }
+  steps.push({
+    sel: '#btn-help',
+    title: 'Keyboard & Quick help',
+    body: 'W and S trim sail, A and D turn. Z and X fire port and starboard; Space fires both. Q and E swing the camera; scroll from horizon to deck view. Tap ? anytime for Quick help.'
+  });
   steps.push({
     sel: '#combat-shot-wrap',
     title: 'Shot locker',
-    body: 'The round cannonball button shows your selected shot and hold count; tap it for round, grape, or chain. On PC it sits between the port and starboard cannon buttons in one row above the bottom toolbar; on phones it sits above the wheel in balanced mode, or above the stacked cannon buttons in left- and right-thumb layouts.'
+    body: 'The round cannonball button shows your selected shot and count; click for round, grape, or chain. It sits between the port and starboard cannon buttons above the toolbar.'
   });
   steps.push({
     sel: '#btn-log',
@@ -20454,11 +20610,9 @@ function buildTutorialSteps() {
     body: 'Ship papers, cargo hold, crew, missions, and the pirate roll are all kept here.'
   });
   steps.push({
-    sel: isMobile ? '#btn-chat' : '#chat-box',
+    sel: '#chat-box',
     title: 'Speaking tube',
-    body: isMobile
-      ? 'Hail nearby captains with the ship\'s chat.'
-      : 'Chat stays open in the lower left. Press T to focus the message box, or hail captains from World or Clan tabs.'
+    body: 'Chat stays open in the lower left. Press T to focus the message box, or hail captains from World or Clan tabs.'
   });
   steps.push({
     sel: '#btn-anchor',
@@ -20468,7 +20622,7 @@ function buildTutorialSteps() {
   steps.push({
     sel: '#btn-settings',
     title: 'Settings',
-    body: 'Adjust sound here' + (isMobile ? ', and change your helm layout if you like.' : '.')
+    body: 'Adjust sound here.'
   });
   steps.push({
     sel: null,
@@ -20476,6 +20630,84 @@ function buildTutorialSteps() {
     body: 'Raise the black flag, find plunder, and mind the shoals. Tap Done to cast off!'
   });
   return steps;
+}
+
+function buildTutorialStepsMobile() {
+  const steps = [];
+  steps.push({
+    sel: null,
+    title: 'Welcome aboard',
+    body: 'A short tour of your phone helm — only controls that are on-screen. Skip anytime.'
+  });
+  steps.push({
+    sel: '#compass',
+    title: 'Compass and wind',
+    body: 'Heading, wind arrow, and speed readout — same ideas as PC, compact for the top corner.'
+  });
+  steps.push({
+    sel: '#minimap',
+    title: 'Sea chart',
+    body: 'Tap to open the full map. Pinch and drag there to zoom and pan.'
+  });
+  steps.push({
+    sel: '#joystick-zone',
+    title: 'Helm',
+    body: 'Drag the wheel to fill sails and steer. Turning builds gradually with speed.'
+  });
+  if (G.mobileControlScheme === 3) {
+    steps.push({
+      sel: '#touch-broadsides-layer',
+      title: 'Edge broadsides',
+      body: 'Tap the left or right strip of open sea (not HUD buttons). Port on the left, starboard on the right. In battle the edges may pulse briefly as a hint.'
+    });
+  } else {
+    steps.push({
+      sel: '#touch-port',
+      title: 'Broadsides',
+      body: 'Port and starboard cannon buttons flank the wheel (or stack in one-thumb layouts). Short reload per battery — you can steer and fire together.'
+    });
+  }
+  steps.push({
+    sel: '#touch-zoom',
+    emphasizeZoom: true,
+    title: 'Zoom & spyglass',
+    body: 'Pinch the sea or tap + / − to move between horizon and deck view.'
+  });
+  steps.push({
+    sel: '#combat-shot-wrap',
+    title: 'Shot locker',
+    body: 'Round ammo control above the wheel (or above stacked cannons): tap to pick round, grape, or chain.'
+  });
+  steps.push({
+    sel: '#btn-log',
+    title: 'Captain\'s Log',
+    body: 'Ship, cargo, crew, missions — bottom toolbar, scrollable book icon.'
+  });
+  steps.push({
+    sel: '#btn-chat',
+    title: 'Chat',
+    body: 'Hail other captains — opens the speaking tube.'
+  });
+  steps.push({
+    sel: '#btn-anchor',
+    title: 'Anchor',
+    body: 'Drop the hook from the toolbar when you need to hold station.'
+  });
+  steps.push({
+    sel: '#btn-settings',
+    title: 'Settings',
+    body: 'Sound and your helm layout live here.'
+  });
+  steps.push({
+    sel: null,
+    title: 'All set',
+    body: 'Fair winds — tap Done when you\'re ready to sail!'
+  });
+  return steps;
+}
+
+function buildTutorialSteps() {
+  return isMobile ? buildTutorialStepsMobile() : buildTutorialStepsDesktop();
 }
 
 let _pendingTutorialAfterHelp = false;
