@@ -581,10 +581,11 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   transform:translate(-50%,-50%) scale(0.98);
 }
 .ui-drag-ghost--cargo{
-  min-width:72px;min-height:72px;display:flex;align-items:center;justify-content:center;
+  min-width:0;min-height:0;max-width:none;max-height:none;display:flex;align-items:center;justify-content:center;
   background:linear-gradient(165deg,rgba(44,34,24,0.96),rgba(22,16,12,0.98));
-  border:1px solid rgba(140,110,70,0.5);
+  border:1px solid rgba(140,110,70,0.5);box-sizing:border-box;
 }
+#log-panel.log-panel--crew .crew-card-v2{touch-action:none;}
 .crew-card-v2--prisoner{border-color:rgba(90,90,90,0.45);opacity:0.97;}
 .crew-card-main{
   display:grid;grid-template-columns:var(--crew-portrait-size, 60px) minmax(0,1fr);gap:6px;padding:6px;min-width:0;align-items:start;
@@ -7150,6 +7151,20 @@ function wildlifeIsNearCullCenter(wx, wz, cx, cz) {
   const dx = wx - cx, dz = wz - cz;
   return dx * dx + dz * dz <= WILDLIFE_CULL_R2;
 }
+/** Hide distant NPC and remote-player hulls using the same band as islands / wildlife (camera or spectate anchor). */
+function updateShipMeshCullVisibility() {
+  const c = wildlifeCullCenterXZ();
+  const cx = c.x, cz = c.z;
+  for (let i = 0; i < G.npcs.length; i++) {
+    const npc = G.npcs[i];
+    if (!npc.mesh) continue;
+    npc.mesh.visible = wildlifeIsNearCullCenter(npc.x, npc.z, cx, cz);
+  }
+  otherShipGroups.forEach(sg => {
+    if (!sg) return;
+    sg.visible = wildlifeIsNearCullCenter(sg.position.x, sg.position.z, cx, cz);
+  });
+}
 /** Open-ocean predator pairs (deterministic motion from synced world time). */
 const ambientSharkPairs = [];
 /** After crew rescue: predator sharks follow rescuer's boat briefly (all clients). */
@@ -8116,6 +8131,7 @@ function refreshOtherPlayerShipCacheKey(p) {
 /** Catalog for creation + port chandler (gold prices; first is free starter). */
 const PIRATE_FLAG_EMBLEMS = [
   { id: 'skull_crossbones', name: 'Skull & crossbones', price: 0 },
+  { id: 'main_menu_crest', name: 'Main menu crest', price: 0 },
   { id: 'crossed_sabers', name: 'Crossed sabers', price: 62 },
   { id: 'hourglass', name: 'Hourglass', price: 55 },
   { id: 'bleeding_heart', name: 'Bleeding heart', price: 72 },
@@ -8150,6 +8166,8 @@ function drawPirateFlagToCanvas(ctx, cw, ch, flagColorHex, emblemId) {
   const pal = pirateFlagPalette(flagColorHex || '#1a1a1a');
   const W = 64, H = 48;
   ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  if (ctx.imageSmoothingQuality) ctx.imageSmoothingQuality = 'high';
   if (cw !== W || ch !== H) {
     ctx.scale(cw / W, ch / H);
   }
@@ -8211,6 +8229,25 @@ function drawPirateFlagToCanvas(ctx, cw, ch, flagColorHex, emblemId) {
     ctx.fillStyle = pal.acc;
     ctx.beginPath(); ctx.moveTo(18, 12); ctx.lineTo(22, 14); ctx.lineTo(20, 18); ctx.closePath(); ctx.fill();
     ctx.beginPath(); ctx.moveTo(46, 12); ctx.lineTo(42, 14); ctx.lineTo(44, 18); ctx.closePath(); ctx.fill();
+  } else if (id === 'main_menu_crest') {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const ox = 32, oy = 24;
+    const brass = '#c9a24a';
+    ctx.font = 'bold 34px Georgia, "Times New Roman", serif';
+    ctx.fillStyle = 'rgba(201, 162, 74, 0.28)';
+    for (let k = 0; k < 10; k++) {
+      const a = (k / 10) * Math.PI * 2;
+      ctx.fillText('\u2620', ox + Math.cos(a) * 2.1, oy + Math.sin(a) * 2.1);
+    }
+    ctx.fillStyle = 'rgba(201, 162, 74, 0.4)';
+    ctx.fillText('\u2620', ox + 1.1, oy + 1.1);
+    ctx.fillStyle = brass;
+    ctx.globalAlpha = 0.55;
+    ctx.fillText('\u2620', ox, oy);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = pal.ink;
+    ctx.fillText('\u2620', ox, oy);
   } else {
     ctx.font = 'bold 26px Georgia,serif'; ctx.fillStyle = pal.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('\u2620', 32, 24);
   }
@@ -8224,10 +8261,17 @@ function attachPirateFlagToShip(g, spec, flagColor, flagPlace, mastRigForMastFla
   const mastIdx = Math.max(0, spec.masts - 1);
   const mZ = (mastIdx - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
   const mastBaseY = spec.hullH * 0.6;
-  const fc = document.createElement('canvas'); fc.width = 64; fc.height = 48;
+  const fcW = 256, fcH = 192;
+  const fc = document.createElement('canvas'); fc.width = fcW; fc.height = fcH;
   const ctx = fc.getContext('2d');
-  drawPirateFlagToCanvas(ctx, 64, 48, flagColor, flagEmblemId);
+  drawPirateFlagToCanvas(ctx, fcW, fcH, flagColor, flagEmblemId);
   const ftex = new THREE.CanvasTexture(fc);
+  ftex.generateMipmaps = true;
+  ftex.minFilter = THREE.LinearMipmapLinearFilter;
+  ftex.magFilter = THREE.LinearFilter;
+  if (renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy) {
+    ftex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  }
   const flagRig = new THREE.Group();
   let poleH = spec.hullLen * 0.36;
   let hingeZ = 0.02;
@@ -18066,9 +18110,9 @@ function showPortTab(tab) {
       const card = document.createElement('div');
       card.className = 'port-flag-card';
       const cvs = document.createElement('canvas');
-      cvs.width = 128;
-      cvs.height = 64;
-      drawPirateFlagToCanvas(cvs.getContext('2d'), 128, 64, fcPort, def.id);
+      cvs.width = 256;
+      cvs.height = 128;
+      drawPirateFlagToCanvas(cvs.getContext('2d'), 256, 128, fcPort, def.id);
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.style.cssText = 'width:100%;padding:6px 8px;border-radius:5px;font-size:10px;font-family:Georgia,serif;cursor:pointer;border:1px solid rgba(140,160,120,0.45);';
@@ -20028,6 +20072,7 @@ function update(dt) {
       }
     }
   });
+  updateShipMeshCullVisibility();
 
   for (let i = G.cannonballs.length - 1; i >= 0; i--) {
     const b = G.cannonballs[i];
@@ -21100,9 +21145,9 @@ function buildFlagEmblemPicker(selectedId) {
     b.dataset.emblem = def.id;
     b.title = def.name;
     const cvs = document.createElement('canvas');
-    cvs.width = 64;
-    cvs.height = 48;
-    drawPirateFlagToCanvas(cvs.getContext('2d'), 64, 48, flagColor, def.id);
+    cvs.width = 128;
+    cvs.height = 96;
+    drawPirateFlagToCanvas(cvs.getContext('2d'), 128, 96, flagColor, def.id);
     b.appendChild(cvs);
     b.addEventListener('click', () => {
       row.querySelectorAll('.flag-emblem-swatch').forEach(s => s.classList.remove('sel'));
@@ -21126,7 +21171,11 @@ function drawFlagPreview() {
     const fc = flagColor;
     row.querySelectorAll('.flag-emblem-swatch').forEach(sw => {
       const c = sw.querySelector('canvas');
-      if (c) drawPirateFlagToCanvas(c.getContext('2d'), 64, 48, fc, sw.dataset.emblem);
+      if (c) {
+        c.width = 128;
+        c.height = 96;
+        drawPirateFlagToCanvas(c.getContext('2d'), 128, 96, fc, sw.dataset.emblem);
+      }
     });
   }
 }
@@ -22562,10 +22611,21 @@ function showUiDragGhostFromElement(el, clientX, clientY, kind) {
   const g = el.cloneNode(true);
   g.classList.add('ui-drag-ghost');
   if (kind === 'cargo') g.classList.add('ui-drag-ghost--cargo');
-  const maxW = kind === 'cargo' ? 118 : 268;
-  const sc = Math.min(1, maxW / Math.max(1, rect.width));
-  g.style.width = rect.width + 'px';
-  g.style.transform = 'translate(-50%,-50%) scale(' + sc + ')';
+  let sc = 1;
+  if (kind === 'cargo') {
+    const rw = Math.max(1, rect.width), rh = Math.max(1, rect.height);
+    g.style.width = rw + 'px';
+    g.style.height = rh + 'px';
+    g.style.maxWidth = rw + 'px';
+    g.style.maxHeight = rh + 'px';
+    g.style.boxSizing = 'border-box';
+    g.style.transform = 'translate(-50%,-50%) scale(1)';
+  } else {
+    const maxW = 268;
+    sc = Math.min(1, maxW / Math.max(1, rect.width));
+    g.style.width = rect.width + 'px';
+    g.style.transform = 'translate(-50%,-50%) scale(' + sc + ')';
+  }
   r.appendChild(g);
   copyCanvasesRecursive(el, g);
   uiDragGhostEl = g;
@@ -22675,7 +22735,7 @@ function isCrewSeaDrop(clientX, clientY) {
 (function bindCrewCardPointerDrag() {
   const root = document.getElementById('crew-list');
   if (!root) return;
-  const TH = isMobile ? 4 : 3;
+  const TH = isMobile ? 2 : 1;
   const CREW_MOVE_OPTS = { capture: true, passive: false };
   const CREW_END_OPTS = { capture: true };
   const crewPtr = { active: false, dragging: false, crewIdx: -1, sx: 0, sy: 0, x: 0, y: 0, pointerId: null, card: null, portraitTap: false, winBound: false };
@@ -22703,15 +22763,8 @@ function isCrewSeaDrop(clientX, clientY) {
     crewPtr.x = e.clientX;
     crewPtr.y = e.clientY;
     if (!crewPtr.dragging && crewPtr.card) {
-      const dx = Math.abs(crewPtr.x - crewPtr.sx);
-      const dy = Math.abs(crewPtr.y - crewPtr.sy);
-      const d = Math.hypot(dx, dy);
+      const d = Math.hypot(Math.abs(crewPtr.x - crewPtr.sx), Math.abs(crewPtr.y - crewPtr.sy));
       if (d > TH) {
-        const vetoScroll = isMobile ? dy > dx * 2.45 : dy > dx * 1.06;
-        if (vetoScroll) {
-          resetCrewPointerNoAction();
-          return;
-        }
         crewPtr.dragging = true;
         crewPtr.card.classList.add('dragging');
         try { crewPtr.card.setPointerCapture(e.pointerId); } catch (e2) {}
