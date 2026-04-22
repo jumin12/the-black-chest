@@ -2836,6 +2836,199 @@ function getCannonballKillerPlayerId(b) {
   return G.myId != null ? G.myId : null;
 }
 
+function normalizeEscortRaidersForCargo(cargoSyncId) {
+  if (cargoSyncId == null) return;
+  G.npcs.forEach(a => {
+    if (a.attackNpcSyncId === cargoSyncId) {
+      a.attackNpcSyncId = null;
+      a.escortRaider = false;
+    }
+  });
+}
+function removeEscortCargoNpcFromWorld(npc) {
+  if (!npc) return;
+  normalizeEscortRaidersForCargo(npc.syncId);
+  const ix = G.npcs.indexOf(npc);
+  if (ix >= 0) G.npcs.splice(ix, 1);
+  if (npc.mesh) {
+    scene.remove(npc.mesh);
+    npc.mesh = null;
+  }
+}
+function demoteEscortNpcsToNormal() {
+  let any = false;
+  for (let i = G.quests.length - 1; i >= 0; i--) {
+    const q = G.quests[i];
+    if (q.type !== 'escort' || !q.accepted) continue;
+    any = true;
+    const cargo = q.escortCargoSyncId != null ? G.npcs.find(n => n.syncId === q.escortCargoSyncId) : null;
+    if (cargo) {
+      cargo.isEscortCargo = false;
+      cargo.escortQuestActive = false;
+      if (isMultiplayerHost()) {
+        try { assignNewTradeRoute(cargo); } catch (err) {}
+      }
+    }
+    if (q.escortCargoSyncId != null) normalizeEscortRaidersForCargo(q.escortCargoSyncId);
+    if (q.attackerSyncIds) {
+      q.attackerSyncIds.forEach(sid => {
+        const a = G.npcs.find(n => n.syncId === sid);
+        if (a) {
+          a.attackNpcSyncId = null;
+          a.escortRaider = false;
+        }
+      });
+    }
+    G.quests.splice(i, 1);
+  }
+  if (any) notify('Escort contract void — remaining ships resume ordinary sailing.');
+}
+
+function failEscortQuest(msg, cargoSyncId) {
+  for (let i = G.quests.length - 1; i >= 0; i--) {
+    const q = G.quests[i];
+    if (q.type !== 'escort' || !q.accepted || q.pendingReward) continue;
+    if (cargoSyncId != null && q.escortCargoSyncId !== cargoSyncId) continue;
+    if (q.attackerSyncIds && q.attackerSyncIds.length) {
+      q.attackerSyncIds.forEach(sid => {
+        const a = G.npcs.find(n => n.syncId === sid);
+        if (a) {
+          a.attackNpcSyncId = null;
+          a.escortRaider = false;
+        }
+      });
+    }
+    const cargo = q.escortCargoSyncId != null ? G.npcs.find(n => n.syncId === q.escortCargoSyncId) : null;
+    if (cargo && !cargo.sinking) normalizeEscortRaidersForCargo(cargo.syncId);
+    G.quests.splice(i, 1);
+    notify(msg || 'Escort contract failed.');
+    updateMissionsPanel();
+    updateStoryBriefHud();
+    saveProgressDebounced();
+    broadcastWorldQuestsToServer();
+    return;
+  }
+}
+function hostCompleteEscortQuestArrival(npc) {
+  if (!isMultiplayerHost() || !npc.isEscortCargo || !npc.escortQuestActive) return;
+  const q = G.quests.find(x => x.type === 'escort' && x.accepted && x.escortCargoSyncId === npc.syncId);
+  if (!q) return;
+  q.pendingReward = true;
+  npc.escortQuestActive = false;
+  removeEscortCargoNpcFromWorld(npc);
+  notify(`Convoy arrived — dock at any port → Quests to collect ${q.reward}g.`);
+  updateMissionsPanel();
+  updateStoryBriefHud();
+  saveProgressDebounced();
+}
+function spawnEscortRaiderPirates(cargoSyncId, nearPt, count, nameRng) {
+  const ids = [];
+  const typePool = ['cutter', 'sloop', 'brigantine'];
+  for (let a = 0; a < count; a++) {
+    const sr = () => (nameRng ? nameRng() : Math.random());
+    const ang = sr() * Math.PI * 2;
+    const dist = 52 + sr() * 42;
+    let nx = nearPt.x + Math.sin(ang) * dist;
+    let nz = nearPt.z + Math.cos(ang) * dist;
+    nx = Math.max(-WORLD_EDGE_CLAMP + 20, Math.min(WORLD_EDGE_CLAMP - 20, nx));
+    nz = Math.max(-WORLD_EDGE_CLAMP + 20, Math.min(WORLD_EDGE_CLAMP - 20, nz));
+    const npcType = typePool[Math.floor(sr() * typePool.length)];
+    let placed = false;
+    for (let attempt = 0; attempt < 14; attempt++) {
+      if (!isSeaObstructed(nx, nz) && !seaReefBlocksPoint(nx, nz, 1.1)) {
+        placed = true;
+        break;
+      }
+      nx += (sr() - 0.5) * 22;
+      nz += (sr() - 0.5) * 22;
+    }
+    if (!placed) continue;
+    const sid = nextEscortQuestSyncId();
+    const pirateFaction = ((Math.floor(nx / CHUNK_SIZE) * 31 + Math.floor(nz / CHUNK_SIZE) * 17 + a * 13) & 0x7fffffff) % 4;
+    const npcFlagColor = FACTION_TRADE_COLORS[pirateFaction];
+    const npc = {
+      syncId: sid,
+      x: nx, z: nz,
+      rotation: sr() * Math.PI * 2,
+      speed: 0,
+      health: 52 + sr() * 38,
+      type: npcType,
+      name: NPC_SHIP_NAMES.length ? NPC_SHIP_NAMES[Math.floor(sr() * NPC_SHIP_NAMES.length)] : `Raider ${a + 1}`,
+      wanderAngle: sr() * Math.PI * 2, wanderTimer: 8 + sr() * 6,
+      underFireTimer: 0, fireJitter: sr(),
+      riggingHealth: 100,
+      flagPosition: pickRandomAiFlagPosition(sr()),
+      factionId: pirateFaction,
+      flagColor: npcFlagColor,
+      sailBonus: 0.14,
+      aggro: true,
+      attackNpcSyncId: cargoSyncId,
+      escortRaider: true
+    };
+    npc.speed = npcMaxForwardSpeed(npc) * (0.2 + sr() * 0.12);
+    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name);
+    npc.crewData = ambientPirateCrewData((a * 7919 + (cargoSyncId | 0)) >>> 0);
+    buildCrewMeshes(mesh, npc.crewData, npc.type);
+    npc.mesh = mesh;
+    scene.add(mesh);
+    applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+    G.npcs.push(npc);
+    ids.push(sid);
+  }
+  return ids;
+}
+function beginEscortQuest(q) {
+  if (!q || q.type !== 'escort' || !isMultiplayerHost()) return;
+  const pt = sampleOpenOceanNearPlayer(88, 168);
+  const cargoSync = nextEscortQuestSyncId();
+  q.escortCargoSyncId = cargoSync;
+  q.escortSpawned = true;
+  q.attackerSyncIds = [];
+  const cannonPart = tradeShipCannonForType('brigantine');
+  const inm = getItemMeta(q.cargoGood || 'cloth');
+  const npc = {
+    syncId: cargoSync,
+    x: pt.x, z: pt.z,
+    rotation: Math.atan2(q.destDockX - pt.x, q.destDockZ - pt.z),
+    speed: 0,
+    health: 88,
+    type: 'brigantine',
+    tradeCannon: cannonPart,
+    name: q.cargoShipName || `Merchant (${inm.name})`,
+    flagColor: '#2a7a6a',
+    flagPosition: pickRandomAiFlagPosition(Math.random),
+    isTradeShip: true,
+    isEscortCargo: true,
+    escortQuestActive: true,
+    escortDestX: q.destDockX,
+    escortDestZ: q.destDockZ,
+    aggro: false,
+    homeDockX: q.originDockX,
+    homeDockZ: q.originDockZ,
+    homeCx: q.originCx,
+    homeCz: q.originCz,
+    destCx: q.destCx,
+    destCz: q.destCz,
+    sailPick: 'silk',
+    sailBonus: 0.34,
+    wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
+    riggingHealth: 100,
+    cargoGood: q.cargoGood || 'cloth',
+    cargoUnits: q.cargoUnits != null ? q.cargoUnits : 8
+  };
+  const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: 'silk', cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true });
+  const sr = () => Math.random();
+  npc.crewData = merchantCrewFromRng(sr);
+  buildCrewMeshes(mesh, npc.crewData, npc.type);
+  npc.mesh = mesh;
+  scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  G.npcs.push(npc);
+  const nRaid = Math.max(1, Math.min(5, Math.floor(Number(q.attackerCount)) || 3));
+  q.attackerSyncIds = spawnEscortRaiderPirates(cargoSync, pt, nRaid, sr);
+  if (ws?.readyState === 1) G.npcSyncTimer = 0;
+}
+
 /** Loot + side quests from an NPC sink; leaderboard row is updated by the server (see npc_kill_award). */
 function applyLocalNpcKillLootFromNet(msg) {
   if (msg.killerId == null || Number(msg.killerId) !== Number(G.myId)) return;
@@ -2862,10 +3055,14 @@ function applyLocalNpcKillLootFromNet(msg) {
  */
 function runNpcSinkOutcome(npc, killerPlayerId) {
   if (!npc || npc.sinking) return;
+  if (npc.isEscortCargo && npc.escortQuestActive) {
+    failEscortQuest('The contract vessel was sunk — escort failed.', npc.syncId);
+  }
+  const wasEscortContractShip = !!npc.isEscortCargo;
   const kid = killerPlayerId != null ? killerPlayerId : G.myId;
   const missionOwner = npc.missionOwnerPlayerId != null ? npc.missionOwnerPlayerId : (npc.isStoryBounty ? G.myId : null);
   const storyMission = !!(npc.isStoryBounty && missionOwner != null);
-  const goldLoot = storyMission ? 0 : 30;
+  const goldLoot = storyMission ? 0 : (wasEscortContractShip ? 0 : 30);
   let storyOutcome = 'none';
   if (storyMission) {
     let ox, oz;
@@ -2898,11 +3095,13 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
     } else if (storyOutcome === 'reroll' && missionOwner === G.myId) {
       storyBountyRerollLocal();
       bumpNotoriety({ sinksAi: 1 });
-    } else if (!storyMission) {
+    } else if (!storyMission && !wasEscortContractShip) {
       notify(`Sinking ${npc.name}! +30 gold`);
       const gi = G.player.inventory.find(x => x.id === 'gold');
       if (gi) gi.count += 30;
       bumpNotoriety({ sinksAi: 1, gold: 30 });
+    } else if (!storyMission && wasEscortContractShip) {
+      bumpNotoriety({ sinksAi: 1 });
     } else {
       bumpNotoriety({ sinksAi: 1 });
     }
@@ -2916,12 +3115,14 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
   const lootTypes = goldLoot > 0
     ? ['wood', 'iron', 'gunpowder', 'food', 'cannonballs']
     : ['wood', 'iron', 'gold', 'gunpowder', 'food', 'cannonballs'];
-  for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
-    const t = lootTypes[Math.floor(Math.random() * lootTypes.length)];
-    const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
-    const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
-    if (ws?.readyState === 1) spawnWorldLootAt(lx, lz, t, c, 0.5);
-    else addFloatingLootMesh(lx, lz, t, c);
+  if (!wasEscortContractShip) {
+    for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
+      const t = lootTypes[Math.floor(Math.random() * lootTypes.length)];
+      const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
+      const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
+      if (ws?.readyState === 1) spawnWorldLootAt(lx, lz, t, c, 0.5);
+      else addFloatingLootMesh(lx, lz, t, c);
+    }
   }
   reconcileSlotsWithInventory();
 }
@@ -3058,6 +3259,15 @@ function huntQuestMatchesNpc(q, n) {
 const STORY_REWARDS = [55, 75, 100, 140, 200];
 /** NPC sync ids: pirates 0–7, story bounties per player (62000+), merchants from 200 (one per charted port). */
 const TRADE_NPC_SYNC_START = 200;
+/** Escort-contract ships use ids well above trade merchants (200+) and below story bounties (62000+). */
+const ESCORT_QUEST_SYNC_BASE = 5200;
+let _escortQuestSyncSeq = 0;
+function nextEscortQuestSyncId() {
+  return ESCORT_QUEST_SYNC_BASE + (++_escortQuestSyncSeq);
+}
+function escortContractsSessionOk() {
+  return !ws || ws.readyState !== 1 || !G.otherPlayers.size;
+}
 
 function storyProgressRankClient(st) {
   if (!st || typeof st !== 'object') return -1;
@@ -3977,29 +4187,29 @@ function getWindAt(x, z) {
 const SHIP_PARTS = {
   hull: [
     { id: 'basic', name: 'Oak Hull', armor: 0, cost: 0 },
-    { id: 'reinforced', name: 'Ironclad Hull', armor: 30, cost: 5 },
-    { id: 'darkwood', name: 'Darkwood Hull', armor: 15, cost: 3 }
+    { id: 'darkwood', name: 'Darkwood Hull', armor: 20, cost: 14 },
+    { id: 'reinforced', name: 'Ironclad Hull', armor: 42, cost: 32 }
   ],
   sail: [
-    { id: 'basic', name: 'Canvas Sails', speedBonus: 0.3, cost: 0 },
-    { id: 'silk', name: 'Silk Sails', speedBonus: 0.6, cost: 4 },
-    { id: 'war', name: 'War Sails', speedBonus: 0.4, cost: 2 }
+    { id: 'basic', name: 'Canvas Sails', speedBonus: 0.28, cost: 0 },
+    { id: 'war', name: 'War Sails', speedBonus: 0.38, cost: 16 },
+    { id: 'silk', name: 'Silk Sails', speedBonus: 0.62, cost: 36 }
   ],
   cannon: [
     { id: 'none', name: 'No Cannons', damage: 0, cost: 0 },
-    { id: 'light', name: 'Light Cannons', damage: 10, cost: 3 },
-    { id: 'heavy', name: 'Heavy Cannons', damage: 25, cost: 8 }
+    { id: 'light', name: 'Light Cannons', damage: 12, cost: 20 },
+    { id: 'heavy', name: 'Heavy Cannons', damage: 34, cost: 48 }
   ],
   figurehead: [
     { id: 'none', name: 'None', cost: 0 },
-    { id: 'dragon', name: 'Dragon', cost: 5 },
-    { id: 'mermaid', name: 'Mermaid', cost: 4 },
-    { id: 'skull', name: 'Skull', cost: 3 }
+    { id: 'skull', name: 'Skull', cost: 8 },
+    { id: 'mermaid', name: 'Mermaid', cost: 12 },
+    { id: 'dragon', name: 'Dragon', cost: 18 }
   ],
   flag: [
     { id: 'mast', name: 'Masthead', cost: 0 },
-    { id: 'side', name: 'Quarter gallery', cost: 0 },
-    { id: 'stern', name: 'Stern staff', cost: 0 }
+    { id: 'side', name: 'Quarter gallery', cost: 6 },
+    { id: 'stern', name: 'Stern staff', cost: 6 }
   ]
 };
 
@@ -4984,6 +5194,8 @@ function ensureSeaReefsPopulated() {
         } while (tries < 34 && dryLandAtWorldPosition(wx, wz));
         if (dryLandAtWorldPosition(wx, wz)) continue;
         const group = new THREE.Group();
+        group.userData.reefCullX = wx;
+        group.userData.reefCullZ = wz;
         const nRock = 4 + Math.floor(rng() * 7);
         const spread = 2.2 + rng() * 3.8;
         for (let ri = 0; ri < nRock; ri++) {
@@ -5090,6 +5302,7 @@ function checkPlayerSeaReefWreck() {
 
 function sinkNpcOnReef(npc) {
   if (!npc || npc.sinking) return;
+  if (npc.isEscortCargo && npc.escortQuestActive) failEscortQuest('The convoy was wrecked on reefs.', npc.syncId);
   npc.sinking = true;
   npc.sinkTimer = 0;
   npc.speed = 0;
@@ -7166,6 +7379,35 @@ function updateShipMeshCullVisibility() {
     sg.visible = wildlifeIsNearCullCenter(sg.position.x, sg.position.z, cx, cz);
   });
 }
+/** Toggle open-ocean reef meshes, flotsam, and VFX debris by distance (same band as islands / fish). */
+function updateDecorationCullVisibility() {
+  const c = wildlifeCullCenterXZ();
+  const cx = c.x, cz = c.z;
+  const roots = G.seaReefRoots;
+  if (roots && roots.length) {
+    for (let i = 0; i < roots.length; i++) {
+      const g = roots[i];
+      if (!g) continue;
+      const rx = g.userData.reefCullX != null ? g.userData.reefCullX : 0;
+      const rz = g.userData.reefCullZ != null ? g.userData.reefCullZ : 0;
+      g.visible = wildlifeIsNearCullCenter(rx, rz, cx, cz);
+    }
+  }
+  for (let i = G.seaDebris.length - 1; i >= 0; i--) {
+    const d = G.seaDebris[i];
+    if (d) d.visible = wildlifeIsNearCullCenter(d.position.x, d.position.z, cx, cz);
+  }
+  for (let i = G.damageChunks.length - 1; i >= 0; i--) {
+    const ch = G.damageChunks[i];
+    if (ch) ch.visible = wildlifeIsNearCullCenter(ch.position.x, ch.position.z, cx, cz);
+  }
+  for (let fi = 0; fi < G.floatingItems.length; fi++) {
+    const item = G.floatingItems[fi];
+    if (item && item.lootVisual) {
+      item.lootVisual.visible = wildlifeIsNearCullCenter(item.x, item.z, cx, cz);
+    }
+  }
+}
 /** Open-ocean predator pairs (deterministic motion from synced world time). */
 const ambientSharkPairs = [];
 /** After crew rescue: predator sharks follow rescuer's boat briefly (all clients). */
@@ -7429,10 +7671,16 @@ function updateRescueSharkEscorts(dt) {
   const followSpeed = 12;
   const departSpeed = 16;
   const t = getWildlifeWorldTime();
+  const cc = wildlifeCullCenterXZ();
+  const applyRescueSharkCull = (e) => {
+    const mx = (e.mA.position.x + e.mB.position.x) * 0.5;
+    const mz = (e.mA.position.z + e.mB.position.z) * 0.5;
+    const vis = wildlifeIsNearCullCenter(mx, mz, cc.x, cc.z);
+    e.mA.visible = vis;
+    e.mB.visible = vis;
+  };
   for (let i = rescueSharkEscorts.length - 1; i >= 0; i--) {
     const e = rescueSharkEscorts[i];
-    e.mA.visible = true;
-    e.mB.visible = true;
     const phase = e.phase || 'follow';
 
     if (phase === 'depart') {
@@ -7463,6 +7711,7 @@ function updateRescueSharkEscorts(dt) {
       }
       applyPredatorSharkSwimMotion(e.mA, 1.05, Math.sin(t * 1.2 + ph) * 0.05);
       applyPredatorSharkSwimMotion(e.mB, 0.98, Math.sin(t * 1.15 + ph) * -0.045);
+      applyRescueSharkCull(e);
       continue;
     }
 
@@ -7484,10 +7733,14 @@ function updateRescueSharkEscorts(dt) {
       e.departDirZ = dz / len;
       e.phase = 'depart';
       e.departEndT = t + (6.2 + Math.random() * 3.8);
+      applyRescueSharkCull(e);
       continue;
     }
     const pose = getRescueEscortBoatPose(e.playerId);
-    if (!pose) continue;
+    if (!pose) {
+      applyRescueSharkCull(e);
+      continue;
+    }
     const { x, z, yaw } = pose;
     e.lastBoatX = x;
     e.lastBoatZ = z;
@@ -7527,6 +7780,7 @@ function updateRescueSharkEscorts(dt) {
     };
     stepToward(e.mA, tAx, tAz, x, z, bob, 1.02, Math.sin(t * 1.2 + ph) * 0.05);
     stepToward(e.mB, tBx, tBz, x, z, -bob * 0.7, 0.95, Math.sin(t * 1.15 + ph) * -0.045);
+    applyRescueSharkCull(e);
   }
 }
 
@@ -9514,6 +9768,23 @@ function checkHuntQuestOnNpcSink(npc) {
 function checkPortQuestProgress() {
   if (!G.docked || !G.nearDock) return;
   const cx = G.nearDock.cx, cz = G.nearDock.cz;
+  if (G.nearDock.hasTown) {
+    for (let i = G.quests.length - 1; i >= 0; i--) {
+      const q = G.quests[i];
+      if (!q.accepted || q.type !== 'escort' || !q.pendingReward) continue;
+      const gi0 = G.player.inventory.find(x => x.id === 'gold');
+      if (gi0) gi0.count += q.reward;
+      bumpNotoriety({ gold: q.reward });
+      appendCompletedMission({ kind: 'side', title: 'Escort fee collected', detail: q.desc, reward: q.reward });
+      G.quests.splice(i, 1);
+      notify(`Escort payment: +${q.reward}g`);
+      reconcileSlotsWithInventory();
+      updateMissionsPanel();
+      updateStoryBriefHud();
+      saveProgress();
+      broadcastWorldQuestsToServer();
+    }
+  }
   for (let i = G.quests.length - 1; i >= 0; i--) {
     const q = G.quests[i];
     if (!q.accepted || q.type !== 'delivery') continue;
@@ -10725,7 +10996,81 @@ function npcFireBroadsideAtPlayer(npc) {
       kickShipBroadsideCannon(npc.mesh, shot.side, shot.g);
       const nVel = (!npc.anchored && Math.abs(npc.speed || 0) > 0.04) ? npcShipVelocityXZ(npc) : { vx: 0, vz: 0 };
       spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ, nVel);
-      fireCannonball(shot.wx, shot.wz, shot.dirX, shot.dirZ, shot.wy, 'npc', null, 'ball');
+      fireCannonball(shot.wx, shot.wz, shot.dirX, shot.dirZ, shot.wy, 'npc', null, 'ball', npc.syncId);
+      npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
+      if (ws?.readyState === 1 && isMultiplayerHost()) {
+        ws.send(JSON.stringify({ type: 'npc_cannon', x: shot.wx, z: shot.wz, dx: shot.dirX, dz: shot.dirZ, y: shot.wy }));
+        ws.send(JSON.stringify({ type: 'cannon_fx', x: shot.wx, y: shot.wy, z: shot.wz, dx: shot.dirX, dz: shot.dirZ }));
+      }
+      if (masterSfxBusGain() > 0.02) playCannonSound(0.72, shot.wx, shot.wy, shot.wz);
+    }, idx * staggerMs);
+  });
+}
+
+function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
+  if (!targetNpc || targetNpc.sinking || targetNpc.health <= 0) return;
+  const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
+  const cc = Math.max(1, npcSpec.cannonSlots || 2);
+  const perSide = Math.ceil(cc / 2);
+  const tv = npcShipVelocityXZ(targetNpc);
+  let px = targetNpc.x, pz = targetNpc.z;
+  for (let iter = 0; iter < 4; iter++) {
+    const dx = px - npc.x, dz = pz - npc.z;
+    const dist = Math.hypot(dx, dz);
+    const t = dist / CANNONBALL_XY_SPEED;
+    px = targetNpc.x + tv.vx * t;
+    pz = targetNpc.z + tv.vz * t;
+  }
+  const dx = px - npc.x, dz = pz - npc.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist > 78 || dist < 2) return;
+  const toTargetAngle = Math.atan2(dx, dz);
+  const relAngle = toTargetAngle - npc.rotation;
+  const normRel = ((relAngle % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+  const absRel = Math.abs(normRel);
+  let side = absRel > Math.PI / 10 && absRel < Math.PI * 0.82 ? Math.sign(normRel) : 0;
+  if (side === 0 && absRel >= Math.PI * 0.82) side = Math.sign(normRel) || 1;
+  if (side === 0) return;
+  const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
+  const npcShipY = npc.mesh?.position.y || worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
+  const fallbackY = cannonWorldMuzzleYFromShip(npcShipY, npcSpec);
+  const aimDx0 = px - npc.x, aimDz0 = pz - npc.z;
+  const aimLen0 = Math.hypot(aimDx0, aimDz0) || 1;
+  const baseDirX = aimDx0 / aimLen0;
+  const baseDirZ = aimDz0 / aimLen0;
+  const shots = [];
+  for (let g = 0; g < perSide; g++) {
+    if (Math.random() < 0.14) continue;
+    const jitter = (Math.random() - 0.5) * 0.62;
+    const wide = (Math.random() - 0.5) * (0.38 + Math.random() * 0.35);
+    const ang = jitter + wide;
+    const c = Math.cos(ang), s = Math.sin(ang);
+    let dirX = baseDirX * c - baseDirZ * s;
+    let dirZ = baseDirX * s + baseDirZ * c;
+    const nL = Math.hypot(dirX, dirZ) || 1;
+    dirX /= nL;
+    dirZ /= nL;
+    const localZ = (g - Math.floor(perSide / 2) + 0.5) * 1.45;
+    const localX = side * (npcSpec.hullW * 0.55 + 0.6);
+    const wx0 = npc.x + localX * cosR + localZ * sinR;
+    const wz0 = npc.z - localX * sinR + localZ * cosR;
+    let wx = wx0, wy = fallbackY, wz = wz0;
+    if (npc.mesh && getCannonMuzzleWorldPos(npc.mesh, side, g, _muzzleW)) {
+      wx = _muzzleW.x;
+      wy = _muzzleW.y;
+      wz = _muzzleW.z;
+    }
+    shots.push({ g, wx, wy, wz, dirX, dirZ, side });
+  }
+  const staggerMs = Math.max(35, Math.round(BROADSIDE_GUN_STAGGER_SEC * 1000));
+  shots.forEach((shot, idx) => {
+    window.setTimeout(() => {
+      if (G.mode !== 'playing') return;
+      if (!npc.mesh || npc.sinking || npc.health <= 0 || !targetNpc || targetNpc.sinking) return;
+      kickShipBroadsideCannon(npc.mesh, shot.side, shot.g);
+      const nVel = (!npc.anchored && Math.abs(npc.speed || 0) > 0.04) ? npcShipVelocityXZ(npc) : { vx: 0, vz: 0 };
+      spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ, nVel);
+      fireCannonball(shot.wx, shot.wz, shot.dirX, shot.dirZ, shot.wy, 'npc', null, 'ball', npc.syncId);
       npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
       if (ws?.readyState === 1 && isMultiplayerHost()) {
         ws.send(JSON.stringify({ type: 'npc_cannon', x: shot.wx, z: shot.wz, dx: shot.dirX, dz: shot.dirZ, y: shot.wy }));
@@ -10743,6 +11088,32 @@ function updateNPCs(dt) {
       if (npc.sinking) {
         /* Host skips movement/AI while sinking; mesh sink is applied later in this loop. */
       } else if (npc.isTradeShip) {
+        if (npc.isEscortCargo && npc.escortQuestActive) {
+          if (!npc.fireCooldown) npc.fireCooldown = 0;
+          npc.fireCooldown -= dt;
+          npc.aggro = false;
+          const edx = npc.escortDestX - npc.x, edz = npc.escortDestZ - npc.z;
+          const distDest = Math.hypot(edx, edz);
+          if (isMultiplayerHost() && distDest < 52) {
+            hostCompleteEscortQuestArrival(npc);
+          } else if (isMultiplayerHost()) {
+            const sharp = 2.38;
+            if (!npc.escapeMode) {
+              const targetAngle = Math.atan2(edx, edz);
+              let tdiff = targetAngle - npc.rotation;
+              while (tdiff > Math.PI) tdiff -= Math.PI * 2;
+              while (tdiff < -Math.PI) tdiff += Math.PI * 2;
+              npc.rotation += tdiff * 0.76 * dt * npcSailingTurnFactor(npc);
+            }
+            const tgtC = npcMaxForwardSpeed(npc) * 0.44;
+            accelerateNpcToward(npc, dt, tgtC);
+            steerNpcClearanceAhead(npc, dt, sharp);
+            if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+            applyNpcMoveWithIslandEscape(npc, dt, sharp);
+            updateNpcEscapeMode(npc, dt);
+            checkNpcSeaReefWreck(npc);
+          }
+        } else {
         if (!npc.fireCooldown) npc.fireCooldown = 0;
         npc.fireCooldown -= dt;
         if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
@@ -10861,16 +11232,45 @@ function updateNPCs(dt) {
         applyNpcMoveWithIslandEscape(npc, dt, 2.45);
         updateNpcEscapeMode(npc, dt);
         }
+        }
       } else {
       if (!npc.fireCooldown) npc.fireCooldown = 0;
       npc.fireCooldown -= dt;
       if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
 
+      let focus = null;
+      if (npc.attackNpcSyncId != null) {
+        focus = G.npcs.find(n => n.syncId === npc.attackNpcSyncId && !n.sinking && (n.health == null || n.health > 0));
+        if (!focus) {
+          npc.attackNpcSyncId = null;
+          npc.escortRaider = false;
+        }
+      }
+      const aimx = focus ? focus.x : G.player.x;
+      const aimz = focus ? focus.z : G.player.z;
+      const distToTarget = Math.hypot(aimx - npc.x, aimz - npc.z);
       const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
-      const sharp = npc.aggro && distToPlayer < 110 ? 2.55 : 2.05;
+      const sharp = (focus && distToTarget < 115) || (!focus && npc.aggro && distToPlayer < 110) ? 2.55 : 2.05;
 
       if (!npc.escapeMode) {
-        if (npc.aggro && distToPlayer < 110) {
+        if (focus) {
+          const dx = focus.x - npc.x, dz = focus.z - npc.z;
+          const toT = Math.atan2(dx, dz);
+          const starboardBroadside = toT + Math.PI / 2;
+          const portBroadside = toT - Math.PI / 2;
+          const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+          const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+          const targetAngle = dStar < dPort ? starboardBroadside : portBroadside;
+          let diff = targetAngle - npc.rotation;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.35;
+          npc.rotation += diff * turnMul * dt * npcSailingTurnFactor(npc);
+          if (npc.fireCooldown <= 0 && distToTarget < 74) {
+            npcFireBroadsideAtNpcTarget(npc, focus);
+            npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+          }
+        } else if (npc.aggro && distToPlayer < 110) {
           const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
           const toPlayer = Math.atan2(dx, dz);
           const starboardBroadside = toPlayer + Math.PI / 2;
@@ -10904,7 +11304,7 @@ function updateNPCs(dt) {
       steerNpcClearanceAhead(npc, dt, sharp);
       if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
       const maxF = npcMaxForwardSpeed(npc);
-      const tgtSpd = npc.aggro && distToPlayer < 110 ? maxF * 0.5 : maxF * 0.28;
+      const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 110) ? maxF * 0.52 : maxF * 0.28;
       accelerateNpcToward(npc, dt, tgtSpd);
       applyNpcMoveWithIslandEscape(npc, dt, sharp);
       updateNpcEscapeMode(npc, dt);
@@ -10970,7 +11370,7 @@ function disposeCannonballGeometries(root) {
   root.traverse(ch => { if (ch.geometry) ch.geometry.dispose(); });
 }
 
-function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType) {
+function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType, sourceNpcSyncId) {
   const isPellet = ammoType === 'grape_pellet';
   const at = isPellet ? 'grape' : (ammoType === 'grape' || ammoType === 'chain' ? ammoType : 'ball');
   const sea = worldSeaSurfaceY(x, z);
@@ -10989,7 +11389,8 @@ function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType) {
     owner: owner || 'player',
     sourcePlayerId: sourcePlayerId != null ? sourcePlayerId : null,
     ammoType: at,
-    isPellet: !!isPellet
+    isPellet: !!isPellet,
+    sourceNpcSyncId: sourceNpcSyncId != null ? sourceNpcSyncId : null
   };
   G.cannonballs.push(b);
   markSeaBattleActivity();
@@ -17548,6 +17949,11 @@ function updateMissionsPanel() {
       let details = '';
       if (q.type === 'hunt') details = `Target: ${q.target}`;
       else if (q.type === 'delivery') details = `Deliver ${q.count} ${getItemMeta(q.item).name} to ${q.destTown || 'destination port'}`;
+      else if (q.type === 'escort') {
+        details = q.pendingReward
+          ? 'Dock at any charted town → Port Quests to collect your fee.'
+          : `Protect the merchant to ${q.destTown || 'destination'} (signed at ${q.originTown || 'port'}).`;
+      }
       d.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${q.desc}</div>
         <div style="color:#8a7a60;font-size:10px;margin-top:4px;">${details}</div>
         <div style="color:#d4a848;font-size:11px;margin-top:4px;">Reward: ${q.reward} gold</div>`;
@@ -17725,7 +18131,8 @@ function portSellPriceForId(itemId) {
 
 const QUEST_TEMPLATES = [
   { type: 'hunt', desc: 'Sink {target}', reward: 40, target: '' },
-  { type: 'delivery', desc: 'Deliver {count} {item} to {dest}', reward: 30, item: '', count: 0 }
+  { type: 'delivery', desc: 'Deliver {count} {item} to {dest}', reward: 30, item: '', count: 0 },
+  { type: 'escort', desc: 'Escort merchant convoy', reward: 90, originTown: '', destTown: '' }
 ];
 
 const RECRUIT_NAMES = ['Barnacle Bob','Jolly Roger','Peg-Leg Pete','Scarlet Jane','Ironjaw Mike','Black Beth','Cutlass Charlie','Storm Sarah'];
@@ -18004,6 +18411,7 @@ function showPortTab(tab) {
       d.style.cssText = `padding:10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;${q.accepted ? 'border-color:rgba(80,160,80,0.4);' : ''}`;
       d.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${q.desc}</div>
         ${q.type === 'delivery' && q.destTown ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Deliver to: <strong style="color:#c4a878;">${q.destTown}</strong> (gold harbor marker on chart)</div>` : ''}
+        ${q.type === 'escort' ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Sign at: <strong style="color:#c4a878;">${q.originTown || 'listed port'}</strong> · Sail with the merchant to <strong style="color:#c4a878;">${q.destTown || 'destination'}</strong>${q.pendingReward ? ' · <span style="color:#88cc88;">Dock → Quests to collect fee</span>' : ''}</div>` : ''}
         <div style="display:flex;justify-content:space-between;margin-top:6px;">
           <span style="color:#d4a848;font-size:11px;">Reward: ${q.reward} gold</span>
           ${q.accepted ? '<span style="color:#88cc88;font-size:11px;">ACTIVE</span>' : `<button onclick="acceptQuest(${qi})" style="background:rgba(60,50,20,0.5);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:3px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Accept</button>`}
@@ -18146,7 +18554,7 @@ function showPortTab(tab) {
       sd.innerHTML = `<div style="color:#d4a848;font-size:11px;text-transform:uppercase;margin:10px 0 6px;letter-spacing:1px;">${slotHdr}</div>`;
       opts.forEach(opt => {
         if (opt.id === current) return;
-        const upgCost = opt.cost * 3 + 10;
+        const upgCost = opt.cost * 4 + 22;
         const d = document.createElement('div');
         d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:4px;';
         d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${opt.name}</div><div style="color:#8a7a60;font-size:10px;">${opt.armor ? 'Armor +' + opt.armor : opt.speedBonus ? 'Speed +' + opt.speedBonus : opt.damage ? 'Damage ' + opt.damage : ''}</div></div>
@@ -18373,8 +18781,50 @@ function generateQuests() {
   try { ports = collectAllTradingPorts(); } catch (e) { ports = []; }
   ports = ports.slice().sort((a, b) => a.cx - b.cx || a.cz - b.cz || String(a.townName || '').localeCompare(String(b.townName || '')));
   const pool = ports;
+  const escortOk = escortContractsSessionOk();
   for (let i = 0; i < 3; i++) {
-    const wantDelivery = pool.length > 0 && rnd() < 0.5;
+    const roll = rnd();
+    if (escortOk && pool.length >= 2 && roll < 0.3) {
+      const origin = pool[Math.floor(rnd() * pool.length)];
+      let dest = pool[Math.floor(rnd() * pool.length)];
+      for (let t = 0; t < 14 && dest.cx === origin.cx && dest.cz === origin.cz; t++) {
+        dest = pool[Math.floor(rnd() * pool.length)];
+      }
+      if (dest.cx === origin.cx && dest.cz === origin.cz) {
+        const target = npcNames[Math.floor(rnd() * npcNames.length)];
+        G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
+        continue;
+      }
+      const goods = ['wood', 'cloth', 'iron', 'rum'];
+      const cargoGood = goods[Math.floor(rnd() * goods.length)];
+      const cargoUnits = 6 + Math.floor(rnd() * 10);
+      const inm = getItemMeta(cargoGood);
+      const leg = Math.hypot((dest.dockX || 0) - (origin.dockX || 0), (dest.dockZ || 0) - (origin.dockZ || 0));
+      const reward = 62 + Math.floor(rnd() * 55) + Math.floor(leg / 65);
+      const attackerCount = 1 + Math.floor(rnd() * 5);
+      G.quests.push({
+        type: 'escort',
+        desc: `Escort a laden merchant from ${origin.townName} to ${dest.townName} — pirates are hunting convoys.`,
+        reward,
+        originCx: origin.cx, originCz: origin.cz,
+        originDockX: origin.dockX, originDockZ: origin.dockZ,
+        originTown: origin.townName,
+        destCx: dest.cx, destCz: dest.cz,
+        destDockX: dest.dockX, destDockZ: dest.dockZ,
+        destTown: dest.townName,
+        cargoGood,
+        cargoUnits,
+        cargoShipName: `Merchant (${cargoUnits} ${inm.name})`,
+        attackerCount,
+        accepted: false,
+        pendingReward: false,
+        escortCargoSyncId: null,
+        escortSpawned: false,
+        attackerSyncIds: []
+      });
+      continue;
+    }
+    const wantDelivery = pool.length > 0 && roll < 0.65;
     if (!wantDelivery) {
       const target = npcNames[Math.floor(rnd() * npcNames.length)];
       G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
@@ -18402,7 +18852,23 @@ function generateQuests() {
 window.acceptQuest = function(idx) {
   const q = G.quests[idx];
   if (!q || q.accepted) return;
-  if (q.type === 'delivery') {
+  if (q.type === 'escort') {
+    if (!escortContractsSessionOk()) {
+      notify('Escort contracts need a private voyage (no other captains in session).');
+      return;
+    }
+    if (!isMultiplayerHost()) {
+      notify('Only the voyage host may run convoy escort simulation.');
+      return;
+    }
+    if (!G.docked || !G.nearDock || G.nearDock.cx !== q.originCx || G.nearDock.cz !== q.originCz) {
+      notify(`Sign this escort at ${q.originTown || 'the issuing port'} (charted harbor).`);
+      return;
+    }
+    q.accepted = true;
+    beginEscortQuest(q);
+    notify(`Merchant under way — defend them until they reach ${q.destTown || 'the destination'}.`);
+  } else if (q.type === 'delivery') {
     if (!tryAddQuestCargo(q.item, q.count)) {
       notify('Not enough cargo space for contract goods!');
       return;
@@ -20074,6 +20540,7 @@ function update(dt) {
     }
   });
   updateShipMeshCullVisibility();
+  updateDecorationCullVisibility();
 
   for (let i = G.cannonballs.length - 1; i >= 0; i--) {
     const b = G.cannonballs[i];
@@ -20091,13 +20558,17 @@ function update(dt) {
     }
 
     const mpHost = isMultiplayerHost();
-    const applyNpcCannonHits = mpHost && b.owner !== 'npc';
+    const hitNpcsAsHost = mpHost && (
+      b.owner === 'player' || b.owner === 'other_player' ||
+      (b.owner === 'npc' && b.sourceNpcSyncId != null)
+    );
     const predictLocalNpcHitFx = !mpHost && b.owner === 'player';
-    if (applyNpcCannonHits || predictLocalNpcHitFx) {
+    if (hitNpcsAsHost || predictLocalNpcHitFx) {
       const px = b.x - b.dx * dt, pz = b.z - b.dz * dt;
       G.npcs.forEach(npc => {
         if (b.life <= 0) return;
         if (npc.sinking || npc.health <= 0) return;
+        if (b.owner === 'npc' && b.sourceNpcSyncId === npc.syncId) return;
         const at = b.ammoType || 'ball';
         const isPellet = !!b.isPellet;
         let hitR = cannonballStrikeHitRadius(npc.type, at, isPellet);
@@ -20105,7 +20576,7 @@ function update(dt) {
         const nYaw = npc.rotation != null ? npc.rotation : 0;
         const distHit = distSegmentToShipHullOBB(px, pz, b.x, b.z, npc.x, npc.z, nYaw, npc.type);
         if (distHit >= hitR || b.y < SEA_LEVEL - 4) return;
-        if (applyNpcCannonHits) {
+        if (hitNpcsAsHost) {
           let dh = 15;
           if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
           else if (at === 'grape') dh = 10;
@@ -20754,6 +21225,11 @@ function storyBriefAppendContracts(main) {
   if (!side.length) return main;
   const lines = side.map(q => {
     if (q.type === 'delivery' && q.destTown) return `• ${q.desc} (${q.reward}g) → ${q.destTown}`;
+    if (q.type === 'escort') {
+      return q.pendingReward
+        ? `• Escort: collect ${q.reward}g (any port → Quests)`
+        : `• Escort → ${q.destTown || 'destination'} (${q.reward}g)`;
+    }
     return `• ${q.desc} (${q.reward}g)`;
   });
   return `${main}\n\nCONTRACTS\n${lines.join('\n')}`;
@@ -21826,6 +22302,9 @@ function refreshMainMenuSavePanel() {
 function exitGameToMainMenu() {
   if (G.mode !== 'playing') return;
   setCaptainWalkActive(false);
+  try {
+    demoteEscortNpcsToNormal();
+  } catch (e2) {}
   try {
     saveProgress();
   } catch (e) {}
