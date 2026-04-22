@@ -2988,6 +2988,7 @@ function normalizeEscortRaidersForCargo(cargoSyncId) {
     if (a.attackNpcSyncId === cargoSyncId) {
       a.attackNpcSyncId = null;
       a.escortRaider = false;
+      a.aggro = true;
     }
   });
 }
@@ -3022,6 +3023,7 @@ function demoteEscortNpcsToNormal() {
         if (a) {
           a.attackNpcSyncId = null;
           a.escortRaider = false;
+          a.aggro = true;
         }
       });
     }
@@ -3041,12 +3043,14 @@ function failEscortQuest(msg, cargoSyncId) {
         if (a) {
           a.attackNpcSyncId = null;
           a.escortRaider = false;
+          a.aggro = true;
         }
       });
     }
     const cargo = q.escortCargoSyncId != null ? G.npcs.find(n => n.syncId === q.escortCargoSyncId) : null;
     if (cargo && !cargo.sinking) normalizeEscortRaidersForCargo(cargo.syncId);
     G.quests.splice(i, 1);
+    G._escortAbandonT = 0;
     notify(msg || 'Escort contract failed.');
     updateMissionsPanel();
     updateStoryBriefHud();
@@ -3061,6 +3065,7 @@ function hostCompleteEscortQuestArrival(npc) {
   if (!q) return;
   q.pendingReward = true;
   npc.escortQuestActive = false;
+  G._escortAbandonT = 0;
   removeEscortCargoNpcFromWorld(npc);
   notify(`Convoy arrived — dock at any port → Quests to collect ${q.reward}g.`);
   updateMissionsPanel();
@@ -3073,7 +3078,7 @@ function spawnEscortRaiderPirates(cargoSyncId, nearPt, count, nameRng) {
   for (let a = 0; a < count; a++) {
     const sr = () => (nameRng ? nameRng() : Math.random());
     const ang = sr() * Math.PI * 2;
-    const dist = 52 + sr() * 42;
+    const dist = 36 + sr() * 52;
     let nx = nearPt.x + Math.sin(ang) * dist;
     let nz = nearPt.z + Math.cos(ang) * dist;
     nx = Math.max(-WORLD_EDGE_CLAMP + 20, Math.min(WORLD_EDGE_CLAMP - 20, nx));
@@ -3123,9 +3128,59 @@ function spawnEscortRaiderPirates(cargoSyncId, nearPt, count, nameRng) {
   }
   return ids;
 }
+
+const ESCORT_ABANDON_DIST = 430;
+const ESCORT_ABANDON_TIME = 52;
+
+function findEscortMerchantSpawnNearPort(originDockX, originDockZ, destDockX, destDockZ, rng) {
+  const dx = (destDockX || 0) - (originDockX || 0);
+  const dz = (destDockZ || 0) - (originDockZ || 0);
+  const leg = Math.hypot(dx, dz) || 1;
+  const ux = dx / leg;
+  const uz = dz / leg;
+  const px = -uz;
+  const pz = ux;
+  const seaward = 30 + rng() * 26;
+  let x = originDockX + ux * seaward;
+  let z = originDockZ + uz * seaward;
+  x += (rng() - 0.5) * 20 * px;
+  z += (rng() - 0.5) * 20 * pz;
+  for (let t = 0; t < 28; t++) {
+    if (!dryLandAtWorldPosition(x, z) && !isSeaObstructed(x, z) && !seaReefBlocksPoint(x, z, 1.15)) {
+      return { x, z };
+    }
+    x += ux * 11 + (rng() - 0.5) * 14;
+    z += uz * 11 + (rng() - 0.5) * 14;
+  }
+  return { x: originDockX + ux * 42, z: originDockZ + uz * 42 };
+}
+
+function tickEscortAbandonment(dt) {
+  if (!isMultiplayerHost() || G.mode !== 'playing' || G.docked || G.playerSinking) return;
+  const q = G.quests.find(x => x.type === 'escort' && x.accepted && !x.pendingReward && x.escortSpawned);
+  if (!q) {
+    G._escortAbandonT = 0;
+    return;
+  }
+  const cargo = q.escortCargoSyncId != null ? G.npcs.find(n => n.syncId === q.escortCargoSyncId && !n.sinking) : null;
+  if (!cargo) return;
+  const d = Math.hypot(G.player.x - cargo.x, G.player.z - cargo.z);
+  if (d > ESCORT_ABANDON_DIST) {
+    G._escortAbandonT = (G._escortAbandonT || 0) + dt;
+    if (G._escortAbandonT >= ESCORT_ABANDON_TIME) {
+      G._escortAbandonT = 0;
+      demoteEscortNpcsToNormal();
+    }
+  } else {
+    G._escortAbandonT = 0;
+  }
+}
+
 function beginEscortQuest(q) {
   if (!q || q.type !== 'escort' || !isMultiplayerHost()) return;
-  const pt = sampleOpenOceanNearPlayer(88, 168);
+  G._escortAbandonT = 0;
+  const rng = islandRng((q.originCx | 0) + 441, (q.originCz | 0) + 919);
+  const pt = findEscortMerchantSpawnNearPort(q.originDockX, q.originDockZ, q.destDockX, q.destDockZ, rng);
   const cargoSync = nextEscortQuestSyncId();
   q.escortCargoSyncId = cargoSync;
   q.escortSpawned = true;
@@ -3170,8 +3225,9 @@ function beginEscortQuest(q) {
   scene.add(mesh);
   applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
   G.npcs.push(npc);
-  const nRaid = Math.max(1, Math.min(5, Math.floor(Number(q.attackerCount)) || 3));
-  q.attackerSyncIds = spawnEscortRaiderPirates(cargoSync, pt, nRaid, sr);
+  const nRaid = 1 + Math.floor(rng() * 5);
+  q.attackerCount = nRaid;
+  q.attackerSyncIds = spawnEscortRaiderPirates(cargoSync, pt, nRaid, rng);
   if (ws?.readyState === 1) G.npcSyncTimer = 0;
 }
 
@@ -5302,11 +5358,24 @@ const matPalmFrond = new THREE.MeshLambertMaterial({ color: 0x5cb048 });
 const matPalmCrown = new THREE.MeshLambertMaterial({ color: 0x3d7a32 });
 const matRock = new THREE.MeshLambertMaterial({ color: 0x7a7a7a });
 const matReefRock = new THREE.MeshStandardMaterial({
-  color: 0x4a4a52,
+  color: 0x42424a,
   roughness: 0.91,
-  metalness: 0.08,
+  metalness: 0.1,
   flatShading: true
 });
+const matReefRockMoss = new THREE.MeshStandardMaterial({
+  color: 0x3a4842,
+  roughness: 0.94,
+  metalness: 0.05,
+  flatShading: true
+});
+const matReefRockBleach = new THREE.MeshStandardMaterial({
+  color: 0x5a5c62,
+  roughness: 0.86,
+  metalness: 0.06,
+  flatShading: true
+});
+const REEF_SHARED_MATERIALS = [matReefRock, matReefRockMoss, matReefRockBleach];
 
 function clearSeaReefs() {
   const roots = G.seaReefRoots;
@@ -5317,7 +5386,7 @@ function clearSeaReefs() {
       scene.remove(g);
       g.traverse(ch => {
         if (ch.geometry) ch.geometry.dispose();
-        if (ch.material && ch.material !== matReefRock) ch.material.dispose();
+        if (ch.material && !REEF_SHARED_MATERIALS.includes(ch.material)) ch.material.dispose();
       });
     }
   }
@@ -5336,49 +5405,108 @@ function jitterReefGeometry(geo, rng, sx, sy, sz) {
   geo.computeVertexNormals();
 }
 
-/** One reef spire: volcanic stump + jagged cone + side shard (seabed → above surface). Returns a Group or null. */
-function buildSeaReefSpireGroup(lx, lz, floorY, surf, rng) {
+function pickReefRockMat(rng) {
+  const r = rng();
+  if (r < 0.28) return matReefRockMoss;
+  if (r < 0.5) return matReefRockBleach;
+  return matReefRock;
+}
+
+/** Volcanic stump + cone + shards; `kind`: 'full' | 'slim' | 'wide' */
+function buildSeaReefSpireGroup(lx, lz, floorY, surf, rng, kind) {
   if (dryLandAtWorldPosition(lx, lz)) return null;
   const depth = Math.max(1.4, surf - floorY);
-  const above = 0.88 + rng() * 1.5;
+  const above = (kind === 'slim' ? 0.95 : kind === 'wide' ? 0.72 : 0.88) + rng() * (kind === 'wide' ? 1.1 : 1.55);
   const h = depth + above;
-  const r0 = 0.19 + rng() * 0.2;
-  const stumpFrac = 0.18 + rng() * 0.1;
+  const r0 = (kind === 'wide' ? 0.26 : 0.17) + rng() * (kind === 'wide' ? 0.26 : 0.22);
+  const stumpFrac = (kind === 'slim' ? 0.12 : 0.18) + rng() * 0.1;
   const stumpH = h * stumpFrac;
   const topH = h - stumpH;
   const stumpR = r0 * (0.95 + rng() * 0.14);
   const stumpGeo = new THREE.CylinderGeometry(stumpR * 0.52, stumpR, stumpH, 8);
   jitterReefGeometry(stumpGeo, rng, 0.11, 0.055, 0.11);
-  const stump = new THREE.Mesh(stumpGeo, matReefRock);
+  const stump = new THREE.Mesh(stumpGeo, pickReefRockMat(rng));
   stump.position.set(lx, floorY + stumpH * 0.5, lz);
   stump.rotation.set((rng() - 0.5) * 0.12, rng() * Math.PI * 2, (rng() - 0.5) * 0.12);
   stump.castShadow = true;
   stump.receiveShadow = true;
   const coneGeo = new THREE.ConeGeometry(r0 * 0.88, topH, 8);
   jitterReefGeometry(coneGeo, rng, 0.22, 0.16, 0.22);
-  const cone = new THREE.Mesh(coneGeo, matReefRock);
+  const cone = new THREE.Mesh(coneGeo, pickReefRockMat(rng));
   cone.position.set(lx, floorY + stumpH + topH * 0.5, lz);
   cone.rotation.set((rng() - 0.5) * 0.42, rng() * Math.PI * 2, (rng() - 0.5) * 0.46);
   cone.castShadow = true;
   cone.receiveShadow = true;
-  const shardSz = r0 * (0.38 + rng() * 0.32);
-  const shardGeo = new THREE.OctahedronGeometry(shardSz, 0);
-  jitterReefGeometry(shardGeo, rng, 0.16, 0.16, 0.16);
-  const shard = new THREE.Mesh(shardGeo, matReefRock);
-  const sax = Math.cos(rng() * Math.PI * 2) * r0 * 0.55;
-  const saz = Math.sin(rng() * Math.PI * 2) * r0 * 0.55;
-  shard.position.set(lx + sax, floorY + stumpH + topH * (0.62 + rng() * 0.18), lz + saz);
-  shard.rotation.set(rng() * 0.5, rng() * Math.PI * 2, rng() * 0.5);
-  shard.castShadow = true;
-  shard.receiveShadow = true;
   const g = new THREE.Group();
   g.add(stump);
   g.add(cone);
-  g.add(shard);
+  const nShards = kind === 'wide' ? 2 + Math.floor(rng() * 2) : 1 + Math.floor(rng() * 2);
+  for (let si = 0; si < nShards; si++) {
+    const shardSz = r0 * (0.32 + rng() * 0.38);
+    const shardGeo = new THREE.OctahedronGeometry(shardSz, 0);
+    jitterReefGeometry(shardGeo, rng, 0.16, 0.16, 0.16);
+    const shard = new THREE.Mesh(shardGeo, pickReefRockMat(rng));
+    const a = rng() * Math.PI * 2;
+    const rad = r0 * (0.45 + rng() * 0.55);
+    shard.position.set(
+      lx + Math.cos(a) * rad,
+      floorY + stumpH + topH * (0.48 + rng() * 0.38),
+      lz + Math.sin(a) * rad
+    );
+    shard.rotation.set(rng() * 0.5, rng() * Math.PI * 2, rng() * 0.5);
+    shard.castShadow = true;
+    shard.receiveShadow = true;
+    g.add(shard);
+  }
   return g;
 }
 
-/** Jagged reef spires in open water (deterministic). One twin-spire shoal per site: seabed to above the swell. Single collision disc per site. */
+/** Low boulder pile (1–3 lumps). */
+function buildSeaReefBoulderCluster(cx0, cz0, floorY, rng) {
+  if (dryLandAtWorldPosition(cx0, cz0)) return null;
+  const g = new THREE.Group();
+  const surf0 = worldSeaSurfaceY(cx0, cz0, G.time);
+  const depth = Math.max(1.2, surf0 - floorY);
+  const n = 1 + Math.floor(rng() * 3);
+  for (let i = 0; i < n; i++) {
+    const lx = cx0 + (rng() - 0.5) * 1.1;
+    const lz = cz0 + (rng() - 0.5) * 1.1;
+    if (dryLandAtWorldPosition(lx, lz)) continue;
+    const h = (depth + 0.55 + rng() * 1.1) * (0.45 + rng() * 0.35);
+    const r = 0.22 + rng() * 0.35;
+    const geo = new THREE.DodecahedronGeometry(r, 0);
+    jitterReefGeometry(geo, rng, 0.14, 0.12, 0.14);
+    const m = new THREE.Mesh(geo, pickReefRockMat(rng));
+    m.position.set(lx, SEABED_VISUAL_Y + 0.12 + h * 0.5, lz);
+    m.rotation.set(rng() * 0.8, rng() * Math.PI * 2, rng() * 0.8);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    g.add(m);
+  }
+  return g.children.length ? g : null;
+}
+
+/** Ring of tiny rubble at seabed. */
+function addSeaReefRubble(parent, wx, wz, floorY, rng, count) {
+  for (let i = 0; i < count; i++) {
+    const a = rng() * Math.PI * 2;
+    const rad = 0.65 + rng() * 1.85;
+    const lx = wx + Math.cos(a) * rad;
+    const lz = wz + Math.sin(a) * rad;
+    if (dryLandAtWorldPosition(lx, lz)) continue;
+    const sz = 0.08 + rng() * 0.14;
+    const geo = new THREE.TetrahedronGeometry(sz, 0);
+    jitterReefGeometry(geo, rng, 0.04, 0.04, 0.04);
+    const m = new THREE.Mesh(geo, rng() < 0.4 ? matReefRockMoss : matReefRock);
+    m.position.set(lx, floorY + sz * 0.35, lz);
+    m.rotation.set(rng(), rng() * 3, rng());
+    m.castShadow = true;
+    m.receiveShadow = true;
+    parent.add(m);
+  }
+}
+
+/** Jagged reefs: varied formations (1–4 spires, rubble, optional boulder pile). Single collision disc per site. */
 function ensureSeaReefsPopulated() {
   if (G.customMap && G.customMap.heights) return;
   if (G.seaReefs && G.seaReefs.length) return;
@@ -5400,31 +5528,38 @@ function ensureSeaReefsPopulated() {
       group.userData.reefCullZ = wz;
       const floorY = SEABED_VISUAL_Y + 0.14 + (rng() - 0.5) * 0.1;
       const baseAng = rng() * Math.PI * 2;
-      const arm = 0.38 + rng() * 0.42;
-      const pair = [];
-      for (let pi = 0; pi < 2; pi++) {
-        const ang = baseAng + pi * Math.PI + (rng() - 0.5) * 0.4;
+      const form = rng();
+      let nSpires = 2;
+      if (form < 0.14) nSpires = 1;
+      else if (form < 0.42) nSpires = 2;
+      else if (form < 0.72) nSpires = 3;
+      else nSpires = 4;
+      const armBase = 0.32 + rng() * 0.48;
+      const kinds = ['full', 'slim', 'wide'];
+      const pieces = [];
+      for (let pi = 0; pi < nSpires; pi++) {
+        const ang = baseAng + (pi / nSpires) * Math.PI * 2 + (rng() - 0.5) * 0.55;
+        const arm = armBase * (0.82 + rng() * 0.55) * (nSpires > 2 ? 0.92 : 1);
         const lx = wx + Math.cos(ang) * arm;
         const lz = wz + Math.sin(ang) * arm;
         const surf = worldSeaSurfaceY(lx, lz, G.time);
-        const sp = buildSeaReefSpireGroup(lx, lz, floorY, surf, rng);
-        if (sp) pair.push(sp);
+        const kind = kinds[Math.floor(rng() * kinds.length)];
+        const sp = buildSeaReefSpireGroup(lx, lz, floorY, surf, rng, kind);
+        if (sp) pieces.push(sp);
       }
-      if (pair.length !== 2) {
-        pair.forEach(gn => {
-          gn.traverse(ch => {
-            if (ch.geometry) ch.geometry.dispose();
-          });
-        });
-        continue;
+      if (rng() < 0.34) {
+        const bx = wx + Math.cos(baseAng + 1.1) * armBase * 0.55;
+        const bz = wz + Math.sin(baseAng + 1.1) * armBase * 0.55;
+        const b = buildSeaReefBoulderCluster(bx, bz, floorY, rng);
+        if (b) pieces.push(b);
       }
-      pair.forEach(gn => group.add(gn));
-      if (group.children.length) {
-        const hitR = 0.92 + rng() * 0.62;
-        G.seaReefs.push({ x: wx, z: wz, r: hitR * 0.78 });
-        scene.add(group);
-        G.seaReefRoots.push(group);
-      }
+      if (!pieces.length) continue;
+      pieces.forEach(p => group.add(p));
+      addSeaReefRubble(group, wx, wz, floorY, rng, 2 + Math.floor(rng() * 7));
+      const hitR = 0.72 + pieces.length * 0.16 + armBase * 0.38 + rng() * 0.45;
+      G.seaReefs.push({ x: wx, z: wz, r: hitR * 0.82 });
+      scene.add(group);
+      G.seaReefRoots.push(group);
     }
   }
 }
@@ -20497,6 +20632,7 @@ function update(dt) {
 
   updateChunks();
   updateNPCs(dt);
+  tickEscortAbandonment(dt);
   G.npcs.forEach(npc => {
     if (!npc.mesh || npc.sinking) return;
     animateRemoteShipSails(npc.mesh, npc.x, npc.z, npc.rotation, npc.speed || 0, dt);
