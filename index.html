@@ -1882,7 +1882,7 @@ body.game-help-mobile-minimal #game-help-panel{
           <div class="scheme-mini"><div class="m-edge" style="left:0;"></div><div class="m-edge" style="right:0;left:auto;"></div><div class="m-joy" style="left:50%;transform:translateX(-50%);"></div></div>
         </label>
       </div>
-      <p class="hint" style="margin:10px 0 0;font-size:11px;color:#8a7a68;line-height:1.45;">At sea: drag one finger on open water (outside the wheel, broadside buttons, HUD, and minimap) to orbit the camera like the ship preview. The +/− zoom buttons restore chase view behind the ship.</p>
+      <p class="hint" style="margin:10px 0 0;font-size:11px;color:#8a7a68;line-height:1.45;">At sea: drag one finger on open water (outside the wheel, broadside buttons, HUD, and minimap) to orbit the camera like the ship preview. <strong>Pinch</strong> the sea to zoom the camera; the <strong>+</strong> / <strong>−</strong> buttons by the small chart change <strong>minimap</strong> zoom (tap the minimap for the full sea chart).</p>
       <button type="button" id="mobile-layout-confirm">Begin voyage</button>
     </div>
   </div>
@@ -2485,7 +2485,7 @@ body.game-help-mobile-minimal #game-help-panel{
             <h3>Helm (touch)</h3>
             <p>Drag the <strong>wheel joystick</strong> at the bottom: push forward to fill sails and go ahead, left/right to steer. Turning is <strong>gradual</strong>—you need a bit of way on, like a real vessel.</p>
             <h3>Camera &amp; chart</h3>
-            <p><strong>Pinch</strong> the sea or use the <strong>+</strong> / <strong>−</strong> cluster (upper area) to zoom from horizon toward deck. Tap the <strong>minimap</strong> to open the full sea chart.</p>
+            <p><strong>Pinch</strong> the sea to zoom the sailing camera (horizon to deck). The <strong>+</strong> / <strong>−</strong> by the <strong>minimap</strong> only adjust that small chart (same max zoom as the full map). Tap the minimap to open the full sea chart for pinch and drag there.</p>
             <h3>Toolbar</h3>
             <p>Bottom bar: <strong>Log</strong> (ship, cargo, crew, missions), <strong>Chat</strong>, <strong>Anchor</strong>, <strong>Deck / spyglass</strong>, <strong>Settings</strong>. Choose your <strong>helm layout</strong> when you start a voyage or under Settings on phone.</p>
             <h3>Deck walk</h3>
@@ -2644,9 +2644,9 @@ body.game-help-mobile-minimal #game-help-panel{
     <svg class="broadside-cannon-icon" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="44" height="44" viewBox="0 0 64 64" aria-hidden="true"><use href="#spr-cannon-fire-left" xlink:href="#spr-cannon-fire-left"/></svg>
   </div>
 </div>
-<div id="touch-zoom" aria-label="Camera zoom">
-  <div class="touch-btn" id="touch-zoom-in" title="Closer (deck)">+</div>
-  <div class="touch-btn" id="touch-zoom-out" title="Wider (horizon)">&minus;</div>
+<div id="touch-zoom" aria-label="Minimap zoom — pinch the sea to zoom the camera">
+  <div class="touch-btn" id="touch-zoom-in" title="Zoom the minimap in (pinch the sea to zoom the sailing view)">+</div>
+  <div class="touch-btn" id="touch-zoom-out" title="Zoom the minimap out (pinch the sea to zoom the sailing view)">&minus;</div>
 </div>
 <div id="deck-spyglass-btn" class="touch-btn" title="Toggle spyglass" aria-label="Spyglass" style="display:none;">
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#d4a848" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="10" r="6"/><path d="M21 21l-5-5"/></svg>
@@ -9584,8 +9584,10 @@ function spawnFish(wx, wz, count, rng) {
   }
 }
 
+/** Slower = calmer schools (same paths, less frantic motion / rotation). */
+const FISH_SWIM_TIME_MULT = 0.5;
 function updateFish(dt) {
-  const t = getWildlifeWorldTime();
+  const t = getWildlifeWorldTime() * FISH_SWIM_TIME_MULT;
   const cc = wildlifeCullCenterXZ();
   schoolLeaders.forEach(l => {
     if (l.anchorX == null) {
@@ -16670,8 +16672,6 @@ function bindEdgeBroadsideTap(el, fireSide) {
 }
 bindEdgeBroadsideTap(document.getElementById('touch-edge-left'), -1);
 bindEdgeBroadsideTap(document.getElementById('touch-edge-right'), 1);
-document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => { e.preventDefault(); resetMobileCameraChase(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom + 55); }, { passive: false });
-document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => { e.preventDefault(); resetMobileCameraChase(); G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom - 55); }, { passive: false });
 
 (function bindDeckSpyglassMobile() {
   const b = document.getElementById('deck-spyglass-btn');
@@ -22074,6 +22074,10 @@ const FULLMAP_ZOOM_MAX = 0.8;
 function clampFullmapZoom(z) {
   return Math.max(FULLMAP_ZOOM_MIN, Math.min(FULLMAP_ZOOM_MAX, z));
 }
+/** Minimap world scale uses the same `s` as the full chart; range matches `FULLMAP_ZOOM_*` (most zoomed-in = `FULLMAP_ZOOM_MAX`). */
+const MM_ZOOM_MIN = 0.02;
+const MM_ZOOM_MAX = FULLMAP_ZOOM_MAX;
+let mmZoom = MM_ZOOM_MAX;
 let fullmapOpen = false, fmPanX = 0, fmPanZ = 0, fmZoom = clampFullmapZoom(0.15), fmDragging = false, fmLastX = 0, fmLastY = 0;
 let debugMapPanX = 0, debugMapPanZ = 0, debugMapZoom = clampFullmapZoom(0.12), debugMapDragging = false, debugMapLastX = 0, debugMapLastY = 0;
 let debugMapTouchId = null, debugMapTouchX = 0, debugMapTouchY = 0, debugMapPinchDist = 0;
@@ -22873,8 +22877,7 @@ fmCanvas.addEventListener('touchend', e => { e.stopPropagation(); fmTouchId = nu
 document.getElementById('minimap').onclick = toggleFullmap;
 document.getElementById('fullmap-close').onclick = toggleFullmap;
 
-/** Pixels per world unit; higher = more zoomed-in on the small minimap. */
-let mmZoom = 0.125;
+/** Pixels per world unit; `mmZoom` (initialized to max zoom-in to match the full chart ceiling). */
 function drawMinimap() {
   ensureMapChartLayerListeners();
   const w = mmCanvas.width, h = mmCanvas.height, s = mmZoom, cx = w / 2, cy = h / 2;
@@ -23016,10 +23019,25 @@ function drawMinimap() {
   ctx.restore();
 }
 document.getElementById('minimap').addEventListener('wheel', e => {
-  if (!fullmapOpen) return;
+  if (fullmapOpen) return;
   e.preventDefault(); e.stopPropagation();
-  mmZoom = Math.max(0.02, Math.min(0.3, mmZoom + e.deltaY * 0.0002)); drawMinimap();
+  mmZoom = Math.max(MM_ZOOM_MIN, Math.min(MM_ZOOM_MAX, mmZoom + e.deltaY * 0.0002)); drawMinimap();
 }, { passive: false });
+(function bindMinimapZoomTouchControls() {
+  const step = 0.04;
+  document.getElementById('touch-zoom-in')?.addEventListener('touchstart', e => {
+    e.preventDefault();
+    if (G.mode !== 'playing' || fullmapOpen) return;
+    mmZoom = Math.max(MM_ZOOM_MIN, Math.min(MM_ZOOM_MAX, mmZoom + step));
+    drawMinimap();
+  }, { passive: false });
+  document.getElementById('touch-zoom-out')?.addEventListener('touchstart', e => {
+    e.preventDefault();
+    if (G.mode !== 'playing' || fullmapOpen) return;
+    mmZoom = Math.max(MM_ZOOM_MIN, Math.min(MM_ZOOM_MAX, mmZoom - step));
+    drawMinimap();
+  }, { passive: false });
+})();
 
 /** Match rendered GPU sea; pitch/roll from slope of `worldSeaSurfaceY`. */
 function playerShipWaveAt(wx, wz, yaw) {
@@ -25213,7 +25231,7 @@ function buildTutorialStepsMobile() {
   steps.push({
     sel: '#minimap',
     title: 'Sea chart',
-    body: 'Tap to open the full map. Pinch and drag there to zoom and pan.'
+    body: 'Starts zoomed in on you (same top zoom as the big chart). +/− by the small map adjust it; tap to open the full map for pinch and pan.'
   });
   steps.push({
     sel: '#joystick-zone',
@@ -25236,8 +25254,8 @@ function buildTutorialStepsMobile() {
   steps.push({
     sel: '#touch-zoom',
     emphasizeZoom: true,
-    title: 'Zoom & spyglass',
-    body: 'Pinch the sea or tap + / − to move between horizon and deck view.'
+    title: 'Minimap & camera',
+    body: 'Tap + / − to zoom the small sea chart. Pinch the open sea to zoom the sailing camera between horizon and deck.'
   });
   steps.push({
     sel: '#combat-shot-wrap',
