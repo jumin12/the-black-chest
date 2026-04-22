@@ -4457,6 +4457,7 @@ function migratePlayerCrewRecords() {
   for (const c of G.player.crew) normalizeCrewMemberRecord(c);
   ensureUniqueStationAssignments();
   ensurePlayerCrewTasks();
+  dedupeCrewDisplayIdentities();
 }
 /** After load: recover from empty saves, invalid JSON shapes, or missing captain so the deck never loads bare. */
 function ensurePlayerCrewSanityAfterLoad() {
@@ -4471,7 +4472,7 @@ function ensurePlayerCrewSanityAfterLoad() {
     changed = true;
   }
   if (G.player.crew.length === 0) {
-    G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+    G.player.crew = rollFreshPlayerCrewFromPools().map(c => ({ ...c }));
     changed = true;
   } else if (!G.player.crew.some(c => c && c.role === 'captain')) {
     const first = G.player.crew.find(c => c && c.role !== 'prisoner');
@@ -4480,11 +4481,12 @@ function ensurePlayerCrewSanityAfterLoad() {
       first.task = 'helm';
       changed = true;
     } else {
-      G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+      G.player.crew = rollFreshPlayerCrewFromPools().map(c => ({ ...c }));
       changed = true;
     }
   }
   if (changed) migratePlayerCrewRecords();
+  else dedupeCrewDisplayIdentities();
 }
 function getCaptainDisplayCrew() {
   const list = G.player.crew || [];
@@ -9782,8 +9784,8 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     const cg = new THREE.CylinderGeometry(0.1 * barrelScale, 0.15 * barrelScale, barrelLen, 6); cg.rotateZ(Math.PI / 2);
     const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
     for (let c = 0; c < visualCount; c++) {
-      /* Even c → port (−1), odd → starboard (+1); matches fireSide / broadsideReadyInfo / muzzle lookup. */
-      const side = c % 2 === 0 ? -1 : 1, idx = Math.floor(c / 2);
+      /* Even c → starboard (+1), odd → port (−1); matches fireSide / broadsideReadyInfo / muzzle lookup. */
+      const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
       const cn = new THREE.Mesh(c === 0 ? cg : cg.clone(), cm);
       cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * 1.8);
       cn.castShadow = true;
@@ -10498,6 +10500,11 @@ function updateCrewDeckAnimations(dt) {
   G._crewGunBlendSm += (gunTgt - G._crewGunBlendSm) * Math.min(1, 6 * dt);
   const gunRun = G._crewGunBlendSm * G._crewGunBlendSm * (3 - 2 * G._crewGunBlendSm);
   const reefWork = G._reefAgainstWindSm || 0;
+  const gunnerOrder = [];
+  for (let gi = 0; gi < G.player.crew.length; gi++) {
+    const m = G.player.crew[gi];
+    if (m && m.role !== 'prisoner' && m.task === 'cannons') gunnerOrder.push(gi);
+  }
 
   ship.children.forEach(ch => {
     if (!ch.userData || !ch.userData.isCrew || ch.userData.crewIdx == null) return;
@@ -10516,9 +10523,15 @@ function updateCrewDeckAnimations(dt) {
       tryRot = Math.sin(t * 0.26 + k) * 0.28;
     } else if (member.task === 'cannons') {
       const ci = ch.userData.crewIdx;
-      const cannonSide = ci % 2 === 0 ? -1 : 1;
+      let gIx = gunnerOrder.indexOf(ci);
+      if (gIx < 0) gIx = 0;
+      let ccSlots = spec.cannonSlots || 2;
+      if (ccSlots < 1) ccSlots = 1;
+      const visualCount = ccSlots === 1 ? 2 : ccSlots;
+      const cannonSide = gIx % 2 === 0 ? 1 : -1;
+      const idxOnSide = Math.floor(gIx / 2);
       const gx = cannonSide * spec.hullW * 0.36;
-      const gz = (Math.floor(ci / 2) - 1) * 1.8;
+      const gz = (idxOnSide - Math.floor(visualCount / 4) + 0.5) * 1.8;
       const run = Math.sin(t * 0.55 + k * 1.3);
       const ram = Math.sin(t * 0.48 + k) * 0.09 * gunAmp * ampBase;
       const sway = Math.cos(t * 0.38 + k * 0.7) * 0.07 * gunAmp * ampBase;
@@ -22241,6 +22254,14 @@ function update(dt) {
     G.player.morale = Math.min(100, (G.player.morale != null ? G.player.morale : 100) + morRegen * dt);
   }
 
+  if (!G.spectate && !G.docked && !G.playerSinking && G.player.health > 0 && !G.captainWalk?.active) {
+    if (countSailorCrew() === 0) {
+      G.lastAttacker = 'No crew — ship abandoned';
+      G.lastAttackerId = null;
+      G.player.health = 0;
+    }
+  }
+
   if (G.undockingAnim) {
     const u = G.undockingAnim;
     const stU = G.player.shipType || 'sloop';
@@ -24771,6 +24792,60 @@ function getDefaultStartingCrew() {
     { name: 'One-Eye Jack', role: 'sailor', health: 100, task: 'sails', color: '#1a3a6a', hat: 'none', outfit: 'vest', parrot: false, missedMeals: 0, skills: { gunning: 2, sailing: 4, navigation: 2, commanding: 2 } }
   ];
 }
+/** Rebuild player crew from name pools (for corrupt/empty saves) so rows are not all identical defaults. */
+function rollFreshPlayerCrewFromPools() {
+  const seed = (Date.now() ^ (Math.imul(Math.random() * 0x40000000 | 0, 1664525) + 1013904223)) >>> 0;
+  const base = ambientPirateCrewData(seed);
+  const skillsFor = (role) => {
+    const r = String(role || '').toLowerCase();
+    if (r === 'captain') return { gunning: 2, sailing: 2, navigation: 2, commanding: 4 };
+    if (r === 'gunner') return { gunning: 4, sailing: 2, navigation: 2, commanding: 2 };
+    if (r === 'navigator') return { gunning: 2, sailing: 2, navigation: 4, commanding: 2 };
+    return { gunning: 2, sailing: 4, navigation: 2, commanding: 2 };
+  };
+  return base.map(c => ({
+    name: c.name,
+    role: c.role,
+    task: c.task,
+    health: 100,
+    color: c.color || '#4a4a4a',
+    hat: c.hat != null ? c.hat : 'none',
+    outfit: c.outfit || 'vest',
+    parrot: !!c.parrot,
+    missedMeals: 0,
+    skills: { ...skillsFor(c.role) }
+  }));
+}
+/** Fix duplicate or blank names after load/migrate so portraits and manifests stay distinct. */
+function dedupeCrewDisplayIdentities() {
+  if (!Array.isArray(G.player.crew)) return;
+  const used = new Set();
+  let seed = (Date.now() ^ (Math.imul(G.player.crew.length + 1, 2654435761) >>> 0)) >>> 0;
+  const normKey = (n) => String(n || '').trim().toLowerCase();
+  for (const c of G.player.crew) {
+    if (!c || c.role === 'prisoner') continue;
+    let nk = normKey(c.name);
+    if (!nk) {
+      const pack = ambientPirateCrewData(++seed);
+      const ix = c.role === 'captain' ? 0 : c.role === 'gunner' ? 1 : 2;
+      const pick = pack[ix % 3];
+      c.name = pick.name;
+      c.color = c.color || pick.color;
+      if (pick.hat != null) c.hat = pick.hat;
+      nk = normKey(c.name);
+    }
+    let guard = 0;
+    while (used.has(nk) && guard++ < 16) {
+      const pack = ambientPirateCrewData(++seed);
+      const pick = pack[guard % 3];
+      c.name = pick.name;
+      c.color = c.color || pick.color;
+      if (pick.hat != null) c.hat = pick.hat;
+      nk = normKey(c.name);
+    }
+    used.add(nk);
+  }
+}
 function applyDefaultStartingLoadout(opts) {
   opts = opts || {};
   const keep = !!opts.preserveCaptainIdentity;
@@ -24948,7 +25023,7 @@ function loadProgress() {
     if (Array.isArray(data.crew) && data.crew.length > 0) {
       G.player.crew = data.crew;
     } else if (Array.isArray(data.crew) && data.crew.length === 0) {
-      G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+      G.player.crew = rollFreshPlayerCrewFromPools().map(c => ({ ...c }));
     }
     if (data.quests) G.quests = data.quests.filter(q => q && q.type !== 'explore');
     if (data.completedMissionLog && Array.isArray(data.completedMissionLog)) G.completedMissionLog = data.completedMissionLog.slice(0, 40);
