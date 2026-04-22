@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1a120c">
+<link rel="manifest" href="/site.webmanifest">
 <link rel="icon" type="image/png" href="assets/flags/flag23.png" sizes="32x32">
 <link rel="apple-touch-icon" href="assets/flags/flag23.png">
 <link rel="alternate icon" href="/favicon.svg" type="image/svg+xml">
@@ -29,6 +31,16 @@ html,body{overflow:hidden;touch-action:none;
     linear-gradient(168deg, #24180f 0%, #120c08 48%, #1c1410 100%);
   font-family:Georgia,'Palatino Linotype',Palatino,'Times New Roman',serif;color:#d8cca8;cursor:default;width:100%;height:100%;position:fixed;}
 canvas{display:block;touch-action:none;width:100%;height:100%;-webkit-touch-callout:none;}
+#portrait-lock-overlay{
+  display:none;position:fixed;inset:0;z-index:99999;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+  padding:32px;box-sizing:border-box;text-align:center;pointer-events:auto;
+  background:linear-gradient(168deg, #1a120c 0%, #0c0806 100%);
+  color:var(--parchment);font-family:Georgia,serif;font-size:16px;line-height:1.45;
+  border:0 solid;box-shadow:inset 0 0 0 3px rgba(201,162,74,0.35);
+}
+#portrait-lock-overlay .p-icon{font-size:56px;opacity:0.85;}
+#portrait-lock-overlay p{max-width:320px;opacity:0.92;}
+@media (min-width:769px){ #portrait-lock-overlay{ display:none !important; } }
 input,textarea{-webkit-user-select:text;user-select:text;}
 #ui-layer{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:14;display:none;}
 #ui-layer>*{pointer-events:auto;}
@@ -1729,6 +1741,10 @@ body.game-help-mobile-minimal #game-help-panel{
 </style>
 </head>
 <body>
+<div id="portrait-lock-overlay" aria-hidden="true">
+  <div class="p-icon" aria-hidden="true">↻</div>
+  <p><strong>Turn your device to portrait</strong><br>Play in portrait mode for the best experience and stability.</p>
+</div>
 <div id="start-screen">
   <div class="main-menu-card">
     <div class="main-menu-crest" style="font-size:clamp(50px,12vw,80px);margin-bottom:4px;opacity:0.55;color:var(--brass);text-shadow:0 0 24px rgba(201,162,74,0.25);">&#9760;</div>
@@ -2643,6 +2659,12 @@ body.game-help-mobile-minimal #game-help-panel{
 import * as THREE from 'three';
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
+const _deviceMem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : null;
+const _deviceCores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency != null ? Number(navigator.hardwareConcurrency) : 8;
+const isLowEndMobile = isMobile && (
+  (_deviceMem != null && _deviceMem <= 3) ||
+  (_deviceCores > 0 && _deviceCores <= 4)
+);
 function shouldDockChatPanel() {
   if (isMobile) return false;
   try {
@@ -2670,16 +2692,17 @@ function clampNpcIntoWorldBounds(npc) {
   npc.x = Math.max(-lim, Math.min(lim, npc.x));
   npc.z = Math.max(-lim, Math.min(lim, npc.z));
 }
-const RENDER_DIST = isMobile ? 2 : 3;
+const RENDER_DIST = isMobile ? (isLowEndMobile ? 1 : 2) : 3;
 /** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload + wildlife hide use the same band). */
-const CHUNK_UNLOAD_MARGIN = 2;
+const CHUNK_UNLOAD_MARGIN = isLowEndMobile ? 1 : 2;
 const WILDLIFE_CULL_RADIUS = CHUNK_SIZE * (RENDER_DIST + CHUNK_UNLOAD_MARGIN + 1.1);
 const WILDLIFE_CULL_R2 = WILDLIFE_CULL_RADIUS * WILDLIFE_CULL_RADIUS;
 function mainCanvasPixelRatio() {
   const raw = Math.max(0.5, window.devicePixelRatio || 1);
   let cap = isMobile ? 1.36 : 1.65;
-  if (isMobile) {
-    const mem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : 6;
+  if (isLowEndMobile) cap = Math.min(cap, 1.0);
+  else if (isMobile) {
+    const mem = _deviceMem != null ? _deviceMem : 6;
     if (mem <= 2) cap = 1.1;
     else if (mem <= 4) cap = 1.24;
   }
@@ -2687,8 +2710,48 @@ function mainCanvasPixelRatio() {
 }
 /** Inset ship/cargo/yard/port previews: keep below main DPR to limit extra WebGL drawing buffers on phones. */
 function secondaryPanelPixelRatio() {
-  return Math.min(mainCanvasPixelRatio(), isMobile ? 1.2 : 1.75);
+  return Math.min(mainCanvasPixelRatio(), isLowEndMobile ? 0.95 : (isMobile ? 1.2 : 1.75));
 }
+function initPortraitMode() {
+  if (typeof document === 'undefined') return;
+  const overlay = document.getElementById('portrait-lock-overlay');
+  function showLandscapeOverlay() {
+    if (!isMobile) {
+      if (overlay) { overlay.style.display = 'none'; overlay.setAttribute('aria-hidden', 'true'); }
+      return;
+    }
+    const w = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 0;
+    const h = (typeof window !== 'undefined' && window.innerHeight) ? window.innerHeight : 0;
+    const land = w > 0 && h > 0 && w > h;
+    if (overlay) {
+      overlay.style.display = land ? 'flex' : 'none';
+      overlay.setAttribute('aria-hidden', land ? 'false' : 'true');
+    }
+  }
+  function tryLockPortrait() {
+    if (!isMobile) return;
+    try {
+      const o = typeof screen !== 'undefined' && screen.orientation;
+      if (o && typeof o.lock === 'function') o.lock('portrait').catch(function () { /* not allowed until gesture / PWA */ });
+    } catch (e) { /* unsupported */ }
+  }
+  if (isMobile) {
+    showLandscapeOverlay();
+    try {
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', showLandscapeOverlay);
+      }
+    } catch (e) { /* */ }
+    window.addEventListener('resize', showLandscapeOverlay);
+    window.addEventListener('orientationchange', function () { tryLockPortrait(); showLandscapeOverlay(); });
+    var lockOnce = function () { tryLockPortrait(); showLandscapeOverlay(); };
+    document.addEventListener('pointerdown', lockOnce, { once: true, passive: true });
+    window.addEventListener('pointerdown', lockOnce, { once: true, passive: true });
+  } else if (overlay) {
+    overlay.style.display = 'none';
+  }
+}
+initPortraitMode();
 const ISLAND_CHANCE = 0.25;
 /** Gentler dome than falloff² — smoother procedural islands (matches map-editor). */
 const ISLAND_HEIGHT_FALLOFF_POW = 1.48;
@@ -4944,8 +5007,9 @@ renderer.domElement.addEventListener('webglcontextlost', e => {
 }, false);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x87a5c0, 0.0018);
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 8000);
+scene.fog = new THREE.FogExp2(0x87a5c0, isLowEndMobile ? 0.00225 : 0.0018);
+const VIEW_CAMERA_FAR = isLowEndMobile ? 4200 : (isMobile ? 5800 : 8000);
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, VIEW_CAMERA_FAR);
 /** Sky is a sphere centered on the camera; radius must be < camera.far or the dome is clipped (black sky). */
 const SKY_RADIUS = camera.far * 0.9;
 const WATER_PLANE_SIZE = Math.max(CHUNK_SIZE * (RENDER_DIST * 2 + 1), camera.far * 2.75);
@@ -4981,7 +5045,11 @@ const skyUniforms = {
   uSkyCamPos: { value: new THREE.Vector3() }
 };
 const sky = new THREE.Mesh(
-  new THREE.SphereGeometry(SKY_RADIUS, isMobile ? 20 : 48, isMobile ? 16 : 48),
+  new THREE.SphereGeometry(
+    SKY_RADIUS,
+    isLowEndMobile ? 12 : (isMobile ? 20 : 48),
+    isLowEndMobile ? 8 : (isMobile ? 16 : 48)
+  ),
   new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -5095,7 +5163,7 @@ const waterUniforms = {
   uDayFactor: { value: 1 },
   uCamPos: { value: new THREE.Vector3() }
 };
-const WAKE_UNIFORM_SLOTS = isMobile ? 8 : 16;
+const WAKE_UNIFORM_SLOTS = isLowEndMobile ? 4 : (isMobile ? 8 : 16);
 const _waterWakeVecs = [];
 for (let wi = 0; wi < WAKE_UNIFORM_SLOTS; wi++) {
   const v = new THREE.Vector4(0, 0, 0, 0);
@@ -5403,7 +5471,7 @@ const waterFS = `
     gl_FragColor = vec4(color, waterAlpha);
   }`;
 
-const WATER_GRID_SEGS = isMobile ? 40 : 96;
+const WATER_GRID_SEGS = isLowEndMobile ? 24 : (isMobile ? 40 : 96);
 const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, WATER_GRID_SEGS, WATER_GRID_SEGS);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
@@ -5445,12 +5513,13 @@ function createSandSeabedTexture() {
   try {
     const maxA = renderer.capabilities && typeof renderer.capabilities.getMaxAnisotropy === 'function'
       ? renderer.capabilities.getMaxAnisotropy() : 1;
-    tex.anisotropy = Math.min(4, maxA);
+    tex.anisotropy = Math.min(isLowEndMobile ? 2 : 4, maxA);
   } catch (e) { /* noop */ }
   return tex;
 }
 const seabedTex = createSandSeabedTexture();
-const seabedGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, isMobile ? 16 : 32, isMobile ? 16 : 32);
+const _seabedSeg = isLowEndMobile ? 8 : (isMobile ? 16 : 32);
+const seabedGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, _seabedSeg, _seabedSeg);
 seabedGeom.rotateX(-Math.PI / 2);
 const seabed = new THREE.Mesh(seabedGeom, new THREE.MeshLambertMaterial({ map: seabedTex, color: 0xffffff }));
 seabed.position.set(0, SEABED_VISUAL_Y, 0);
@@ -8489,7 +8558,9 @@ function generateIsland(cx, cz) {
     group.userData.faction = meta0.faction;
   }
 
-  const seg = Math.max(28, Math.floor(islandRadius * 2.0));
+  let seg = Math.max(28, Math.floor(islandRadius * 2.0));
+  if (isLowEndMobile) seg = Math.max(10, Math.min(28, seg));
+  else if (isMobile) seg = Math.max(20, Math.min(48, seg));
   const terrainGeo = new THREE.PlaneGeometry(islandRadius * 2.2, islandRadius * 2.2, seg, seg);
   terrainGeo.rotateX(-Math.PI / 2);
   const positions = terrainGeo.attributes.position;
@@ -13290,10 +13361,10 @@ const cbMat = new THREE.MeshPhongMaterial({ color: 0x1c1c1c, shininess: 35 });
 const grapeShotMat = new THREE.MeshPhongMaterial({ color: 0x3a3028 });
 const chainShotMat = new THREE.MeshPhongMaterial({ color: 0x2a2826, shininess: 40 });
 const splashes = [];
-const MAX_LIVE_CANNONBALLS = isMobile ? 72 : 128;
-const MAX_VFX_SPLASHES = isMobile ? 20 : 36;
-const MAX_VFX_DAMAGE_CHUNKS = isMobile ? 200 : 340;
-const MAX_SEA_DEBRIS_MESHES = isMobile ? 55 : 95;
+const MAX_LIVE_CANNONBALLS = isLowEndMobile ? 40 : (isMobile ? 72 : 128);
+const MAX_VFX_SPLASHES = isLowEndMobile ? 10 : (isMobile ? 20 : 36);
+const MAX_VFX_DAMAGE_CHUNKS = isLowEndMobile ? 110 : (isMobile ? 200 : 340);
+const MAX_SEA_DEBRIS_MESHES = isLowEndMobile ? 28 : (isMobile ? 55 : 95);
 
 function removeCannonballEntryAtIndex(i) {
   if (i < 0 || i >= G.cannonballs.length) return;
@@ -24577,8 +24648,12 @@ function gameLoop(time) {
       updateDebugRoster();
     }
     if (isMobile) {
-      if (_gameLoopFrame % 3 === 0) drawMinimap();
-      if (fullmapOpen && (_gameLoopFrame & 1) === 0) drawFullmap();
+      const mEvery = isLowEndMobile ? 6 : 3;
+      if (_gameLoopFrame % mEvery === 0) drawMinimap();
+      if (fullmapOpen) {
+        if (isLowEndMobile) { if (_gameLoopFrame % 3 === 0) drawFullmap(); }
+        else if ((_gameLoopFrame & 1) === 0) drawFullmap();
+      }
     } else {
       if ((_gameLoopFrame & 1) === 0) drawMinimap();
       if (fullmapOpen) drawFullmap();
