@@ -2652,9 +2652,9 @@ function shouldDockChatPanel() {
     return false;
   }
 }
-const CHUNK_SIZE = 300;
-/** Playable archipelago spans chunk indices ±this from origin (15×15 chunks, ~28–34 port towns). Outside is empty ocean. */
-const WORLD_CHUNK_HALF = 7;
+const CHUNK_SIZE = 275;
+/** Playable archipelago spans chunk indices ±this from origin (11×11 chunks, ~20–25 port towns). Outside is empty ocean. */
+const WORLD_CHUNK_HALF = 5;
 const WORLD_EDGE_CLAMP = WORLD_CHUNK_HALF * CHUNK_SIZE + CHUNK_SIZE * 0.5;
 function isChunkInWorld(cx, cz) {
   return cx >= -WORLD_CHUNK_HALF && cx <= WORLD_CHUNK_HALF && cz >= -WORLD_CHUNK_HALF && cz <= WORLD_CHUNK_HALF;
@@ -2671,18 +2671,19 @@ function clampNpcIntoWorldBounds(npc) {
   npc.x = Math.max(-lim, Math.min(lim, npc.x));
   npc.z = Math.max(-lim, Math.min(lim, npc.z));
 }
-const RENDER_DIST = isMobile ? 2 : 3;
+/** One fewer chunk ring than before on PC — same load profile as phone, fewer terrain/waterdraw tiles. */
+const RENDER_DIST = 2;
 /** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload + wildlife hide use the same band). */
 const CHUNK_UNLOAD_MARGIN = 2;
 const WILDLIFE_CULL_RADIUS = CHUNK_SIZE * (RENDER_DIST + CHUNK_UNLOAD_MARGIN + 1.1);
 const WILDLIFE_CULL_R2 = WILDLIFE_CULL_RADIUS * WILDLIFE_CULL_RADIUS;
 function mainCanvasPixelRatio() {
   const raw = Math.max(0.5, window.devicePixelRatio || 1);
-  let cap = isMobile ? 1.36 : 1.65;
+  let cap = isMobile ? 1.28 : 1.5;
   if (isMobile) {
     const mem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : 6;
-    if (mem <= 2) cap = 1.1;
-    else if (mem <= 4) cap = 1.24;
+    if (mem <= 2) cap = 1.05;
+    else if (mem <= 4) cap = 1.16;
   }
   return Math.max(0.5, Math.min(raw, cap));
 }
@@ -2762,7 +2763,7 @@ const FACTION_COLONIAL_PREFIXES = [
 const DEFAULT_SAIL_TRIM_COLOR = '#c9b89a';
 const BANNED_FROM_PORT_RELATION = -40;
 /** Scales max sailing speed, acceleration, and over-ground motion for the player only (not AI ships). */
-const PLAYER_BASE_SPEED_MULT = 0.7;
+const PLAYER_BASE_SPEED_MULT = 0.35;
 
 /** Camera zoom level: higher = closer to the ship (deck view); lower = wider (horizon). */
 const CAM_ZOOM_HORIZON = 70;
@@ -4916,7 +4917,7 @@ class SimplexNoise {
 let noise;
 
 /* ============================= THREE.JS SETUP ============================ */
-const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false, preserveDrawingBuffer: false, powerPreference: isMobile ? 'low-power' : 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false, preserveDrawingBuffer: false, powerPreference: isMobile ? 'low-power' : 'high-performance', stencil: false });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(mainCanvasPixelRatio());
 if (renderer.outputColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -22870,6 +22871,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
  * Avoids the old local-wind “prediction” that fought authority and made other ships skip on the host.
  */
 function advanceRemoteShipNetSmooth(sg, p, dt) {
+  const sdt = Math.min(Math.max(0, dt), 0.05);
   let ns = sg.userData.netSmooth;
   const authR = p.rotation != null && Number.isFinite(Number(p.rotation)) ? Number(p.rotation) : 0;
   if (!ns || !Number.isFinite(ns.x) || !Number.isFinite(ns.z) || !Number.isFinite(ns.ry)) {
@@ -22892,16 +22894,16 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
   const th = authR;
   if (Math.abs(v) > 0.006) {
-    ns.x += Math.sin(th) * v * dt;
-    ns.z += Math.cos(th) * v * dt;
+    ns.x += Math.sin(th) * v * sdt;
+    ns.z += Math.cos(th) * v * sdt;
   }
-  const posK = 1 - Math.exp(-(err > 5.5 ? 32 : 24) * dt);
+  const posK = 1 - Math.exp(-(err > 5.5 ? 32 : 24) * sdt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-40 * dt);
+  const rotK = 1 - Math.exp(-40 * sdt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
@@ -22909,8 +22911,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE for smooth remote motion. */
 const NET_SYNC_HZ = 45;
-/** Mobile hosts send AI a bit slower to cut WS/JSON load; still well above what eyes need vs 8Hz. */
-const NPC_NET_SYNC_HZ = isMobile ? 24 : NET_SYNC_HZ;
+/** Multiplayer host NPCs: same cadence as world tick so all peers stay aligned (was slower on phone). */
+const NPC_NET_SYNC_HZ = NET_SYNC_HZ;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 
 function update(dt) {
@@ -23958,7 +23960,7 @@ function update(dt) {
   G.nearDock = nearestDock;
   const dockPrompt = document.getElementById('dock-prompt');
   const logPanelEl = document.getElementById('log-panel');
-  const captainsLogOpen = logPanelEl ? window.getComputedStyle(logPanelEl).display !== 'none' : false;
+  const captainsLogOpen = !!(logPanelEl && logPanelEl.style.display && logPanelEl.style.display !== 'none');
   const showDockPrompt = nearestDock && !G.docked && G.mode === 'playing' && !G.spectate && !G.playerSinking
     && G.player.health > 0 && !(G.captainWalk && G.captainWalk.active) && !captainsLogOpen;
   if (dockPrompt) {
