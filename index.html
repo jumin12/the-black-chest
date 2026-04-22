@@ -3443,7 +3443,9 @@ function spawnHuntMarkNpcForQuest(q) {
     nx = pt.nx; nz = pt.nz;
   }
   const chunkX = Math.floor(nx / CHUNK_SIZE), chunkZ = Math.floor(nz / CHUNK_SIZE);
-  const pirateFaction = ((chunkX * 31 + chunkZ * 17 + (G.worldSeed | 0)) & 0x7fffffff) % FACTION_COUNT;
+  const pirateFaction = (q.huntTargetFaction != null && Number.isFinite(Number(q.huntTargetFaction)))
+    ? (q.huntTargetFaction | 0) % FACTION_COUNT
+    : ((chunkX * 31 + chunkZ * 17 + (G.worldSeed | 0)) & 0x7fffffff) % FACTION_COUNT;
   let sid = q.huntTargetSyncId;
   if (sid == null || G.npcs.some(n => n.syncId === sid)) sid = allocHuntMarkSyncId();
   q.huntTargetSyncId = sid;
@@ -3761,7 +3763,17 @@ function huntQuestTargetsNpc(q, n) {
   if (!q || q.type !== 'hunt' || !n) return false;
   const a = String(q.target || '').trim().toLowerCase();
   const b = String(n.name || '').trim().toLowerCase();
-  return !!a && a === b;
+  if (!a || a !== b) return false;
+  if (q.huntTargetFaction != null && Number.isFinite(Number(q.huntTargetFaction))) {
+    const want = (q.huntTargetFaction | 0) % FACTION_COUNT;
+    if (n.isTradeShip) {
+      const hf = n.homeFaction != null ? (n.homeFaction | 0) % FACTION_COUNT : townFaction({ cx: n.homeCx, cz: n.homeCz, hasTown: true });
+      return hf === want;
+    }
+    if (n.factionId == null) return true;
+    return (n.factionId | 0) % FACTION_COUNT === want;
+  }
+  return true;
 }
 function huntQuestMatchesNpc(q, n) {
   return huntQuestTargetsNpc(q, n) && !n.sinking;
@@ -3773,6 +3785,12 @@ function isNpcActiveMissionMapTarget(n) {
   if (sq && sq.phase === 'active' && n.isStoryBounty && n.missionOwnerPlayerId != null && G.myId != null
       && Number(n.missionOwnerPlayerId) === Number(G.myId) && (n.storyStep | 0) === (sq.step | 0)) {
     return true;
+  }
+  const letters = (G.politics && G.politics.activeLetters) || [];
+  for (let li = 0; li < letters.length; li++) {
+    const L = letters[li];
+    if (!L || (L.done | 0) >= (L.need | 0)) continue;
+    if (L.pirateOnly ? letterMarquePirateTarget(L, n) : letterMarqueFactionTarget(L, n)) return true;
   }
   const qs = G.quests || [];
   for (let i = 0; i < qs.length; i++) {
@@ -7172,6 +7190,23 @@ function ensureCourtOffersForDock(dock) {
   }
   G.politics.courtOffers = offers.slice(0, 5);
 }
+function letterMarquePirateTarget(L, n) {
+  if (!L || !L.pirateOnly || !n || n.sinking) return false;
+  if (n.isTradeShip || n.isStoryBounty) return false;
+  const issuer = (L.issuer | 0) % FACTION_COUNT;
+  if (n.factionId != null && (n.factionId | 0) % FACTION_COUNT === issuer) return false;
+  return true;
+}
+function letterMarqueFactionTarget(L, n) {
+  if (!L || L.pirateOnly || L.target == null || !n || n.sinking) return false;
+  if (n.isStoryBounty) return false;
+  const t = (L.target | 0) % FACTION_COUNT;
+  if (n.isTradeShip) {
+    const hf = n.homeFaction != null ? (n.homeFaction | 0) % FACTION_COUNT : townFaction({ cx: n.homeCx, cz: n.homeCz, hasTown: true });
+    return hf === t;
+  }
+  return n.factionId != null && (n.factionId | 0) % FACTION_COUNT === t;
+}
 function tryProgressFactionLetters(npc, killerPlayerId) {
   if (killerPlayerId == null || Number(killerPlayerId) !== Number(G.myId)) return;
   ensurePolitics();
@@ -7181,13 +7216,7 @@ function tryProgressFactionLetters(npc, killerPlayerId) {
   for (let i = 0; i < letters.length; i++) {
     const L = letters[i];
     if (L.done >= L.need) continue;
-    let match = false;
-    if (L.pirateOnly) {
-      match = !npc.isTradeShip && !npc.isStoryBounty;
-    } else if (npc.isTradeShip && L.target != null) {
-      const hf = npc.homeFaction != null ? (npc.homeFaction | 0) % FACTION_COUNT : townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
-      match = hf === (L.target | 0);
-    }
+    const match = L.pirateOnly ? letterMarquePirateTarget(L, npc) : letterMarqueFactionTarget(L, npc);
     if (!match) continue;
     letterTouched = true;
     L.done++;
@@ -21296,12 +21325,33 @@ function createPortQuestRng(dock, salt) {
     return s / 4294967296;
   };
 }
+function pickRandomEnemyFactionForPort(dock, rnd) {
+  if (!dock) return 0;
+  const here = (townFaction(dock) | 0) % FACTION_COUNT;
+  const pool = [];
+  for (let f = 0; f < FACTION_COUNT; f++) { if (f !== here) pool.push(f); }
+  if (!pool.length) return (here + 1) % FACTION_COUNT;
+  return pool[Math.floor(rnd() * pool.length)];
+}
+function makeHuntSideQuestAtPort(dock, rnd, salt) {
+  const enemyF = pickRandomEnemyFactionForPort(dock, rnd);
+  const target = proceduralPirateShipName(enemyF, dock.cx | 0, dock.cz | 0, (salt | 0) * 10007 + 13);
+  return {
+    type: 'hunt',
+    desc: `Sink the ${target}`,
+    reward: 35 + Math.floor(rnd() * 30),
+    target,
+    huntTargetFaction: enemyF,
+    accepted: false
+  };
+}
 /** Append one unaccepted hunt / delivery / escort with issuing port `dock` (escort only if host + session allows). */
 function pushRandomSideQuestForPort(dock, rnd) {
   let ports = [];
   try { ports = collectAllTradingPorts(); } catch (e) { ports = []; }
   const pool = ports;
   if (!dock || dock.cx == null || !pool.length) return false;
+  const huntSalt = (G.quests && G.quests.length ? G.quests.length * 17 : 0) + ((dock.cx | 0) * 131 + (dock.cz | 0) * 911);
   const npcNames = NPC_SHIP_NAMES.length ? NPC_SHIP_NAMES.slice() : ['Sea Phantom', 'Red Tide', 'Storm Chaser'];
   for (let ii = npcNames.length - 1; ii > 0; ii--) {
     const j = Math.floor(rnd() * (ii + 1));
@@ -21316,8 +21366,7 @@ function pushRandomSideQuestForPort(dock, rnd) {
       dest = pool[Math.floor(rnd() * pool.length)];
     }
     if (dest.cx === origin.cx && dest.cz === origin.cz) {
-      const target = npcNames[Math.floor(rnd() * npcNames.length)];
-      G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
+      G.quests.push(makeHuntSideQuestAtPort(origin, rnd, huntSalt));
       return true;
     }
     const goods = ['wood', 'cloth', 'iron', 'rum'];
@@ -21353,8 +21402,7 @@ function pushRandomSideQuestForPort(dock, rnd) {
   }
   const wantDelivery = pool.length > 0 && roll < 0.65;
   if (!wantDelivery) {
-    const target = npcNames[Math.floor(rnd() * npcNames.length)];
-    G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
+    G.quests.push(makeHuntSideQuestAtPort(dock, rnd, huntSalt + Math.floor(rnd() * 5000)));
     return true;
   }
   const items = ['wood', 'cloth', 'iron', 'rum'];
@@ -21954,6 +22002,21 @@ function drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, opts) {
         }
       } catch (e) {}
     }
+    (function drawMarqueNpcRings() {
+      G.npcs.forEach(n => {
+        if (n.sinking) return;
+        const ok = L.pirateOnly ? letterMarquePirateTarget(L, n) : letterMarqueFactionTarget(L, n);
+        if (!ok) return;
+        if (!npcVis(n)) return;
+        const sx = wx2sx(n.x), sy = wz2sy(n.z);
+        if (!inBounds(sx, sy)) return;
+        ctx.strokeStyle = 'rgba(255,200,120,0.9)'; ctx.lineWidth = mini ? 1.4 : 1.9; ctx.setLineDash([3, 2]);
+        ctx.beginPath(); ctx.arc(sx, sy, mini ? 7.5 : 9.5, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#ffd8a0'; ctx.font = (mini ? '6px' : '8px') + ' Georgia'; ctx.textAlign = 'center';
+        ctx.fillText('Marque', sx, sy - (mini ? 9 : 12));
+      });
+    })();
   }
 }
 /** Shared world chart: full map + optional wind overlay + optional debug layer toggles. */
