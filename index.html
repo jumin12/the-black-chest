@@ -2678,8 +2678,17 @@ const WILDLIFE_CULL_RADIUS = CHUNK_SIZE * (RENDER_DIST + CHUNK_UNLOAD_MARGIN + 1
 const WILDLIFE_CULL_R2 = WILDLIFE_CULL_RADIUS * WILDLIFE_CULL_RADIUS;
 function mainCanvasPixelRatio() {
   const raw = window.devicePixelRatio || 1;
-  const cap = isMobile ? 1.12 : 1.65;
+  let cap = isMobile ? 1.36 : 1.65;
+  if (isMobile) {
+    const mem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : 6;
+    if (mem <= 2) cap = 1.1;
+    else if (mem <= 4) cap = 1.24;
+  }
   return Math.min(raw, cap);
+}
+/** Inset ship/cargo/yard/port previews: keep below main DPR to limit extra WebGL drawing buffers on phones. */
+function secondaryPanelPixelRatio() {
+  return Math.min(mainCanvasPixelRatio(), isMobile ? 1.2 : 1.75);
 }
 const ISLAND_CHANCE = 0.25;
 /** Gentler dome than falloff² — smoother procedural islands (matches map-editor). */
@@ -13274,6 +13283,58 @@ const cbMat = new THREE.MeshPhongMaterial({ color: 0x1c1c1c, shininess: 35 });
 const grapeShotMat = new THREE.MeshPhongMaterial({ color: 0x3a3028 });
 const chainShotMat = new THREE.MeshPhongMaterial({ color: 0x2a2826, shininess: 40 });
 const splashes = [];
+const MAX_LIVE_CANNONBALLS = isMobile ? 72 : 128;
+const MAX_VFX_SPLASHES = isMobile ? 20 : 36;
+const MAX_VFX_DAMAGE_CHUNKS = isMobile ? 200 : 340;
+const MAX_SEA_DEBRIS_MESHES = isMobile ? 55 : 95;
+
+function removeCannonballEntryAtIndex(i) {
+  if (i < 0 || i >= G.cannonballs.length) return;
+  if (cannonballMeshes[i]) {
+    const cm = cannonballMeshes[i];
+    if (cm.userData && cm.userData.disposeOnRemove) disposeCannonballGeometries(cm);
+    scene.remove(cm);
+  }
+  G.cannonballs.splice(i, 1);
+  cannonballMeshes.splice(i, 1);
+}
+function cullCannonballsToBudget() {
+  while (G.cannonballs.length > MAX_LIVE_CANNONBALLS) {
+    removeCannonballEntryAtIndex(0);
+  }
+}
+function cullSplashesToBudget() {
+  while (splashes.length > MAX_VFX_SPLASHES) {
+    const s = splashes[0];
+    if (s) {
+      scene.remove(s);
+      s.children.forEach(c => { c.geometry.dispose(); c.material.dispose(); });
+    }
+    splashes.splice(0, 1);
+  }
+}
+function cullDamageChunksToBudget() {
+  while (G.damageChunks.length > MAX_VFX_DAMAGE_CHUNKS) {
+    const c = G.damageChunks[0];
+    if (c) {
+      scene.remove(c);
+      c.geometry.dispose();
+      c.material.dispose();
+    }
+    G.damageChunks.splice(0, 1);
+  }
+}
+function cullSeaDebrisToBudget() {
+  while (G.seaDebris.length > MAX_SEA_DEBRIS_MESHES) {
+    const d = G.seaDebris[0];
+    if (d) {
+      scene.remove(d);
+      d.geometry.dispose();
+      d.material.dispose();
+    }
+    G.seaDebris.splice(0, 1);
+  }
+}
 
 function disposeCannonballGeometries(root) {
   if (!root) return;
@@ -13281,6 +13342,7 @@ function disposeCannonballGeometries(root) {
 }
 
 function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType, sourceNpcSyncId) {
+  cullCannonballsToBudget();
   const isPellet = ammoType === 'grape_pellet';
   const at = isPellet ? 'grape' : (ammoType === 'grape' || ammoType === 'chain' ? ammoType : 'ball');
   const sea = worldSeaSurfaceY(x, z);
@@ -13518,6 +13580,7 @@ function spawnDamageChunks(wx, wy, wz) {
     scene.add(chunk);
     G.damageChunks.push(chunk);
   }
+  cullDamageChunksToBudget();
 }
 
 function markSeaBattleActivity() {
@@ -13566,6 +13629,7 @@ function spawnSeaDebrisFromHit(wx, wz, pieces, fromNet) {
     scene.add(mesh);
     G.seaDebris.push(mesh);
   }
+  cullSeaDebrisToBudget();
 }
 
 /** Chain-shot rigging: 3 bands — stages 0–1 lean, stage 2 knocked over (heavy list). */
@@ -13725,6 +13789,7 @@ function applyAmmoHitToLocalPlayer(ammoType, shooterId, hx, hz, isPellet) {
 }
 
 function createSplash(x, z) {
+  cullSplashesToBudget();
   const sg = new THREE.Group();
   const qx = Math.floor(x * 100), qz = Math.floor(z * 100);
   for (let i = 0; i < 6; i++) {
@@ -13778,6 +13843,7 @@ function spawnLandCannonImpact(x, z, impactY) {
     scene.add(spark);
     G.damageChunks.push(spark);
   }
+  cullDamageChunksToBudget();
 }
 
 function addFloatingLootMesh(x, z, type, count, netId) {
@@ -16611,17 +16677,22 @@ renderer.domElement.addEventListener('touchend', e => {
   }
 }, { passive: true });
 
+let _resizeRaf = null;
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
-  renderer.setPixelRatio(mainCanvasPixelRatio());
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  resizeCargoPreview();
-  resizeYardShipPreview();
-  resizePortVista();
-  if (typeof drawCompass === 'function') drawCompass();
-  if (typeof repositionTutorialHighlight === 'function') repositionTutorialHighlight();
-  if (isMobile) applyMobileControlScheme(G.mobileControlScheme);
-  syncHudToastAnchors();
+  if (_resizeRaf != null) cancelAnimationFrame(_resizeRaf);
+  _resizeRaf = requestAnimationFrame(() => {
+    _resizeRaf = null;
+    camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+    renderer.setPixelRatio(mainCanvasPixelRatio());
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    resizeCargoPreview();
+    resizeYardShipPreview();
+    resizePortVista();
+    if (typeof drawCompass === 'function') drawCompass();
+    if (typeof repositionTutorialHighlight === 'function') repositionTutorialHighlight();
+    if (isMobile) applyMobileControlScheme(G.mobileControlScheme);
+    syncHudToastAnchors();
+  });
 });
 
 let audioCtx, masterGain;
@@ -19054,7 +19125,7 @@ function ensureCargoPreview() {
   const w = Math.max(200, container.clientWidth || 280);
   cargoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   cargoRenderer.setSize(w, h);
-  cargoRenderer.setPixelRatio(mainCanvasPixelRatio());
+  cargoRenderer.setPixelRatio(secondaryPanelPixelRatio());
   cargoRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   container.appendChild(cargoRenderer.domElement);
 
@@ -19076,7 +19147,7 @@ function resizeCargoPreview() {
   if (!container) return;
   const w = Math.max(200, container.clientWidth);
   const h = Math.max(280, container.clientHeight || 340);
-  cargoRenderer.setPixelRatio(mainCanvasPixelRatio());
+  cargoRenderer.setPixelRatio(secondaryPanelPixelRatio());
   cargoRenderer.setSize(w, h);
   cargoCamera.aspect = w / h;
   cargoCamera.updateProjectionMatrix();
@@ -19185,7 +19256,7 @@ function ensureYardShipPreview() {
   const w = Math.max(200, container.clientWidth || 280);
   yardShipRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   yardShipRenderer.setSize(w, h);
-  yardShipRenderer.setPixelRatio(mainCanvasPixelRatio());
+  yardShipRenderer.setPixelRatio(secondaryPanelPixelRatio());
   yardShipRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   container.appendChild(yardShipRenderer.domElement);
   yardShipScene = new THREE.Scene();
@@ -19204,7 +19275,7 @@ function resizeYardShipPreview() {
   if (!container) return;
   const w = Math.max(200, container.clientWidth);
   const h = Math.max(200, container.clientHeight || 260);
-  yardShipRenderer.setPixelRatio(mainCanvasPixelRatio());
+  yardShipRenderer.setPixelRatio(secondaryPanelPixelRatio());
   yardShipRenderer.setSize(w, h);
   yardShipCamera.aspect = w / h;
   yardShipCamera.updateProjectionMatrix();
@@ -19352,7 +19423,7 @@ function ensurePortVista() {
     });
     if (portVistaRenderer.outputColorSpace !== undefined) portVistaRenderer.outputColorSpace = THREE.SRGBColorSpace;
     portVistaRenderer.setSize(w, h);
-    portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), 1.75));
+    portVistaRenderer.setPixelRatio(secondaryPanelPixelRatio());
     portVistaRenderer.toneMapping = THREE.ACESFilmicToneMapping;
     container.appendChild(portVistaRenderer.domElement);
     portVistaRenderer.domElement.addEventListener('webglcontextlost', e => {
@@ -19372,7 +19443,7 @@ function resizePortVista() {
   const w = Math.max(120, container.clientWidth);
   const h = Math.max(120, container.clientHeight);
   if (w < 8 || h < 8) return;
-  portVistaRenderer.setPixelRatio(Math.min(mainCanvasPixelRatio(), 1.75));
+  portVistaRenderer.setPixelRatio(secondaryPanelPixelRatio());
   portVistaRenderer.setSize(w, h);
   portVistaCamera.aspect = w / h;
   portVistaCamera.updateProjectionMatrix();
@@ -24402,7 +24473,7 @@ function setup3DPreview() {
   const h = container.clientHeight || 300;
   previewRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   previewRenderer.setSize(container.clientWidth, h);
-  previewRenderer.setPixelRatio(mainCanvasPixelRatio());
+  previewRenderer.setPixelRatio(secondaryPanelPixelRatio());
   previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   container.insertBefore(previewRenderer.domElement, container.firstChild);
 
