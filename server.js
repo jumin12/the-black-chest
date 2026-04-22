@@ -178,6 +178,7 @@ function migratePartyRecord(pr) {
   if (!pr) return;
   if (!Array.isArray(pr.officerKeys)) pr.officerKeys = [];
   if (!pr.pendingInviteFrom || typeof pr.pendingInviteFrom !== 'object') pr.pendingInviteFrom = {};
+  if (!Array.isArray(pr.pendingJoinRequests)) pr.pendingJoinRequests = [];
 }
 
 function deletePendingInviteMeta(pr, captainKey) {
@@ -193,6 +194,27 @@ function stripCaptainFromOtherPendingInvites(targetKey, exceptPartyId) {
     if (!o || !o.pendingKeys || !o.pendingKeys.includes(targetKey)) continue;
     o.pendingKeys = o.pendingKeys.filter(k => k !== targetKey);
     deletePendingInviteMeta(o, targetKey);
+  }
+}
+
+/** Remove this captain from every clan’s application queue (except `exceptPartyId` when set). Re-broadcasts affected clans. */
+function stripCaptainFromAllJoinRequestsExcept(targetKey, exceptPartyId) {
+  if (!targetKey) return;
+  const touched = [];
+  for (const pid of Object.keys(partyStore.parties)) {
+    if (exceptPartyId && pid === exceptPartyId) continue;
+    const o = partyStore.parties[pid];
+    migratePartyRecord(o);
+    if (!o.pendingJoinRequests.length) continue;
+    const next = o.pendingJoinRequests.filter(r => r.captainKey !== targetKey);
+    if (next.length !== o.pendingJoinRequests.length) {
+      o.pendingJoinRequests = next;
+      touched.push(pid);
+    }
+  }
+  if (touched.length) {
+    savePartyStore();
+    for (const pid of touched) broadcastPartySync(pid);
   }
 }
 
@@ -511,20 +533,20 @@ function broadcastPartySync(partyId) {
   const p = partyStore.parties[partyId];
   if (!p || !Array.isArray(p.memberKeys)) return;
   refreshPartyTagsForMemberKeys(p.memberKeys);
-  const payload = buildPartySyncPayload(p);
   for (const ck of p.memberKeys) {
     const pid = findPlayerIdByCaptainKey(ck);
     if (pid == null) continue;
     const cws = findWsByPlayerId(pid);
     if (cws && cws.readyState === 1) {
       try {
+        const payload = buildPartySyncPayload(p, ck);
         cws.send(JSON.stringify({ type: 'party_sync', party: payload }));
       } catch (e) {}
     }
   }
 }
 
-function buildPartySyncPayload(p) {
+function buildPartySyncPayload(p, viewerCaptainKey) {
   migratePartyRecord(p);
   const officerKeys = Array.isArray(p.officerKeys) ? p.officerKeys.slice() : [];
   const memberKeys = Array.isArray(p.memberKeys) ? p.memberKeys.slice() : [];
@@ -545,7 +567,7 @@ function buildPartySyncPayload(p) {
       role
     };
   });
-  return {
+  const out = {
     id: p.id,
     tag: p.tag,
     leaderCaptainKey: p.leaderKey,
@@ -553,6 +575,14 @@ function buildPartySyncPayload(p) {
     memberKeys,
     members
   };
+  if (viewerCaptainKey && canInviteToClan(p, viewerCaptainKey)) {
+    out.pendingJoinRequests = (p.pendingJoinRequests || []).map(r => ({
+      captainKey: String(r.captainKey),
+      name: r.name != null ? String(r.name).slice(0, 28) : '',
+      t: r.t != null ? Number(r.t) : 0
+    }));
+  }
+  return out;
 }
 
 function getPartyForCaptainKey(ck) {
@@ -1869,7 +1899,7 @@ wss.on('connection', (ws, req) => {
   const myCkInit = ws.captainAccountKey || null;
   if (myCkInit) {
     const pr = getPartyForCaptainKey(myCkInit);
-    if (pr) partyPayload = buildPartySyncPayload(pr);
+    if (pr) partyPayload = buildPartySyncPayload(pr, myCkInit);
   }
   const initWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   ws.send(JSON.stringify({
@@ -2111,8 +2141,8 @@ wss.on('connection', (ws, req) => {
           });
           const prSync = getPartyForCaptainKey(newKey);
           if (prSync) {
-            const syncPayload = buildPartySyncPayload(prSync);
             broadcastPartySync(prSync.id);
+            const syncPayload = buildPartySyncPayload(prSync, newKey);
             try { ws.send(JSON.stringify({ type: 'party_sync', party: syncPayload })); } catch (e) {}
           } else {
             try { ws.send(JSON.stringify({ type: 'party_sync', party: null })); } catch (e) {}
@@ -2495,7 +2525,7 @@ wss.on('connection', (ws, req) => {
             break;
           }
           const pid = `p${partyStore.nextPartyNum++}`;
-          partyStore.parties[pid] = { id: pid, tag, leaderKey: ck, memberKeys: [ck], pendingKeys: [], pendingInviteFrom: {}, officerKeys: [] };
+          partyStore.parties[pid] = { id: pid, tag, leaderKey: ck, memberKeys: [ck], pendingKeys: [], pendingInviteFrom: {}, officerKeys: [], pendingJoinRequests: [] };
           partyStore.captainParty[ck] = pid;
           savePartyStore();
           broadcastPartySync(pid);
@@ -2528,6 +2558,8 @@ wss.on('connection', (ws, req) => {
           if (!pr.pendingKeys.includes(tck)) pr.pendingKeys.push(tck);
           const fromName = players.get(id)?.name || 'Captain';
           pr.pendingInviteFrom[tck] = { fromCaptainKey: ck, fromName: String(fromName).slice(0, 28) };
+          migratePartyRecord(pr);
+          pr.pendingJoinRequests = (pr.pendingJoinRequests || []).filter(r => r.captainKey !== tck);
           savePartyStore();
           const tws = findWsByCaptainKey(tck);
           if (tws) {
@@ -2696,6 +2728,112 @@ wss.on('connection', (ws, req) => {
           savePartyStore();
           broadcastPartySync(pr.id);
           try { ws.send(JSON.stringify({ type: 'party_ok', action: 'officer_demoted' })); } catch (e) {}
+          break;
+        }
+        case 'party_list_public': {
+          const rows = [];
+          for (const pr of Object.values(partyStore.parties)) {
+            migratePartyRecord(pr);
+            if (!pr || !pr.id) continue;
+            rows.push({
+              id: pr.id,
+              tag: pr.tag != null ? String(pr.tag).slice(0, 24) : '',
+              members: Array.isArray(pr.memberKeys) ? pr.memberKeys.length : 0,
+              max: CLAN_MAX_MEMBERS
+            });
+          }
+          rows.sort((a, b) => String(a.tag).localeCompare(String(b.tag), undefined, { sensitivity: 'base' }));
+          try { ws.send(JSON.stringify({ type: 'party_public_list', clans: rows })); } catch (e) {}
+          break;
+        }
+        case 'party_request_join': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          if (!ck) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Reserve a captain name before applying to a clan.' })); } catch (e) {}
+            break;
+          }
+          if (getPartyForCaptainKey(ck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Already in a clan.' })); } catch (e) {}
+            break;
+          }
+          const partyId = String(msg.partyId || '').trim();
+          const pr = partyStore.parties[partyId];
+          if (!pr) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'That clan was not found.' })); } catch (e) {}
+            break;
+          }
+          migratePartyRecord(pr);
+          if (pr.memberKeys.length >= CLAN_MAX_MEMBERS) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'That clan is full.' })); } catch (e) {}
+            break;
+          }
+          stripCaptainFromAllJoinRequestsExcept(ck, partyId);
+          const pl = players.get(id);
+          const name = pl && pl.name ? String(pl.name).slice(0, 28) : 'Captain';
+          const dup = (pr.pendingJoinRequests || []).some(r => r.captainKey === ck);
+          if (!dup) pr.pendingJoinRequests.push({ captainKey: ck, name, t: Date.now() });
+          savePartyStore();
+          broadcastPartySync(partyId);
+          try { ws.send(JSON.stringify({ type: 'party_ok', action: 'join_request_sent' })); } catch (e) {}
+          break;
+        }
+        case 'party_approve_join': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          migratePartyRecord(pr);
+          if (!pr || !canInviteToClan(pr, ck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the captain or an officer may approve applications.' })); } catch (e) {}
+            break;
+          }
+          const tck = normalizeCaptainKey(String(msg.targetCaptainKey || ''));
+          if (!tck) break;
+          const pj = pr.pendingJoinRequests || [];
+          const idx = pj.findIndex(r => r.captainKey === tck);
+          if (idx < 0) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'No pending application from that captain.' })); } catch (e) {}
+            break;
+          }
+          if (getPartyForCaptainKey(tck)) {
+            pr.pendingJoinRequests.splice(idx, 1);
+            savePartyStore();
+            broadcastPartySync(pr.id);
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'That captain already joined another clan.' })); } catch (e) {}
+            break;
+          }
+          if (pr.memberKeys.length >= CLAN_MAX_MEMBERS) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Clan is full.' })); } catch (e) {}
+            break;
+          }
+          pr.pendingJoinRequests.splice(idx, 1);
+          stripCaptainFromOtherPendingInvites(tck, pr.id);
+          if (!pr.memberKeys.includes(tck)) pr.memberKeys.push(tck);
+          partyStore.captainParty[tck] = pr.id;
+          stripCaptainFromAllJoinRequestsExcept(tck, pr.id);
+          savePartyStore();
+          broadcastPartySync(pr.id);
+          const newPid = findPlayerIdByCaptainKey(tck);
+          if (newPid != null) {
+            const plJ = players.get(newPid);
+            if (plJ) refreshPlayerPartyTag(plJ);
+          }
+          break;
+        }
+        case 'party_reject_join': {
+          const ck = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const pr = getPartyForCaptainKey(ck);
+          migratePartyRecord(pr);
+          if (!pr || !canInviteToClan(pr, ck)) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the captain or an officer may reject applications.' })); } catch (e) {}
+            break;
+          }
+          const tck = normalizeCaptainKey(String(msg.targetCaptainKey || ''));
+          if (!tck) break;
+          const before = (pr.pendingJoinRequests || []).length;
+          pr.pendingJoinRequests = (pr.pendingJoinRequests || []).filter(r => r.captainKey !== tck);
+          if (pr.pendingJoinRequests.length !== before) {
+            savePartyStore();
+            broadcastPartySync(pr.id);
+          }
           break;
         }
         case 'admin_nav': {
