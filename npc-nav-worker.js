@@ -31,10 +31,12 @@ self.onmessage = function (ev) {
     gscore[i] = 1e20;
   }
   const h = (ix, iz) => Math.abs(ix - gix) + Math.abs(iz - giz);
+  const inOpen = new Uint8Array(N);
   gscore[si] = 0;
   open.push(si);
+  inOpen[si] = 1;
   let expansions = 0;
-  const MAX_EXP = 1600;
+  const MAX_EXP = 900;
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   while (open.length && expansions < MAX_EXP) {
     expansions++;
@@ -52,6 +54,7 @@ self.onmessage = function (ev) {
     }
     const cur = open[bi];
     open.splice(bi, 1);
+    inOpen[cur] = 0;
     if (cur === gi) {
       const idxs = [];
       let c = cur;
@@ -82,7 +85,10 @@ self.onmessage = function (ev) {
       if (tent < gscore[ni]) {
         came[ni] = cur;
         gscore[ni] = tent;
-        if (open.indexOf(ni) < 0) open.push(ni);
+        if (!inOpen[ni]) {
+          open.push(ni);
+          inOpen[ni] = 1;
+        }
       }
     }
   }
