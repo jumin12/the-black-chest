@@ -11854,6 +11854,102 @@ function spawnTradeShips() {
     if (tryAddMerchantNpcFromHome(home, allPorts, tradeSyncIdx, 800000 + ex * 131)) tradeSyncIdx++;
   }
 }
+function spawnOneFactionPatrol(factionId) {
+  if (!isMultiplayerHost()) return false;
+  const fid = (factionId | 0) % FACTION_COUNT;
+  const allPorts = collectAllTradingPorts().filter(p => townFaction(p) % FACTION_COUNT === fid);
+  if (!allPorts.length) return false;
+  const tBase = ((G.worldSeed >>> 0) ^ Math.imul(fid, 977)) >>> 0;
+  const pick = allPorts[(tBase + (G.npcs.length | 0) * 13) % allPorts.length];
+  let s = (tBase + Math.imul(pick.cx * 7919 + pick.cz * 9341, 2654435761)) >>> 0;
+  const sr = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  const spawn = findMerchantSpawnOffCoast(pick, sr);
+  if (!spawn) return false;
+  let nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nx));
+  let nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nz));
+  const pid = allocPatrolSyncId();
+  if (pid == null) return false;
+  const typePool = ['brigantine', 'warship', 'galleon'];
+  const st = typePool[Math.floor(sr() * typePool.length)];
+  for (let trySp = 0; trySp < 14; trySp++) {
+    const nr = shipHullRadius(st);
+    let clash = false;
+    for (let j = 0; j < G.npcs.length; j++) {
+      const ex = G.npcs[j];
+      if (Math.hypot(nx - ex.x, nz - ex.z) < nr + shipHullRadius(ex.type) + 7) { clash = true; break; }
+    }
+    if (!clash && Math.hypot(nx - G.player.x, nz - G.player.z) >= nr + shipHullRadius(G.player.shipType) + 11) break;
+    const sp2 = findMerchantSpawnOffCoast(pick, sr);
+    if (sp2) {
+      nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, sp2.nx));
+      nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, sp2.nz));
+    }
+  }
+  const facCol = FACTION_TRADE_COLORS[fid];
+  const cannonPart = tradeShipCannonForType(st);
+  const labels = ['Patrol', 'Squadron', 'Coast Guard', 'Guardship'];
+  const npc = {
+    syncId: pid,
+    x: nx, z: nz,
+    rotation: sr() * Math.PI * 2,
+    speed: 0,
+    health: 72 + sr() * 48,
+    type: st,
+    name: `${FACTION_SHORT_NAMES[fid]} ${labels[Math.floor(sr() * labels.length)]}`,
+    factionId: fid,
+    isFactionPatrol: true,
+    patrolCannon: cannonPart,
+    flagColor: facCol,
+    flagAssetId: factionFlagPngIdForFaction(fid),
+    flagPosition: pickRandomAiFlagPosition(sr),
+    sailBonus: 0.12,
+    wanderAngle: sr() * Math.PI * 2,
+    wanderTimer: 4 + sr() * 8,
+    underFireTimer: 0,
+    fireJitter: sr(),
+    riggingHealth: 100,
+    attackNpcSyncId: null
+  };
+  npc.speed = npcMaxForwardSpeed(npc) * (0.2 + sr() * 0.12);
+  const mesh = buildShipMesh(st, { hull: 'basic', sail: 'war', cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, facCol, npc.name, { flagAssetId: npc.flagAssetId });
+  npc.crewData = ambientPirateCrewData((tBase + pid * 17) >>> 0);
+  buildCrewMeshes(mesh, npc.crewData, st);
+  npc.mesh = mesh;
+  scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  G.npcs.push(npc);
+  return true;
+}
+function seedInitialFactionPatrols() {
+  if (!isMultiplayerHost()) return;
+  ensurePolitics();
+  for (let f = 0; f < FACTION_COUNT; f++) {
+    const wealth = G.politics.factionWealth[f] | 0;
+    let wars = 0;
+    for (let j = 0; j < FACTION_COUNT; j++) {
+      if (j !== f && factionsConsideredAtWar(f, j)) wars++;
+    }
+    const n = Math.min(7, 1 + Math.floor(wealth / 620) + wars);
+    for (let k = 0; k < n; k++) spawnOneFactionPatrol(f);
+  }
+}
+function tickFactionPatrolReserves(dt) {
+  if (!isMultiplayerHost() || G.mode !== 'playing') return;
+  G._patrolTickAcc = (G._patrolTickAcc || 0) + dt;
+  if (G._patrolTickAcc < 11) return;
+  G._patrolTickAcc = 0;
+  ensurePolitics();
+  for (let f = 0; f < FACTION_COUNT; f++) {
+    let wars = 0;
+    for (let j = 0; j < FACTION_COUNT; j++) {
+      if (j !== f && factionsConsideredAtWar(f, j)) wars++;
+    }
+    const wealth = G.politics.factionWealth[f] | 0;
+    const desired = Math.min(12, 2 + Math.floor(wealth / 460) + wars * 2);
+    const alive = G.npcs.filter(n => n.isFactionPatrol && (n.factionId | 0) % FACTION_COUNT === f && !n.sinking && (n.health == null || n.health > 0)).length;
+    if (alive < desired) spawnOneFactionPatrol(f);
+  }
+}
 function spawnNPCs() {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
@@ -11914,6 +12010,8 @@ function spawnNPCs() {
     G.npcs.push(npc);
   }
   spawnTradeShips();
+  G._nextPatrolSyncId = PATROL_SYNC_MIN;
+  seedInitialFactionPatrols();
   tryRestoreStoryBountyAfterNpcReset();
   initTownStockpiles();
   ensureSeaReefsPopulated();
@@ -11921,7 +12019,8 @@ function spawnNPCs() {
 
 function rebuildNPCShipMesh(npc) {
   const merchant = !!npc.isTradeShip;
-  const mercCannon = merchant ? (npc.tradeCannon || tradeShipCannonForType(npc.type)) : 'light';
+  const patrol = !!npc.isFactionPatrol && !merchant;
+  const mercCannon = merchant ? (npc.tradeCannon || tradeShipCannonForType(npc.type)) : patrol ? (npc.patrolCannon || tradeShipCannonForType(npc.type)) : 'light';
     const npcCrew = merchant ? (npc.crewData && npc.crewData.length ? npc.crewData : [
     { name: 'Merchant', role: 'captain', task: 'helm', color: '#3a3020', hat: 'tricorn' },
     { name: 'Gunner', role: 'gunner', task: 'cannons', color: '#4a4538', hat: 'bandana' },
@@ -11934,7 +12033,9 @@ function rebuildNPCShipMesh(npc) {
   const fp = npc.flagPosition || 'mast';
   const partsRaw = merchant
     ? { hull: 'basic', sail: npc.sailPick === 'silk' ? 'silk' : 'basic', cannon: mercCannon, figurehead: 'none', flag: fp }
-    : { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: fp };
+    : patrol
+      ? { hull: 'basic', sail: 'war', cannon: mercCannon, figurehead: 'none', flag: fp }
+      : { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: fp };
   const parts = merchant ? partsRaw : normalizeShipPartsForRemoteView(partsRaw);
   if (npc.mesh) {
     scene.remove(npc.mesh);
@@ -12118,9 +12219,85 @@ function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
   });
 }
 
+/** Host-only: national squadrons hunt enemy merchants, pirates, and rival patrols. */
+function updatePatrolWorldHuntAi(npc, dt) {
+  if (!npc.isFactionPatrol || npc.isTradeShip || npc.isStoryBounty || npc.sinking) return;
+  if (npc.isEscortCargo && npc.escortQuestActive) return;
+  npc._patrolHuntAcc = (npc._patrolHuntAcc || 0) + dt;
+  if (npc._patrolHuntAcc < 0.62) return;
+  npc._patrolHuntAcc = 0;
+  ensurePolitics();
+  const pf = (npc.factionId | 0) % FACTION_COUNT;
+  const distPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+  if (npc.aggro && distPlayer < 88) return;
+  if (npc.attackNpcSyncId != null) {
+    const prey = G.npcs.find(n => n.syncId === npc.attackNpcSyncId && !n.sinking && (n.health == null || n.health > 0));
+    if (prey) {
+      const d = Math.hypot(prey.x - npc.x, prey.z - npc.z);
+      if (d < 600) return;
+    }
+    npc.attackNpcSyncId = null;
+  }
+  const huntRoll = Math.random();
+  let bestId = null;
+  let bestScore = -1e9;
+  for (let i = 0; i < G.npcs.length; i++) {
+    const m = G.npcs[i];
+    if (m === npc || m.sinking) continue;
+    const mh = m.health != null && Number.isFinite(Number(m.health)) ? Number(m.health) : 50;
+    if (mh <= 0) continue;
+    const d = Math.hypot(m.x - npc.x, m.z - npc.z);
+    if (d > 540) continue;
+    if (m.isTradeShip) {
+      const mf = townFaction({ cx: m.homeCx, cz: m.homeCz, hasTown: true }) % FACTION_COUNT;
+      if (!factionsConsideredAtWar(pf, mf)) continue;
+      const score = 1300 - d;
+      if (score > bestScore) { bestScore = score; bestId = m.syncId; }
+    } else if (m.isFactionPatrol) {
+      const of = (m.factionId | 0) % FACTION_COUNT;
+      if (of === pf) continue;
+      if (!factionsConsideredAtWar(pf, of) && huntRoll > 0.07) continue;
+      const score = 950 - d;
+      if (score > bestScore) { bestScore = score; bestId = m.syncId; }
+    } else if (!m.isStoryBounty) {
+      if (m.factionId != null) {
+        const of = (m.factionId | 0) % FACTION_COUNT;
+        if (!factionsConsideredAtWar(pf, of) && huntRoll > 0.055) continue;
+      } else if (huntRoll > 0.11) continue;
+      const score = 880 - d;
+      if (score > bestScore) { bestScore = score; bestId = m.syncId; }
+    }
+  }
+  if (bestId != null) npc.attackNpcSyncId = bestId;
+}
+function updateMerchantThreatScan(npc, dt) {
+  if (!npc.isTradeShip || npc.sinking) return;
+  npc._merThreatAcc = (npc._merThreatAcc || 0) + dt;
+  if (npc._merThreatAcc < 0.38) return;
+  npc._merThreatAcc = 0;
+  if (npc.returnFireSyncId != null) return;
+  const mf = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true }) % FACTION_COUNT;
+  for (let i = 0; i < G.npcs.length; i++) {
+    const p = G.npcs[i];
+    if (!p || p === npc || p.sinking || p.isTradeShip) continue;
+    if (p.attackNpcSyncId === npc.syncId) {
+      npc.returnFireSyncId = p.syncId;
+      npc.underFireTimer = Math.max(npc.underFireTimer || 0, 4.5);
+      return;
+    }
+    const d = Math.hypot(p.x - npc.x, p.z - npc.z);
+    if (d > 85) continue;
+    const pf = p.factionId != null ? (p.factionId | 0) % FACTION_COUNT : -1;
+    if (pf >= 0 && factionsConsideredAtWar(mf, pf)) {
+      npc.returnFireSyncId = p.syncId;
+      npc.underFireTimer = Math.max(npc.underFireTimer || 0, 4.2);
+      return;
+    }
+  }
+}
 /** Host-only: corsairs pick trade prey (faction wars + occasional predation) and duel rival patrols. */
 function updatePirateWorldHuntAi(npc, dt) {
-  if (npc.isTradeShip || npc.isStoryBounty || npc.sinking) return;
+  if (npc.isTradeShip || npc.isStoryBounty || npc.sinking || npc.isFactionPatrol) return;
   if (npc.isEscortCargo && npc.escortQuestActive) return;
   if (npc.escortRaider) return;
   npc._huntAiAcc = (npc._huntAiAcc || 0) + dt;
@@ -12201,6 +12378,15 @@ function updateNPCs(dt) {
         if (!npc.fireCooldown) npc.fireCooldown = 0;
         npc.fireCooldown -= dt;
         if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
+        updateMerchantThreatScan(npc, dt);
+        let atkShip = npc.returnFireSyncId != null ? G.npcs.find(n => n.syncId === npc.returnFireSyncId && !n.sinking && (n.health == null || n.health > 0)) : null;
+        if (atkShip) {
+          const da = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z);
+          if (da > 205 && npc.underFireTimer <= 0) {
+            npc.returnFireSyncId = null;
+            atkShip = null;
+          }
+        }
         const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
         ensurePolitics();
         const mPfid = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
@@ -12216,7 +12402,37 @@ function updateNPCs(dt) {
           npc.aggro = false;
         }
         const fighting = npc.aggro && distToPlayer < 135 && !G.playerSinking && G.player.health > 0;
-        if (fighting) {
+        const fightingNpc = !!atkShip && Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 128;
+        if (fightingNpc) {
+          const sharp = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 92 ? 2.55 : 2.12;
+          if (!npc.escapeMode) {
+            const dx = atkShip.x - npc.x, dz = atkShip.z - npc.z;
+            const toT = Math.atan2(dx, dz);
+            const starboardBroadside = toT + Math.PI / 2;
+            const portBroadside = toT - Math.PI / 2;
+            const dStar = Math.abs(((starboardBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+            const dPort = Math.abs(((portBroadside - npc.rotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+            const targetAngle = dStar < dPort ? starboardBroadside : portBroadside;
+            let diff = targetAngle - npc.rotation;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            const turnMul = npc.underFireTimer > 0 ? 1.85 : 1.32;
+            npc.rotation += diff * turnMul * dt * npcSailingTurnFactor(npc);
+            const distAtk = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z);
+            if (npc.fireCooldown <= 0 && distAtk < 74) {
+              npcFireBroadsideAtNpcTarget(npc, atkShip);
+              npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+            }
+          }
+          steerNpcClearanceAhead(npc, dt, sharp);
+          if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
+          const maxF = npcMaxForwardSpeed(npc);
+          const distAtk = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z);
+          const tgtSpd = npc.underFireTimer > 0 && distAtk < 95 ? maxF * 0.08 : maxF * 0.2;
+          accelerateNpcToward(npc, dt, tgtSpd);
+          applyNpcMoveWithIslandEscape(npc, dt, sharp);
+          updateNpcEscapeMode(npc, dt);
+        } else if (fighting) {
           const sharp = distToPlayer < 110 ? 2.55 : 2.05;
           if (!npc.escapeMode) {
             const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
@@ -12374,10 +12590,19 @@ function updateNPCs(dt) {
       if (!npc.fireCooldown) npc.fireCooldown = 0;
       npc.fireCooldown -= dt;
       if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
-      updatePirateWorldHuntAi(npc, dt);
+      if (npc.isFactionPatrol) updatePatrolWorldHuntAi(npc, dt);
+      else updatePirateWorldHuntAi(npc, dt);
 
       let focus = null;
-      if (npc.attackNpcSyncId != null) {
+      if (npc.returnFireSyncId != null) {
+        const retal = G.npcs.find(n => n.syncId === npc.returnFireSyncId && !n.sinking && (n.health == null || n.health > 0));
+        if (retal) {
+          const dr = Math.hypot(retal.x - npc.x, retal.z - npc.z);
+          if (dr < 228 && (npc.underFireTimer > 0 || dr < 98)) focus = retal;
+          else npc.returnFireSyncId = null;
+        } else npc.returnFireSyncId = null;
+      }
+      if (!focus && npc.attackNpcSyncId != null) {
         focus = G.npcs.find(n => n.syncId === npc.attackNpcSyncId && !n.sinking && (n.health == null || n.health > 0));
         if (!focus) {
           npc.attackNpcSyncId = null;
@@ -13518,6 +13743,89 @@ function netNpcSyncId(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
+/** Host-allocated patrol / squadron ids (below story-bounty range). */
+const PATROL_SYNC_MIN = 35000;
+const PATROL_SYNC_MAX = 37999;
+function allocPatrolSyncId() {
+  if (G._nextPatrolSyncId == null || G._nextPatrolSyncId < PATROL_SYNC_MIN) G._nextPatrolSyncId = PATROL_SYNC_MIN;
+  if (G._nextPatrolSyncId > PATROL_SYNC_MAX) return null;
+  return G._nextPatrolSyncId++;
+}
+/** Non-host / late join: instantiate an NPC shell from authoritative sync rows (same ships everyone sees). */
+function buildNpcFromNetSyncData(nd, nid) {
+  const isMer = !!nd.mer;
+  const isPat = !!nd.pat;
+  const ffi = nd.ffi != null ? (nd.ffi | 0) % FACTION_COUNT : 0;
+  const tp = nd.t && SHIP_TYPES[nd.t] ? nd.t : 'sloop';
+  const nm = nd.n || (isMer ? 'Merchantman' : isPat ? 'Patrol' : 'Corsair');
+  const fc = nd.fc || FACTION_TRADE_COLORS[ffi];
+  const fa = nd.fa != null && sanitizeFlagPngId(nd.fa) != null ? sanitizeFlagPngId(nd.fa) : factionFlagPngIdForFaction(ffi);
+  const fp = AI_FLAG_POSITIONS[(nid | 0) % 3];
+  const h0 = nd.h != null && Number.isFinite(Number(nd.h)) ? Math.round(Number(nd.h)) : 55;
+  const npc = {
+    syncId: nid,
+    x: nd.x, z: nd.z,
+    rotation: nd.r != null ? nd.r : 0,
+    health: h0,
+    type: tp,
+    name: nm,
+    flagColor: fc,
+    flagAssetId: fa,
+    flagPosition: fp,
+    wanderAngle: nd.r != null ? nd.r : 0,
+    wanderTimer: 5,
+    underFireTimer: 0,
+    fireJitter: 0,
+    aggro: !!nd.aggro,
+    sinking: !!nd.sinking,
+    syncX: nd.x, syncZ: nd.z, syncR: nd.r != null ? nd.r : 0,
+    riggingHealth: nd.rg != null ? Math.max(0, Math.min(100, nd.rg)) : 100,
+    speed: nd.sp != null && Number.isFinite(Number(nd.sp)) ? Number(nd.sp) : 0
+  };
+  if (nd.mo != null && Number.isFinite(Number(nd.mo))) npc.missionOwnerPlayerId = Math.floor(Number(nd.mo));
+  if (isMer) {
+    npc.isTradeShip = true;
+    npc.homeCx = nd.hcx != null ? nd.hcx | 0 : 0;
+    npc.homeCz = nd.hcz != null ? nd.hcz | 0 : 0;
+    npc.homeDockX = nd.hdx;
+    npc.homeDockZ = nd.hdz;
+    npc.homeFaction = ffi;
+    npc.tradeCannon = tradeShipCannonForType(tp);
+    npc.sailPick = 'basic';
+    const mesh = buildShipMesh(tp, { hull: 'basic', sail: 'basic', cannon: npc.tradeCannon, figurehead: 'none', flag: fp }, fc, nm, { merchantHull: true, flagAssetId: fa });
+    let s = (nid * 1103515245 + 12345) >>> 0;
+    const sr = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    npc.crewData = merchantCrewFromRng(sr);
+    buildCrewMeshes(mesh, npc.crewData, tp);
+    npc.mesh = mesh;
+    scene.add(mesh);
+  } else if (isPat) {
+    npc.isFactionPatrol = true;
+    npc.factionId = ffi;
+    npc.patrolCannon = tradeShipCannonForType(tp);
+    npc.sailBonus = 0.12;
+    const mesh = buildShipMesh(tp, { hull: 'basic', sail: 'war', cannon: npc.patrolCannon, figurehead: 'none', flag: fp }, fc, nm, { flagAssetId: fa });
+    npc.crewData = ambientPirateCrewData((nid * 997) >>> 0);
+    buildCrewMeshes(mesh, npc.crewData, tp);
+    npc.mesh = mesh;
+    scene.add(mesh);
+  } else {
+    npc.factionId = ffi;
+    npc.sailBonus = 0.1;
+    const mesh = buildShipMesh(tp, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: fp }, fc, nm, { flagAssetId: fa });
+    npc.crewData = ambientPirateCrewData((nid * 131) >>> 0);
+    buildCrewMeshes(mesh, npc.crewData, tp);
+    npc.mesh = mesh;
+    scene.add(mesh);
+  }
+  applyRiggingVisualToGroup(npc.mesh, getNpcRiggingHealth(npc));
+  if (nd.atk != null && Number.isFinite(Number(nd.atk))) {
+    const aid = Number(nd.atk);
+    if (isMer) npc.returnFireSyncId = aid;
+    else npc.attackNpcSyncId = aid;
+  }
+  return npc;
+}
 /** Drop a remote captain from roster + scene (dock ropes, story, ship group). */
 function removeRemotePeer(lid) {
   const lidN = netPlayerId(lid);
@@ -14072,6 +14380,21 @@ function connectToServer() {
       }
       case 'world_quests':
         break;
+      case 'politics_snap': {
+        if (isMultiplayerHost()) break;
+        ensurePolitics();
+        if (Array.isArray(msg.matrix) && msg.matrix.length === FACTION_COUNT) {
+          G.politics.matrix = msg.matrix.map(row => (Array.isArray(row) ? row.slice() : row));
+        }
+        if (Array.isArray(msg.fw) && msg.fw.length >= FACTION_COUNT) {
+          for (let i = 0; i < FACTION_COUNT; i++) {
+            if (msg.fw[i] != null && Number.isFinite(Number(msg.fw[i]))) G.politics.factionWealth[i] = Number(msg.fw[i]);
+          }
+        }
+        if (msg.pc && typeof msg.pc === 'object') G.politics.portController = { ...msg.pc };
+        if (msg.inf != null && Number.isFinite(Number(msg.inf))) G.politics.inflation = Number(msg.inf);
+        break;
+      }
       case 'npc_sync': {
         if (!Array.isArray(msg.npcs)) break;
         const seen = new Set();
@@ -14117,7 +14440,46 @@ function connectToServer() {
             scene.add(mesh);
             G.npcs.push(npc);
           }
+          if (!npc && !sbMeta) {
+            const built = buildNpcFromNetSyncData(nd, nid);
+            if (built) {
+              npc = built;
+              G.npcs.push(npc);
+            }
+          }
           if (!npc) return;
+          const wasMer = !!npc.isTradeShip;
+          const wasPat = !!npc.isFactionPatrol;
+          if ('mer' in nd) {
+            if (nd.mer) {
+              npc.isTradeShip = true;
+              npc.isFactionPatrol = false;
+            } else {
+              npc.isTradeShip = false;
+              npc.isFactionPatrol = !!nd.pat;
+            }
+          } else if ('pat' in nd && !npc.isTradeShip) {
+            npc.isFactionPatrol = !!nd.pat;
+          }
+          if (nd.hcx != null) npc.homeCx = nd.hcx | 0;
+          if (nd.hcz != null) npc.homeCz = nd.hcz | 0;
+          if (nd.hdx != null) npc.homeDockX = nd.hdx;
+          if (nd.hdz != null) npc.homeDockZ = nd.hdz;
+          if (nd.ffi != null) {
+            const f = (nd.ffi | 0) % FACTION_COUNT;
+            if (npc.isTradeShip) npc.homeFaction = f;
+            else npc.factionId = f;
+          }
+          if ('atk' in nd && nd.atk != null && Number.isFinite(Number(nd.atk))) {
+            const aid = Number(nd.atk);
+            if (npc.isTradeShip) npc.returnFireSyncId = aid;
+            else npc.attackNpcSyncId = aid;
+          } else if ('atk' in nd) {
+            if (npc.isTradeShip) npc.returnFireSyncId = null;
+            else if (!npc.isStoryBounty) npc.attackNpcSyncId = null;
+          }
+          if (nd.sp != null && Number.isFinite(Number(nd.sp))) npc.speed = Number(nd.sp);
+          if (!npc.isStoryBounty && (wasMer !== !!npc.isTradeShip || wasPat !== !!npc.isFactionPatrol)) rebuildNPCShipMesh(npc);
           if (nd.mo != null && Number.isFinite(Number(nd.mo))) npc.missionOwnerPlayerId = Math.floor(Number(nd.mo));
           if (nd.fa != null && sanitizeFlagPngId(nd.fa) != null) npc.flagAssetId = sanitizeFlagPngId(nd.fa);
           if (nd.t && SHIP_TYPES[nd.t] && (
@@ -17299,7 +17661,7 @@ function updateSpectateInfoPanel() {
     const n = G.npcs.find(x => x.syncId === sp.syncId);
     if (!n || n.sinking) { el.textContent = 'Vessel no longer on scope.'; return; }
     const spec = SHIP_TYPES[n.type] || SHIP_TYPES.sloop;
-    const kind = n.isTradeShip ? 'Merchant' : (n.isStoryBounty ? 'Bounty' : 'Corsair');
+    const kind = n.isTradeShip ? 'Merchant' : (n.isFactionPatrol ? 'Navy' : (n.isStoryBounty ? 'Bounty' : 'Corsair'));
     el.innerHTML = `<strong style="color:#d4a848;">${escapeDebugHtml(n.name || spec.name)}</strong> · ${escapeDebugHtml(kind)} · ${escapeDebugHtml(spec.name || n.type)}<br>
       ${Math.round(n.x)}, ${Math.round(n.z)} · Hull ${Math.round(n.health)}`;
     return;
@@ -17483,7 +17845,7 @@ function updateDebugRoster() {
   npcs.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
   for (const n of npcs) {
     const spec = SHIP_TYPES[n.type] || SHIP_TYPES.sloop;
-    const kind = n.isTradeShip ? 'Merchant' : (n.isStoryBounty ? 'Story bounty' : 'Corsair');
+    const kind = n.isTradeShip ? 'Merchant' : (n.isFactionPatrol ? 'Navy patrol' : (n.isStoryBounty ? 'Story bounty' : 'Corsair'));
     const shipHay = `${n.name || ''} ${spec.name || ''} ${n.type || ''} ${kind} ${Math.round(n.x)} ${Math.round(n.z)} ai npc ${n.syncId != null ? n.syncId : ''}`;
     if (!debugRosterSearchMatches(shipHay, q)) continue;
     const row = document.createElement('div');
@@ -21517,6 +21879,7 @@ function update(dt) {
   updateSeaDebrisBattleClock(dt);
   tickTownEconomy(dt);
   tickPoliticsEconomy(dt);
+  tickFactionPatrolReserves(dt);
   const wHere = getWindAt(G.player.x, G.player.z);
   G.wind.angle = wHere.angle;
   G.wind.speed = wHere.speed;
@@ -22099,6 +22462,16 @@ function update(dt) {
           }
           npc.aggro = true;
           npc.underFireTimer = 4.6;
+          if (b.owner === 'npc' && b.sourceNpcSyncId != null) {
+            const shooter = G.npcs.find(n => n.syncId === b.sourceNpcSyncId);
+            if (shooter && !shooter.sinking && (shooter.health == null || shooter.health > 0)) {
+              if (npc.isTradeShip) {
+                npc.returnFireSyncId = b.sourceNpcSyncId;
+              } else if (!npc.isStoryBounty) {
+                npc.returnFireSyncId = b.sourceNpcSyncId;
+              }
+            }
+          }
           let popMsg = `−${dh} hull`;
           if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
           else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
@@ -22575,22 +22948,62 @@ function update(dt) {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       if (n.sinking) return true;
       return h > -900;
-    }).map(n => ({
-      id: n.syncId,
-      x: Math.round(n.x * 10) / 10,
-      z: Math.round(n.z * 10) / 10,
-      r: Math.round(n.rotation * 1000) / 1000,
-      h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
-      rg: Math.round(getNpcRiggingHealth(n)),
-      aggro: !!n.aggro,
-      sinking: !!n.sinking,
-      t: n.type,
-      n: n.name,
-      fc: n.flagColor,
-      fa: n.flagAssetId != null ? n.flagAssetId : undefined,
-      mo: n.missionOwnerPlayerId != null ? n.missionOwnerPlayerId : undefined
-    }));
+    }).map(n => {
+      const ffi = n.isTradeShip
+        ? ((n.homeFaction != null ? n.homeFaction : townFaction({ cx: n.homeCx, cz: n.homeCz, hasTown: true })) | 0) % FACTION_COUNT
+        : ((n.factionId | 0) % FACTION_COUNT);
+      let atk = null;
+      if (n.isTradeShip) {
+        if (n.returnFireSyncId != null && Number.isFinite(Number(n.returnFireSyncId))) atk = Number(n.returnFireSyncId);
+      } else {
+        if (n.returnFireSyncId != null && Number.isFinite(Number(n.returnFireSyncId))) atk = Number(n.returnFireSyncId);
+        else if (n.attackNpcSyncId != null && Number.isFinite(Number(n.attackNpcSyncId))) atk = Number(n.attackNpcSyncId);
+      }
+      const row = {
+        id: n.syncId,
+        x: Math.round(n.x * 10) / 10,
+        z: Math.round(n.z * 10) / 10,
+        r: Math.round(n.rotation * 1000) / 1000,
+        h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
+        rg: Math.round(getNpcRiggingHealth(n)),
+        aggro: !!n.aggro,
+        sinking: !!n.sinking,
+        t: n.type,
+        n: n.name,
+        fc: n.flagColor,
+        fa: n.flagAssetId != null ? n.flagAssetId : undefined,
+        mo: n.missionOwnerPlayerId != null ? n.missionOwnerPlayerId : undefined,
+        mer: !!n.isTradeShip,
+        pat: !!(n.isFactionPatrol && !n.isTradeShip),
+        ffi,
+        sp: Math.round((n.speed || 0) * 100) / 100,
+        atk: atk != null ? atk : null
+      };
+      if (n.isTradeShip) {
+        row.hcx = n.homeCx | 0;
+        row.hcz = n.homeCz | 0;
+        if (n.homeDockX != null) row.hdx = Math.round(n.homeDockX * 10) / 10;
+        if (n.homeDockZ != null) row.hdz = Math.round(n.homeDockZ * 10) / 10;
+      }
+      return row;
+    });
     ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
+  }
+
+  if (!G._polSnapTimer) G._polSnapTimer = 0;
+  G._polSnapTimer -= dt;
+  if (isMultiplayerHost() && G._polSnapTimer <= 0 && ws?.readyState === 1) {
+    G._polSnapTimer = 20;
+    ensurePolitics();
+    try {
+      ws.send(JSON.stringify({
+        type: 'politics_snap',
+        matrix: G.politics.matrix,
+        fw: G.politics.factionWealth,
+        pc: G.politics.portController,
+        inf: G.politics.inflation != null ? G.politics.inflation : 1
+      }));
+    } catch (e) {}
   }
   updateCannonSmoke(dt);
   updateAllShipCannonRecoil(dt);
