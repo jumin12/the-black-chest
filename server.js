@@ -1650,13 +1650,25 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
-    const svg = Buffer.from(
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-      + '<rect width="32" height="32" rx="5" fill="#1a140c"/>'
-      + '<path fill="#d4a848" d="M16 5l2.2 7.2H26l-5.8 4.4L22.4 26 16 21.7 9.6 26l2.2-9.4L6 12.2h7.8L16 5z"/>'
-      + '</svg>'
-    );
-    sendSvg(svg);
+    const flagPng = path.join(__dirname, 'assets', 'flags', 'flag23.png');
+    fs.readFile(flagPng, (err, data) => {
+      if (!err && data && data.length) {
+        res.writeHead(200, {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=86400',
+          ...CORS_HEADERS
+        });
+        res.end(data);
+        return;
+      }
+      const svg = Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+        + '<rect width="32" height="32" rx="5" fill="#1a140c"/>'
+        + '<path fill="#d4a848" d="M16 5l2.2 7.2H26l-5.8 4.4L22.4 26 16 21.7 9.6 26l2.2-9.4L6 12.2h7.8L16 5z"/>'
+        + '</svg>'
+      );
+      sendSvg(svg);
+    });
     return;
   }
 
@@ -2523,6 +2535,40 @@ wss.on('connection', (ws, req) => {
           reconcileLeaderboardRows();
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          break;
+        }
+        case 'party_chart_markers': {
+          const pl = players.get(id);
+          if (!pl) break;
+          const ck = ws.captainAccountKey || pl.captainKey || null;
+          if (!ck) break;
+          const pr = getPartyForCaptainKey(ck);
+          if (!pr || !Array.isArray(pr.memberKeys)) break;
+          const raw = Array.isArray(msg.markers) ? msg.markers : [];
+          const markers = [];
+          for (let i = 0; i < raw.length && markers.length < 24; i++) {
+            const m = raw[i];
+            if (!m || typeof m !== 'object') continue;
+            const x = Number(m.x);
+            const z = Number(m.z);
+            if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+            const idM = m.id != null ? Number(m.id) : i;
+            markers.push({
+              id: Number.isFinite(idM) ? idM : i,
+              x: Math.max(-5e5, Math.min(5e5, x)),
+              z: Math.max(-5e5, Math.min(5e5, z))
+            });
+          }
+          const payload = JSON.stringify({ type: 'party_chart_markers', fromCaptainKey: String(ck), markers });
+          for (const memberCk of pr.memberKeys) {
+            if (memberCk === ck) continue;
+            const opid = findPlayerIdByCaptainKey(memberCk);
+            if (opid == null) continue;
+            const cws = findWsByPlayerId(opid);
+            if (cws && cws.readyState === 1) {
+              try { cws.send(payload); } catch (e) {}
+            }
+          }
           break;
         }
         case 'npc_kill_credit': {

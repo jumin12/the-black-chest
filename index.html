@@ -5,10 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<!-- Primary icon is inline so the tab draws without a round-trip. /favicon.svg is also served by server.js for alternate + apple-touch links. -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%23141210'/%3E%3Cpath stroke='%23ddd8ce' stroke-width='2.3' stroke-linecap='round' d='M7.5 23.5L24.5 6.5M7.5 6.5l17 17'/%3E%3Cellipse cx='16' cy='14' rx='5.5' ry='6' fill='%23ddd8ce'/%3E%3Crect x='12.5' y='17.8' width='7' height='2' rx='0.35' fill='%23141210'/%3E%3Ccircle cx='13.5' cy='12.6' r='1.3' fill='%23141210'/%3E%3Ccircle cx='18.5' cy='12.6' r='1.3' fill='%23141210'/%3E%3C/svg%3E" type="image/svg+xml">
+<link rel="icon" type="image/png" href="assets/flags/flag23.png" sizes="32x32">
+<link rel="apple-touch-icon" href="assets/flags/flag23.png">
 <link rel="alternate icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/favicon.svg">
 <title>The Black Chest</title>
 <style>
 :root{
@@ -2115,7 +2114,7 @@ body.game-help-mobile-minimal #game-help-panel{
     </div>
       </div>
       <button type="button" id="fullmap-close" class="fullmap-close-btn">CLOSE</button>
-      <div id="map-hint" class="fullmap-hint">Scroll to zoom · Drag to pan · M to close</div>
+      <div id="map-hint" class="fullmap-hint">Scroll to zoom · Drag to pan · Double-click: place pin (clan see yours) · Right-click: remove your pin · M to close</div>
     </div>
     </div>
   </div>
@@ -2951,6 +2950,10 @@ const G = {
   quests: [],
   /** Recent finished contracts & story beats for Captains Log (newest first). */
   completedMissionLog: [],
+  /** @type {{ id: number, x: number, z: number }[]} Private full-map pins; only this client edits them. */
+  chartMarkers: [],
+  /** @type {Map<string, { id: number, x: number, z: number }[]>} Other clan members' pins, keyed by captainKey. */
+  chartMarkersParty: new Map(),
   storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
@@ -14803,6 +14806,21 @@ async function connectToServer() {
         if (!('party' in msg)) break;
         applyPartySyncPayload(msg.party);
         break;
+      case 'party_chart_markers': {
+        if (msg.fromCaptainKey == null) break;
+        const from = String(msg.fromCaptainKey);
+        const cap = getCaptainDisplayCrew();
+        const myK = captainNameStorageKey(G.myCaptainKey || (cap && cap.name) || '');
+        if (from === myK) break;
+        if (!G.chartMarkersParty) G.chartMarkersParty = new Map();
+        G.chartMarkersParty.set(
+          from,
+          Array.isArray(msg.markers) ? msg.markers.filter(m => m && m.x != null && m.z != null).slice(0, CHART_MARKERS_MAX) : []
+        );
+        if (fullmapOpen) drawFullmap();
+        if (G.mode === 'playing') drawMinimap();
+        break;
+      }
       case 'party_invite_pending':
         G.partyInvite = {
           partyId: msg.partyId != null ? String(msg.partyId) : '',
@@ -17748,6 +17766,7 @@ function applyPartySyncPayload(party) {
   const prevId = G.party?.id || '';
   if (party === null) {
     G.party = null;
+    G.chartMarkersParty = new Map();
     clearClanLocalSnapshot();
   } else if (typeof party !== 'object' || party.id == null || String(party.id).trim() === '') {
     return;
@@ -17770,12 +17789,19 @@ function applyPartySyncPayload(party) {
     G.partyInvite = null;
     persistClanLocalSnapshotFromParty(G.party);
     hideClanInviteOnlinePopup();
+    if (G.chartMarkersParty && G.party.memberKeys) {
+      const keep = new Set(G.party.memberKeys.map(k => String(k)));
+      for (const k of Array.from(G.chartMarkersParty.keys())) {
+        if (!keep.has(k)) G.chartMarkersParty.delete(k);
+      }
+    }
   }
   syncPartyTagToLeaderboard();
   renderPartyChatPanel();
   const nextTag = G.party?.tag || '';
   const nextId = G.party?.id || '';
   if (G.mode === 'playing' && (prevTag !== nextTag || prevId !== nextId)) updatePlayerShipNametagOnly();
+  if (G.party && G.mode === 'playing') broadcastMyChartMarkersToParty();
 }
 function applyServerPop(sp) {
   if (!sp || typeof sp !== 'object') return;
@@ -22012,6 +22038,7 @@ function toggleFullmap() {
   const compStack = document.getElementById('compass-stack');
   if (compStack) compStack.style.display = fullmapOpen ? 'none' : '';
   if (fullmapOpen) {
+    _fullmapLastTapT = 0;
     ensureMapChartLayerListeners();
     setFullmapLayersPanelVisible(!isMobile);
     fmPanX = 0; fmPanZ = 0; fmZoom = clampFullmapZoom(fmZoom); drawFullmap(); hideMobileControls();
@@ -22412,6 +22439,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   if (mapChartLayers.missions) {
     drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, { mini: false, debugShipLayers });
   }
+  drawUserChartMarkers(ctx, wx2sx, wz2sy, false);
 
   }
 
@@ -22478,6 +22506,103 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   ctx.fillStyle = 'rgba(220,190,140,0.75)'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'right';
   ctx.fillText(`Zoom: ${(s * 1000).toFixed(0)}x`, w - 12, h - 10);
 }
+const CHART_MARKERS_MAX = 24;
+function _hashCaptainKeyForHue(ck) {
+  const t = String(ck || '');
+  let h = 2166136261;
+  for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 16777619);
+  return (h >>> 0) % 300;
+}
+function clampWorldXZForChartMarker(x, z) {
+  const lim = WORLD_EDGE_CLAMP;
+  return { x: Math.max(-lim, Math.min(lim, x)), z: Math.max(-lim, Math.min(lim, z)) };
+}
+function fullmapClientToWorld(clientX, clientY) {
+  const cv = document.getElementById('fullmap-canvas');
+  if (!cv) return clampWorldXZForChartMarker(0, 0);
+  const rect = cv.getBoundingClientRect();
+  const sc = 800 / rect.width;
+  const mx = (clientX - rect.left) * sc;
+  const my = (clientY - rect.top) * sc;
+  const w = 800, cx = w / 2, cy = w / 2;
+  const centerX = G.player.x + fmPanX;
+  const centerZ = G.player.z + fmPanZ;
+  const s = clampFullmapZoom(fmZoom);
+  const wx = centerX - (mx - cx) / s;
+  const wz = centerZ - (my - cy) / s;
+  return clampWorldXZForChartMarker(wx, wz);
+}
+function addChartMarkerWorld(x, z) {
+  if (G.mode !== 'playing') return;
+  if (!G.chartMarkers) G.chartMarkers = [];
+  if (G.chartMarkers.length >= CHART_MARKERS_MAX) {
+    notify('You can have at most 24 chart pins. Remove one with right-click (or a long-press on phone).', 4000);
+    return;
+  }
+  const c = clampWorldXZForChartMarker(x, z);
+  G.chartMarkers.push({ id: (Date.now() + Math.random()), x: c.x, z: c.z });
+  saveProgressDebounced();
+  broadcastMyChartMarkersToParty();
+  if (fullmapOpen) drawFullmap();
+  if (G.mode === 'playing') drawMinimap();
+}
+function broadcastMyChartMarkersToParty() {
+  if (ws && ws.readyState === 1 && G.party && G.party.id) {
+    try {
+      const rows = (G.chartMarkers || []).map(m => ({ id: m.id, x: m.x, z: m.z })).filter(m => m.x != null && m.z != null);
+      ws.send(JSON.stringify({ type: 'party_chart_markers', markers: rows.slice(0, CHART_MARKERS_MAX) }));
+    } catch (e) {}
+  }
+}
+function tryRemoveMyChartMarkerAtClientXY(clientX, clientY, wx2sx, wz2sy) {
+  if (!G.chartMarkers || !G.chartMarkers.length) return false;
+  const rect = document.getElementById('fullmap-canvas')?.getBoundingClientRect();
+  if (!rect) return false;
+  const sc = 800 / rect.width;
+  const sx = (clientX - rect.left) * sc;
+  const sy = (clientY - rect.top) * sc;
+  let best = -1, bestD = 20;
+  for (let i = 0; i < G.chartMarkers.length; i++) {
+    const m = G.chartMarkers[i];
+    const px = wx2sx(m.x), py = wz2sy(m.z);
+    const d = Math.hypot(px - sx, py - sy);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  if (best >= 0) {
+    G.chartMarkers.splice(best, 1);
+    saveProgressDebounced();
+    broadcastMyChartMarkersToParty();
+    return true;
+  }
+  return false;
+}
+function drawUserChartMarkers(ctx, wx2sx, wz2sy, mini) {
+  const drawOne = (x, z, fillCss) => {
+    const sx = wx2sx(x), sy = wz2sy(z);
+    const h = mini ? 5 : 8;
+    const w = mini ? 3.2 : 5;
+    ctx.save();
+    ctx.fillStyle = fillCss;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - h);
+    ctx.lineTo(sx - w, sy + w * 0.35);
+    ctx.lineTo(sx + w, sy + w * 0.35);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = mini ? 0.55 : 0.8; ctx.stroke();
+    ctx.restore();
+  };
+  (G.chartMarkers || []).forEach(m => { if (m && m.x != null && m.z != null) drawOne(m.x, m.z, '#d4a848'); });
+  const c0 = getCaptainDisplayCrew();
+  const myK = captainNameStorageKey(G.myCaptainKey || (c0 && c0.name) || '');
+  if (G.chartMarkersParty && G.chartMarkersParty.size) {
+    G.chartMarkersParty.forEach((list, cKey) => {
+      if (!cKey || cKey === myK || !Array.isArray(list)) return;
+      const col = `hsl(${_hashCaptainKeyForHue(cKey) + 20}, 70%, 58%)`;
+      list.forEach(m => { if (m && m.x != null && m.z != null) drawOne(m.x, m.z, col); });
+    });
+  }
+}
 function drawFullmap() {
   fmZoom = clampFullmapZoom(fmZoom);
   const cv = document.getElementById('fullmap-canvas');
@@ -22485,7 +22610,62 @@ function drawFullmap() {
   drawWorldMapCanvas(ctx, w, h, G.player.x + fmPanX, G.player.z + fmPanZ, fmZoom, { windOverlay: false, debugShipLayers: false, showFactionLegend: true });
 }
 const fmCanvas = document.getElementById('fullmap-canvas');
+let _fullmapLastTapT = 0, _fullmapLastTapX = 0, _fullmapLastTapY = 0, _fullmapLongPressT = null, _fullmapLx = 0, _fullmapLy = 0;
+function _fullmapWzHelper() {
+  const w = 800, cx = w / 2, cy = w / 2;
+  const centerX = G.player.x + fmPanX, centerZ = G.player.z + fmPanZ;
+  const s = clampFullmapZoom(fmZoom);
+  return { wx2sx: wx => cx - (wx - centerX) * s, wz2sy: wz => cy - (wz - centerZ) * s };
+}
 fmCanvas.addEventListener('wheel', e => { e.preventDefault(); fmZoom = clampFullmapZoom(fmZoom * (1 - e.deltaY * 0.001)); if (fullmapOpen) drawFullmap(); }, { passive: false });
+fmCanvas.addEventListener('dblclick', e => {
+  if (!fullmapOpen || G.mode !== 'playing') return;
+  e.preventDefault();
+  const p = fullmapClientToWorld(e.clientX, e.clientY);
+  addChartMarkerWorld(p.x, p.z);
+});
+fmCanvas.addEventListener('contextmenu', e => {
+  if (!fullmapOpen || G.mode !== 'playing') return;
+  e.preventDefault();
+  const { wx2sx, wz2sy } = _fullmapWzHelper();
+  if (tryRemoveMyChartMarkerAtClientXY(e.clientX, e.clientY, wx2sx, wz2sy)) { drawFullmap(); drawMinimap(); }
+});
+fmCanvas.addEventListener('touchstart', e => {
+  if (!fullmapOpen || G.mode !== 'playing' || e.touches.length !== 1) { clearTimeout(_fullmapLongPressT); _fullmapLongPressT = null; return; }
+  const t = e.touches[0];
+  _fullmapLx = t.clientX; _fullmapLy = t.clientY;
+  _fullmapLongPressT = setTimeout(() => {
+    _fullmapLongPressT = null;
+    const { wx2sx, wz2sy } = _fullmapWzHelper();
+    if (tryRemoveMyChartMarkerAtClientXY(t.clientX, t.clientY, wx2sx, wz2sy)) { drawFullmap(); drawMinimap(); }
+  }, 650);
+}, { capture: true, passive: true });
+fmCanvas.addEventListener('touchmove', e => {
+  if (_fullmapLongPressT && e.touches[0]) {
+    const t = e.touches[0];
+    if (Math.hypot(t.clientX - _fullmapLx, t.clientY - _fullmapLy) > 12) { clearTimeout(_fullmapLongPressT); _fullmapLongPressT = null; }
+  }
+}, { capture: true, passive: true });
+fmCanvas.addEventListener('touchend', e => {
+  clearTimeout(_fullmapLongPressT);
+  _fullmapLongPressT = null;
+  if (!fullmapOpen || G.mode !== 'playing' || e.touches.length > 0) return;
+  const t = e.changedTouches[0];
+  if (!t) return;
+  const now = performance.now();
+  if (
+    _fullmapLastTapT > 0
+    && now - _fullmapLastTapT < 420
+    && Math.hypot(t.clientX - _fullmapLastTapX, t.clientY - _fullmapLastTapY) < 50
+  ) {
+    e.preventDefault();
+    const p = fullmapClientToWorld(t.clientX, t.clientY);
+    addChartMarkerWorld(p.x, p.z);
+    _fullmapLastTapT = 0;
+    return;
+  }
+  _fullmapLastTapT = now; _fullmapLastTapX = t.clientX; _fullmapLastTapY = t.clientY;
+}, { capture: true, passive: false });
 fmCanvas.addEventListener('mousedown', e => { fmDragging = true; fmLastX = e.clientX; fmLastY = e.clientY; fmCanvas.style.cursor = 'grabbing'; });
 window.addEventListener('mousemove', e => {
   if (fmDragging) {
@@ -22705,6 +22885,7 @@ function drawMinimap() {
   if (mapChartLayers.missions) {
     drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, { mini: true });
   }
+  drawUserChartMarkers(ctx, wx2sx, wz2sy, true);
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
   ctx.lineTo(cx - Math.sin(G.player.rotation) * 7, cy - Math.cos(G.player.rotation) * 7); ctx.stroke();
@@ -25140,6 +25321,11 @@ function beginVoyageAfterCharacter() {
   G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
   G.quests = [];
   G.completedMissionLog = [];
+  G.chartMarkers = [];
+  G.chartMarkersParty = new Map();
+  G.politics = null;
+  ensurePolitics();
+  G.townStockpiles = {};
   G.mode = 'playing';
   G.player.speed = 1;
   G.fallbackWorldSeed = CANONICAL_DEFAULT_WORLD_SEED >>> 0;
@@ -25165,6 +25351,7 @@ function beginVoyageAfterCharacter() {
   G.player.morale = 100;
   trimCrewAndPrisonersToShipLimits();
   updateChunks();
+  initTownStockpiles();
   spawnNPCs();
   rebuildPlayerShip();
   applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
@@ -25687,6 +25874,7 @@ function saveProgress() {
       quests: G.quests,
       completedMissionLog: G.completedMissionLog || [],
       storyQuest: G.storyQuest,
+      chartMarkers: Array.isArray(G.chartMarkers) ? G.chartMarkers.map(m => (m && m.x != null && m.z != null ? { id: m.id, x: m.x, z: m.z } : null)).filter(Boolean).slice(0, CHART_MARKERS_MAX) : [],
       worldSeed: G.worldSeed,
       townStockpiles: G.townStockpiles,
       playerStats: { ...G.playerStats },
@@ -25773,6 +25961,14 @@ function loadProgress() {
       };
     } else {
       G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
+    }
+    if (Array.isArray(data.chartMarkers)) {
+      G.chartMarkers = data.chartMarkers
+        .map(m => (m && Number.isFinite(Number(m.x)) && Number.isFinite(Number(m.z)) ? { id: m.id != null ? Number(m.id) || 0 : 0, x: Number(m.x), z: Number(m.z) } : null))
+        .filter(Boolean)
+        .slice(0, CHART_MARKERS_MAX);
+    } else if (!G.chartMarkers) {
+      G.chartMarkers = [];
     }
     if (data.politics && typeof data.politics === 'object') {
       ensurePolitics();
@@ -26154,6 +26350,11 @@ function executeStartNewVoyageAfterConfirm() {
   retireCurrentCaptainIntoAllTime();
   localStorage.removeItem(SAVE_KEY);
   clearClanLocalSnapshot();
+  G.chartMarkers = [];
+  G.chartMarkersParty = new Map();
+  G.politics = null;
+  ensurePolitics();
+  G.townStockpiles = {};
   G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
   G.player.health = 100; G.player.riggingHealth = 100; G.player.morale = 100;
