@@ -5674,18 +5674,42 @@ function getCachedIslandNoise(cx, cz) {
   return G._chunkIslandNoise[key];
 }
 /** Elliptical / irregular coast — normalized “distance” before edge warp (matches terrain mesh). */
-function proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise) {
+function proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise, shapeMeta) {
+  let eLong = 1, shAng = 0;
+  let subOffX = 0, subOffZ = 0, subScale = 0;
+  if (shapeMeta) {
+    if (shapeMeta.shapeElong != null && shapeMeta.shapeElong > 1.04) eLong = shapeMeta.shapeElong;
+    if (shapeMeta.shapeAng != null) shAng = shapeMeta.shapeAng;
+    if (shapeMeta.subRadiusScale != null && shapeMeta.subRadiusScale > 0.04) {
+      subOffX = shapeMeta.subOffX || 0;
+      subOffZ = shapeMeta.subOffZ || 0;
+      subScale = shapeMeta.subRadiusScale;
+    }
+  }
+  const c0 = Math.cos(-shAng), s0 = Math.sin(-shAng);
+  const qx = px * c0 - pz * s0;
+  const qz = px * s0 + pz * c0;
+  const ex = qx / Math.sqrt(eLong);
+  const ez = qz * Math.sqrt(eLong);
   const e1 = 0.58 + Math.abs(islandNoise.noise2D(worldX * 0.0019, worldZ * 0.0019)) * 0.46;
   const e2 = 0.58 + Math.abs(islandNoise.noise2D(worldX * 0.0019 + 12.2, worldZ * 0.0019 - 8.4)) * 0.46;
   const ellA = islandRadius * e1;
   const ellB = islandRadius * e2;
   const ang0 = islandNoise.noise2D(worldX * 0.0016, worldZ * 0.0016) * Math.PI;
   const c = Math.cos(ang0), s = Math.sin(ang0);
-  const rx = px * c - pz * s;
-  const rz = px * s + pz * c;
+  const rx = ex * c - ez * s;
+  const rz = ex * s + ez * c;
   let d0 = Math.sqrt((rx / ellA) * (rx / ellA) + (rz / ellB) * (rz / ellB));
   d0 += islandNoise.noise2D(px * 0.062 + worldX * 0.007, pz * 0.062 + worldZ * 0.007) * 0.12;
   d0 += islandNoise.noise2D(px * 0.018 - 2.2, pz * 0.018 + 1.7) * 0.06;
+  if (subScale > 0) {
+    const sx = px - subOffX, sz = pz - subOffZ;
+    const rs = islandRadius * subScale;
+    const e1s = 0.52 + Math.abs(islandNoise.noise2D(worldX * 0.0022 + 5.1, worldZ * 0.0022 - 2.4)) * 0.44;
+    const e2s = 0.52 + Math.abs(islandNoise.noise2D(worldX * 0.0022 - 1.3, worldZ * 0.0022 + 6.2)) * 0.44;
+    const dSub = Math.sqrt((sx / (rs * e1s)) ** 2 + (sz / (rs * e2s)) ** 2);
+    d0 = Math.min(d0, dSub * 1.06);
+  }
   return d0;
 }
 /** Land mask aligned with generateIsland terrain vertices (not the old circular0.85·R shortcut). */
@@ -5695,7 +5719,7 @@ function dryLandSampleForMeta(wx, wz, meta) {
   const px = wx - worldX, pz = wz - worldZ;
   if (px * px + pz * pz > islandRadius * islandRadius * 2.45) return false;
   const islandNoise = getCachedIslandNoise(meta.cx, meta.cz);
-  const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise);
+  const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise, meta);
   const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
   const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
   const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
@@ -5714,7 +5738,7 @@ function dryLandCollisionSampleForMeta(wx, wz, meta) {
   const px = wx - worldX, pz = wz - worldZ;
   if (px * px + pz * pz > islandRadius * islandRadius * 2.45) return false;
   const islandNoise = getCachedIslandNoise(meta.cx, meta.cz);
-  const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise);
+  const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise, meta);
   const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
   const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
   const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
@@ -5960,6 +5984,39 @@ function placeTownDockSeaward(meta) {
   meta.dockZ += Math.cos(daF) * PIER_MESH_CENTER_SHIFT;
 }
 
+function buildExtraTownMetaFromParent(parent, portSlot, worldSeedOpt) {
+  const nExtra = parent.extraTownCount | 0;
+  if (nExtra <= 0 || portSlot < 1) return null;
+  const wsU = worldSeedOpt !== undefined ? (Number(worldSeedOpt) >>> 0) : (G.worldSeed >>> 0);
+  const baseAng = (portSlot / (nExtra + 1)) * Math.PI * 2 + (hashChunk(parent.cx + portSlot * 17, parent.cz - portSlot * 9, worldSeedOpt) - 0.5) * 0.9;
+  const tmp = {
+    worldX: parent.worldX, worldZ: parent.worldZ, radius: parent.radius,
+    maxH: parent.maxH, cx: parent.cx, cz: parent.cz, h: parent.h,
+    hasTown: true,
+    shapeElong: parent.shapeElong, shapeAng: parent.shapeAng,
+    subOffX: parent.subOffX, subOffZ: parent.subOffZ, subRadiusScale: parent.subRadiusScale,
+    dockAngle: baseAng + (hashChunk(parent.cx + portSlot * 31, parent.cz + portSlot * 43, worldSeedOpt) - 0.5) * 0.95
+  };
+  const dirX = Math.cos(tmp.dockAngle), dirZ = Math.sin(tmp.dockAngle);
+  tmp.dockX = parent.worldX + dirX * (parent.radius * 0.3);
+  tmp.dockZ = parent.worldZ + dirZ * (parent.radius * 0.3);
+  placeTownDockSeaward(tmp);
+  const th = (parent.cx * 73856093 ^ parent.cz * 19349663 ^ wsU ^ Math.imul(portSlot, 12582917)) >>> 0;
+  const baseIdx = (th + portSlot * 47) % TOWN_NAME_LEXICON.length;
+  const tagIdx = ((Math.imul(th, 1103515245) + 12345 + portSlot * 997) >>> 0) % TOWN_NAME_TAGS.length;
+  return {
+    cx: parent.cx, cz: parent.cz,
+    worldX: parent.worldX, worldZ: parent.worldZ,
+    radius: parent.radius, maxH: parent.maxH, h: parent.h,
+    hasTown: true, portSlot,
+    dockX: tmp.dockX, dockZ: tmp.dockZ, dockAngle: tmp.dockAngle,
+    townName: TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx],
+    faction: ((parent.cx * 7919 ^ parent.cz * 9341 ^ wsU ^ Math.imul(portSlot, 6151)) >>> 0) % 4,
+    shapeElong: parent.shapeElong, shapeAng: parent.shapeAng,
+    subOffX: parent.subOffX, subOffZ: parent.subOffZ, subRadiusScale: parent.subRadiusScale
+  };
+}
+
 /** Deterministic island data for a chunk (matches generateIsland). Used for world map so all players see the full archipelago in view. */
 function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
   if (!isChunkInWorld(cx, cz)) return null;
@@ -5970,21 +6027,54 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
   const jz = (hashChunk(cx - 19, cz + 83, worldSeedOpt) * 2 - 1) * jitter;
   const worldX = cx * CHUNK_SIZE + jx, worldZ = cz * CHUNK_SIZE + jz;
   const wsU = worldSeedOpt !== undefined ? (Number(worldSeedOpt) >>> 0) : (G.worldSeed >>> 0);
-  // Hash-based size (do not allocate SimplexNoise here — this runs millions of times during trade-ship port search).
   const sizeFactor = (hashChunk(cx + 11, cz + 29, worldSeedOpt) * 0.55 + hashChunk(cx - 17, cz + 41, worldSeedOpt) * 0.45);
   const sizeClass = hashChunk(cx + 5, cz + 23, worldSeedOpt);
-  let islandRadius = 15 + sizeFactor * 100 + h * 30;
-  let islandHeight = 2.2 + sizeFactor * 12 + h * 5.5;
+  let islandRadius = 18 + sizeFactor * 118 + h * 34;
+  let islandHeight = 2.35 + sizeFactor * 13 + h * 5.8;
   if (sizeClass < 0.34) {
     islandRadius *= 0.38 + hashChunk(cx, cz + 1, worldSeedOpt) * 0.28;
     islandHeight *= 0.72 + hashChunk(cx - 3, cz + 8, worldSeedOpt) * 0.22;
   } else if (sizeClass > 0.86) {
-    islandRadius *= 1.08 + hashChunk(cx + 9, cz - 2, worldSeedOpt) * 0.38;
-    islandHeight *= 1.05 + hashChunk(cx - 1, cz + 4, worldSeedOpt) * 0.25;
+    islandRadius *= 1.12 + hashChunk(cx + 9, cz - 2, worldSeedOpt) * 0.42;
+    islandHeight *= 1.06 + hashChunk(cx - 1, cz + 4, worldSeedOpt) * 0.26;
   }
-  const meta = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h };
-  if (islandRadius > 50 && h < 0.12) {
+  const contHash = hashChunk(cx + 101, cz + 207, worldSeedOpt);
+  let extraTownCount = 0;
+  let isContinent = false;
+  if (islandRadius > 52 && contHash > 0.958) {
+    isContinent = true;
+    islandRadius *= 2.05 + hashChunk(cx - 3, cz + 11, worldSeedOpt) * 1.12;
+    islandHeight *= 1.07 + hashChunk(cx + 1, cz - 7, worldSeedOpt) * 0.16;
+    extraTownCount = 1 + (hashChunk(cx + 77, cz - 99, worldSeedOpt) * 2.35 | 0);
+  }
+  const meta = {
+    cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: false, h,
+    isContinent,
+    extraTownCount,
+    shapeElong: 1,
+    shapeAng: 0,
+    subRadiusScale: 0,
+    subOffX: 0,
+    subOffZ: 0,
+    extraTowns: null
+  };
+  const shapeMix = hashChunk(cx + 41, cz - 17, worldSeedOpt);
+  meta.shapeElong = shapeMix > 0.3 ? 1.32 + hashChunk(cx - 11, cz + 29, worldSeedOpt) * 2.05 : 1;
+  meta.shapeAng = hashChunk(cx + 53, cz + 71, worldSeedOpt) * Math.PI * 2;
+  const arch = hashChunk(cx + 17, cz + 91, worldSeedOpt);
+  if (arch < 0.125) {
+    meta.subRadiusScale = 0.34 + hashChunk(cx + 2, cz + 3, worldSeedOpt) * 0.28;
+    const aa = hashChunk(cx + 31, cz + 44, worldSeedOpt) * Math.PI * 2;
+    const od = islandRadius * (0.46 + hashChunk(cx - 5, cz + 8, worldSeedOpt) * 0.44);
+    meta.subOffX = Math.sin(aa) * od;
+    meta.subOffZ = Math.cos(aa) * od;
+  }
+  meta.radius = islandRadius;
+  meta.maxH = islandHeight;
+  const wantTown = (islandRadius > 46 && h < 0.138) || isContinent;
+  if (wantTown) {
     meta.hasTown = true;
+    meta.portSlot = 0;
     meta.faction = ((cx * 7919 ^ cz * 9341 ^ wsU) >>> 0) % 4;
     let th = (cx * 73856093 ^ cz * 19349663 ^ wsU ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
     const baseIdx = th % TOWN_NAME_LEXICON.length;
@@ -5993,6 +6083,13 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
     meta.townName = TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx];
     meta.dockAngle = (hashChunk(cx + 99, cz + 99, worldSeedOpt) * 2 - 1) * Math.PI;
     placeTownDockSeaward(meta);
+    if (extraTownCount > 0) {
+      meta.extraTowns = [];
+      for (let si = 0; si < extraTownCount; si++) {
+        const et = buildExtraTownMetaFromParent(meta, si + 1, worldSeedOpt);
+        if (et) meta.extraTowns.push(et);
+      }
+    }
   }
   return meta;
 }
@@ -6002,8 +6099,9 @@ function isSeaObstructed(x, z) {
   return dryLandAtWorldPosition(x, z);
 }
 /** True if any part of the ship footprint (bow, stern, beams) overlaps land — stricter than center-point only. */
-function shipFootprintOverlapsLand(wx, wz, yaw, shipType) {
-  const R = shipHullRadius(shipType || 'sloop') * 1.1;
+function shipFootprintOverlapsLand(wx, wz, yaw, shipType, marginMul) {
+  const m = marginMul != null && Number.isFinite(Number(marginMul)) ? Math.max(1, Number(marginMul)) : 1;
+  const R = shipHullRadius(shipType || 'sloop') * 1.1 * m;
   const s = Math.sin(yaw || 0), c = Math.cos(yaw || 0);
   const pts = [
     [wx, wz],
@@ -6178,7 +6276,13 @@ function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, ce
   for (let cxi = minCx; cxi <= maxCx; cxi++) {
     for (let czi = minCz; czi <= maxCz; czi++) {
       const meta = getProceduralIslandMeta(cxi, czi, worldSeedOpt);
-      if (meta) fn(meta);
+      if (meta) {
+        fn(meta);
+        const extras = meta.extraTowns;
+        if (extras && extras.length) {
+          for (let ei = 0; ei < extras.length; ei++) fn(extras[ei]);
+        }
+      }
     }
   }
 }
@@ -6504,7 +6608,8 @@ function updateTownFlagWindAnimation() {
 function portExportsGood(meta) {
   if (!meta || !meta.hasTown) return 'food';
   if (meta.exportGood && PORT_EXPORT_POOL.includes(meta.exportGood)) return meta.exportGood;
-  const idx = ((meta.cx * 5023 ^ meta.cz * 9839 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_EXPORT_POOL.length;
+  const ps = meta.portSlot != null ? meta.portSlot | 0 : 0;
+  const idx = ((meta.cx * 5023 ^ meta.cz * 9839 ^ ps * 6151 ^ (G.worldSeed >>> 0)) >>> 0) % PORT_EXPORT_POOL.length;
   return PORT_EXPORT_POOL[idx];
 }
 function collectPortsInArea(wx, wz, half) {
@@ -6538,7 +6643,9 @@ function collectAllTradingPorts() {
 const TRADE_DELIVERY_UNITS = 12;
 function portStockKey(meta) {
   if (meta && meta.customTownId != null && String(meta.customTownId).length) return `c:${meta.customTownId}`;
-  return `${meta.cx | 0},${meta.cz | 0}`;
+  const cx = meta.cx | 0, cz = meta.cz | 0;
+  const ps = meta.portSlot != null && Number(meta.portSlot) > 0 ? Number(meta.portSlot) | 0 : 0;
+  return ps ? `${cx},${cz}:p${ps}` : `${cx},${cz}`;
 }
 function cloneTownStockpileTable(src) {
   if (!src || typeof src !== 'object') return {};
@@ -6689,7 +6796,8 @@ function findMerchantSpawnOffCoast(home, sr) {
 }
 /** Prefer same faction + complementary export; rng is () => 0..1 */
 function pickTradeDestination(home, list, rng) {
-  const others = list.filter(p => p.cx !== home.cx || p.cz !== home.cz);
+  const hs = home.portSlot != null ? home.portSlot | 0 : 0;
+  const others = list.filter(p => p.cx !== home.cx || p.cz !== home.cz || (p.portSlot != null ? p.portSlot | 0 : 0) !== hs);
   if (!others.length) return null;
   const hf = townFaction(home);
   let cand = others.filter(p => townFaction(p) === hf && portExportsGood(p) !== portExportsGood(home));
@@ -6725,15 +6833,18 @@ function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   npc.homeDockZ = homeMeta.dockZ;
   npc.homeCx = homeMeta.cx;
   npc.homeCz = homeMeta.cz;
+  npc.homePortSlot = homeMeta.portSlot != null ? homeMeta.portSlot | 0 : 0;
   npc.cargoGood = portExportsGood(homeMeta);
   let dest = pickTradeDestination(homeMeta, list, sr);
   if (!dest) {
-    const others = list.filter(p => p.cx !== homeMeta.cx || p.cz !== homeMeta.cz);
+    const hs = npc.homePortSlot;
+    const others = list.filter(p => p.cx !== homeMeta.cx || p.cz !== homeMeta.cz || (p.portSlot != null ? p.portSlot | 0 : 0) !== hs);
     if (others.length) dest = others[Math.floor(sr() * others.length)];
   }
   if (!dest) return;
   npc.destCx = dest.cx;
   npc.destCz = dest.cz;
+  npc.destPortSlot = dest.portSlot != null ? dest.portSlot | 0 : 0;
   npc.tradeDestX = dest.dockX;
   npc.tradeDestZ = dest.dockZ;
   npc.cargoUnits = 10 + (Math.floor(sr() * 10) | 0);
@@ -6910,8 +7021,8 @@ function createDriftwood(x, y, z, rng) {
 }
 
 /** Land surface height (m above flat sea bed) at local island coords — must match terrain mesh vertex logic. */
-function sampleIslandLandHeight(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise) {
-  const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise);
+function sampleIslandLandHeight(px, pz, worldX, worldZ, islandRadius, islandHeight, islandNoise, shapeMeta) {
+  const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise, shapeMeta);
   const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
   const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
   const ridges = Math.abs(islandNoise.noise2D((worldX + px) * 0.04, (worldZ + pz) * 0.04)) * 0.2;
@@ -7398,7 +7509,7 @@ function generateIsland(cx, cz) {
   const islandNoise = new SimplexNoise(cx * 777 + cz * 333);
   for (let i = 0; i < positions.count; i++) {
     const px = positions.getX(i), pz = positions.getZ(i);
-    const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise);
+    const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise, meta0);
 
     const n1 = noise.fbm((worldX + px) * 0.015, (worldZ + pz) * 0.015, 4);
     const n2 = islandNoise.noise2D((worldX + px) * 0.025, (worldZ + pz) * 0.025) * 0.25;
@@ -7466,9 +7577,9 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(t * 0.7, 0) * Math.PI * 2;
     const rad = (0.15 + Math.abs(ln.noise2D(t * 0.3, 1)) * 0.72) * islandRadius;
     const tx = Math.cos(a) * rad, tz = Math.sin(a) * rad;
-    const d = proceduralIslandNormDistCore(tx, tz, worldX, worldZ, islandRadius, islandNoise);
+    const d = proceduralIslandNormDistCore(tx, tz, worldX, worldZ, islandRadius, islandNoise, meta0);
     if (d > 0.93) continue;
-    const ty = sampleIslandLandHeight(tx, tz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    const ty = sampleIslandLandHeight(tx, tz, worldX, worldZ, islandRadius, islandHeight, islandNoise, meta0);
     if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.06, worldZ + tz, rng));
   }
 
@@ -7477,9 +7588,9 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(bi * 0.88, 50) * Math.PI * 2;
     const rad = (0.18 + Math.abs(ln.noise2D(bi * 0.33, 51)) * 0.68) * islandRadius;
     const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
-    const d = proceduralIslandNormDistCore(bx, bz, worldX, worldZ, islandRadius, islandNoise);
+    const d = proceduralIslandNormDistCore(bx, bz, worldX, worldZ, islandRadius, islandNoise, meta0);
     if (d > 0.94 || d < 0.22) continue;
-    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise, meta0);
     if (by < 0.48 || by > islandHeight * 0.78) continue;
     group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, 0.28 + rng() * 0.42, rng));
   }
@@ -7489,9 +7600,9 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(r * 0.5, 10) * Math.PI * 2;
     const rad = (0.3 + Math.abs(ln.noise2D(r * 0.4, 11)) * 0.65) * islandRadius;
     const rx = Math.cos(a) * rad, rz = Math.sin(a) * rad;
-    const d = proceduralIslandNormDistCore(rx, rz, worldX, worldZ, islandRadius, islandNoise);
+    const d = proceduralIslandNormDistCore(rx, rz, worldX, worldZ, islandRadius, islandNoise, meta0);
     if (d > 0.96) continue;
-    const ry = sampleIslandLandHeight(rx, rz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    const ry = sampleIslandLandHeight(rx, rz, worldX, worldZ, islandRadius, islandHeight, islandNoise, meta0);
     if (ry < 0.38) continue;
     group.add(createRock(worldX + rx, SEA_LEVEL + ry + 0.08, worldZ + rz, 0.4 + rng() * 1.2, rng));
   }
@@ -7501,9 +7612,9 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(di * 0.6, 60) * Math.PI * 2;
     const rad = (0.72 + Math.abs(ln.noise2D(di * 0.4, 61)) * 0.22) * islandRadius;
     const dx = Math.cos(a) * rad, dz = Math.sin(a) * rad;
-    const d = proceduralIslandNormDistCore(dx, dz, worldX, worldZ, islandRadius, islandNoise);
+    const d = proceduralIslandNormDistCore(dx, dz, worldX, worldZ, islandRadius, islandNoise, meta0);
     if (d < 0.62 || d > 0.98) continue;
-    const dy = sampleIslandLandHeight(dx, dz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    const dy = sampleIslandLandHeight(dx, dz, worldX, worldZ, islandRadius, islandHeight, islandNoise, meta0);
     if (dy < 0.35) continue;
     group.add(createDriftwood(worldX + dx, SEA_LEVEL + Math.max(0.12, dy * 0.45) + 0.06, worldZ + dz, rng));
   }
@@ -7515,9 +7626,9 @@ function generateIsland(cx, cz) {
     const a = ln.noise2D(bi * 1.1, 70) * Math.PI * 2;
     const rad = (0.2 + Math.abs(ln.noise2D(bi * 0.5, 71)) * 0.5) * islandRadius;
     const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
-    const d = proceduralIslandNormDistCore(bx, bz, worldX, worldZ, islandRadius, islandNoise);
+    const d = proceduralIslandNormDistCore(bx, bz, worldX, worldZ, islandRadius, islandNoise, meta0);
     if (d > 0.88) continue;
-    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise, meta0);
     if (by < 0.35 || by > islandHeight * 0.48) continue;
     group.add(createBarrel(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, rng));
   }
@@ -7540,12 +7651,13 @@ function generateIsland(cx, cz) {
     const dockAngle = meta0.dockAngle;
     const dockX = meta0.dockX, dockZ = meta0.dockZ;
     group.userData.hasTown = true;
+    group.userData.portSlot = 0;
     group.userData.townName = meta0.townName;
     group.userData.dockX = dockX; group.userData.dockZ = dockZ;
 
     const terrainYWorld = (wx, wz) => {
       const px = wx - worldX, pz = wz - worldZ;
-      const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise);
+      const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise, meta0);
       const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
       const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
       const warpedDist = dist + edgeWarp + coastWobble;
@@ -7623,10 +7735,82 @@ function generateIsland(cx, cz) {
     }
     const fyy = SEA_LEVEL + Math.max(terrainYWorld(fxx, fzz), 0.35) + 0.35;
     addDockFactionFlag(group, tf, fxx, fzz, fyy, dockAngle, dockWidX, dockWidZ);
+
+    if (meta0.extraTowns && meta0.extraTowns.length) {
+      for (let ei = 0; ei < meta0.extraTowns.length; ei++) {
+        const et = meta0.extraTowns[ei];
+        const edA = et.dockAngle, edX = et.dockX, edZ = et.dockZ;
+        const edLongX = Math.sin(edA), edLongZ = Math.cos(edA);
+        const edWidX = Math.cos(edA), edWidZ = -Math.sin(edA);
+        const edYLand = Math.max(
+          terrainYWorld(edX + edLongX * PIER_SEA_HALF, edZ + edLongZ * PIER_SEA_HALF),
+          terrainYWorld(edX - edLongX * PIER_LAND_HALF, edZ - edLongZ * PIER_LAND_HALF),
+          terrainYWorld(edX, edZ)
+        );
+        const edGround = edYLand > 0 ? edYLand : 0;
+        const edock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.4, PIER_TOTAL_LEN), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+        const edDeckClear = 0.52;
+        const edCenterY = SEA_LEVEL + edGround + edDeckClear;
+        edock.position.set(edX, edCenterY, edZ);
+        edock.rotation.y = edA;
+        edock.receiveShadow = true; edock.castShadow = true;
+        group.add(edock);
+        const edUndersideY = edCenterY - 0.2;
+        const edPostTopY = edUndersideY - 0.06;
+        for (let pi = 0; pi < 8; pi++) {
+          const side = pi % 2 === 0 ? 1 : -1;
+          const along = (Math.floor(pi / 2) - 1.5) * postAlongStep;
+          const ppx = edX + edLongX * along + edWidX * 2.3 * side;
+          const ppz = edZ + edLongZ * along + edWidZ * 2.3 * side;
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, postH, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
+          post.position.set(ppx, edPostTopY - postH * 0.5, ppz);
+          post.castShadow = true;
+          group.add(post);
+        }
+        const etoInX = worldX - edX, etoInZ = worldZ - edZ;
+        const etinLen = Math.hypot(etoInX, etoInZ) || 1;
+        const eux = etoInX / etinLen, euz = etoInZ / etinLen;
+        addTownSettlementForChunk(group, edX, edZ, edA, worldX, worldZ, islandRadius, rng, {
+          terrainYWorld,
+          landOk: (wx, wz) => dryLandCollisionSampleForMeta(wx, wz, meta0),
+          minGyMax: PROC_LAND_HT_MIN * 0.78,
+          minGyMin: PROC_LAND_HT_MIN * 0.52
+        });
+        const etf = townFaction(et) % 4;
+        const etLab = makeTextSprite(et.townName, '#e8d090', FACTION_NAMES[etf] + ' · Port', FACTION_TRADE_COLORS[etf]);
+        const etLabelBaseH = Math.max(terrainYWorld(worldX, worldZ), edGround, PROC_LAND_HT_MIN);
+        etLab.position.set(edX, SEA_LEVEL + etLabelBaseH + 7.5, edZ);
+        group.add(etLab);
+        let efxx = edX + edWidX * sideOff;
+        let efzz = edZ + edWidZ * sideOff;
+        for (let dist = 2; dist <= Math.min(140, islandRadius * 1.45); dist += 2) {
+          const tx = edX + eux * dist + edWidX * (sideOff * 0.35);
+          const tz = edZ + euz * dist + edWidZ * (sideOff * 0.35);
+          if (isSeaObstructed(tx, tz)) {
+            efxx = tx;
+            efzz = tz;
+            break;
+          }
+        }
+        const efyy = SEA_LEVEL + Math.max(terrainYWorld(efxx, efzz), 0.35) + 0.35;
+        addDockFactionFlag(group, etf, efxx, efzz, efyy, edA, edWidX, edWidZ);
+      }
+    }
   }
 
   islandGroup.add(group);
   G.islands.push(group.userData);
+  if (meta0.extraTowns && meta0.extraTowns.length) {
+    for (let ei = 0; ei < meta0.extraTowns.length; ei++) {
+      const et = meta0.extraTowns[ei];
+      G.islands.push({
+        cx: et.cx, cz: et.cz, worldX: et.worldX, worldZ: et.worldZ,
+        radius: et.radius, maxH: et.maxH, hasTown: true, h: et.h,
+        dockX: et.dockX, dockZ: et.dockZ, dockAngle: et.dockAngle,
+        townName: et.townName, faction: et.faction, portSlot: et.portSlot
+      });
+    }
+  }
   const sgN = 3 + Math.floor(rng() * 4) + (meta0.hasTown ? 3 : 0) + Math.min(6, Math.floor(islandRadius / 32));
   spawnSeagulls(worldX, worldZ, sgN, rng);
   for (let fi = 0; fi < 8; fi++) {
@@ -10118,7 +10302,9 @@ function checkPortQuestProgress() {
     const q = G.quests[i];
     if (!q.accepted || q.type !== 'delivery') continue;
     if (q.destCx == null || q.destCz == null) continue;
-    if (q.destCx !== cx || q.destCz !== cz) continue;
+    const qd = q.destPortSlot != null ? q.destPortSlot | 0 : 0;
+    const np = G.nearDock.portSlot != null ? G.nearDock.portSlot | 0 : 0;
+    if (q.destCx !== cx || q.destCz !== cz || qd !== np) continue;
     if (getInvCount(q.item) < q.count) continue;
     if (!removeInventoryAmount(q.item, q.count)) continue;
     const gi = G.player.inventory.find(x => x.id === 'gold');
@@ -10677,6 +10863,7 @@ function sampleOpenOceanPointInWorld(rng) {
 /** Best yaw (world) to sail toward open water from a blocked or coastal position. */
 function findNpcOpenWaterHeading(npc, testStep) {
   const step = testStep || 32;
+  const st = npc.type || 'sloop';
   let bestA = null, best = -1;
   for (let i = 0; i < 24; i++) {
     const ang = (i / 24) * Math.PI * 2;
@@ -10684,7 +10871,7 @@ function findNpcOpenWaterHeading(npc, testStep) {
     for (let s = 1; s <= 4; s++) {
       const tx = npc.x + Math.sin(ang) * step * s;
       const tz = npc.z + Math.cos(ang) * step * s;
-      if (!isSeaObstructed(tx, tz)) ok++;
+      if (!npcNavFootprintBlocked(tx, tz, ang, st)) ok++;
       else break;
     }
     if (ok > best) { best = ok; bestA = ang; }
@@ -10756,37 +10943,83 @@ function accelerateNpcToward(npc, dt, target) {
   }
   npc.speed = Math.max(-maxF * 0.2, Math.min(maxF, npc.speed));
 }
+/** Wider berth from charted land / shoals — matches stricter hull sampling than a single point test. */
+function npcNavFootprintBlocked(wx, wz, yaw, shipType) {
+  return shipFootprintOverlapsLand(wx, wz, yaw, shipType, 1.38);
+}
 /** Ray along npc.rotation: true if sea for full distance. */
 function npcForwardRayClear(npc, dist, segments) {
   const n = Math.max(2, segments | 0);
   const step = dist / n;
+  const st = npc.type || 'sloop';
   for (let s = 1; s <= n; s++) {
     const x = npc.x + Math.sin(npc.rotation) * step * s;
     const z = npc.z + Math.cos(npc.rotation) * step * s;
-    if (isSeaObstructed(x, z)) return false;
+    if (npcNavFootprintBlocked(x, z, npc.rotation, st)) return false;
     if (seaReefBlocksPoint(x, z, 0.82)) return false;
   }
   return true;
+}
+/** Prefer headings toward gx/gz that keep a deep-water arc (captain-style detour before the shore closes in). */
+function steerNpcTowardGoalWithCoastAvoid(npc, dt, gx, gz, turnSharp) {
+  if (npc.escapeMode || gx == null || gz == null) return;
+  if (npcNavFootprintBlocked(npc.x, npc.z, npc.rotation, npc.type || 'sloop')) return;
+  const desired = Math.atan2(gx - npc.x, gz - npc.z);
+  const lookAhead = npc.isTradeShip ? 118 : 96;
+  const samples = npc.isTradeShip ? 25 : 23;
+  const arc = npc.isTradeShip ? 1.18 * Math.PI : 1.12 * Math.PI;
+  const st = npc.type || 'sloop';
+  let bestAng = npc.rotation, bestScore = -1e9;
+  for (let i = 0; i < samples; i++) {
+    const u = i / Math.max(1, samples - 1);
+    const ang = desired + (u - 0.5) * arc;
+    let score = 0;
+    const steps = npc.isTradeShip ? 15 : 14;
+    const stepLen = lookAhead / steps;
+    for (let s = 1; s <= steps; s++) {
+      const px = npc.x + Math.sin(ang) * stepLen * s;
+      const pz = npc.z + Math.cos(ang) * stepLen * s;
+      if (!npcNavFootprintBlocked(px, pz, ang, st) && !seaReefBlocksPoint(px, pz, 0.76)) {
+        score += 1 + s * 0.07;
+      } else {
+        score -= (steps - s) * 2.4;
+        break;
+      }
+    }
+    let da = ang - desired;
+    while (da > Math.PI) da -= Math.PI * 2;
+    while (da < -Math.PI) da += Math.PI * 2;
+    score += Math.cos(da) * 9.2;
+    if (score > bestScore) { bestScore = score; bestAng = ang; }
+  }
+  let diff = bestAng - npc.rotation;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const turn = turnSharp != null ? turnSharp : 2.25;
+  const mul = npc.isTradeShip ? 0.92 : 1;
+  npc.rotation += diff * turn * dt * mul * npcSailingTurnFactor(npc);
+  npc.wanderAngle = npc.rotation;
 }
 /** When land is ahead, steer toward the best arc around it (longest open ray among sampled headings). */
 function steerNpcClearanceAhead(npc, dt, turnSharp) {
   if (npc.escapeMode) return;
   if (isSeaObstructed(npc.x, npc.z)) return;
-  const look = npc.isTradeShip ? 50 : 40;
-  if (npcForwardRayClear(npc, look, npc.isTradeShip ? 11 : 9)) return;
+  const look = npc.isTradeShip ? 86 : 72;
+  if (npcForwardRayClear(npc, look, npc.isTradeShip ? 12 : 10)) return;
   const turn = turnSharp != null ? turnSharp : 2.35;
-  const arc = npc.isTradeShip ? 1.22 : 1.15;
-  const turnMul = npc.isTradeShip ? 0.82 : 0.72;
+  const arc = npc.isTradeShip ? 1.32 : 1.22;
+  const turnMul = npc.isTradeShip ? 0.86 : 0.76;
+  const st = npc.type || 'sloop';
   let bestAng = npc.rotation, bestScore = 0;
   for (let i = -14; i <= 14; i++) {
     const a = npc.rotation + (i / 14) * arc;
     let score = 0;
-    const rayStep = npc.isTradeShip ? 9.2 : 8.5;
-    const rayLen = npc.isTradeShip ? 8 : 7;
+    const rayStep = npc.isTradeShip ? 9.6 : 8.8;
+    const rayLen = npc.isTradeShip ? 9 : 8;
     for (let s = 1; s <= rayLen; s++) {
       const x = npc.x + Math.sin(a) * rayStep * s;
       const z = npc.z + Math.cos(a) * rayStep * s;
-      if (!isSeaObstructed(x, z) && !seaReefBlocksPoint(x, z, 0.78)) score++;
+      if (!npcNavFootprintBlocked(x, z, a, st) && !seaReefBlocksPoint(x, z, 0.78)) score++;
       else break;
     }
     if (score > bestScore) { bestScore = score; bestAng = a; }
@@ -10840,11 +11073,12 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   const turn = turnSharp != null ? turnSharp : 2.35;
   const nNewX = npc.x + Math.sin(npc.rotation) * spd * dt;
   const nNewZ = npc.z + Math.cos(npc.rotation) * spd * dt;
+  const st = npc.type || 'sloop';
   if (spd < 0.02) {
     npc.navLastMoveClear = true;
     return;
   }
-  if (!isSeaObstructed(nNewX, nNewZ)) {
+  if (!npcNavFootprintBlocked(nNewX, nNewZ, npc.rotation, st)) {
     npc.x = nNewX;
     npc.z = nNewZ;
     npc.navLastMoveClear = true;
@@ -10866,14 +11100,14 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   const back = Math.atan2(npc.x - nNewX, npc.z - nNewZ);
   let bx = npc.x + Math.sin(back) * bump;
   let bz = npc.z + Math.cos(back) * bump;
-  if (!isSeaObstructed(bx, bz)) {
+  if (!npcNavFootprintBlocked(bx, bz, npc.rotation, st)) {
     npc.x = bx;
     npc.z = bz;
   } else {
     const side = npc.rotation + Math.PI / 2;
     bx = npc.x + Math.sin(side) * bump * 0.75;
     bz = npc.z + Math.cos(side) * bump * 0.75;
-    if (!isSeaObstructed(bx, bz)) { npc.x = bx; npc.z = bz; }
+    if (!npcNavFootprintBlocked(bx, bz, npc.rotation, st)) { npc.x = bx; npc.z = bz; }
   }
   nudgeNpcOffIsland(npc);
 }
@@ -11427,13 +11661,7 @@ function updateNPCs(dt) {
             hostCompleteEscortQuestArrival(npc);
           } else if (isMultiplayerHost()) {
             const sharp = 2.38;
-            if (!npc.escapeMode) {
-              const targetAngle = Math.atan2(edx, edz);
-              let tdiff = targetAngle - npc.rotation;
-              while (tdiff > Math.PI) tdiff -= Math.PI * 2;
-              while (tdiff < -Math.PI) tdiff += Math.PI * 2;
-              npc.rotation += tdiff * 0.76 * dt * npcSailingTurnFactor(npc);
-            }
+            if (!npc.escapeMode) steerNpcTowardGoalWithCoastAvoid(npc, dt, npc.escortDestX, npc.escortDestZ, 2.52);
             const tgtC = npcMaxForwardSpeed(npc) * 0.44;
             accelerateNpcToward(npc, dt, tgtC);
             steerNpcClearanceAhead(npc, dt, sharp);
@@ -11471,6 +11699,7 @@ function updateNPCs(dt) {
               npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
             }
           }
+          if (!npcForwardRayClear(npc, 48, 8)) steerNpcTowardGoalWithCoastAvoid(npc, dt, G.player.x, G.player.z, sharp * 0.58);
           steerNpcClearanceAhead(npc, dt, sharp);
           if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
           const maxF = npcMaxForwardSpeed(npc);
@@ -11493,7 +11722,7 @@ function updateNPCs(dt) {
           }
           if (npc.tradeTimer <= 0) {
             initTownStockpiles();
-            const hk = portStockKey({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
+            const hk = portStockKey({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true, portSlot: npc.homePortSlot });
             const q = npc.cargoUnits != null ? npc.cargoUnits : TRADE_DELIVERY_UNITS;
             subtractTownStockpile(hk, npc.cargoGood, q);
             npc.tradePhase = 'to_dest';
@@ -11507,13 +11736,7 @@ function updateNPCs(dt) {
               npc.tradeTimer = TRADE_DOCK_EDGE_SEC;
               npc.speed = 0;
             } else {
-              if (!npc.escapeMode) {
-                const targetAngle = Math.atan2(dx, dz);
-                let tdiff = targetAngle - npc.rotation;
-                while (tdiff > Math.PI) tdiff -= Math.PI * 2;
-                while (tdiff < -Math.PI) tdiff += Math.PI * 2;
-                npc.rotation += tdiff * 0.62 * dt * npcSailingTurnFactor(npc);
-              }
+              if (!npc.escapeMode) steerNpcTowardGoalWithCoastAvoid(npc, dt, tx, tz, 2.38);
               accelerateNpcToward(npc, dt, tgtC);
             }
           }
@@ -11532,12 +11755,15 @@ function updateNPCs(dt) {
             if (phase === 'dock_dest') {
               initTownStockpiles();
               const dq = npc.cargoUnits != null ? npc.cargoUnits : TRADE_DELIVERY_UNITS;
-              const dk = portStockKey({ cx: npc.destCx, cz: npc.destCz, hasTown: true });
+              const dk = portStockKey({ cx: npc.destCx, cz: npc.destCz, hasTown: true, portSlot: npc.destPortSlot });
               addTownStockpile(dk, npc.cargoGood, dq);
-              const destMeta = getProceduralIslandMeta(npc.destCx | 0, npc.destCz | 0);
-              if (destMeta && destMeta.hasTown) npc.cargoGood = portExportsGood(destMeta);
-              const homeM = getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
-              if (homeM && homeM.hasTown) syncTradeShipName(npc, homeM);
+              npc.cargoGood = portExportsGood({
+                cx: npc.destCx, cz: npc.destCz, hasTown: true,
+                portSlot: npc.destPortSlot != null ? npc.destPortSlot | 0 : 0
+              });
+              const portsH = collectAllTradingPorts();
+              const homeRow = portsH.find(p => p.cx === (npc.homeCx | 0) && p.cz === (npc.homeCz | 0) && (p.portSlot | 0) === (npc.homePortSlot != null ? npc.homePortSlot | 0 : 0));
+              if (homeRow) syncTradeShipName(npc, homeRow);
               npc.tradeDestX = npc.homeDockX;
               npc.tradeDestZ = npc.homeDockZ;
               npc.tradePhase = 'to_home';
@@ -11599,6 +11825,7 @@ function updateNPCs(dt) {
             npcFireBroadsideAtNpcTarget(npc, focus);
             npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
           }
+          if (!npcForwardRayClear(npc, 48, 8)) steerNpcTowardGoalWithCoastAvoid(npc, dt, aimx, aimz, sharp * 0.58);
         } else if (npc.aggro && distToPlayer < 110) {
           const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
           const toPlayer = Math.atan2(dx, dz);
@@ -11617,6 +11844,7 @@ function updateNPCs(dt) {
             npcFireBroadsideAtPlayer(npc);
             npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
           }
+          if (!npcForwardRayClear(npc, 48, 8)) steerNpcTowardGoalWithCoastAvoid(npc, dt, aimx, aimz, sharp * 0.58);
         } else {
           npc.wanderTimer -= dt;
           if (npc.wanderTimer <= 0) {
@@ -19212,10 +19440,16 @@ function isSideContractListedAtThisPort(q) {
   if (!q || q.accepted) return true;
   if (!G.nearDock || G.nearDock.cx == null || G.nearDock.cz == null) return true;
   if (q.type === 'hunt') return true;
-  if (q.type === 'escort') return q.originCx === G.nearDock.cx && q.originCz === G.nearDock.cz;
+  const nds = G.nearDock.portSlot != null ? G.nearDock.portSlot | 0 : 0;
+  if (q.type === 'escort') {
+    if (q.originCx !== G.nearDock.cx || q.originCz !== G.nearDock.cz) return false;
+    const qs = q.originPortSlot != null ? q.originPortSlot | 0 : 0;
+    return qs === nds;
+  }
   if (q.type === 'delivery') {
     if (q.originCx == null || q.originCz == null) return true;
-    return q.originCx === G.nearDock.cx && q.originCz === G.nearDock.cz;
+    const qs = q.originPortSlot != null ? q.originPortSlot | 0 : 0;
+    return q.originCx === G.nearDock.cx && q.originCz === G.nearDock.cz && qs === nds;
   }
   return true;
 }
@@ -19237,10 +19471,10 @@ function generateQuests() {
     if (escortOk && pool.length >= 2 && roll < 0.3) {
       const origin = pool[Math.floor(rnd() * pool.length)];
       let dest = pool[Math.floor(rnd() * pool.length)];
-      for (let t = 0; t < 14 && dest.cx === origin.cx && dest.cz === origin.cz; t++) {
+      for (let t = 0; t < 18 && dest.cx === origin.cx && dest.cz === origin.cz && (dest.portSlot | 0) === (origin.portSlot | 0); t++) {
         dest = pool[Math.floor(rnd() * pool.length)];
       }
-      if (dest.cx === origin.cx && dest.cz === origin.cz) {
+      if (dest.cx === origin.cx && dest.cz === origin.cz && (dest.portSlot | 0) === (origin.portSlot | 0)) {
         const target = npcNames[Math.floor(rnd() * npcNames.length)];
         G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
         continue;
@@ -19257,9 +19491,11 @@ function generateQuests() {
         desc: `Escort a laden merchant from ${origin.townName} to ${dest.townName} — pirates are hunting convoys.`,
         reward,
         originCx: origin.cx, originCz: origin.cz,
+        originPortSlot: origin.portSlot != null ? origin.portSlot | 0 : 0,
         originDockX: origin.dockX, originDockZ: origin.dockZ,
         originTown: origin.townName,
         destCx: dest.cx, destCz: dest.cz,
+        destPortSlot: dest.portSlot != null ? dest.portSlot | 0 : 0,
         destDockX: dest.dockX, destDockZ: dest.dockZ,
         destTown: dest.townName,
         cargoGood,
@@ -19285,20 +19521,23 @@ function generateQuests() {
     const count = 3 + Math.floor(rnd() * 5);
     const origin = pool[Math.floor(rnd() * pool.length)];
     let dest = pool[Math.floor(rnd() * pool.length)];
-    for (let t = 0; t < 14 && dest.cx === origin.cx && dest.cz === origin.cz; t++) {
+    for (let t = 0; t < 18 && dest.cx === origin.cx && dest.cz === origin.cz && (dest.portSlot | 0) === (origin.portSlot | 0); t++) {
       dest = pool[Math.floor(rnd() * pool.length)];
     }
     const inm = getItemMeta(item);
+    const sameDock = dest.cx === origin.cx && dest.cz === origin.cz && (dest.portSlot | 0) === (origin.portSlot | 0);
     G.quests.push({
       type: 'delivery',
-      desc: dest.cx === origin.cx && dest.cz === origin.cz
+      desc: sameDock
         ? `Deliver ${count} ${inm.name} locally at ${origin.townName}`
         : `Deliver ${count} ${inm.name} from ${origin.townName} to ${dest.townName}`,
       reward: 20 + count * 5,
       item, count,
       originCx: origin.cx, originCz: origin.cz,
+      originPortSlot: origin.portSlot != null ? origin.portSlot | 0 : 0,
       originTown: origin.townName,
       destCx: dest.cx, destCz: dest.cz,
+      destPortSlot: dest.portSlot != null ? dest.portSlot | 0 : 0,
       destTown: dest.townName,
       destDockX: dest.dockX, destDockZ: dest.dockZ,
       accepted: false
@@ -19319,7 +19558,9 @@ window.acceptQuest = function(idx) {
       notify('Only the voyage host may run convoy escort simulation.');
       return;
     }
-    if (!G.docked || !G.nearDock || G.nearDock.cx !== q.originCx || G.nearDock.cz !== q.originCz) {
+    const qo = q.originPortSlot != null ? q.originPortSlot | 0 : 0;
+    const nd = G.nearDock.portSlot != null ? G.nearDock.portSlot | 0 : 0;
+    if (!G.docked || !G.nearDock || G.nearDock.cx !== q.originCx || G.nearDock.cz !== q.originCz || nd !== qo) {
       notify(`Sign this escort at ${q.originTown || 'the issuing port'} (charted harbor).`);
       return;
     }
@@ -19327,7 +19568,9 @@ window.acceptQuest = function(idx) {
     beginEscortQuest(q);
     notify(`Merchant under way — defend them until they reach ${q.destTown || 'the destination'}.`);
   } else if (q.type === 'delivery') {
-    if (q.originCx != null && q.originCz != null && (!G.nearDock || G.nearDock.cx !== q.originCx || G.nearDock.cz !== q.originCz)) {
+    const qop = q.originPortSlot != null ? q.originPortSlot | 0 : 0;
+    const ndp = G.nearDock && G.nearDock.portSlot != null ? G.nearDock.portSlot | 0 : 0;
+    if (q.originCx != null && q.originCz != null && (!G.nearDock || G.nearDock.cx !== q.originCx || G.nearDock.cz !== q.originCz || ndp !== qop)) {
       notify(`Sign this cargo contract at ${q.originTown || 'the issuing port'}.`);
       return;
     }
