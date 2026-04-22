@@ -7011,6 +7011,7 @@ function tryProgressFactionLetters(npc, killerPlayerId) {
   ensurePolitics();
   const letters = G.politics.activeLetters;
   if (!letters.length) return;
+  let letterTouched = false;
   for (let i = 0; i < letters.length; i++) {
     const L = letters[i];
     if (L.done >= L.need) continue;
@@ -7022,6 +7023,7 @@ function tryProgressFactionLetters(npc, killerPlayerId) {
       match = hf === (L.target | 0);
     }
     if (!match) continue;
+    letterTouched = true;
     L.done++;
     notify(`${FACTION_NAMES[L.issuer]} letter — ${L.done}/${L.need}.`);
     if (L.done >= L.need) {
@@ -7052,6 +7054,7 @@ function tryProgressFactionLetters(npc, killerPlayerId) {
       saveProgressDebounced();
     }
   }
+  if (letterTouched) updateMissionsPanel();
 }
 window.portAcceptMarqueLetter = function(offerId) {
   if (!G.docked) return;
@@ -7075,6 +7078,7 @@ window.portAcceptMarqueLetter = function(offerId) {
   });
   notify('Letter of marque filed — fulfill it at sea.');
   saveProgressDebounced();
+  updateMissionsPanel();
   showPortTab('governor');
 };
 window.portSwearToFaction = function(fid) {
@@ -11440,6 +11444,20 @@ function isMultiplayerHost() {
   G.multiplayerNpcAuthorityId = minId;
   return my === minId;
 }
+/** Lowest numeric player id simulates AI traffic; keeps npc_sync consistent when peers join or leave. */
+function recalcMultiplayerNpcAuthorityFromPeers() {
+  if (!G.myId || !ws || ws.readyState !== 1) {
+    G.multiplayerNpcAuthorityId = null;
+    return;
+  }
+  const my = Number(G.myId);
+  const oids = Array.from(G.otherPlayers.keys()).map(Number).filter(Number.isFinite);
+  if (!oids.length) {
+    G.multiplayerNpcAuthorityId = null;
+    return;
+  }
+  G.multiplayerNpcAuthorityId = Math.min(my, ...oids);
+}
 /** True if (wx,wz) is open sea and most compass bearings stay in water at ~clear units (off beaches, still works in channels). */
 function hasMinClearanceFromLand(wx, wz, clear) {
   if (isSeaObstructed(wx, wz)) return false;
@@ -14228,16 +14246,7 @@ function connectToServer() {
             refreshOtherPlayerShipCacheKey(G.otherPlayers.get(pid));
           });
         }
-        if (msg.players && msg.players.length > 0) {
-          const existingIds = [];
-          for (const p of msg.players) {
-            const pid = netPlayerId(p.id);
-            if (pid != null && pid !== G.myId) existingIds.push(pid);
-          }
-          G.multiplayerNpcAuthorityId = existingIds.length ? Math.min(...existingIds) : null;
-        } else {
-          G.multiplayerNpcAuthorityId = null;
-        }
+        recalcMultiplayerNpcAuthorityFromPeers();
         if (G.mode === 'playing' && !voyageSaveExistsInStorage()) {
           ensurePlayerInOpenOcean();
           nudgePlayerSpawnClearOfShips();
@@ -14267,11 +14276,10 @@ function connectToServer() {
         if (!pl) break;
         const pid = netPlayerId(pl.id);
         if (pid == null || pid === G.myId) break;
-        const incumbentAlone = G.otherPlayers.size === 0;
         const row = { ...pl, id: pid };
         G.otherPlayers.set(pid, row);
         refreshOtherPlayerShipCacheKey(G.otherPlayers.get(pid));
-        if (incumbentAlone) G.multiplayerNpcAuthorityId = Number(G.myId);
+        recalcMultiplayerNpcAuthorityFromPeers();
         break;
       }
       case 'player_identity': {
@@ -14295,13 +14303,8 @@ function connectToServer() {
       case 'player_leave': {
         const lid = netPlayerId(msg.id);
         if (lid == null) break;
-        if (G.multiplayerNpcAuthorityId != null && lid === G.multiplayerNpcAuthorityId) {
-          const my = Number(G.myId);
-          const rest = new Set([my, ...G.otherPlayers.keys()]);
-          rest.delete(lid);
-          G.multiplayerNpcAuthorityId = rest.size ? Math.min(...rest) : null;
-        }
         removeRemotePeer(lid);
+        recalcMultiplayerNpcAuthorityFromPeers();
         if (G.mode === 'playing') {
           requestAnimationFrame(() => {
             try { warmUpGameView(); } catch (e) {}
@@ -14330,6 +14333,7 @@ function connectToServer() {
         for (const pid of Array.from(G.otherPlayers.keys())) {
           if (!activeRemote.has(pid)) removeRemotePeer(pid);
         }
+        recalcMultiplayerNpcAuthorityFromPeers();
         break;
       }
       case 'ship_update': {
@@ -19852,12 +19856,6 @@ function updateWorldPanel() {
   }
   dipTable += '</tbody></table>';
   dipTable += '<div style="font-size:9px;color:#7a6a58;margin-top:8px;line-height:1.45;">Each cell is the <strong>average</strong> of how both crowns read that border (higher is calmer). <span style="color:#cc8888;">War</span> when the average drops below 18. Your personal standing with each power is listed above — this grid is state diplomacy only.</div>';
-  const letters = (G.politics.activeLetters || []).length
-    ? (G.politics.activeLetters || []).map(L => {
-      const iss = (L.issuer | 0) % FACTION_COUNT;
-      return `<div style="display:flex;align-items:flex-start;gap:8px;font-size:10px;color:#c8c0a8;margin:4px 0;line-height:1.35;"><span style="display:flex;margin-top:2px;flex-shrink:0;">${worldPanelFactionFlagThumb(iss, 20, 15)}</span><span><span style="color:${FACTION_TRADE_COLORS[iss]};">${escapeDebugHtml(FACTION_SHORT_NAMES[iss])}</span>: ${L.desc} — <strong>${L.done}/${L.need}</strong></span></div>`;
-    }).join('')
-    : '<div style="font-size:10px;color:#7a6a58;">No letters of marque in your log.</div>';
   el.innerHTML = `
     <div style="color:#d4a848;font-size:12px;text-align:center;margin-bottom:10px;letter-spacing:1px;">WORLD ALMANAC</div>
     <div style="color:#9a8a78;font-size:10px;line-height:1.5;margin-bottom:10px;">Procedural archipelago · seed <span style="color:#c4a878;">${G.worldSeed}</span><br>
@@ -19877,8 +19875,7 @@ function updateWorldPanel() {
     <div style="margin-bottom:10px;">${relYou}</div>
     <div style="color:#c9a878;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Courts &amp; crowns</div>
     <div style="margin-bottom:12px;">${dipTable}</div>
-    <div style="color:#c9a878;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Active letters</div>
-    <div style="margin-bottom:12px;">${letters}</div>
+    <div style="font-size:10px;color:#7a6a58;margin-bottom:12px;line-height:1.45;">Letters of marque and harbor contracts: open <strong>Missions</strong> (log) or <strong>Port → Quests</strong> while docked.</div>
     <div style="color:#d4a848;font-size:10px;text-transform:uppercase;margin:14px 0 6px;">Fleet &amp; activity</div>
     <div style="color:#e0d6c2;font-size:12px;line-height:1.55;">
       <div>Ships at sea (not sunk): <strong>${totalNpcs}</strong></div>
@@ -19962,7 +19959,29 @@ function updateMissionsPanel() {
   storyWrap.innerHTML = storyHtml;
   l.appendChild(storyWrap);
 
-  l.appendChild(hdr('Side missions — active', 'Posted contracts you accepted', false));
+  ensurePolitics();
+  l.appendChild(hdr('Letters of marque — active', 'Governor-issued orders; progress by sinking valid targets at sea', false));
+  const actLet = G.politics.activeLetters || [];
+  if (!actLet.length) {
+    const le = document.createElement('div');
+    le.style.cssText = 'color:#8a7a60;font-size:11px;padding:8px 0 4px;line-height:1.45;';
+    le.innerHTML = 'None on file. Dock → <strong>Governor</strong> to accept sealed letters against rival powers.';
+    l.appendChild(le);
+  } else {
+    actLet.forEach(L => {
+      const iss = (L.issuer | 0) % FACTION_COUNT;
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:10px;background:rgba(22,38,48,0.45);border:1px solid rgba(100,140,170,0.32);border-radius:6px;margin-bottom:8px;';
+      row.innerHTML = `<div style="display:flex;align-items:flex-start;gap:8px;">
+        <span style="flex-shrink:0;margin-top:2px;">${worldPanelFactionFlagThumb(iss, 22, 16)}</span>
+        <div style="min-width:0;"><div style="color:${FACTION_TRADE_COLORS[iss]};font-size:10px;text-transform:uppercase;letter-spacing:0.06em;">${escapeDebugHtml(FACTION_SHORT_NAMES[iss])}</div>
+        <div style="color:#e0d6c2;font-size:12px;margin-top:4px;line-height:1.4;">${escapeDebugHtml(L.desc)}</div>
+        <div style="color:#d4a848;font-size:11px;margin-top:6px;">Progress: <strong>${L.done}/${L.need}</strong> · Reward on completion: ${L.reward | 0}g</div></div></div>`;
+      l.appendChild(row);
+    });
+  }
+
+  l.appendChild(hdr('Side missions — active', `Posted contracts you accepted (max ${MAX_PLAYER_SIDE_QUESTS})`, false));
   const active = G.quests.filter(q => q.accepted);
   if (!active.length) {
     const empty = document.createElement('div');
@@ -20502,20 +20521,40 @@ function showPortTab(tab) {
 
     const sideHdr = document.createElement('div');
     sideHdr.style.cssText = 'color:#d4a848;font-size:11px;letter-spacing:1px;margin-bottom:8px;';
-    sideHdr.textContent = 'SIDE CONTRACTS';
+    sideHdr.innerHTML = `SIDE CONTRACTS <span style="color:#8a7a60;font-size:10px;font-weight:normal;letter-spacing:0.04em;">(active limit ${MAX_PLAYER_SIDE_QUESTS})</span>`;
     content.appendChild(sideHdr);
 
-    if (G.quests.length === 0) generateQuests();
+    ensureMinimumOpenQuestsAtCurrentPort();
+    ensurePolitics();
+    const marqueBox = document.createElement('div');
+    marqueBox.style.cssText = 'padding:12px;background:rgba(22,38,48,0.5);border:1px solid rgba(100,140,170,0.35);border-radius:8px;margin-bottom:14px;';
+    const actLet = G.politics.activeLetters || [];
+    if (!actLet.length) {
+      marqueBox.innerHTML = `<div style="color:#a8c8e8;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px;">Letters of marque</div>
+        <div style="color:#8a7a68;font-size:11px;line-height:1.45;">No sealed orders on file. Visit the <strong>Governor</strong> in this port to accept letters against rival flags.</div>`;
+    } else {
+      marqueBox.innerHTML = `<div style="color:#a8c8e8;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Letters of marque — active</div>` +
+        actLet.map(L => {
+          const iss = (L.issuer | 0) % FACTION_COUNT;
+          return `<div style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#e0d6c2;margin:6px 0;line-height:1.4;">
+            <span style="flex-shrink:0;margin-top:2px;">${worldPanelFactionFlagThumb(iss, 22, 16)}</span>
+            <span><span style="color:${FACTION_TRADE_COLORS[iss]};">${escapeDebugHtml(FACTION_SHORT_NAMES[iss])}</span> — ${escapeDebugHtml(L.desc)} <strong style="color:#d4a848;">${L.done}/${L.need}</strong></span></div>`;
+        }).join('');
+    }
+    content.appendChild(marqueBox);
+
     let anyListedSideContract = false;
     G.quests.forEach((q, qi) => {
       if (!isSideContractListedAtThisPort(q)) return;
       anyListedSideContract = true;
       const d = document.createElement('div');
       d.style.cssText = `padding:10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;${q.accepted ? 'border-color:rgba(80,160,80,0.4);' : ''}`;
+      const escortHostNote = q.type === 'escort' && !isMultiplayerHost()
+        ? '<div style="color:#b89868;font-size:10px;margin-top:4px;">Convoy contracts require the voyage host to sign and run escort AI.</div>' : '';
       d.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${q.desc}</div>
         ${q.type === 'delivery' && q.originTown ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Posted at: <strong style="color:#c4a878;">${q.originTown}</strong>${q.destTown ? ` · Deliver to: <strong style="color:#c4a878;">${q.destTown}</strong>` : ''} (gold harbor marker on chart)</div>` : ''}
         ${q.type === 'delivery' && !q.originTown && q.destTown ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Deliver to: <strong style="color:#c4a878;">${q.destTown}</strong> (gold harbor marker on chart)</div>` : ''}
-        ${q.type === 'escort' ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Sign at: <strong style="color:#c4a878;">${q.originTown || 'listed port'}</strong> · Sail with the merchant to <strong style="color:#c4a878;">${q.destTown || 'destination'}</strong>${q.pendingReward ? ' · <span style="color:#88cc88;">Dock → Quests to collect fee</span>' : ''}</div>` : ''}
+        ${q.type === 'escort' ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Sign at: <strong style="color:#c4a878;">${q.originTown || 'listed port'}</strong> · Sail with the merchant to <strong style="color:#c4a878;">${q.destTown || 'destination'}</strong>${q.pendingReward ? ' · <span style="color:#88cc88;">Dock → Quests to collect fee</span>' : ''}</div>${escortHostNote}` : ''}
         <div style="display:flex;justify-content:space-between;margin-top:6px;">
           <span style="color:#d4a848;font-size:11px;">Reward: ${q.reward} gold</span>
           ${q.accepted ? '<span style="color:#88cc88;font-size:11px;">ACTIVE</span>' : `<button onclick="acceptQuest(${qi})" style="background:rgba(60,50,20,0.5);border:1px solid rgba(180,140,60,0.4);color:#d4a848;padding:3px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Accept</button>`}
@@ -20543,7 +20582,7 @@ function showPortTab(tab) {
       return `<span style="color:${col};">${r > 0 ? '+' : ''}${r}</span>`;
     };
     content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:8px;letter-spacing:0.06em;">GOVERNOR&rsquo;S COURT — ${FACTION_NAMES[here]}</div>
-      <p style="color:#9a9080;font-size:10px;line-height:1.45;margin:0 0 12px;">Swear service, buy a pardon for your crimes, and take sealed letters against rival powers.</p>
+      <p style="color:#9a9080;font-size:10px;line-height:1.45;margin:0 0 12px;">Swear service, buy a pardon for your crimes, and take sealed letters against rival powers. <strong style="color:#a8b8c8;">Active letters appear under Port → Quests</strong> and in your Missions log.</p>
       <div style="padding:10px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.25);border-radius:6px;margin-bottom:10px;">
         <div style="color:#e0d6c2;font-size:12px;margin-bottom:6px;">Allegiance</div>
         <div style="color:#8a7a60;font-size:10px;margin-bottom:8px;">${jf != null ? `You serve <strong style="color:${FACTION_TRADE_COLORS[jf % FACTION_COUNT]}">${FACTION_NAMES[jf]}</strong>.` : 'Independent — no crown pays your commission.'}</div>
@@ -20967,113 +21006,146 @@ function createWorldQuestRng() {
     return s / 4294967296;
   };
 }
+const MAX_PLAYER_SIDE_QUESTS = 5;
+function countAcceptedSideQuests() {
+  return (G.quests || []).filter(q => q && q.accepted).length;
+}
 /** Side contracts listed in Port → Quests only at the town that posts them (active contracts still show everywhere). */
-function isSideContractListedAtThisPort(q) {
+function isSideContractListedAtDock(q, dock) {
   if (!q || q.accepted) return true;
-  if (!G.nearDock || G.nearDock.cx == null || G.nearDock.cz == null) return true;
+  if (!dock || dock.cx == null || dock.cz == null) return true;
   if (q.type === 'hunt') return true;
-  if (q.type === 'escort') return q.originCx === G.nearDock.cx && q.originCz === G.nearDock.cz;
+  if (q.type === 'escort') return q.originCx === dock.cx && q.originCz === dock.cz;
   if (q.type === 'delivery') {
     if (q.originCx == null || q.originCz == null) return true;
-    return q.originCx === G.nearDock.cx && q.originCz === G.nearDock.cz;
+    return q.originCx === dock.cx && q.originCz === dock.cz;
   }
   return true;
 }
-function generateQuests() {
-  G.quests = [];
-  const rnd = createWorldQuestRng();
+function isSideContractListedAtThisPort(q) {
+  return isSideContractListedAtDock(q, G.nearDock);
+}
+function createPortQuestRng(dock, salt) {
+  let s = (G.worldSeed >>> 0) + 48271 + ((dock.cx | 0) * 11003 ^ (dock.cz | 0) * 91009) + ((salt | 0) * 2654435761 >>> 0);
+  return function () {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+/** Append one unaccepted hunt / delivery / escort with issuing port `dock` (escort only if host + session allows). */
+function pushRandomSideQuestForPort(dock, rnd) {
+  let ports = [];
+  try { ports = collectAllTradingPorts(); } catch (e) { ports = []; }
+  const pool = ports;
+  if (!dock || dock.cx == null || !pool.length) return false;
   const npcNames = NPC_SHIP_NAMES.length ? NPC_SHIP_NAMES.slice() : ['Sea Phantom', 'Red Tide', 'Storm Chaser'];
   for (let ii = npcNames.length - 1; ii > 0; ii--) {
     const j = Math.floor(rnd() * (ii + 1));
     const t = npcNames[ii]; npcNames[ii] = npcNames[j]; npcNames[j] = t;
   }
-  let ports = [];
-  try { ports = collectAllTradingPorts(); } catch (e) { ports = []; }
-  ports = ports.slice().sort((a, b) => a.cx - b.cx || a.cz - b.cz || String(proceduralTownDisplayName(a)).localeCompare(String(proceduralTownDisplayName(b))));
-  const pool = ports;
-  const escortOk = escortContractsSessionOk();
-  for (let i = 0; i < 3; i++) {
-    const roll = rnd();
-    if (escortOk && pool.length >= 2 && roll < 0.3) {
-      const origin = pool[Math.floor(rnd() * pool.length)];
-      let dest = pool[Math.floor(rnd() * pool.length)];
-      for (let t = 0; t < 14 && dest.cx === origin.cx && dest.cz === origin.cz; t++) {
-        dest = pool[Math.floor(rnd() * pool.length)];
-      }
-      if (dest.cx === origin.cx && dest.cz === origin.cz) {
-        const target = npcNames[Math.floor(rnd() * npcNames.length)];
-        G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
-        continue;
-      }
-      const goods = ['wood', 'cloth', 'iron', 'rum'];
-      const cargoGood = goods[Math.floor(rnd() * goods.length)];
-      const cargoUnits = 6 + Math.floor(rnd() * 10);
-      const inm = getItemMeta(cargoGood);
-      const leg = Math.hypot((dest.dockX || 0) - (origin.dockX || 0), (dest.dockZ || 0) - (origin.dockZ || 0));
-      const reward = 62 + Math.floor(rnd() * 55) + Math.floor(leg / 65);
-      const attackerCount = 1 + Math.floor(rnd() * 5);
-      const oNm = proceduralTownDisplayName(origin);
-      const dNm = proceduralTownDisplayName(dest);
-      G.quests.push({
-        type: 'escort',
-        desc: `Escort a laden merchant from ${oNm} to ${dNm} — pirates are hunting convoys.`,
-        reward,
-        originCx: origin.cx, originCz: origin.cz,
-        originDockX: origin.dockX, originDockZ: origin.dockZ,
-        originTown: oNm,
-        destCx: dest.cx, destCz: dest.cz,
-        destDockX: dest.dockX, destDockZ: dest.dockZ,
-        destTown: dNm,
-        cargoGood,
-        cargoUnits,
-        cargoShipName: `Merchant (${cargoUnits} ${inm.name})`,
-        attackerCount,
-        accepted: false,
-        pendingReward: false,
-        escortCargoSyncId: null,
-        escortSpawned: false,
-        attackerSyncIds: []
-      });
-      continue;
-    }
-    const wantDelivery = pool.length > 0 && roll < 0.65;
-    if (!wantDelivery) {
-      const target = npcNames[Math.floor(rnd() * npcNames.length)];
-      G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
-      continue;
-    }
-    const items = ['wood', 'cloth', 'iron', 'rum'];
-    const item = items[Math.floor(rnd() * items.length)];
-    const count = 3 + Math.floor(rnd() * 5);
-    const origin = pool[Math.floor(rnd() * pool.length)];
+  const escortOk = escortContractsSessionOk() && isMultiplayerHost();
+  const roll = rnd();
+  if (escortOk && pool.length >= 2 && roll < 0.3) {
+    const origin = dock;
     let dest = pool[Math.floor(rnd() * pool.length)];
     for (let t = 0; t < 14 && dest.cx === origin.cx && dest.cz === origin.cz; t++) {
       dest = pool[Math.floor(rnd() * pool.length)];
     }
-    const inm = getItemMeta(item);
-    const oNm2 = proceduralTownDisplayName(origin);
-    const dNm2 = proceduralTownDisplayName(dest);
+    if (dest.cx === origin.cx && dest.cz === origin.cz) {
+      const target = npcNames[Math.floor(rnd() * npcNames.length)];
+      G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
+      return true;
+    }
+    const goods = ['wood', 'cloth', 'iron', 'rum'];
+    const cargoGood = goods[Math.floor(rnd() * goods.length)];
+    const cargoUnits = 6 + Math.floor(rnd() * 10);
+    const inm = getItemMeta(cargoGood);
+    const leg = Math.hypot((dest.dockX || 0) - (origin.dockX || 0), (dest.dockZ || 0) - (origin.dockZ || 0));
+    const reward = 62 + Math.floor(rnd() * 55) + Math.floor(leg / 65);
+    const attackerCount = 1 + Math.floor(rnd() * 5);
+    const oNm = proceduralTownDisplayName(origin);
+    const dNm = proceduralTownDisplayName(dest);
     G.quests.push({
-      type: 'delivery',
-      desc: dest.cx === origin.cx && dest.cz === origin.cz
-        ? `Deliver ${count} ${inm.name} locally at ${oNm2}`
-        : `Deliver ${count} ${inm.name} from ${oNm2} to ${dNm2}`,
-      reward: 20 + count * 5,
-      item, count,
+      type: 'escort',
+      desc: `Escort a laden merchant from ${oNm} to ${dNm} — pirates are hunting convoys.`,
+      reward,
       originCx: origin.cx, originCz: origin.cz,
-      originTown: oNm2,
+      originDockX: origin.dockX, originDockZ: origin.dockZ,
+      originTown: oNm,
       destCx: dest.cx, destCz: dest.cz,
-      destTown: dNm2,
       destDockX: dest.dockX, destDockZ: dest.dockZ,
-      accepted: false
+      destTown: dNm,
+      cargoGood,
+      cargoUnits,
+      cargoShipName: `Merchant (${cargoUnits} ${inm.name})`,
+      attackerCount,
+      accepted: false,
+      pendingReward: false,
+      escortCargoSyncId: null,
+      escortSpawned: false,
+      attackerSyncIds: []
     });
+    return true;
+  }
+  const wantDelivery = pool.length > 0 && roll < 0.65;
+  if (!wantDelivery) {
+    const target = npcNames[Math.floor(rnd() * npcNames.length)];
+    G.quests.push({ type: 'hunt', desc: `Sink the ${target}`, reward: 35 + Math.floor(rnd() * 30), target, accepted: false });
+    return true;
+  }
+  const items = ['wood', 'cloth', 'iron', 'rum'];
+  const item = items[Math.floor(rnd() * items.length)];
+  const count = 3 + Math.floor(rnd() * 5);
+  const origin = dock;
+  let dest = pool[Math.floor(rnd() * pool.length)];
+  for (let t = 0; t < 14 && dest.cx === origin.cx && dest.cz === origin.cz; t++) {
+    dest = pool[Math.floor(rnd() * pool.length)];
+  }
+  const inm = getItemMeta(item);
+  const oNm2 = proceduralTownDisplayName(origin);
+  const dNm2 = proceduralTownDisplayName(dest);
+  G.quests.push({
+    type: 'delivery',
+    desc: dest.cx === origin.cx && dest.cz === origin.cz
+      ? `Deliver ${count} ${inm.name} locally at ${oNm2}`
+      : `Deliver ${count} ${inm.name} from ${oNm2} to ${dNm2}`,
+    reward: 20 + count * 5,
+    item, count,
+    originCx: origin.cx, originCz: origin.cz,
+    originTown: oNm2,
+    destCx: dest.cx, destCz: dest.cz,
+    destTown: dNm2,
+    destDockX: dest.dockX, destDockZ: dest.dockZ,
+    accepted: false
+  });
+  return true;
+}
+/** At least three open listings on this harbor board; caps total rows to avoid unbounded growth. */
+function ensureMinimumOpenQuestsAtCurrentPort() {
+  const dock = G.nearDock;
+  if (!dock || dock.cx == null || dock.cz == null) return;
+  if (!Array.isArray(G.quests)) G.quests = [];
+  let guard = 0;
+  while (guard++ < 40) {
+    const openHere = G.quests.filter(q => !q.accepted && isSideContractListedAtDock(q, dock));
+    if (openHere.length >= 3) break;
+    if (G.quests.length >= 52) break;
+    const rnd = createPortQuestRng(dock, (G.quests.length << 5) ^ guard * 1315423911);
+    if (!pushRandomSideQuestForPort(dock, rnd)) break;
   }
   if (ws?.readyState === 1 && isMultiplayerHost()) broadcastWorldQuestsToServer();
+}
+function generateQuests() {
+  ensureMinimumOpenQuestsAtCurrentPort();
 }
 
 window.acceptQuest = function(idx) {
   const q = G.quests[idx];
   if (!q || q.accepted) return;
+  if (countAcceptedSideQuests() >= MAX_PLAYER_SIDE_QUESTS) {
+    notify(`You may only track ${MAX_PLAYER_SIDE_QUESTS} harbor contracts at once. Finish one or clear your log before accepting another.`);
+    return;
+  }
   if (q.type === 'escort') {
     if (!escortContractsSessionOk()) {
       notify('Escort contracts are unavailable right now.');
