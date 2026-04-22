@@ -4019,10 +4019,18 @@ function distSegmentToPointXZ(x0, z0, x1, z1, px, pz) {
   return Math.hypot(px - qx, pz - qz);
 }
 
-/** Half-beam / half-length along ship-local X (starboard) and Z (bow), tuned to extruded hull mesh. */
-function shipHullObbHalfExtents(shipType) {
+/** Half-beam / half-length along ship-local X (starboard) and Z (bow), tuned to extruded hull mesh + bow style + hull part. */
+function shipHullObbHalfExtents(shipType, hullPartId) {
   const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
-  return { hw: spec.hullW * 0.5 * 1.08, hl: spec.hullLen * 0.5 * 1.06 };
+  let hw = spec.hullW * 0.5 * 1.12;
+  let hl = spec.hullLen * 0.5 * 1.1;
+  const bs = spec.bowStyle;
+  if (bs === 'blunt') hl *= 1.06;
+  else if (bs === 'wide') { hw *= 1.045; hl *= 1.02; }
+  else if (bs === 'pointed') { hl *= 1.035; hw *= 0.99; }
+  if (hullPartId === 'reinforced') { hw *= 1.06; hl *= 1.03; }
+  else if (hullPartId === 'darkwood') { hw *= 1.03; hl *= 1.025; }
+  return { hw, hl };
 }
 /** Unsigned distance from (px,pz) to ship hull oriented box (0 inside). */
 function distPointToShipHullOBB(px, pz, shipX, shipZ, yaw, shipType) {
@@ -4056,10 +4064,10 @@ function shipObbProjectionInterval(cx, cz, yaw, hw, hl, nx, nz) {
   return { min: c - r, max: c + r };
 }
 /** SAT overlap for two hull boxes; returns MTD from B toward A, or null if separated. */
-function obbShipsSeparation(cxA, czA, yawA, typeA, cxB, czB, yawB, typeB, margin) {
+function obbShipsSeparation(cxA, czA, yawA, typeA, cxB, czB, yawB, typeB, margin, hullPartA, hullPartB) {
   const m = margin != null ? margin : 0.92;
-  const ea = shipHullObbHalfExtents(typeA);
-  const eb = shipHullObbHalfExtents(typeB);
+  const ea = shipHullObbHalfExtents(typeA, hullPartA);
+  const eb = shipHullObbHalfExtents(typeB, hullPartB);
   const hwa = ea.hw * m, hla = ea.hl * m;
   const hwb = eb.hw * m, hlb = eb.hl * m;
   const axes = [
@@ -11649,24 +11657,85 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   }
 }
 
+/** Hull part id for collision sizing (matches typical buildShipMesh loadouts). */
+function npcCollisionHullPart(npc) {
+  if (!npc) return undefined;
+  if (npc.isTradeShip || npc.isEscortCargo) return 'basic';
+  if (npc.isFactionPatrol) return 'basic';
+  return 'darkwood';
+}
+
+/** Land + NPC hull overlap test at a candidate player position (OBB, harbor truce when both in exempt ring). */
+function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
+  if (shipFootprintOverlapsLand(tx, tz, yaw, shipType)) return false;
+  if (!G.npcs || !G.npcs.length) return true;
+  const hp = hullPart != null ? hullPart : (G.player.shipParts && G.player.shipParts.hull);
+  const margin = 1.03;
+  const st = shipType || 'sloop';
+  for (let i = 0; i < G.npcs.length; i++) {
+    const npc = G.npcs[i];
+    if (npc.sinking || npc.health <= 0) continue;
+    if (playerInHarborRamExemptZone(tx, tz, st) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) continue;
+    const sep = obbShipsSeparation(tx, tz, yaw, st, npc.x, npc.z, npc.rotation, npc.type, margin, hp, npcCollisionHullPart(npc));
+    if (sep) return false;
+  }
+  return true;
+}
+
+function relaxPlayerNpcCircleOverlaps() {
+  if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
+  const pad = 1.35;
+  const pType = G.player.shipType || 'sloop';
+  const ph = G.player.shipParts && G.player.shipParts.hull;
+  let pr = shipHullRadius(pType);
+  if (ph === 'reinforced') pr *= 1.07;
+  else if (ph === 'darkwood') pr *= 1.03;
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    for (const npc of G.npcs) {
+      if (npc.sinking || npc.health <= 0) continue;
+      if (playerInHarborRamExemptZone(G.player.x, G.player.z, pType) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) continue;
+      let nr = shipHullRadius(npc.type);
+      const nh = npcCollisionHullPart(npc);
+      if (nh === 'reinforced') nr *= 1.07;
+      else if (nh === 'darkwood') nr *= 1.03;
+      const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
+      const d = Math.hypot(dx, dz);
+      const need = pr + nr + pad;
+      if (d >= need - 1e-4 || d < 1e-5) continue;
+      const nx = dx / d, nz = dz / d;
+      const push = Math.min(need - d, 8.5) * 0.72;
+      const ox = G.player.x, oz = G.player.z;
+      G.player.x += nx * push;
+      G.player.z += nz * push;
+      if (shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, pType)) {
+        G.player.x = ox;
+        G.player.z = oz;
+      } else moved = true;
+    }
+    if (!moved) break;
+  }
+}
+
 function pushPlayerOutOfShipOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
-  if (G.dockingAnim || G.undockingAnim) return;
+  if (G.dockingAnim) return;
   const px = G.player.x, pz = G.player.z;
-  const margin = 0.98;
+  const margin = 1.025;
+  const pHull = G.player.shipParts && G.player.shipParts.hull;
   const pPos = { x: G.player.x, z: G.player.z };
   const pv = (!G.player.anchored && Math.abs(G.player.speed) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
   const mp = ws && ws.readyState === 1;
   const applyNpcRam = !mp || isMultiplayerHost();
-  const localHarborExempt = playerInHarborRamExemptZone(px, pz, G.player.shipType);
-  for (let pass = 0; pass < 4; pass++) {
+  const pTypeEx = G.player.shipType || 'sloop';
+  for (let pass = 0; pass < 6; pass++) {
     pPos.x = G.player.x;
     pPos.z = G.player.z;
     let moved = false;
     G.npcs.forEach(npc => {
       if (npc.sinking || npc.health <= 0) return;
-      if (localHarborExempt) return;
-      const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, npc.type, margin);
+      if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) return;
+      const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, npc.type, margin, pHull, npcCollisionHullPart(npc));
       if (!sep) return;
       {
         const sid = npc.syncId != null ? npc.syncId : `u${Math.round(npc.x)}_${Math.round(npc.z)}`;
@@ -11709,7 +11778,7 @@ function pushPlayerOutOfShipOverlaps() {
             notify(`Ramming impact — ${Math.round(stP.dmg)} hull damage`);
           }
         }
-        const push = sep.depth * 0.55;
+        const push = sep.depth * 0.9;
         G.player.x += sep.nx * push;
         G.player.z += sep.nz * push;
         moved = true;
@@ -11719,8 +11788,9 @@ function pushPlayerOutOfShipOverlaps() {
       for (const op of G.otherPlayers.values()) {
         if (op.x == null || op.z == null) continue;
         if (op.docked) continue;
-        if (localHarborExempt || playerInHarborRamExemptZone(op.x, op.z, op.shipType || 'sloop')) continue;
-        const sepOp = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, op.x, op.z, op.rotation || 0, op.shipType || 'sloop', margin);
+        if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(op.x, op.z, op.shipType || 'sloop')) continue;
+        const opHull = op.shipParts && op.shipParts.hull;
+        const sepOp = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, op.x, op.z, op.rotation || 0, op.shipType || 'sloop', margin, pHull, opHull);
         if (!sepOp) continue;
         {
           const oid = op.id != null ? op.id : 0;
@@ -11742,7 +11812,7 @@ function pushPlayerOutOfShipOverlaps() {
               notify(`Ram! −${Math.round(stP.dmg)} hull`);
             }
           }
-          const push = sepOp.depth * 0.55;
+          const push = sepOp.depth * 0.9;
           G.player.x += sepOp.nx * push;
           G.player.z += sepOp.nz * push;
           moved = true;
@@ -11756,19 +11826,22 @@ function pushPlayerOutOfShipOverlaps() {
       break;
     }
   }
+  relaxPlayerNpcCircleOverlaps();
   clampPlayerIntoWorldBounds();
 }
 
 function separateHostNpcsFromLocalPlayer() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked) return;
   const px = G.player.x, pz = G.player.z;
-  if (playerInHarborRamExemptZone(px, pz, G.player.shipType)) return;
-  const margin = 0.98;
+  const pType = G.player.shipType || 'sloop';
+  const pHull = G.player.shipParts && G.player.shipParts.hull;
+  const margin = 1.025;
   G.npcs.forEach(npc => {
     if (npc.sinking || npc.health <= 0) return;
-    const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, npc.type, px, pz, G.player.rotation, G.player.shipType, margin);
+    if (playerInHarborRamExemptZone(px, pz, pType) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) return;
+    const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, npc.type, px, pz, G.player.rotation, G.player.shipType, margin, npcCollisionHullPart(npc), pHull);
     if (!sep) return;
-    const push = sep.depth * 0.72;
+    const push = sep.depth * 0.82;
     const ox = npc.x, oz = npc.z;
     npc.x += sep.nx * push;
     npc.z += sep.nz * push;
@@ -22117,6 +22190,7 @@ function update(dt) {
   if (G.undockingAnim) {
     const u = G.undockingAnim;
     const stU = G.player.shipType || 'sloop';
+    const hullU = G.player.shipParts && G.player.shipParts.hull;
     const txu = u.targetX, tzu = u.targetZ;
     const tRot = u.targetRot;
     let dxu = txu - G.player.x, dzu = tzu - G.player.z;
@@ -22134,7 +22208,7 @@ function update(dt) {
       dzu = (dzu / distU) * stepU;
       const nxa = G.player.x + dxu;
       const nza = G.player.z + dzu;
-      if (!shipFootprintOverlapsLand(nxa, nza, G.player.rotation, stU)) {
+      if (playerAtSeaPositionClear(nxa, nza, G.player.rotation, stU, hullU)) {
         G.player.x = nxa;
         G.player.z = nza;
       } else {
@@ -22143,7 +22217,7 @@ function update(dt) {
           const mid = (lo + hi) * 0.5;
           const mx = G.player.x + dxu * mid;
           const mz = G.player.z + dzu * mid;
-          if (!shipFootprintOverlapsLand(mx, mz, G.player.rotation, stU)) {
+          if (playerAtSeaPositionClear(mx, mz, G.player.rotation, stU, hullU)) {
             best = mid;
             lo = mid;
           } else hi = mid;
@@ -22161,6 +22235,7 @@ function update(dt) {
       }
     }
     clampPlayerIntoWorldBounds();
+    pushPlayerOutOfShipOverlaps();
   } else if (!G.player.anchored && !G.spectate && !G.playerSinking && G.player.health > 0 && !G.captainWalk.active) {
     const spec = SHIP_TYPES[G.player.shipType];
     const speedMult = playerSpeedMultFromShipParts();
@@ -22232,20 +22307,21 @@ function update(dt) {
     const rigF = Math.max(0.26, Math.pow(Math.max(0.05, rigPct), 1.35));
     const effectiveSpeed = G.player.speed * applyWindEffectWithNavigation(windEffect, windDot) * rigF * getCrewMoraleEfficiency() * getSailingStationMult() * getCommandAuraMult();
     const stMove = G.player.shipType || 'sloop';
+    const pHullMove = G.player.shipParts && G.player.shipParts.hull;
     const stepX = Math.sin(G.player.rotation) * effectiveSpeed * dt;
     const stepZ = Math.cos(G.player.rotation) * effectiveSpeed * dt;
     const newX = G.player.x + stepX;
     const newZ = G.player.z + stepZ;
-    if (!shipFootprintOverlapsLand(newX, newZ, G.player.rotation, stMove)) {
+    if (playerAtSeaPositionClear(newX, newZ, G.player.rotation, stMove, pHullMove)) {
       G.player.x = newX;
       G.player.z = newZ;
     } else {
       let lo = 0, hi = 1, best = 0;
-      for (let k = 0; k < 9; k++) {
+      for (let k = 0; k < 10; k++) {
         const mid = (lo + hi) * 0.5;
         const tx = G.player.x + stepX * mid;
         const tz = G.player.z + stepZ * mid;
-        if (!shipFootprintOverlapsLand(tx, tz, G.player.rotation, stMove)) {
+        if (playerAtSeaPositionClear(tx, tz, G.player.rotation, stMove, pHullMove)) {
           best = mid;
           lo = mid;
         } else hi = mid;
