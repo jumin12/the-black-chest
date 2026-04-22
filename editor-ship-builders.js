@@ -238,7 +238,7 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
     const cg = new THREE.CylinderGeometry(0.1 * barrelScale, 0.15 * barrelScale, 1.15 * barrelScale, 6); cg.rotateZ(Math.PI / 2);
     const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
     for (let c = 0; c < visualCount; c++) {
-      const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
+      const side = c % 2 === 0 ? -1 : 1, idx = Math.floor(c / 2);
       const cn = new THREE.Mesh(c === 0 ? cg : cg.clone(), cm);
       cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * 1.8);
       cn.castShadow = true; g.add(cn);
