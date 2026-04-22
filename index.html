@@ -1412,6 +1412,57 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   background:linear-gradient(180deg,rgba(235,205,140,0.9),rgba(140,100,50,0.88));
 }
 .game-help-body-scroll::-webkit-scrollbar-track{background:rgba(18,12,8,0.65);border-radius:6px;}
+.game-help-scroll-frame{
+  flex:1;
+  min-height:0;
+  min-width:0;
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  width:100%;
+}
+@media(max-width:768px){
+  #game-help-modal .game-help-body-scroll{
+    scrollbar-width:none;
+    touch-action:pan-y;
+  }
+  #game-help-modal .game-help-body-scroll::-webkit-scrollbar{
+    display:none;width:0;height:0;background:transparent;
+  }
+  #game-help-modal .game-help-scroll-frame::after{
+    content:'';
+    position:absolute;
+    top:0;
+    right:max(0px, env(safe-area-inset-right, 0px));
+    bottom:0;
+    width:14px;
+    border-radius:10px;
+    pointer-events:none;
+    z-index:3;
+    box-sizing:border-box;
+    background:linear-gradient(90deg,rgba(40,28,18,0.25),rgba(14,10,6,0.92));
+    border:1px solid rgba(100,80,48,0.45);
+    box-shadow:inset 0 0 8px rgba(0,0,0,0.35);
+  }
+  #game-help-modal .game-help-scroll-frame::before{
+    content:'';
+    position:absolute;
+    top:var(--help-thumb-off, 0px);
+    right:calc(3px + max(0px, env(safe-area-inset-right, 0px)));
+    width:8px;
+    min-height:24px;
+    height:var(--help-thumb-len, 36px);
+    max-height:calc(100% - 8px);
+    border-radius:10px;
+    pointer-events:none;
+    z-index:4;
+    box-sizing:border-box;
+    border:2px solid rgba(30,20,12,0.95);
+    background:linear-gradient(180deg,rgba(235,205,140,0.95),rgba(160,110,45,0.92) 40%,rgba(90,58,22,0.95));
+    box-shadow:inset 0 1px 0 rgba(255,245,220,0.45),0 2px 6px rgba(0,0,0,0.35);
+    opacity:var(--help-thumb-op, 1);
+  }
+}
 .game-help-pane{display:none;font-size:13px;line-height:1.55;color:#e4dcc8;}
 .game-help-pane.active{display:block;}
 .game-help-pane h3{margin:0 0 10px;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:#c9a050;}
@@ -1463,8 +1514,7 @@ body.game-help-mobile-minimal #game-help-panel{
   touch-action:auto;
 }
 #game-help-modal.game-help--mobile .game-help-body-scroll{
-  padding:14px 16px 16px;
-  padding-bottom:max(16px, env(safe-area-inset-bottom, 0px));
+  padding:14px max(22px, calc(16px + env(safe-area-inset-right, 0px))) max(16px, env(safe-area-inset-bottom, 0px)) 16px;
 }
 /* Narrow phones: hide joystick, zoom, and other HUD so only the bottom toolbar shows with the help panel. */
 @media(max-width:768px){
@@ -2386,6 +2436,7 @@ body.game-help-mobile-minimal #game-help-panel{
         <button type="button" class="game-help-tab" role="tab" aria-selected="false" data-help-tab="factions" id="game-help-tab-factions">Factions</button>
       </div>
       <div class="game-help-body">
+        <div class="game-help-scroll-frame">
         <div class="game-help-body-scroll">
         <div class="game-help-pane active" data-help-pane="basics" id="game-help-pane-basics">
           <div class="help-for-pc">
@@ -2467,6 +2518,7 @@ body.game-help-mobile-minimal #game-help-panel{
           <p>While docked, the governor may offer <strong>letters</strong> to sink enemy-flagged shipping or, in quieter times, “accidents” that please the court. Accept from the port quest list; progress ticks when you defeat the right hulls.</p>
           <h3>Commissions</h3>
           <p>You may swear a <strong>formal commission</strong> to one faction (when offered). That alliance shifts how their rivals treat you and which objectives pay best.</p>
+        </div>
         </div>
         </div>
       </div>
@@ -7422,7 +7474,7 @@ function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   npc.cargoUnits = 10 + (Math.floor(sr() * 10) | 0);
   syncTradeShipName(npc, homeMeta);
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta) % FACTION_COUNT];
-  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.26 + sr() * 0.16);
+  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.32 + sr() * 0.18);
   npc.tradeCruiseSpeed = npc.targetCruise;
 }
 
@@ -11704,6 +11756,81 @@ function tradeShipCannonForType(shipType) {
   if (shipType === 'brigantine') return 'medium';
   return 'light';
 }
+/** Spawn one merchantman leaving `home` port; returns true if added. `seedSalt` separates RNG streams for duplicate routes. */
+function tryAddMerchantNpcFromHome(home, allPorts, tradeSyncIdx, seedSalt) {
+  const tBase = ((G.worldSeed | 0) * 31 + 22411) >>> 0;
+  let s = (tBase + (seedSalt | 0) + Math.imul(home.cx * 7919 + home.cz * 9341, 2654435761)) >>> 0;
+  const sr = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  const dest = pickTradeDestination(home, allPorts, sr);
+  if (!dest) return false;
+  const spawn = findMerchantSpawnOffCoast(home, sr);
+  if (!spawn) return false;
+  let nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nx));
+  let nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nz));
+  const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
+  const st = shipTypes[Math.floor(sr() * shipTypes.length)];
+  for (let trySp = 0; trySp < 12; trySp++) {
+    const nr = shipHullRadius(st);
+    let clash = false;
+    for (let j = 0; j < G.npcs.length; j++) {
+      const ex = G.npcs[j];
+      if (Math.hypot(nx - ex.x, nz - ex.z) < nr + shipHullRadius(ex.type) + 6) { clash = true; break; }
+    }
+    if (!clash && Math.hypot(nx - G.player.x, nz - G.player.z) >= nr + shipHullRadius(G.player.shipType) + 9) break;
+    const sp2 = findMerchantSpawnOffCoast(home, sr);
+    if (sp2) {
+      nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, sp2.nx));
+      nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, sp2.nz));
+    }
+  }
+  const sailPick = sr() > 0.55 ? 'silk' : 'basic';
+  const cannonPart = tradeShipCannonForType(st);
+  const homeFac = townFaction(home) % FACTION_COUNT;
+  const isTroop = sr() < 0.13;
+  const npc = {
+    syncId: TRADE_NPC_SYNC_START + tradeSyncIdx,
+    x: nx, z: nz,
+    rotation: 0,
+    speed: 0,
+    health: 48 + sr() * 42,
+    type: st,
+    tradeCannon: cannonPart,
+    name: '',
+    homeFaction: homeFac,
+    flagColor: FACTION_TRADE_COLORS[homeFac],
+    flagAssetId: factionFlagPngIdForFaction(homeFac),
+    flagPosition: pickRandomAiFlagPosition(sr()),
+    isTradeShip: true,
+    isTroopTransport: isTroop,
+    troopFaction: homeFac,
+    troopCount: isTroop ? (90 + Math.floor(sr() * 200)) : 0,
+    troopGold: isTroop ? (180 + Math.floor(sr() * 420)) : 0,
+    aggro: false,
+    homeDockX: home.dockX,
+    homeDockZ: home.dockZ,
+    homeCx: home.cx,
+    homeCz: home.cz,
+    sailPick,
+    sailBonus: sailPick === 'silk' ? 0.3 : 0,
+    wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
+    riggingHealth: 100
+  };
+  assignTradeRouteFromHome(npc, home, allPorts, sr);
+  npc.homeEmbarkX = nx;
+  npc.homeEmbarkZ = nz;
+  npc.rotation = Math.atan2(npc.tradeDestX - nx, npc.tradeDestZ - nz);
+  npc.tradePhase = 'loading_home';
+  npc.tradeTimer = 6 + sr() * 14;
+  syncTradeShipName(npc, home);
+  const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, flagAssetId: npc.flagAssetId });
+  npc.crewData = merchantCrewFromRng(sr);
+  buildCrewMeshes(mesh, npc.crewData, npc.type);
+  npc.mesh = mesh;
+  scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  G.npcs.push(npc);
+  return true;
+}
 function spawnTradeShips() {
   const tBase = ((G.worldSeed | 0) * 31 + 22411) >>> 0;
   const allPorts = collectAllTradingPorts();
@@ -11719,77 +11846,12 @@ function spawnTradeShips() {
   let tradeSyncIdx = 0;
   for (let pi = 0; pi < order.length; pi++) {
     const home = portsSorted[order[pi]];
-    let s = (tBase + Math.imul(home.cx * 7919 + home.cz * 9341, 2654435761)) >>> 0;
-    const sr = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-    const dest = pickTradeDestination(home, allPorts, sr);
-    if (!dest) continue;
-    const spawn = findMerchantSpawnOffCoast(home, sr);
-    if (!spawn) continue;
-    let nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nx));
-    let nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, spawn.nz));
-    const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
-    const st = shipTypes[Math.floor(sr() * shipTypes.length)];
-    for (let trySp = 0; trySp < 12; trySp++) {
-      const nr = shipHullRadius(st);
-      let clash = false;
-      for (let j = 0; j < G.npcs.length; j++) {
-        const ex = G.npcs[j];
-        if (Math.hypot(nx - ex.x, nz - ex.z) < nr + shipHullRadius(ex.type) + 6) { clash = true; break; }
-      }
-      if (!clash && Math.hypot(nx - G.player.x, nz - G.player.z) >= nr + shipHullRadius(G.player.shipType) + 9) break;
-      const sp2 = findMerchantSpawnOffCoast(home, sr);
-      if (sp2) {
-        nx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, sp2.nx));
-        nz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, sp2.nz));
-      }
-    }
-    const sailPick = sr() > 0.55 ? 'silk' : 'basic';
-    const cannonPart = tradeShipCannonForType(st);
-    const homeFac = townFaction(home) % FACTION_COUNT;
-    const isTroop = sr() < 0.13;
-    const npc = {
-      syncId: TRADE_NPC_SYNC_START + tradeSyncIdx,
-      x: nx, z: nz,
-      rotation: 0,
-      speed: 0,
-      health: 48 + sr() * 42,
-      type: st,
-      tradeCannon: cannonPart,
-      name: '',
-      homeFaction: homeFac,
-      flagColor: FACTION_TRADE_COLORS[homeFac],
-      flagAssetId: factionFlagPngIdForFaction(homeFac),
-      flagPosition: pickRandomAiFlagPosition(sr()),
-      isTradeShip: true,
-      isTroopTransport: isTroop,
-      troopFaction: homeFac,
-      troopCount: isTroop ? (90 + Math.floor(sr() * 200)) : 0,
-      troopGold: isTroop ? (180 + Math.floor(sr() * 420)) : 0,
-      aggro: false,
-      homeDockX: home.dockX,
-      homeDockZ: home.dockZ,
-      homeCx: home.cx,
-      homeCz: home.cz,
-      sailPick,
-      sailBonus: sailPick === 'silk' ? 0.3 : 0,
-      wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
-      riggingHealth: 100
-    };
-    assignTradeRouteFromHome(npc, home, allPorts, sr);
-    npc.homeEmbarkX = nx;
-    npc.homeEmbarkZ = nz;
-    npc.rotation = Math.atan2(npc.tradeDestX - nx, npc.tradeDestZ - nz);
-    npc.tradePhase = 'loading_home';
-    npc.tradeTimer = 6 + sr() * 14;
-    syncTradeShipName(npc, home);
-    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, flagAssetId: npc.flagAssetId });
-    npc.crewData = merchantCrewFromRng(sr);
-    buildCrewMeshes(mesh, npc.crewData, npc.type);
-    npc.mesh = mesh;
-    scene.add(mesh);
-    applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
-    G.npcs.push(npc);
-    tradeSyncIdx++;
+    if (tryAddMerchantNpcFromHome(home, allPorts, tradeSyncIdx, pi * 997)) tradeSyncIdx++;
+  }
+  const extraMerchants = Math.min(40, Math.max(0, Math.floor(allPorts.length * 0.45)));
+  for (let ex = 0; ex < extraMerchants; ex++) {
+    const home = allPorts[(tBase + ex * 31337) % allPorts.length];
+    if (tryAddMerchantNpcFromHome(home, allPorts, tradeSyncIdx, 800000 + ex * 131)) tradeSyncIdx++;
   }
 }
 function spawnNPCs() {
@@ -11797,7 +11859,9 @@ function spawnNPCs() {
   G.npcs = [];
   const npcSeed = (G.worldSeed | 0) * 7 + 13;
   const typePool = ['cutter','sloop','brigantine','galleon','warship'];
-  for (let i = 0; i < 8; i++) {
+  const portCount = collectAllTradingPorts().length;
+  const nPirates = Math.min(46, 10 + Math.floor(portCount * 0.48));
+  for (let i = 0; i < nPirates; i++) {
     let s = npcSeed + i * 997;
     const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
     const npcType = typePool[Math.floor(sr() * 5)];
@@ -11841,7 +11905,7 @@ function spawnNPCs() {
     npc.flagColor = npcFlagColor;
     npc.flagAssetId = factionFlagPngIdForFaction(pirateFaction);
     npc.sailBonus = 0.1;
-    npc.speed = npcMaxForwardSpeed(npc) * (0.14 + sr() * 0.1);
+    npc.speed = npcMaxForwardSpeed(npc) * (0.22 + sr() * 0.14);
     const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name, { flagAssetId: npc.flagAssetId });
     npc.crewData = ambientPirateCrewData((npcSeed + i * 997) >>> 0);
     buildCrewMeshes(mesh, npc.crewData, npc.type);
@@ -12054,6 +12118,53 @@ function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
   });
 }
 
+/** Host-only: corsairs pick trade prey (faction wars + occasional predation) and duel rival patrols. */
+function updatePirateWorldHuntAi(npc, dt) {
+  if (npc.isTradeShip || npc.isStoryBounty || npc.sinking) return;
+  if (npc.isEscortCargo && npc.escortQuestActive) return;
+  if (npc.escortRaider) return;
+  npc._huntAiAcc = (npc._huntAiAcc || 0) + dt;
+  if (npc._huntAiAcc < 0.68) return;
+  npc._huntAiAcc = 0;
+  ensurePolitics();
+  const pirF = (npc.factionId | 0) % FACTION_COUNT;
+  const distPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+  if (npc.aggro && distPlayer < 92) return;
+  if (npc.attackNpcSyncId != null) {
+    const prey = G.npcs.find(n => n.syncId === npc.attackNpcSyncId && !n.sinking && (n.health == null || n.health > 0));
+    if (prey) {
+      const d = Math.hypot(prey.x - npc.x, prey.z - npc.z);
+      if (d < 620) return;
+    }
+    npc.attackNpcSyncId = null;
+  }
+  const huntRoll = Math.random();
+  let bestId = null;
+  let bestScore = -1e9;
+  for (let i = 0; i < G.npcs.length; i++) {
+    const m = G.npcs[i];
+    if (m === npc || m.sinking) continue;
+    const mh = m.health != null && Number.isFinite(Number(m.health)) ? Number(m.health) : 50;
+    if (mh <= 0) continue;
+    const d = Math.hypot(m.x - npc.x, m.z - npc.z);
+    if (d > 520) continue;
+    if (m.isTradeShip) {
+      const mf = townFaction({ cx: m.homeCx, cz: m.homeCz, hasTown: true }) % FACTION_COUNT;
+      const war = factionsConsideredAtWar(pirF, mf);
+      if (!war && huntRoll > 0.072) continue;
+      const score = (war ? 1200 : 140) - d;
+      if (score > bestScore) { bestScore = score; bestId = m.syncId; }
+    } else if (!m.isStoryBounty && m.factionId != null && !m.isTradeShip) {
+      const of = (m.factionId | 0) % FACTION_COUNT;
+      if (of === pirF) continue;
+      if (!factionsConsideredAtWar(pirF, of) && huntRoll > 0.045) continue;
+      const score = 900 - d;
+      if (score > bestScore) { bestScore = score; bestId = m.syncId; }
+    }
+  }
+  if (bestId != null) npc.attackNpcSyncId = bestId;
+}
+
 function updateNPCs(dt) {
   const host = isMultiplayerHost();
   G.npcs.forEach((npc, npcIdx) => {
@@ -12143,7 +12254,7 @@ function updateNPCs(dt) {
           npc.wanderAngle = npc.rotation;
         }
         if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
-        const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.35;
+        const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.44;
         const phase = npc.tradePhase || 'to_dest';
         const dockTx = npc.tradeDestX, dockTz = npc.tradeDestZ;
         let tx = dockTx, tz = dockTz;
@@ -12263,6 +12374,7 @@ function updateNPCs(dt) {
       if (!npc.fireCooldown) npc.fireCooldown = 0;
       npc.fireCooldown -= dt;
       if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
+      updatePirateWorldHuntAi(npc, dt);
 
       let focus = null;
       if (npc.attackNpcSyncId != null) {
@@ -23374,6 +23486,10 @@ function gameHelpSetTab(tab) {
     const on = p.getAttribute('data-help-pane') === tab;
     p.classList.toggle('active', on);
   });
+  requestAnimationFrame(() => {
+    syncGameHelpScrollbarThumb();
+    requestAnimationFrame(() => syncGameHelpScrollbarThumb());
+  });
 }
 
 function openGameHelpModal(opts = {}) {
@@ -23389,6 +23505,10 @@ function openGameHelpModal(opts = {}) {
   root.style.display = 'flex';
   root.setAttribute('aria-hidden', 'false');
   document.getElementById('btn-help')?.classList.add('active');
+  requestAnimationFrame(() => {
+    syncGameHelpScrollbarThumb();
+    requestAnimationFrame(() => syncGameHelpScrollbarThumb());
+  });
 }
 
 function closeGameHelpModal(options = {}) {
@@ -24864,6 +24984,63 @@ function _syncOneCaptainLogScrollThumb(scrollHost) {
 function syncShipLogScrollbarThumb() {
   document.querySelectorAll('#log-ship .ship-log-scroll-outer, #log-world .ship-log-scroll-outer').forEach(_syncOneCaptainLogScrollThumb);
 }
+function syncGameHelpScrollbarThumb() {
+  const scrollHost = document.querySelector('#game-help-modal .game-help-body-scroll');
+  if (!scrollHost) return;
+  const frame = scrollHost.closest('.game-help-scroll-frame');
+  const styleTarget = (isMobile && frame) ? frame : scrollHost;
+  const sh = scrollHost.scrollHeight;
+  const ch = scrollHost.clientHeight;
+  const st = scrollHost.scrollTop;
+  if (sh <= ch + 2 || ch < 32) {
+    styleTarget.style.setProperty('--help-thumb-op', '0');
+    styleTarget.style.setProperty('--help-thumb-len', '32px');
+    styleTarget.style.setProperty('--help-thumb-off', '0px');
+    return;
+  }
+  const maxScroll = sh - ch;
+  const inset = isMobile ? 6 : 4;
+  const usable = Math.max(40, ch - inset * 2);
+  const thumbLen = Math.max(32, Math.min((ch / sh) * usable, usable - 8));
+  const travel = Math.max(0, usable - thumbLen);
+  const off = maxScroll > 0 ? (st / maxScroll) * travel : 0;
+  styleTarget.style.setProperty('--help-thumb-op', '1');
+  styleTarget.style.setProperty('--help-thumb-len', `${thumbLen}px`);
+  styleTarget.style.setProperty('--help-thumb-off', `${inset + off}px`);
+}
+(function bindGameHelpScrollGutter() {
+  const scrollHost = document.querySelector('#game-help-modal .game-help-body-scroll');
+  if (!scrollHost) return;
+  scrollHost.addEventListener('scroll', () => syncGameHelpScrollbarThumb(), { passive: true });
+  window.addEventListener('resize', () => syncGameHelpScrollbarThumb());
+  if (!isMobile) return;
+  const GUTTER_PX = 36;
+  let rail = null;
+  function gameHelpModalOpen() {
+    const r = document.getElementById('game-help-modal');
+    return !!(r && r.style.display === 'flex');
+  }
+  function inRightGutter(clientX) {
+    const r = scrollHost.getBoundingClientRect();
+    return clientX >= r.right - GUTTER_PX;
+  }
+  scrollHost.addEventListener('touchstart', e => {
+    if (!gameHelpModalOpen() || e.touches.length !== 1) return;
+    if (!inRightGutter(e.touches[0].clientX)) return;
+    rail = { y: e.touches[0].clientY, scroll: scrollHost.scrollTop };
+  }, { passive: true });
+  scrollHost.addEventListener('touchmove', e => {
+    if (!rail || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dy = rail.y - t.clientY;
+    rail.y = t.clientY;
+    scrollHost.scrollTop += dy;
+    syncGameHelpScrollbarThumb();
+  }, { passive: true });
+  function endRail() { rail = null; }
+  scrollHost.addEventListener('touchend', endRail, { passive: true });
+  scrollHost.addEventListener('touchcancel', endRail, { passive: true });
+})();
 (function bindShipLogScrollGutterTouch() {
   function bindHost(scrollHost) {
     if (!scrollHost) return;
