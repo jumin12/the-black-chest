@@ -8781,9 +8781,10 @@ function anchorWildlifeClockFromServer(worldT) {
   }
   const predicted = _wildlifeSyncedT0 + (now - _wildlifeSyncedPerf0) / 1000 + _wildlifeSmoothOff;
   let err = w - predicted;
-  err = Math.max(-0.55, Math.min(0.55, err));
-  _wildlifeSmoothOff += err * 0.28;
-  _wildlifeSmoothOff = Math.max(-0.75, Math.min(0.75, _wildlifeSmoothOff));
+  if (Math.abs(err) < 0.06) return;
+  err = Math.max(-0.2, Math.min(0.2, err));
+  _wildlifeSmoothOff += err * 0.045;
+  _wildlifeSmoothOff = Math.max(-0.4, Math.min(0.4, _wildlifeSmoothOff));
 }
 function wildlifeCullCenterXZ() {
   if (G.spectate) {
@@ -13228,19 +13229,21 @@ function updateNPCs(dt) {
       }
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
-      const v = (npc.speed != null && Number.isFinite(Number(npc.speed))) ? Number(npc.speed) : 0;
-      if (Math.abs(v) > 0.012) {
-        npc.x += Math.sin(npc.rotation) * v * dt;
-        npc.z += Math.cos(npc.rotation) * v * dt;
+      const ex = npc.syncX - npc.x, ez = npc.syncZ - npc.z;
+      const err = Math.hypot(ex, ez);
+      if (err > 110) {
+        npc.x = npc.syncX;
+        npc.z = npc.syncZ;
+      } else {
+        const kPos = 1 - Math.exp(-12 * dt);
+        npc.x += ex * kPos;
+        npc.z += ez * kPos;
       }
-      const k = Math.min(1, 36 * dt);
-      npc.x += (npc.syncX - npc.x) * k;
-      npc.z += (npc.syncZ - npc.z) * k;
       let dr = npc.syncR - npc.rotation;
       while (dr > Math.PI) dr -= Math.PI * 2;
       while (dr < -Math.PI) dr += Math.PI * 2;
-      const rk = Math.min(1, 36 * dt);
-      npc.rotation += dr * rk;
+      const kRot = 1 - Math.exp(-18 * dt);
+      npc.rotation += dr * kRot;
     }
 
     if (npc.sinking) {
@@ -17116,6 +17119,42 @@ function bootstrapGameAudioOnUserGesture() {
 ['pointerdown', 'keydown'].forEach(ev => {
   window.addEventListener(ev, bootstrapGameAudioOnUserGesture, { capture: true, passive: true });
 });
+
+let _gameAudioSuspendedByPage = false;
+function suspendAllGameAudioForPageExit() {
+  if (_gameAudioSuspendedByPage) return;
+  _gameAudioSuspendedByPage = true;
+  try { fadeAndStopShipTravelWA(); } catch (e) {}
+  try { if (_musicAudio) _musicAudio.pause(); } catch (e) {}
+  try { if (audioCtx && audioCtx.state === 'running') void audioCtx.suspend(); } catch (e) {}
+}
+function resumeGameAudioIfPageVisible() {
+  if (!_gameAudioSuspendedByPage) return;
+  _gameAudioSuspendedByPage = false;
+  if (document.visibilityState !== 'visible') return;
+  try { if (audioCtx && audioCtx.state === 'suspended') void audioCtx.resume(); } catch (e) {}
+  if (G.mode === 'playing') {
+    tryStartBackgroundMusic();
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') suspendAllGameAudioForPageExit();
+  else resumeGameAudioIfPageVisible();
+}, { capture: true });
+window.addEventListener('pagehide', e => {
+  if (e.persisted) {
+    suspendAllGameAudioForPageExit();
+    return;
+  }
+  suspendAllGameAudioForPageExit();
+  try { if (G.mode === 'playing') flushPendingSaveProgress(); } catch (e2) {}
+  if (ws && ws.readyState === 1) {
+    try { ws.close(1000, 'page leave'); } catch (e3) {}
+  }
+}, { capture: true });
+window.addEventListener('beforeunload', () => {
+  suspendAllGameAudioForPageExit();
+}, { capture: true });
 
 function tryPlaySeagullSpatial() {
   if (masterSfxBusGain() <= 0.02) return;
