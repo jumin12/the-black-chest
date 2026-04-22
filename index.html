@@ -12658,7 +12658,9 @@ function rebuildNPCShipMesh(npc) {
   buildCrewMeshes(mesh, npcCrew, npc.type);
   npc.mesh = mesh;
   scene.add(mesh);
-  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  const _rh0 = getNpcRiggingHealth(npc);
+  applyRiggingVisualToGroup(mesh, _rh0);
+  npc._rigVisRh = Math.round(_rh0);
 }
 
 /** Horizontal cannonball speed (world u/s); must match fireCannonball dx,dz scale. */
@@ -13302,21 +13304,27 @@ function updateNPCs(dt) {
       }
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
+      const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
+      const vNet = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
+      if (Math.abs(vNet) > 0.006) {
+        npc.x += Math.sin(authR) * vNet * dt;
+        npc.z += Math.cos(authR) * vNet * dt;
+      }
       const ex = npc.syncX - npc.x, ez = npc.syncZ - npc.z;
       const err = Math.hypot(ex, ez);
-      if (err > 110) {
+      if (err > 140) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
       } else {
-        const kPos = 1 - Math.exp(-12 * dt);
-        npc.x += ex * kPos;
-        npc.z += ez * kPos;
+        const posK = 1 - Math.exp(-(err > 8 ? 34 : 26) * dt);
+        npc.x += ex * posK;
+        npc.z += ez * posK;
       }
-      let dr = npc.syncR - npc.rotation;
+      let dr = authR - npc.rotation;
       while (dr > Math.PI) dr -= Math.PI * 2;
       while (dr < -Math.PI) dr += Math.PI * 2;
-      const kRot = 1 - Math.exp(-18 * dt);
-      npc.rotation += dr * kRot;
+      const kRot = 1 - Math.exp(-40 * dt);
+      npc.rotation += dr * Math.min(1, kRot);
     }
 
     if (npc.sinking) {
@@ -13333,7 +13341,13 @@ function updateNPCs(dt) {
       npc.mesh.rotation.y = npc.rotation;
       npc.mesh.rotation.x = nt.wavePitch;
       npc.mesh.rotation.z = nt.waveRoll;
-      applyRiggingVisualToGroup(npc.mesh, getNpcRiggingHealth(npc));
+      {
+        const rhNow = Math.round(getNpcRiggingHealth(npc));
+        if (npc._rigVisRh !== rhNow) {
+          npc._rigVisRh = rhNow;
+          applyRiggingVisualToGroup(npc.mesh, rhNow);
+        }
+      }
       const wakeKey = npc.syncId != null ? `npc${npc.syncId}` : `npci${npcIdx}`;
       let effWakeSpd = npc.speed != null ? npc.speed : 0;
       if (!host) {
@@ -14632,7 +14646,9 @@ function buildNpcFromNetSyncData(nd, nid) {
     npc.mesh = mesh;
     scene.add(mesh);
   }
-  applyRiggingVisualToGroup(npc.mesh, getNpcRiggingHealth(npc));
+  const _rhB = getNpcRiggingHealth(npc);
+  applyRiggingVisualToGroup(npc.mesh, _rhB);
+  npc._rigVisRh = Math.round(_rhB);
   if (nd.atk != null && Number.isFinite(Number(nd.atk))) {
     const aid = Number(nd.atk);
     if (isMer) npc.returnFireSyncId = aid;
@@ -15208,12 +15224,18 @@ async function connectToServer() {
         if (G.myId == null) break;
         if (!Array.isArray(msg.npcs)) break;
         const seen = new Set();
+        const npcBySyncId = new Map();
+        for (let _ni = 0; _ni < G.npcs.length; _ni++) {
+          const _n = G.npcs[_ni];
+          const _sid = netNpcSyncId(_n.syncId);
+          if (_sid != null) npcBySyncId.set(_sid, _n);
+        }
         msg.npcs.forEach(nd => {
           if (!nd) return;
           const nid = netNpcSyncId(nd.id);
           if (nid == null) return;
           seen.add(nid);
-          let npc = G.npcs.find(n => netNpcSyncId(n.syncId) === nid);
+          let npc = npcBySyncId.get(nid);
           const sbMeta = parseStoryBountyFromSyncId(nid);
           const moNet = nd.mo != null && Number.isFinite(Number(nd.mo)) ? Math.floor(Number(nd.mo)) : (sbMeta ? sbMeta.ownerPlayerId : null);
           if (!npc && sbMeta) {
@@ -15249,12 +15271,14 @@ async function connectToServer() {
             npc.mesh = mesh;
             scene.add(mesh);
             G.npcs.push(npc);
+            npcBySyncId.set(nid, npc);
           }
           if (!npc && !sbMeta) {
             const built = buildNpcFromNetSyncData(nd, nid);
             if (built) {
               npc = built;
               G.npcs.push(npc);
+              npcBySyncId.set(nid, npc);
             }
           }
           if (!npc) return;
@@ -15306,7 +15330,14 @@ async function connectToServer() {
           if (nd.h != null && Number.isFinite(Number(nd.h))) npc.health = Math.round(Number(nd.h));
           npc.aggro = !!nd.aggro;
           if (nd.rg != null) npc.riggingHealth = Math.max(0, Math.min(100, nd.rg));
-          if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, getNpcRiggingHealth(npc));
+          if (npc.mesh) {
+            const rhNet = getNpcRiggingHealth(npc);
+            const rhKey = Math.round(rhNet);
+            if (npc._rigVisRh !== rhKey) {
+              npc._rigVisRh = rhKey;
+              applyRiggingVisualToGroup(npc.mesh, rhNet);
+            }
+          }
           if (nd.sinking && !npc.sinking) {
             npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
           }
