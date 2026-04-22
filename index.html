@@ -1389,16 +1389,29 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   box-shadow:0 0 0 1px rgba(212,168,72,0.25),inset 0 1px 0 rgba(255,230,200,0.12);
 }
 .game-help-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:0;}
-.game-help-body-scroll{flex:1 1 auto;min-height:0;min-width:0;}
-#game-help-modal:not(.game-help--mobile) .game-help-body-scroll{
-  overflow:visible;
-  padding:14px 18px 16px;
-}
-#game-help-modal:not(.game-help--mobile) .game-help-body{
+.game-help-body-scroll{
+  flex:1 1 auto;
+  min-height:0;
+  min-width:0;
+  position:relative;
+  display:block;
+  touch-action:pan-y;
   overflow-y:auto;
+  overflow-x:hidden;
   -webkit-overflow-scrolling:touch;
   overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+  scrollbar-width:thin;
+  scrollbar-color:rgba(212,168,72,0.85) rgba(18,12,8,0.92);
+  padding:14px 18px 16px;
 }
+.game-help-body-scroll::-webkit-scrollbar{width:10px;}
+.game-help-body-scroll::-webkit-scrollbar-thumb{
+  border-radius:6px;
+  border:2px solid rgba(30,20,12,0.85);
+  background:linear-gradient(180deg,rgba(235,205,140,0.9),rgba(140,100,50,0.88));
+}
+.game-help-body-scroll::-webkit-scrollbar-track{background:rgba(18,12,8,0.65);border-radius:6px;}
 .game-help-pane{display:none;font-size:13px;line-height:1.55;color:#e4dcc8;}
 .game-help-pane.active{display:block;}
 .game-help-pane h3{margin:0 0 10px;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:#c9a050;}
@@ -1450,11 +1463,6 @@ body.game-help-mobile-minimal #game-help-panel{
   touch-action:auto;
 }
 #game-help-modal.game-help--mobile .game-help-body-scroll{
-  overflow-y:auto;
-  overflow-x:hidden;
-  -webkit-overflow-scrolling:touch;
-  touch-action:pan-y;
-  overscroll-behavior:contain;
   padding:14px 16px 16px;
   padding-bottom:max(16px, env(safe-area-inset-bottom, 0px));
 }
@@ -3183,7 +3191,7 @@ function spawnEscortRaiderPirates(cargoSyncId, nearPt, count, nameRng) {
       speed: 0,
       health: 52 + sr() * 38,
       type: npcType,
-      name: NPC_SHIP_NAMES.length ? NPC_SHIP_NAMES[Math.floor(sr() * NPC_SHIP_NAMES.length)] : `Raider ${a + 1}`,
+      name: proceduralPirateShipName(pirateFaction, Math.floor(nx / CHUNK_SIZE), Math.floor(nz / CHUNK_SIZE), (cargoSyncId | 0) * 17 + a * 3),
       wanderAngle: sr() * Math.PI * 2, wanderTimer: 8 + sr() * 6,
       underFireTimer: 0, fireJitter: sr(),
       riggingHealth: 100,
@@ -3815,6 +3823,43 @@ const SHIP_TYPES = {
   galleon: { name: 'Galleon', desc: 'Heavy hauler', hullLen: 14, hullW: 4.5, hullH: 2.3, masts: 3, maxCrew: 18, maxPrisoners: 16, speed: 0.94, turnRate: 0.7, cannonSlots: 6, cargoSlots: 17, bowStyle: 'wide' },
   warship: { name: 'Man-o-War', desc: 'Floating fortress', hullLen: 18, hullW: 5.5, hullH: 2.8, masts: 3, maxCrew: 28, maxPrisoners: 24, speed: 0.69, turnRate: 0.5, cannonSlots: 10, cargoSlots: 23, bowStyle: 'blunt' }
 };
+/** Fish, dolphins, and sharks stay beyond island surf by at least five cutter hull lengths. */
+const WILDLIFE_ISLAND_EDGE_CLEAR_M = SHIP_TYPES.cutter.hullLen * 5;
+function wildlifeXZOutsideIslandMargin(wx, wz, marginM) {
+  const m = marginM != null ? marginM : WILDLIFE_ISLAND_EDGE_CLEAR_M;
+  if (isSeaObstructed(wx, wz)) return false;
+  const isls = G.islands;
+  if (!isls || !isls.length) return true;
+  for (let i = 0; i < isls.length; i++) {
+    const isl = isls[i];
+    if (!isl || isl.worldX == null) continue;
+    const dx = wx - isl.worldX, dz = wz - isl.worldZ;
+    if (Math.hypot(dx, dz) < (isl.radius || 15) + m) return false;
+  }
+  return true;
+}
+function nudgeWildlifeXZAwayFromIslands(x, z, refX, refZ) {
+  if (wildlifeXZOutsideIslandMargin(x, z)) return { x, z };
+  let px = x, pz = z;
+  const isls = G.islands;
+  if (isls && isls.length) {
+    for (let i = 0; i < isls.length; i++) {
+      const isl = isls[i];
+      if (!isl || isl.worldX == null) continue;
+      const dx = px - isl.worldX, dz = pz - isl.worldZ;
+      const d = Math.hypot(dx, dz) || 1;
+      const need = (isl.radius || 15) + WILDLIFE_ISLAND_EDGE_CLEAR_M;
+      if (d < need) {
+        const push = need - d + 1.1;
+        px += (dx / d) * push;
+        pz += (dz / d) * push;
+      }
+    }
+  }
+  if (wildlifeXZOutsideIslandMargin(px, pz) && !isSeaObstructed(px, pz)) return { x: px, z: pz };
+  if (wildlifeXZOutsideIslandMargin(refX, refZ)) return { x: refX, z: refZ };
+  return { x: refX, z: refZ };
+}
 
 function shipHullRadius(shipType) {
   const s = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
@@ -6082,16 +6127,45 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
   return meta;
 }
 
+/** Per-crown settlement stems (historic / plausible); combined with colonial prefixes and tags. */
+const FACTION_TOWN_STEMS = [
+  ['Whitstable', 'Penzance', 'Falmouth', 'Dartmouth', 'Scarborough', 'Great Yarmouth', 'King\'s Lynn', 'Bridlington', 'Grimsby', 'Milford Haven', 'Holyhead', 'Ramsgate', 'Deal Castle', 'Brixham', 'Padstow', 'St Ives', 'Ilfracombe', 'Lyme Regis', 'Southwold', 'Lowestoft', 'Harwich', 'Margate', 'Fowey', 'Truro Haven', 'Plymouth Sound', 'Portsmouth Bay', 'Hull Roads', 'Liverpool Bar', 'Tynemouth', 'Whitby Reach', 'Dover Roads', 'Portree Bay', 'Oban Sound', 'Stornoway Roads', 'Ayr Harbour'],
+  ['Vlissingen', 'Terneuzen', 'Harlingen', 'Den Helder', 'IJmuiden', 'Katwijk', 'Scheveningen', 'Delfshaven', 'Brielle', 'Maassluis', 'Hoorn Haven', 'Enkhuizen', 'Medemblik', 'Stavoren', 'Workum', 'Brouwershaven', 'Zierikzee', 'Veere', 'Gorinchem', 'Kampen', 'Urck', 'Marken', 'Volendam', 'Edam', 'Monnickendam', 'Texel Roads', 'Terschelling Deep', 'Ameland Gat', 'Schouwen Bank', 'Walcheren Reach', 'Rotterdam Roads', 'Brouwersdam', 'Roompot', 'Oosterschelde', 'Westkapelle'],
+  ['Calais Roads', 'Boulogne', 'Dunkerque', 'Le Havre', 'Cherbourg', 'Saint-Malo', 'Brest Roads', 'La Rochelle', 'Rochefort', 'Bordeaux Garonne', 'Bayonne', 'Sète', 'Toulon', 'Marseille Vieux', 'Nice Baie', 'Antibes', 'Grasse Reach', 'Dieppe', 'Honfleur', 'Granville', 'Lorient', 'Concarneau', 'Quimper Bay', 'Vannes Roads', 'Nantes Loire', 'Dunkerque Bank', 'Île de Ré', 'Noirmoutier', 'Arcachon', 'Port-Vendres', 'Collioure', 'Ajaccio Roads', 'Bastia', 'Calvi Bay', 'Bonifacio'],
+  ['Cádiz Bay', 'Málaga', 'Almería', 'Cartagena', 'Valencia', 'Barcelona', 'Tarragona', 'Gandía', 'Alicante', 'Marbella', 'Huelva', 'Ayamonte', 'Gijón', 'Santander', 'Bilbao Abra', 'La Coruña', 'Vigo Ría', 'Ferrol', 'Marín', 'Pasajes', 'Sagunto', 'Castellón', 'Palma', 'Mahón', 'Ibiza', 'Santa Cruz', 'Las Palmas', 'Arrecife', 'Puerto del Rosario', 'Melilla Roads', 'Ceuta', 'Tarifa Strait', 'Roquetas', 'Estepona', 'Motril'],
+  ['Lisboa Tejo', 'Porto Douro', 'Aveiro', 'Figueira da Foz', 'Peniche', 'Nazaré', 'Sesimbra', 'Setúbal', 'Sines', 'Lagos', 'Portimão', 'Faro Ria', 'Tavira', 'Viana do Castelo', 'Leixões', 'Póvoa de Varzim', 'Esposende', 'Caminha', 'Vila do Conde', 'Matosinhos', 'Cascais Bay', 'Ericeira', 'Sines Bay', 'Olhão', 'Horta Fayal', 'Ponta Delgada', 'Praia da Vitória', 'Velas', 'Machico', 'Funchal', 'Porto Santo', 'Angra do Heroísmo', 'Vila Franca', 'Lajes', 'Santa Cruz das Flores']
+];
+/** Merchant hull names — register tone per crown (deterministic pick). */
+const FACTION_MERCHANT_SHIP_NAMES = [
+  ['HMS Packet Lark', 'King George Trader', 'Crown Transport', 'Britannia Merchant', 'Albion Packet', 'Royal Sovereign Cargo', 'Atlantic Factor', 'Channel Trader', 'North Star Hoy', 'Cape Breton', 'West India Factor', 'Liverpool Pride', 'Bristol Venture', 'Londonderry', 'Clyde Lass', 'Sussex Merchant', 'Kentish Fly', 'Cornwall Packet', 'Yarmouth Lass', 'Severn Trader'],
+  ['VOC Vertrouwen', 'Staten Generaal', 'Nieuw Amsterdam', 'Zeelandia', 'Hollandia Packet', 'Friesland Trader', 'Amsterdam Factor', 'Rotterdam Fly', 'Maas Merchant', 'Texel Hoy', 'Scheldt Packet', 'Utrecht Trader', 'Gouda Factor', 'Delft Fly', 'Haarlem Lass', 'Batavia Return', 'Indische Liefde', 'Oostzee Hoop', 'Noordster', 'Walcheren Packet'],
+  ['Saint Louis', 'Belle Poule Marchande', 'Roi Soleil', 'Fleuron du Roi', 'Dauphin Trader', 'Bretagne Packet', 'Normandie Factor', 'Gascogne Fly', 'Provence Merchant', 'Corse Packet', 'Petit Capitaine', 'Bonne Aventure', 'Lys Royal', 'Fleur de Lys Cargo', 'Charente', 'Garonne Fly', 'Méditerranée', 'Antilles Royale', 'Côte d\'Argent', 'Havre Packet'],
+  ['Nuestra Señora del Rosario', 'San Fernando Merchant', 'Santa Isabel', 'Capitán Real', 'Indias Unidas', 'Galeón Menor', 'Nueva España', 'Carabela Menor', 'San Telmo', 'Virgen del Carmen', 'Rey Católico', 'Plata Trader', 'Oro del Sur', 'Cádiz Packet', 'Sevilla Factor', 'Barcelona Fly', 'Cartagena Lass', 'Bilbao Merchant', 'Coruña Packet', 'Canarias Trader'],
+  ['Nossa Senhora da Boa Viagem', 'São Gabriel Mercante', 'Infante Dom Henrique', 'Lusitânia Packet', 'Tejo Trader', 'Douro Fly', 'Algarve Factor', 'Cascais Merchant', 'Sagres Packet', 'Índia Portuguesa', 'Brasil Return', 'Estreito d\'Hope', 'Corvo Packet', 'Açores Fly', 'Madeira Trader', 'Coimbra Factor', 'Porto Rico Menor', 'Rainha Santa', 'Real Figueira', 'Alentejo Sun']
+];
+const FACTION_PIRATE_SHIP_NAMES = [
+  ['Red Jackal', 'Crown\'s Spite', 'King\'s Ruin', 'Channel Reaver', 'Cornish Spectre', 'Thames Cutlass', 'Irish Sea Fiend', 'Scottish Gale', 'Wessex Wraith', 'Sussex Raider', 'Kentish Devil', 'Liverpool Curse', 'Bristol Bane', 'Plymouth Phantom', 'Yorkshire Hook', 'North Sea Harpy', 'Atlantic Knave', 'British Bastion Broken', 'Albion\'s Shame', 'Empire\'s Leak'],
+  ['Flying Herring', 'Zuider Zee Wolf', 'Texel Terror', 'Amsterdam\'s Debt', 'Rotterdam Rogue', 'VOC\'s Shame', 'Dutch Courage Lost', 'Lowlands Leviathan', 'Scheldt Skulker', 'Friesland Fang', 'Batavian Banshee', 'Holland Hook', 'Maas Marauder', 'Zeeland Zephyr Dark', 'Utrecht Undertow', 'Gouda Ghost', 'Delft Dagger', 'Haarlem Horror', 'Indies Interceptor', 'Nether Night'],
+  ['Sans-Culotte Fury', 'République Noire', 'Belle Mort', 'Girondin Ghost', 'Jacobin Jackal', 'Corsaire du Nord', 'Méditerranée Maudit', 'Bretagne Brûlant', 'Normandie Nuit', 'Marseille Malice', 'Toulon Terror', 'Bordeaux Blade', 'Petit Tonnerre', 'Roi des Vagues Mortes', 'Fleur de Feu', 'Charente Charogne', 'Garonne Grim', 'Antilles Avide', 'Côte Sauvage', 'Paris Plague Sea'],
+  ['Diablo del Plata', 'Rey Negro', 'Fantasma de Cádiz', 'Puta del Mar', 'Carabela Maldita', 'Corsario Católico', 'Sangre del Sol', 'Muerte Española', 'Galeón Fantasma', 'Tiburón Santo', 'Venganza de Colón', 'Barlovento Brujo', 'Costa Oscura', 'Indias Infernales', 'Noche de Sevilla', 'Puñal de Barcelona', 'Calavera de Cartagena', 'Tormenta de Gijón', 'Bruma de Vigo', 'Lobo del Estrecho'],
+  ['Cão do Atlântico', 'Bruxa dos Açores', 'Diabo da Madeira', 'Fantasma do Tejo', 'Navio da Maldição', 'Lobo do Cabo', 'Sangue Português', 'Estrela Negra', 'Vingança de Henry', 'Morto-vivo do Douro', 'Tempestade Lusitana', 'Coração de Ferro', 'Alma Perdida', 'Inferno na Ria', 'Corsário do Sul', 'Sombra de Lagos', 'Faca de Porto', 'Fúria de Faro', 'Espírito Sombrio', 'Medo do Mar']
+];
 /** Deterministic settlement name body from chunk; `prefixFaction` sets colonial flavor (usually controlling power). */
 function proceduralTownNameCore(cx, cz, prefixFaction, worldSeedOpt) {
   const wsU = worldSeedOpt !== undefined ? (Number(worldSeedOpt) >>> 0) : (G.worldSeed >>> 0);
   let th = (cx * 73856093 ^ cz * 19349663 ^ wsU ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
-  const baseIdx = th % TOWN_NAME_LEXICON.length;
+  const fi = (prefixFaction | 0) % FACTION_COUNT;
+  const stems = FACTION_TOWN_STEMS[fi] || TOWN_NAME_LEXICON;
+  const baseIdx = th % stems.length;
   th = Math.imul(th, 1103515245) + 12345 >>> 0;
   const tagIdx = th % TOWN_NAME_TAGS.length;
-  const facPre = FACTION_COLONIAL_PREFIXES[prefixFaction % FACTION_COUNT];
+  const facPre = FACTION_COLONIAL_PREFIXES[fi];
   const pre = facPre[th % facPre.length];
-  return pre + TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx];
+  const body = stems[baseIdx];
+  th = Math.imul(th, 1103515245) + 12345 >>> 0;
+  const skipPre = (th & 7) === 0 && String(body).includes(' ');
+  const core = (skipPre ? '' : pre) + body + TOWN_NAME_TAGS[tagIdx];
+  return core.replace(/\s{2,}/g, ' ').trim();
 }
 /** Port label / map name: tracks `townFaction` (conquest) and custom towns. */
 function proceduralTownDisplayName(meta) {
@@ -6103,12 +6177,16 @@ function proceduralTownDisplayName(meta) {
     let h = 0;
     for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
     let th = (h ^ (G.worldSeed >>> 0) ^ ((meta.cx | 0) * 1315423911) ^ ((meta.cz | 0) * 19349663)) >>> 0;
-    const baseIdx = th % TOWN_NAME_LEXICON.length;
+    const stems = FACTION_TOWN_STEMS[fac] || TOWN_NAME_LEXICON;
+    const baseIdx = th % stems.length;
     th = Math.imul(th, 1103515245) + 12345 >>> 0;
     const tagIdx = th % TOWN_NAME_TAGS.length;
     const facPre = FACTION_COLONIAL_PREFIXES[fac];
     const pre = facPre[th % facPre.length];
-    return pre + TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx];
+    const body = stems[baseIdx];
+    th = Math.imul(th, 1103515245) + 12345 >>> 0;
+    const skipPre = (th & 7) === 0 && String(body).includes(' ');
+    return ((skipPre ? '' : pre) + body + TOWN_NAME_TAGS[tagIdx]).replace(/\s{2,}/g, ' ').trim();
   }
   return proceduralTownNameCore(meta.cx | 0, meta.cz | 0, fac, undefined);
 }
@@ -6139,7 +6217,7 @@ function refreshPortFactionVisuals(cx, cz) {
     ud.townName = disp;
     const oldSpr = ud.townNameSprite;
     if (oldSpr) {
-      const newSpr = makeTextSprite(disp, '#e8d090', FACTION_NAMES[tf] + ' · Port', FACTION_TRADE_COLORS[tf]);
+      const newSpr = makeTextSprite(disp, '#e8d090', FACTION_SHORT_NAMES[tf] + ' · Port', '', '', factionFlagPngIdForFaction(tf));
       newSpr.position.copy(oldSpr.position);
       newSpr.visible = oldSpr.visible;
       disposeTownNameSprite(oldSpr);
@@ -6498,10 +6576,13 @@ const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood
 const FACTION_COUNT = 5;
 const FACTION_FLAG_PNG_IDS = [10, 13, 21, 19, 16];
 const FACTION_NAMES = ['British Empire', 'Dutch Republic', 'Kingdom of France', 'Spanish Empire', 'Kingdom of Portugal'];
+/** Almanac / nametags — common English shorthand for each crown. */
+const FACTION_SHORT_NAMES = ['Britain', 'Netherlands', 'France', 'Spain', 'Portugal'];
 const FACTION_TRADE_COLORS = ['#c8102e', '#e87722', '#0055a4', '#e6bc0c', '#1a7a3e'];
 const FACTION_MAP_COLORS = ['rgba(200,16,46,0.9)', 'rgba(232,119,34,0.9)', 'rgba(0,85,164,0.9)', 'rgba(230,188,12,0.9)', 'rgba(26,122,62,0.9)'];
 const FACTION_VISUAL_DEFAULTS = {
   names: ['British Empire', 'Dutch Republic', 'Kingdom of France', 'Spanish Empire', 'Kingdom of Portugal'],
+  shortNames: ['Britain', 'Netherlands', 'France', 'Spain', 'Portugal'],
   trade: ['#c8102e', '#e87722', '#0055a4', '#e6bc0c', '#1a7a3e'],
   map: ['rgba(200,16,46,0.9)', 'rgba(232,119,34,0.9)', 'rgba(0,85,164,0.9)', 'rgba(230,188,12,0.9)', 'rgba(26,122,62,0.9)']
 };
@@ -6652,6 +6733,7 @@ function updateShipKillAchievements(prevTotal, newTotal) {
 function resetFactionVisualsToDefault() {
   for (let i = 0; i < FACTION_COUNT; i++) {
     FACTION_NAMES[i] = FACTION_VISUAL_DEFAULTS.names[i];
+    FACTION_SHORT_NAMES[i] = FACTION_VISUAL_DEFAULTS.shortNames[i];
     FACTION_TRADE_COLORS[i] = FACTION_VISUAL_DEFAULTS.trade[i];
     FACTION_MAP_COLORS[i] = FACTION_VISUAL_DEFAULTS.map[i];
   }
@@ -6905,6 +6987,18 @@ function randomChoosableFlagRng(rng) {
 }
 function factionFlagPngIdForFaction(fid) {
   return FACTION_FLAG_PNG_IDS[(fid | 0) % FACTION_COUNT] || FACTION_FLAG_PNG_IDS[0];
+}
+function proceduralFactionMerchantShipName(fid, salt) {
+  const f = (fid | 0) % FACTION_COUNT;
+  const pool = FACTION_MERCHANT_SHIP_NAMES[f];
+  const th = (Math.imul(salt | 0, 1103515245) + 12345 ^ (G.worldSeed | 0) ^ (f * 7919)) >>> 0;
+  return pool[th % pool.length];
+}
+function proceduralPirateShipName(fid, cx, cz, idx) {
+  const f = (fid | 0) % FACTION_COUNT;
+  const pool = FACTION_PIRATE_SHIP_NAMES[f];
+  const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (G.worldSeed | 0) ^ (f * 50261)) >>> 0;
+  return pool[th % pool.length];
 }
 function playerCombatPowerEstimate() {
   const st = SHIP_TYPES[G.player.shipType || 'sloop'] || SHIP_TYPES.sloop;
@@ -7290,8 +7384,9 @@ const TRADE_DOCK_EDGE_SEC = 4.2;
 function syncTradeShipName(npc, homeMeta) {
   const nm = getItemMeta(npc.cargoGood);
   const shortLab = (nm.name || npc.cargoGood).split(/\s+/)[0];
-  const homeDisp = proceduralTownDisplayName(homeMeta);
-  let tradeName = `${homeDisp} — ${shortLab}`;
+  const homeFac = townFaction(homeMeta) % FACTION_COUNT;
+  const vessel = proceduralFactionMerchantShipName(homeFac, (npc.syncId | 0) ^ ((homeMeta.cx | 0) * 31 + (homeMeta.cz | 0) * 17));
+  let tradeName = `${vessel} · ${shortLab}`;
   if (tradeName.length > 28) tradeName = tradeName.slice(0, 27) + '…';
   npc.name = tradeName;
 }
@@ -7531,7 +7626,7 @@ function ensureCanonicalWildlifeForChunk(cx, cz) {
       const dist = 22 + rng() * 138;
       const ox = cwx + Math.cos(ang) * dist;
       const oz = cwz + Math.sin(ang) * dist;
-      if (!isSeaObstructed(ox, oz)) spawnFish(ox, oz, 4 + Math.floor(rng() * 10), rng);
+      if (!isSeaObstructed(ox, oz) && wildlifeXZOutsideIslandMargin(ox, oz)) spawnFish(ox, oz, 4 + Math.floor(rng() * 10), rng);
     }
     if (rng() < 0.4) spawnAmbientSharkPair(cwx + (rng() - 0.5) * 90, cwz + (rng() - 0.5) * 90, rng);
     return;
@@ -7543,7 +7638,7 @@ function ensureCanonicalWildlifeForChunk(cx, cz) {
     const dist = 35 + rng() * 145;
     const ox = cwx + Math.cos(ang) * dist;
     const oz = cwz + Math.sin(ang) * dist;
-    if (!isSeaObstructed(ox, oz)) spawnFish(ox, oz, 5 + Math.floor(rng() * 12), rng);
+    if (!isSeaObstructed(ox, oz) && wildlifeXZOutsideIslandMargin(ox, oz)) spawnFish(ox, oz, 5 + Math.floor(rng() * 12), rng);
   }
   if (rng() < 0.48) spawnAmbientSharkPair(cwx + (rng() - 0.5) * 105, cwz + (rng() - 0.5) * 105, rng);
 }
@@ -8193,7 +8288,7 @@ function generateIsland(cx, cz) {
     });
 
     const tf = townFaction(meta0) % FACTION_COUNT;
-    const townLabel = makeTextSprite(group.userData.townName, '#e8d090', FACTION_NAMES[tf] + ' · Port', FACTION_TRADE_COLORS[tf]);
+    const townLabel = makeTextSprite(group.userData.townName, '#e8d090', FACTION_SHORT_NAMES[tf] + ' · Port', '', '', factionFlagPngIdForFaction(tf));
     const labelBaseH = Math.max(terrainYWorld(worldX, worldZ), dockGround, PROC_LAND_HT_MIN);
     townLabel.position.set(dockX, SEA_LEVEL + labelBaseH + 7.5, dockZ);
     group.add(townLabel);
@@ -8220,21 +8315,21 @@ function generateIsland(cx, cz) {
   spawnSeagulls(worldX, worldZ, sgN, rng);
   for (let fi = 0; fi < 8; fi++) {
     const fishAngle = rng() * Math.PI * 2;
-    const fishDist = islandRadius * 0.92 + 10 + rng() * 70;
+    const fishDist = islandRadius + WILDLIFE_ISLAND_EDGE_CLEAR_M + 4 + rng() * 70;
     const fxx = worldX + Math.cos(fishAngle) * fishDist, fzz = worldZ + Math.sin(fishAngle) * fishDist;
-    if (!isSeaObstructed(fxx, fzz)) spawnFish(fxx, fzz, 5 + Math.floor(rng() * 9), rng);
+    if (!isSeaObstructed(fxx, fzz) && wildlifeXZOutsideIslandMargin(fxx, fzz)) spawnFish(fxx, fzz, 5 + Math.floor(rng() * 9), rng);
   }
   for (let oi = 0; oi < 12; oi++) {
     const openAngle = rng() * Math.PI * 2;
-    const minRing = islandRadius * 0.92 + 14;
+    const minRing = islandRadius + WILDLIFE_ISLAND_EDGE_CLEAR_M + 8;
     const openDist = minRing + rng() * 340;
     const fx = worldX + Math.cos(openAngle) * openDist;
     const fz = worldZ + Math.sin(openAngle) * openDist;
-    if (!isSeaObstructed(fx, fz)) spawnFish(fx, fz, 4 + Math.floor(rng() * 10), rng);
+    if (!isSeaObstructed(fx, fz) && wildlifeXZOutsideIslandMargin(fx, fz)) spawnFish(fx, fz, 4 + Math.floor(rng() * 10), rng);
   }
   for (let spi = 0; spi < 4; spi++) {
     const sang = rng() * Math.PI * 2;
-    const sdist = islandRadius * 1.05 + 30 + rng() * 220;
+    const sdist = islandRadius + WILDLIFE_ISLAND_EDGE_CLEAR_M + 24 + rng() * 220;
     spawnAmbientSharkPair(worldX + Math.cos(sang) * sdist, worldZ + Math.sin(sang) * sdist, rng);
   }
 }
@@ -8437,7 +8532,7 @@ function spawnAmbientSharkPair(wx, wz, rng) {
   const r = decoRand(rng);
   const cx = wx + (r() - 0.5) * 130;
   const cz = wz + (r() - 0.5) * 130;
-  if (isSeaObstructed(cx, cz)) return;
+  if (isSeaObstructed(cx, cz) || !wildlifeXZOutsideIslandMargin(cx, cz)) return;
   const rad = 36 + r() * 64;
   const spd = 0.034 + r() * 0.048;
   const ph0 = r() * Math.PI * 2;
@@ -8466,10 +8561,16 @@ function updateAmbientSharkPairs(dt) {
     const a1 = pair.ph0 + t * spdEff;
     const a2 = pair.ph0 + t * spdEff + Math.PI * 0.71;
     const wob = Math.sin(t * 1.85 + pair.cx * 0.009) * 0.13;
-    const ax = pair.cx + Math.cos(a1) * pair.rad;
-    const az = pair.cz + Math.sin(a1) * pair.rad;
-    const bx = pair.cx + Math.cos(a2) * pair.rad * 0.9;
-    const bz = pair.cz + Math.sin(a2) * pair.rad * 0.9;
+    let ax = pair.cx + Math.cos(a1) * pair.rad;
+    let az = pair.cz + Math.sin(a1) * pair.rad;
+    let bx = pair.cx + Math.cos(a2) * pair.rad * 0.9;
+    let bz = pair.cz + Math.sin(a2) * pair.rad * 0.9;
+    const na = nudgeWildlifeXZAwayFromIslands(ax, az, pair.cx, pair.cz);
+    ax = na.x;
+    az = na.z;
+    const nb = nudgeWildlifeXZAwayFromIslands(bx, bz, pair.cx, pair.cz);
+    bx = nb.x;
+    bz = nb.z;
     pair.mA.position.set(
       ax,
       worldSeaSurfaceY(ax, az) + pair.floatOffset + wob,
@@ -8951,7 +9052,7 @@ function pruneWildlifeAwayFromPlayer() {
 }
 
 function spawnFish(wx, wz, count, rng) {
-  if (count <= 0 || isSeaObstructed(wx, wz)) return;
+  if (count <= 0 || isSeaObstructed(wx, wz) || !wildlifeXZOutsideIslandMargin(wx, wz)) return;
   const r = decoRand(rng);
   const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
   const floatOffset = -0.045 - r() * 0.11;
@@ -9027,6 +9128,17 @@ function updateFish(dt) {
       }
     }
     if (!isSeaObstructed(nx, nz)) {
+      const refX = l.lastOkX != null ? l.lastOkX : l.anchorX;
+      const refZ = l.lastOkZ != null ? l.lastOkZ : l.anchorZ;
+      const nud = nudgeWildlifeXZAwayFromIslands(nx, nz, refX, refZ);
+      nx = nud.x;
+      nz = nud.z;
+    }
+    if (isSeaObstructed(nx, nz) || !wildlifeXZOutsideIslandMargin(nx, nz)) {
+      nx = l.lastOkX != null ? l.lastOkX : l.anchorX;
+      nz = l.lastOkZ != null ? l.lastOkZ : l.anchorZ;
+    }
+    if (!isSeaObstructed(nx, nz) && wildlifeXZOutsideIslandMargin(nx, nz)) {
       l.lastOkX = nx;
       l.lastOkZ = nz;
     }
@@ -11684,9 +11796,6 @@ function spawnNPCs() {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
   const npcSeed = (G.worldSeed | 0) * 7 + 13;
-  let nameRngState = npcSeed + 901;
-  const nameRng = () => { nameRngState = ((nameRngState * 16807) % 2147483647 + 2147483647) % 2147483647; return nameRngState / 2147483647; };
-  const uniqueNames = pickUniqueNPCShipNames(8, nameRng);
   const typePool = ['cutter','sloop','brigantine','galleon','warship'];
   for (let i = 0; i < 8; i++) {
     let s = npcSeed + i * 997;
@@ -11714,19 +11823,19 @@ function spawnNPCs() {
       nx = pt.nx;
       nz = pt.nz;
     }
+    const chunkX = Math.floor(nx / CHUNK_SIZE), chunkZ = Math.floor(nz / CHUNK_SIZE);
+    const pirateFaction = ((chunkX * 31 + chunkZ * 17 + npcSeed * 3 + i * 13) & 0x7fffffff) % FACTION_COUNT;
     const npc = {
       syncId: i,
       x: nx, z: nz,
       rotation: sr() * Math.PI * 2, speed: 0,
       health: 60 + sr() * 40, type: npcType,
-      name: uniqueNames[i],
+      name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i),
       wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
       underFireTimer: 0, fireJitter: sr(),
       riggingHealth: 100,
       flagPosition: pickRandomAiFlagPosition(sr())
     };
-    const chunkX = Math.floor(nx / CHUNK_SIZE), chunkZ = Math.floor(nz / CHUNK_SIZE);
-    const pirateFaction = ((chunkX * 31 + chunkZ * 17 + npcSeed * 3 + i * 13) & 0x7fffffff) % FACTION_COUNT;
     const npcFlagColor = FACTION_TRADE_COLORS[pirateFaction];
     npc.factionId = pirateFaction;
     npc.flagColor = npcFlagColor;
@@ -18905,6 +19014,12 @@ function updatePiratesPanel() {
   l.appendChild(nav);
 }
 
+function worldPanelFactionFlagThumb(fi, w, h) {
+  const ww = w != null ? w : 22;
+  const hh = h != null ? h : 16;
+  const id = factionFlagPngIdForFaction(fi);
+  return `<img src="assets/flags/flag${id}.png" alt="" width="${ww}" height="${hh}" decoding="async" style="width:${ww}px;height:${hh}px;object-fit:cover;border-radius:3px;border:1px solid rgba(100,80,48,0.45);flex-shrink:0;vertical-align:middle;display:block;"/>`;
+}
 function updateWorldPanel() {
   const el = document.getElementById('world-info');
   if (!el) return;
@@ -18924,25 +19039,25 @@ function updateWorldPanel() {
   const storyBounty = G.npcs.filter(n => n.isStoryBounty && !n.sinking).length;
   const peers = G.otherPlayers.size;
   const netOk = ws && ws.readyState === 1;
-  const facRows = FACTION_NAMES.map((nm, fi) => {
+  const facRows = FACTION_SHORT_NAMES.map((snm, fi) => {
     const c = FACTION_TRADE_COLORS[fi % FACTION_COUNT];
-    return `<div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(30,20,12,0.45);border:1px solid rgba(140,100,40,0.12);border-radius:5px;margin-bottom:4px;">
-      <span style="color:${c};font-size:12px;">${nm}</span><span style="color:#e0d6c2;font-size:12px;">${facPorts[fi]} ports</span></div>`;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;background:rgba(30,20,12,0.45);border:1px solid rgba(140,100,40,0.12);border-radius:5px;margin-bottom:4px;">
+      <span style="display:inline-flex;align-items:center;gap:8px;min-width:0;"><span style="display:flex;align-items:center;">${worldPanelFactionFlagThumb(fi, 24, 18)}</span><span style="color:${c};font-size:12px;">${escapeDebugHtml(snm)}</span></span><span style="color:#e0d6c2;font-size:12px;flex-shrink:0;">${facPorts[fi]} ports</span></div>`;
   }).join('');
   ensurePolitics();
   const jf = G.politics.joinedFaction;
-  const relYou = FACTION_NAMES.map((nm, fi) => {
+  const relYou = FACTION_SHORT_NAMES.map((snm, fi) => {
     const r = playerFactionRelation(fi);
     const col = r <= BANNED_FROM_PORT_RELATION ? '#cc8888' : r >= 24 ? '#88c8a8' : '#c9a878';
-    return `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(80,60,40,0.12);"><span style="color:${FACTION_TRADE_COLORS[fi]};">${nm}</span><span style="color:${col};">${r > 0 ? '+' : ''}${r}</span></div>`;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(80,60,40,0.12);"><span style="display:inline-flex;align-items:center;gap:7px;color:${FACTION_TRADE_COLORS[fi]};min-width:0;">${worldPanelFactionFlagThumb(fi, 20, 15)}<span>${escapeDebugHtml(snm)}</span></span><span style="color:${col};flex-shrink:0;">${r > 0 ? '+' : ''}${r}</span></div>`;
   }).join('');
   let dipTable = '<table style="width:100%;border-collapse:collapse;font-size:10px;margin-top:4px;"><thead><tr><th scope="col"></th>';
   for (let j = 0; j < FACTION_COUNT; j++) {
-    dipTable += `<th scope="col" style="padding:2px 4px;color:${FACTION_TRADE_COLORS[j]};font-size:9px;font-weight:600;">${FACTION_NAMES[j].length > 8 ? FACTION_NAMES[j].slice(0, 7) + '…' : FACTION_NAMES[j]}</th>`;
+    dipTable += `<th scope="col" style="padding:4px 3px;text-align:center;vertical-align:bottom;font-weight:600;"><div style="display:flex;flex-direction:column;align-items:center;gap:3px;"><span style="display:flex;">${worldPanelFactionFlagThumb(j, 22, 16)}</span><span style="color:${FACTION_TRADE_COLORS[j]};font-size:8px;line-height:1.15;max-width:64px;">${escapeDebugHtml(FACTION_SHORT_NAMES[j])}</span></div></th>`;
   }
   dipTable += '</tr></thead><tbody>';
   for (let i = 0; i < FACTION_COUNT; i++) {
-    dipTable += `<tr><th scope="row" style="text-align:right;padding:4px 8px 4px 0;color:${FACTION_TRADE_COLORS[i]};font-size:10px;white-space:nowrap;">${FACTION_NAMES[i]}</th>`;
+    dipTable += `<tr><th scope="row" style="text-align:left;padding:5px 8px 5px 0;vertical-align:middle;"><div style="display:flex;align-items:center;gap:7px;white-space:nowrap;"><span style="display:flex;">${worldPanelFactionFlagThumb(i, 22, 16)}</span><span style="color:${FACTION_TRADE_COLORS[i]};font-size:10px;">${escapeDebugHtml(FACTION_SHORT_NAMES[i])}</span></div></th>`;
     for (let j = 0; j < FACTION_COUNT; j++) {
       if (i === j) {
         dipTable += '<td style="text-align:center;color:#5a5048;background:rgba(35,30,24,0.35);">—</td>';
@@ -18961,7 +19076,10 @@ function updateWorldPanel() {
   dipTable += '</tbody></table>';
   dipTable += '<div style="font-size:9px;color:#7a6a58;margin-top:8px;line-height:1.45;">Each cell is the <strong>average</strong> of how both crowns read that border (higher is calmer). <span style="color:#cc8888;">War</span> when the average drops below 18. Your personal standing with each power is listed above — this grid is state diplomacy only.</div>';
   const letters = (G.politics.activeLetters || []).length
-    ? (G.politics.activeLetters || []).map(L => `<div style="font-size:10px;color:#c8c0a8;margin:4px 0;line-height:1.35;">${FACTION_NAMES[L.issuer]}: ${L.desc} — <strong>${L.done}/${L.need}</strong></div>`).join('')
+    ? (G.politics.activeLetters || []).map(L => {
+      const iss = (L.issuer | 0) % FACTION_COUNT;
+      return `<div style="display:flex;align-items:flex-start;gap:8px;font-size:10px;color:#c8c0a8;margin:4px 0;line-height:1.35;"><span style="display:flex;margin-top:2px;flex-shrink:0;">${worldPanelFactionFlagThumb(iss, 20, 15)}</span><span><span style="color:${FACTION_TRADE_COLORS[iss]};">${escapeDebugHtml(FACTION_SHORT_NAMES[iss])}</span>: ${L.desc} — <strong>${L.done}/${L.need}</strong></span></div>`;
+    }).join('')
     : '<div style="font-size:10px;color:#7a6a58;">No letters of marque in your log.</div>';
   el.innerHTML = `
     <div style="color:#d4a848;font-size:12px;text-align:center;margin-bottom:10px;letter-spacing:1px;">WORLD ALMANAC</div>
@@ -18977,7 +19095,7 @@ function updateWorldPanel() {
     <div style="color:#d4a848;font-size:10px;text-transform:uppercase;margin-bottom:6px;">Powers of the chart</div>
     ${facRows}
     <div style="color:#d4a848;font-size:10px;text-transform:uppercase;margin:14px 0 6px;">Diplomacy &amp; commission</div>
-    ${jf != null ? `<div style="color:#9a9080;font-size:10px;line-height:1.45;margin-bottom:8px;">Your commission: <strong style="color:${FACTION_TRADE_COLORS[jf % FACTION_COUNT]}">${FACTION_NAMES[jf]}</strong></div>` : '<div style="color:#8a7a68;font-size:10px;line-height:1.45;margin-bottom:8px;">No formal commission — you sail as a free captain.</div>'}
+    ${jf != null ? `<div style="color:#9a9080;font-size:10px;line-height:1.45;margin-bottom:8px;">Your commission: <strong style="display:inline-flex;align-items:center;gap:7px;color:${FACTION_TRADE_COLORS[jf % FACTION_COUNT]}"><span style="display:flex;">${worldPanelFactionFlagThumb(jf % FACTION_COUNT, 22, 16)}</span>${escapeDebugHtml(FACTION_SHORT_NAMES[jf % FACTION_COUNT])}</strong></div>` : '<div style="color:#8a7a68;font-size:10px;line-height:1.45;margin-bottom:8px;">No formal commission — you sail as a free captain.</div>'}
     <div style="color:#c9a878;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Your standing</div>
     <div style="margin-bottom:10px;">${relYou}</div>
     <div style="color:#c9a878;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Courts &amp; crowns</div>
