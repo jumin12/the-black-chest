@@ -2526,11 +2526,15 @@ wss.on('connection', (ws, req) => {
             if (hostId === null || pid < hostId) hostId = pid;
           }
           if (hostId === null || id !== hostId) break;
-          const killerId = Math.floor(Number(msg.killerId));
-          if (!Number.isFinite(killerId) || !players.has(killerId)) break;
+          const storyOwnerId = msg.storyOwnerId != null ? Math.floor(Number(msg.storyOwnerId)) : null;
+          const so = msg.storyOutcome != null ? String(msg.storyOutcome) : 'none';
+          if (Number.isFinite(storyOwnerId) && players.has(storyOwnerId) && (so === 'complete' || so === 'reroll')) {
+            sendToPlayerId(storyOwnerId, { type: 'story_bounty_outcome', outcome: so === 'complete' ? 'complete' : 'reroll' });
+          }
+          const killerId = msg.killerId != null ? Math.floor(Number(msg.killerId)) : NaN;
           const dg = Math.max(0, Math.floor(Number(msg.gold) || 0));
           const dAi = Math.max(0, Math.floor(Number(msg.sinksAi) || 0));
-          if (dg === 0 && dAi === 0) break;
+          if (!Number.isFinite(killerId) || !players.has(killerId) || (dg === 0 && dAi === 0)) break;
           const kp = players.get(killerId);
           kp.kills = (kp.kills || 0) + dAi;
           kp.loot = (kp.loot || 0) + dg;
@@ -2554,11 +2558,6 @@ wss.on('connection', (ws, req) => {
             huntNpcName: msg.huntNpcName != null ? String(msg.huntNpcName).slice(0, 48) : '',
             victimName: msg.victimName != null ? String(msg.victimName).slice(0, 48) : 'ship'
           });
-          const storyOwnerId = msg.storyOwnerId != null ? Math.floor(Number(msg.storyOwnerId)) : null;
-          const so = msg.storyOutcome != null ? String(msg.storyOutcome) : 'none';
-          if (Number.isFinite(storyOwnerId) && players.has(storyOwnerId) && (so === 'complete' || so === 'reroll')) {
-            sendToPlayerId(storyOwnerId, { type: 'story_bounty_outcome', outcome: so === 'complete' ? 'complete' : 'reroll' });
-          }
           break;
         }
         case 'party_create': {
