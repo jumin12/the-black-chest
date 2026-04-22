@@ -2671,14 +2671,14 @@ function clampNpcIntoWorldBounds(npc) {
   npc.x = Math.max(-lim, Math.min(lim, npc.x));
   npc.z = Math.max(-lim, Math.min(lim, npc.z));
 }
-const RENDER_DIST = 3;
+const RENDER_DIST = isMobile ? 2 : 3;
 /** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload + wildlife hide use the same band). */
 const CHUNK_UNLOAD_MARGIN = 2;
 const WILDLIFE_CULL_RADIUS = CHUNK_SIZE * (RENDER_DIST + CHUNK_UNLOAD_MARGIN + 1.1);
 const WILDLIFE_CULL_R2 = WILDLIFE_CULL_RADIUS * WILDLIFE_CULL_RADIUS;
 function mainCanvasPixelRatio() {
   const raw = window.devicePixelRatio || 1;
-  const cap = isMobile ? 1.52 : 1.65;
+  const cap = isMobile ? 1.12 : 1.65;
   return Math.min(raw, cap);
 }
 const ISLAND_CHANCE = 0.25;
@@ -4907,7 +4907,7 @@ class SimplexNoise {
 let noise;
 
 /* ============================= THREE.JS SETUP ============================ */
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: false, preserveDrawingBuffer: false, powerPreference: isMobile ? 'low-power' : 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(mainCanvasPixelRatio());
 if (renderer.outputColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -4969,7 +4969,7 @@ const skyUniforms = {
   uSkyCamPos: { value: new THREE.Vector3() }
 };
 const sky = new THREE.Mesh(
-  new THREE.SphereGeometry(SKY_RADIUS, 48, 48),
+  new THREE.SphereGeometry(SKY_RADIUS, isMobile ? 20 : 48, isMobile ? 16 : 48),
   new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -5083,7 +5083,7 @@ const waterUniforms = {
   uDayFactor: { value: 1 },
   uCamPos: { value: new THREE.Vector3() }
 };
-const WAKE_UNIFORM_SLOTS = 16;
+const WAKE_UNIFORM_SLOTS = isMobile ? 8 : 16;
 const _waterWakeVecs = [];
 for (let wi = 0; wi < WAKE_UNIFORM_SLOTS; wi++) {
   const v = new THREE.Vector4(0, 0, 0, 0);
@@ -5391,7 +5391,7 @@ const waterFS = `
     gl_FragColor = vec4(color, waterAlpha);
   }`;
 
-const WATER_GRID_SEGS = 96;
+const WATER_GRID_SEGS = isMobile ? 40 : 96;
 const waterGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, WATER_GRID_SEGS, WATER_GRID_SEGS);
 waterGeom.rotateX(-Math.PI / 2);
 const water = new THREE.Mesh(waterGeom, new THREE.ShaderMaterial({
@@ -5438,7 +5438,7 @@ function createSandSeabedTexture() {
   return tex;
 }
 const seabedTex = createSandSeabedTexture();
-const seabedGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, 32, 32);
+const seabedGeom = new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE, isMobile ? 16 : 32, isMobile ? 16 : 32);
 seabedGeom.rotateX(-Math.PI / 2);
 const seabed = new THREE.Mesh(seabedGeom, new THREE.MeshLambertMaterial({ map: seabedTex, color: 0xffffff }));
 seabed.position.set(0, SEABED_VISUAL_Y, 0);
@@ -16357,8 +16357,9 @@ window.addEventListener('touchmove', e => {
       G.captainWalk.yaw -= dx * CAM_ORBIT_SENS_X * 1.05;
       G.captainWalk.pitch = Math.max(-1.18, Math.min(1.18, G.captainWalk.pitch - dy * CAM_ORBIT_SENS_Y * 1.05));
     } else {
-      G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X * 1.05;
-      G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y * 1.05);
+      const _om = 1.52;
+      G.camera.targetYaw -= dx * CAM_ORBIT_SENS_X * 1.05 * _om;
+      G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle - dy * CAM_ORBIT_SENS_Y * 1.05 * _om);
       G.camera.mobileOrbitFree = true;
     }
     e.preventDefault();
@@ -22659,7 +22660,7 @@ function dampShipWaveTilt(pitch, roll) {
   return { wavePitch: p, waveRoll: r };
 }
 
-const WAKE_TRAIL_MAX = 72;
+const WAKE_TRAIL_MAX = isMobile ? 28 : 72;
 let _wakeFoamRadialTex = null;
 function getWakeFoamRadialTexture() {
   if (_wakeFoamRadialTex) return _wakeFoamRadialTex;
@@ -22767,12 +22768,12 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
 }
 
 /**
- * Predicts other captains' motion between ~45Hz state snapshots (same formula as local sail physics)
- * and pulls tightly toward authoritative x/z/yaw so non-host views match host speed.
+ * Dead-reckon using the server’s speed + heading (45Hz), then soft-correct to x/z/rotation.
+ * Avoids the old local-wind “prediction” that fought authority and made other ships skip on the host.
  */
 function advanceRemoteShipNetSmooth(sg, p, dt) {
   let ns = sg.userData.netSmooth;
-  const authR = p.rotation || 0;
+  const authR = p.rotation != null && Number.isFinite(Number(p.rotation)) ? Number(p.rotation) : 0;
   if (!ns || !Number.isFinite(ns.x) || !Number.isFinite(ns.z) || !Number.isFinite(ns.ry)) {
     ns = { x: p.x, z: p.z, ry: authR };
     sg.userData.netSmooth = ns;
@@ -22784,37 +22785,34 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     return ns;
   }
   const err = Math.hypot(p.x - ns.x, p.z - ns.z);
-  if (err > 85) {
+  if (err > 240) {
     ns.x = p.x;
     ns.z = p.z;
     ns.ry = authR;
     return ns;
   }
-  const wHere = getWindAt(ns.x, ns.z);
-  const windDot = Math.cos(wHere.angle - ns.ry);
-  const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
-  const rigPct = (p.riggingHealth != null ? p.riggingHealth : 100) / 100;
-  const rigF = Math.max(0.26, Math.pow(Math.max(0.05, rigPct), 1.35));
-  const morF = (p.morale != null ? p.morale : 100) < 32 ? 0.9 : 1;
-  const effSpd = (p.speed || 0) * windEffect * rigF * morF;
-  ns.x += Math.sin(ns.ry) * effSpd * dt;
-  ns.z += Math.cos(ns.ry) * effSpd * dt;
-  const pull = Math.min(1, (err > 2.5 ? 34 : 24) * dt);
-  ns.x += (p.x - ns.x) * pull;
-  ns.z += (p.z - ns.z) * pull;
+  const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
+  const th = authR;
+  if (Math.abs(v) > 0.006) {
+    ns.x += Math.sin(th) * v * dt;
+    ns.z += Math.cos(th) * v * dt;
+  }
+  const posK = 1 - Math.exp(-(err > 5.5 ? 32 : 24) * dt);
+  ns.x += (p.x - ns.x) * posK;
+  ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const yawRate = err > 4 ? 48 : 36;
-  ns.ry += dYaw * Math.min(1, yawRate * dt);
+  const rotK = 1 - Math.exp(-40 * dt);
+  ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
 
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE for smooth remote motion. */
 const NET_SYNC_HZ = 45;
-/** Host sends AI fleet at the same cadence as player `state` so non-hosts do not chase 8Hz samples. */
-const NPC_NET_SYNC_HZ = NET_SYNC_HZ;
+/** Mobile hosts send AI a bit slower to cut WS/JSON load; still well above what eyes need vs 8Hz. */
+const NPC_NET_SYNC_HZ = isMobile ? 24 : NET_SYNC_HZ;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 
 function update(dt) {
@@ -23025,15 +23023,16 @@ function update(dt) {
     if (keys['q']) { G.camera.targetYaw -= 1.5 * dt; G.camera.pcOrbitFree = true; }
     if (keys['e']) { G.camera.targetYaw += 1.5 * dt; G.camera.pcOrbitFree = true; }
   }
-  G.camera.yaw += (G.camera.targetYaw - G.camera.yaw) * Math.min(1, 4 * dt);
+  const _camD = isMobile ? 10.5 : 4;
+  G.camera.yaw += (G.camera.targetYaw - G.camera.yaw) * Math.min(1, _camD * dt);
   G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle);
-  G.camera.angle += (G.camera.targetAngle - G.camera.angle) * Math.min(1, 4 * dt);
+  G.camera.angle += (G.camera.targetAngle - G.camera.angle) * Math.min(1, _camD * dt);
 
   if (!G.touch.active) {
     G.camera.offsetX *= (1 - 2 * dt);
     G.camera.offsetZ *= (1 - 2 * dt);
   }
-  G.camera.zoom += (G.camera.targetZoom - G.camera.zoom) * Math.min(1, 4 * dt);
+  G.camera.zoom += (G.camera.targetZoom - G.camera.zoom) * Math.min(1, (isMobile ? 7.5 : 4) * dt);
   G.camera.zoom = clampCameraZoomLevel(G.camera.zoom);
   G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom);
 
@@ -24248,8 +24247,13 @@ function gameLoop(time) {
       drawDebugWorldMap();
       updateDebugRoster();
     }
-    if ((_gameLoopFrame & 1) === 0) drawMinimap();
-    if (fullmapOpen) drawFullmap();
+    if (isMobile) {
+      if (_gameLoopFrame % 3 === 0) drawMinimap();
+      if (fullmapOpen && (_gameLoopFrame & 1) === 0) drawFullmap();
+    } else {
+      if ((_gameLoopFrame & 1) === 0) drawMinimap();
+      if (fullmapOpen) drawFullmap();
+    }
     if (Math.floor(G.time * 4) !== Math.floor((G.time - dt) * 4)) updateHUD();
     syncHudToastAnchors();
     autoSaveTimer += dt;
