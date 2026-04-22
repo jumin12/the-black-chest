@@ -3456,6 +3456,7 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
         victimName: npc.name || 'ship'
       }));
     } catch (e) {}
+    if (iKilled) checkHuntQuestOnNpcSink(npc);
   } else {
     if (storyOutcome === 'complete' && missionOwner === G.myId) {
       onStoryBountySunkByPlayer(npc);
@@ -3628,6 +3629,21 @@ function huntQuestTargetsNpc(q, n) {
 }
 function huntQuestMatchesNpc(q, n) {
   return huntQuestTargetsNpc(q, n) && !n.sinking;
+}
+/** When mission markers are on, highlight these NPCs on chart/minimap even if pirate/merchant layers are off. */
+function isNpcActiveMissionMapTarget(n) {
+  if (!n || n.sinking) return false;
+  const qs = G.quests || [];
+  for (let i = 0; i < qs.length; i++) {
+    const q = qs[i];
+    if (!q || !q.accepted) continue;
+    if (q.type === 'hunt' && huntQuestTargetsNpc(q, n)) return true;
+    if (q.type === 'escort' && !q.pendingReward) {
+      if (q.escortCargoSyncId != null && n.syncId === q.escortCargoSyncId) return true;
+      if (n.escortRaider && n.attackNpcSyncId != null && n.attackNpcSyncId === q.escortCargoSyncId) return true;
+    }
+  }
+  return false;
 }
 const STORY_REWARDS = [55, 75, 100, 140, 200];
 /** NPC sync ids: pirates 0–7, story bounties per player (62000+), merchants from 200 (one per charted port). */
@@ -13642,6 +13658,45 @@ let prefetchedServerSeed = null;
 let knownServerWorldMapRev = 0;
 let appliedServerWorldMapRev = 0;
 let serverWorldMapFetchToken = 0;
+let _jsonParseWorker = null;
+let _jsonParseJobId = 0;
+function getJsonParseWorker() {
+  if (_jsonParseWorker) return _jsonParseWorker;
+  try {
+    _jsonParseWorker = new Worker('assets/json-parse-worker.js');
+  } catch (e) {
+    _jsonParseWorker = null;
+  }
+  return _jsonParseWorker;
+}
+/** Large map JSON: parse in a worker to avoid a long main-thread hitch. */
+function parseJsonStringOffMainIfLarge(str, onOk, onErr) {
+  const s = String(str);
+  if (s.length < 350000) {
+    try { onOk(JSON.parse(s)); } catch (e) { onErr(e); }
+    return;
+  }
+  const w = getJsonParseWorker();
+  if (!w) {
+    try { onOk(JSON.parse(s)); } catch (e) { onErr(e); }
+    return;
+  }
+  const id = ++_jsonParseJobId;
+  const handler = (ev) => {
+    const d = ev.data || {};
+    if (d.id !== id) return;
+    w.removeEventListener('message', handler);
+    if (d.ok) onOk(d.data);
+    else onErr(new Error(d.err || 'parse failed'));
+  };
+  w.addEventListener('message', handler);
+  try {
+    w.postMessage({ id, s });
+  } catch (e) {
+    w.removeEventListener('message', handler);
+    try { onOk(JSON.parse(s)); } catch (e2) { onErr(e2); }
+  }
+}
 
 function getServerUrl() {
   const p = new URLSearchParams(location.search), ex = p.get('server');
@@ -15402,12 +15457,18 @@ function buildWorldMapJsonFromCustomMapSession() {
     if (!f) return;
     const reader = new FileReader();
     reader.onload = () => {
-      try {
-        const data = JSON.parse(String(reader.result));
-        if (applyCustomMapPayload(data, mapTabStatus)) notify('Custom map loaded from file.');
-      } catch (err) {
-        if (mapTabStatus) mapTabStatus.textContent = 'Invalid map JSON file.';
-      }
+      const raw = String(reader.result);
+      parseJsonStringOffMainIfLarge(
+        raw,
+        data => {
+          try {
+            if (applyCustomMapPayload(data, mapTabStatus)) notify('Custom map loaded from file.');
+          } catch (e) {
+            if (mapTabStatus) mapTabStatus.textContent = 'Could not apply custom map.';
+          }
+        },
+        () => { if (mapTabStatus) mapTabStatus.textContent = 'Invalid map JSON file.'; }
+      );
     };
     reader.readAsText(f);
     ev.target.value = '';
@@ -21558,6 +21619,7 @@ function drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, opts) {
   const inBounds = (sx, sy) => mini ? (sx > 0 && sx < w && sy > 0 && sy < h) : (sx > -pad && sx < w + pad && sy > -pad && sy < h + pad);
   const npcVis = n => {
     if (n.sinking) return false;
+    if (isNpcActiveMissionMapTarget(n)) return true;
     return mini ? mapChartNpcVisible(n) : npcVisibleForWorldMapOverlay(n, dbg);
   };
   if (!mapChartLayers.missions) return;
@@ -21840,7 +21902,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   if (!previewIslandsOnly) {
   G.npcs.forEach(n => {
     if (n.sinking) return;
-    if (!npcVisibleForWorldMapOverlay(n, debugShipLayers)) return;
+    if (!npcVisibleForWorldMapOverlay(n, debugShipLayers) && !(mapChartLayers.missions && isNpcActiveMissionMapTarget(n))) return;
     const sx = wx2sx(n.x), sy = wz2sy(n.z);
     if (sx < -10 || sx > w + 10 || sy < -10 || sy > h + 10) return;
     const merchant = !!n.isTradeShip;
@@ -22179,7 +22241,7 @@ function drawMinimap() {
   }
   G.npcs.forEach(n => {
     if (n.sinking) return;
-    if (!mapChartNpcVisible(n)) return;
+    if (!mapChartNpcVisible(n) && !(mapChartLayers.missions && isNpcActiveMissionMapTarget(n))) return;
     const sx = wx2sx(n.x), sy = wz2sy(n.z);
     if (sx > 0 && sx < w && sy > 0 && sy < h) {
       const mc = n.flagColor || (n.isTradeShip ? '#3a9a90' : '#cc3333');
@@ -22436,13 +22498,13 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const effSpd = (p.speed || 0) * windEffect * rigF * morF;
   ns.x += Math.sin(ns.ry) * effSpd * dt;
   ns.z += Math.cos(ns.ry) * effSpd * dt;
-  const pull = Math.min(1, (err > 2.5 ? 14 : 9) * dt);
+  const pull = Math.min(1, (err > 2.5 ? 16 : 11) * dt);
   ns.x += (p.x - ns.x) * pull;
   ns.z += (p.z - ns.z) * pull;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const yawRate = err > 4 ? 22 : 16;
+  const yawRate = err > 4 ? 24 : 18;
   ns.ry += dYaw * Math.min(1, yawRate * dt);
   return ns;
 }
@@ -23874,7 +23936,7 @@ function gameLoop(time) {
       drawDebugWorldMap();
       updateDebugRoster();
     }
-    if (!isMobile || (_gameLoopFrame & 1) === 0) drawMinimap();
+    if ((_gameLoopFrame & 1) === 0) drawMinimap();
     if (fullmapOpen) drawFullmap();
     if (Math.floor(G.time * 4) !== Math.floor((G.time - dt) * 4)) updateHUD();
     syncHudToastAnchors();

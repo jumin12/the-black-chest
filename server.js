@@ -2534,28 +2534,32 @@ wss.on('connection', (ws, req) => {
           const killerId = msg.killerId != null ? Math.floor(Number(msg.killerId)) : NaN;
           const dg = Math.max(0, Math.floor(Number(msg.gold) || 0));
           const dAi = Math.max(0, Math.floor(Number(msg.sinksAi) || 0));
-          if (!Number.isFinite(killerId) || !players.has(killerId) || (dg === 0 && dAi === 0)) break;
+          const huntNpcName = msg.huntNpcName != null ? String(msg.huntNpcName).trim().slice(0, 48) : '';
+          if (!Number.isFinite(killerId) || !players.has(killerId)) break;
+          if (dg === 0 && dAi === 0 && !huntNpcName) break;
           const kp = players.get(killerId);
-          kp.kills = (kp.kills || 0) + dAi;
-          kp.loot = (kp.loot || 0) + dg;
-          const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
-          const killerWs = findWsByPlayerId(killerId);
-          const killerCk = killerWs && killerWs.captainAccountKey ? killerWs.captainAccountKey : (kp.captainKey || null);
-          const idx = getLeaderboardRowIndex(killerId, capName, killerCk, kp.shipName);
-          const row = normalizeLbEntry(leaderboardHistory[idx]);
-          row.gold += dg;
-          row.sinksAi += dAi;
-          leaderboardHistory[idx] = row;
-          reconcileLeaderboardRows();
-          saveLeaderboard();
-          broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          if (dg > 0 || dAi > 0) {
+            kp.kills = (kp.kills || 0) + dAi;
+            kp.loot = (kp.loot || 0) + dg;
+            const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
+            const killerWs = findWsByPlayerId(killerId);
+            const killerCk = killerWs && killerWs.captainAccountKey ? killerWs.captainAccountKey : (kp.captainKey || null);
+            const idx = getLeaderboardRowIndex(killerId, capName, killerCk, kp.shipName);
+            const row = normalizeLbEntry(leaderboardHistory[idx]);
+            row.gold += dg;
+            row.sinksAi += dAi;
+            leaderboardHistory[idx] = row;
+            reconcileLeaderboardRows();
+            saveLeaderboard();
+            broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          }
           broadcastAll({
             type: 'npc_kill_award',
             killerId,
             gold: dg,
             sinksAi: dAi,
             storyBounty: false,
-            huntNpcName: msg.huntNpcName != null ? String(msg.huntNpcName).slice(0, 48) : '',
+            huntNpcName: huntNpcName,
             victimName: msg.victimName != null ? String(msg.victimName).slice(0, 48) : 'ship'
           });
           break;
