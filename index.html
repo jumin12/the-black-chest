@@ -2752,6 +2752,8 @@ const FACTION_COLONIAL_PREFIXES = [
 ];
 const DEFAULT_SAIL_TRIM_COLOR = '#c9b89a';
 const BANNED_FROM_PORT_RELATION = -40;
+/** Scales max sailing speed, acceleration, and over-ground motion for the player only (not AI ships). */
+const PLAYER_BASE_SPEED_MULT = 0.7;
 
 /** Camera zoom level: higher = closer to the ship (deck view); lower = wider (horizon). */
 const CAM_ZOOM_HORIZON = 70;
@@ -3361,7 +3363,7 @@ function beginEscortQuest(q) {
     name: q.cargoShipName || `Merchant (${inm.name})`,
     flagColor: '#2a7a6a',
     flagAssetId: factionFlagPngIdForFaction(townFaction({ cx: q.originCx, cz: q.originCz, hasTown: true })),
-    flagPosition: pickRandomAiFlagPosition(Math.random),
+    flagPosition: pickRandomAiFlagPosition(Math.random()),
     isTradeShip: true,
     isEscortCargo: true,
     escortQuestActive: true,
@@ -3393,6 +3395,140 @@ function beginEscortQuest(q) {
   q.attackerCount = nRaid;
   q.attackerSyncIds = spawnEscortRaiderPirates(cargoSync, pt, nRaid, rng);
   if (ws?.readyState === 1) G.npcSyncTimer = 0;
+}
+
+function ensureActiveContractNpcsForHost() {
+  if (!isMultiplayerHost() || G.mode !== 'playing') return;
+  const qs = G.quests || [];
+  for (let i = 0; i < qs.length; i++) {
+    const q = qs[i];
+    if (!q || !q.accepted) continue;
+    if (q.type === 'hunt') ensureHuntContractNpc(q);
+    else if (q.type === 'escort' && !q.pendingReward && q.escortSpawned) ensureEscortCargoNpcIfMissing(q);
+  }
+}
+function ensureHuntContractNpc(q) {
+  const tgt = String(q.target || '').trim();
+  if (!tgt) return;
+  for (let j = 0; j < G.npcs.length; j++) {
+    const n = G.npcs[j];
+    if (!n || n.sinking) continue;
+    if (n.isTradeShip || n.isStoryBounty || n.isFactionPatrol) continue;
+    if (huntQuestTargetsNpc(q, n)) {
+      if (q.huntTargetSyncId == null) q.huntTargetSyncId = n.syncId;
+      return;
+    }
+  }
+  if (q.huntTargetSyncId != null) {
+    const byId = G.npcs.find(n => n.syncId === q.huntTargetSyncId && !n.sinking && (n.health == null || n.health > 0));
+    if (byId) return;
+  }
+  spawnHuntMarkNpcForQuest(q);
+}
+function spawnHuntMarkNpcForQuest(q) {
+  const typePool = ['cutter', 'sloop', 'brigantine', 'galleon'];
+  const sr = () => Math.random();
+  const npcType = typePool[Math.floor(sr() * typePool.length)];
+  let nx = 0, nz = 0, placed = false;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const pt = sampleOpenOceanNearPlayer(140 + (attempt % 8) * 9, 400 + (attempt % 5) * 18);
+    nx = pt.x; nz = pt.z;
+    if (isWorldPositionFreeForNpcSpawn(nx, nz, npcType)) { placed = true; break; }
+  }
+  if (!placed) {
+    const s2 = (G.worldSeed | 0) * 7 + 911;
+    let s = s2 >>> 0;
+    const srp = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const pt = sampleOpenOceanPointInWorld(srp);
+    nx = pt.nx; nz = pt.nz;
+  }
+  const chunkX = Math.floor(nx / CHUNK_SIZE), chunkZ = Math.floor(nz / CHUNK_SIZE);
+  const pirateFaction = ((chunkX * 31 + chunkZ * 17 + (G.worldSeed | 0)) & 0x7fffffff) % FACTION_COUNT;
+  let sid = q.huntTargetSyncId;
+  if (sid == null || G.npcs.some(n => n.syncId === sid)) sid = allocHuntMarkSyncId();
+  q.huntTargetSyncId = sid;
+  const nameStr = String(q.target || '').trim() || 'Mark';
+  const npc = {
+    syncId: sid,
+    x: nx, z: nz,
+    rotation: sr() * Math.PI * 2, speed: 0,
+    health: 58 + sr() * 36, type: npcType,
+    name: nameStr,
+    wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
+    underFireTimer: 0, fireJitter: sr(),
+    riggingHealth: 100,
+    flagPosition: pickRandomAiFlagPosition(sr()),
+    isHuntContract: true
+  };
+  const npcFlagColor = FACTION_TRADE_COLORS[pirateFaction];
+  npc.factionId = pirateFaction;
+  npc.flagColor = npcFlagColor;
+  npc.flagAssetId = factionFlagPngIdForFaction(pirateFaction);
+  npc.sailBonus = 0.1;
+  npc.speed = npcMaxForwardSpeed(npc) * (0.2 + sr() * 0.12);
+  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name, { flagAssetId: npc.flagAssetId });
+  npc.crewData = ambientPirateCrewData((sid * 997) >>> 0);
+  buildCrewMeshes(mesh, npc.crewData, npc.type);
+  npc.mesh = mesh; scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  G.npcs.push(npc);
+  if (ws?.readyState === 1) G.npcSyncTimer = 0;
+  saveProgressDebounced();
+  notify(`Contract target at sea: ${nameStr}.`);
+}
+function ensureEscortCargoNpcIfMissing(q) {
+  if (!q.escortCargoSyncId) return;
+  const existing = G.npcs.find(n => n.syncId === q.escortCargoSyncId && !n.sinking && (n.health == null || n.health > 0));
+  if (existing) return;
+  const rng = islandRng((q.originCx | 0) + 441, (q.originCz | 0) + 919);
+  const pt = findEscortMerchantSpawnNearPort(q.originDockX, q.originDockZ, q.destDockX, q.destDockZ, rng);
+  const cargoSync = q.escortCargoSyncId;
+  const cannonPart = tradeShipCannonForType('brigantine');
+  const inm = getItemMeta(q.cargoGood || 'cloth');
+  const npc = {
+    syncId: cargoSync,
+    x: pt.x, z: pt.z,
+    rotation: Math.atan2(q.destDockX - pt.x, q.destDockZ - pt.z),
+    speed: 0,
+    health: 88,
+    type: 'brigantine',
+    tradeCannon: cannonPart,
+    name: q.cargoShipName || `Merchant (${inm.name})`,
+    flagColor: '#2a7a6a',
+    flagAssetId: factionFlagPngIdForFaction(townFaction({ cx: q.originCx, cz: q.originCz, hasTown: true })),
+    flagPosition: pickRandomAiFlagPosition(rng()),
+    isTradeShip: true,
+    isEscortCargo: true,
+    escortQuestActive: true,
+    escortDestX: q.destDockX,
+    escortDestZ: q.destDockZ,
+    aggro: false,
+    homeDockX: q.originDockX,
+    homeDockZ: q.originDockZ,
+    homeCx: q.originCx,
+    homeCz: q.originCz,
+    destCx: q.destCx,
+    destCz: q.destCz,
+    sailPick: 'silk',
+    sailBonus: 0.34,
+    wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
+    riggingHealth: 100,
+    cargoGood: q.cargoGood || 'cloth',
+    cargoUnits: q.cargoUnits != null ? q.cargoUnits : 8
+  };
+  const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: 'silk', cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, flagAssetId: npc.flagAssetId });
+  npc.crewData = merchantCrewFromRng(rng);
+  buildCrewMeshes(mesh, npc.crewData, npc.type);
+  npc.mesh = mesh;
+  scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  G.npcs.push(npc);
+  const nRaid = q.attackerCount != null ? Math.max(1, Math.min(8, q.attackerCount | 0)) : 1 + Math.floor(rng() * 5);
+  q.attackerCount = nRaid;
+  q.attackerSyncIds = spawnEscortRaiderPirates(cargoSync, pt, nRaid, rng);
+  if (ws?.readyState === 1) G.npcSyncTimer = 0;
+  saveProgressDebounced();
+  notify('Escort convoy rematerialized at sea.');
 }
 
 /** Loot + side quests from an NPC sink; leaderboard row is updated by the server (see npc_kill_award). */
@@ -3633,6 +3769,11 @@ function huntQuestMatchesNpc(q, n) {
 /** When mission markers are on, highlight these NPCs on chart/minimap even if pirate/merchant layers are off. */
 function isNpcActiveMissionMapTarget(n) {
   if (!n || n.sinking) return false;
+  const sq = G.storyQuest;
+  if (sq && sq.phase === 'active' && n.isStoryBounty && n.missionOwnerPlayerId != null && G.myId != null
+      && Number(n.missionOwnerPlayerId) === Number(G.myId) && (n.storyStep | 0) === (sq.step | 0)) {
+    return true;
+  }
   const qs = G.quests || [];
   for (let i = 0; i < qs.length; i++) {
     const q = qs[i];
@@ -3653,6 +3794,14 @@ const ESCORT_QUEST_SYNC_BASE = 5200;
 let _escortQuestSyncSeq = 0;
 function nextEscortQuestSyncId() {
   return ESCORT_QUEST_SYNC_BASE + (++_escortQuestSyncSeq);
+}
+/** Side-contract hunt targets (not the default ambient pirate pool). */
+const HUNT_MARK_SYNC_MIN = 30000;
+const HUNT_MARK_SYNC_MAX = 31999;
+function allocHuntMarkSyncId() {
+  if (G._nextHuntMarkSyncId == null || G._nextHuntMarkSyncId < HUNT_MARK_SYNC_MIN) G._nextHuntMarkSyncId = HUNT_MARK_SYNC_MIN;
+  if (G._nextHuntMarkSyncId > HUNT_MARK_SYNC_MAX) G._nextHuntMarkSyncId = HUNT_MARK_SYNC_MIN;
+  return G._nextHuntMarkSyncId++;
 }
 function escortContractsSessionOk() {
   return true;
@@ -7154,6 +7303,14 @@ function factionsConsideredAtWar(a, b) {
 }
 function playerBannedFromFactionPort(fid) {
   return playerFactionRelation(fid) <= BANNED_FROM_PORT_RELATION;
+}
+/** Barred, at war with your commission, or hostile standing — their merchants, corsairs, and patrols may attack on sight. */
+function factionHostileToPlayer(fid) {
+  const f = (fid | 0) % FACTION_COUNT;
+  if (playerBannedFromFactionPort(f)) return true;
+  ensurePolitics();
+  if (G.politics.joinedFaction != null && factionsConsideredAtWar(f, G.politics.joinedFaction)) return true;
+  return playerFactionRelation(f) <= -30;
 }
 function randomChoosableFlagRng(rng) {
   const ids = PLAYER_FLAG_CHOICE_IDS;
@@ -11600,7 +11757,7 @@ function getNpcRiggingHealth(npc) {
   if (npc.riggingMult != null) return Math.max(0, Math.min(100, Number(npc.riggingMult) * 100));
   return 100;
 }
-/** Same cap as player: min(G.player.speed, 12 * speedMult) — see update() sailing. */
+/** AI max forward speed (class + rigging; independent of the player’s PLAYER_BASE_SPEED_MULT). */
 function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
@@ -12284,7 +12441,8 @@ function tickFactionPatrolReserves(dt) {
       if (j !== f && factionsConsideredAtWar(f, j)) wars++;
     }
     const wealth = G.politics.factionWealth[f] | 0;
-    const desired = Math.min(12, 2 + Math.floor(wealth / 460) + wars * 2);
+    let desired = Math.min(12, 2 + Math.floor(wealth / 460) + wars * 2);
+    if (factionHostileToPlayer(f)) desired = Math.min(12, desired + 2);
     const alive = G.npcs.filter(n => n.isFactionPatrol && (n.factionId | 0) % FACTION_COUNT === f && !n.sinking && (n.health == null || n.health > 0)).length;
     if (alive < desired) spawnOneFactionPatrol(f);
   }
@@ -12346,6 +12504,7 @@ function spawnNPCs() {
   G._nextPatrolSyncId = PATROL_SYNC_MIN;
   seedInitialFactionPatrols();
   tryRestoreStoryBountyAfterNpcReset();
+  ensureActiveContractNpcsForHost();
   initTownStockpiles();
   ensureSeaReefsPopulated();
 }
@@ -12724,9 +12883,8 @@ function updateNPCs(dt) {
         ensurePolitics();
         const mPfid = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
         const mRel = playerFactionRelation(mPfid);
-        const mWarJ = G.politics.joinedFaction != null && factionsConsideredAtWar(mPfid, G.politics.joinedFaction);
         if (!npc.aggro && !G.playerSinking && G.player.health > 0 && distToPlayer < 142) {
-          if (mRel <= -35 || mWarJ) {
+          if (factionHostileToPlayer(mPfid)) {
             npc.aggro = true;
             npc.underFireTimer = Math.max(npc.underFireTimer || 0, 3.6);
           }
@@ -12949,7 +13107,7 @@ function updateNPCs(dt) {
       ensurePolitics();
       const pirF = npc.factionId != null ? (npc.factionId | 0) % FACTION_COUNT : 0;
       if (!focus && !npc.escortRaider && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
-        if (playerFactionRelation(pirF) <= -36 || (G.politics.joinedFaction != null && factionsConsideredAtWar(pirF, G.politics.joinedFaction))) {
+        if (factionHostileToPlayer(pirF)) {
           npc.aggro = true;
           npc.underFireTimer = Math.max(npc.underFireTimer || 0, 2.9);
         } else if (!npc.aggro && distToPlayer < 152 && npcCombatPowerEstimate(npc) < playerCombatPowerEstimate() * 0.92) {
@@ -19931,7 +20089,12 @@ function updateWorldPanel() {
   const relYou = FACTION_SHORT_NAMES.map((snm, fi) => {
     const r = playerFactionRelation(fi);
     const col = r <= BANNED_FROM_PORT_RELATION ? '#cc8888' : r >= 24 ? '#88c8a8' : '#c9a878';
-    return `<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(80,60,40,0.12);"><span style="display:inline-flex;align-items:center;gap:7px;color:${FACTION_TRADE_COLORS[fi]};min-width:0;">${worldPanelFactionFlagThumb(fi, 20, 15)}<span>${escapeDebugHtml(snm)}</span></span><span style="color:${col};flex-shrink:0;">${r > 0 ? '+' : ''}${r}</span></div>`;
+    const barred = playerBannedFromFactionPort(fi);
+    const atWarJoin = G.politics.joinedFaction != null && factionsConsideredAtWar(fi, G.politics.joinedFaction);
+    const extra = barred
+      ? ` <span style="color:#c07070;font-size:9px;">(barred — no entry)</span>`
+      : (atWarJoin ? ` <span style="color:#b89888;font-size:9px;">(at war w/ your flag)</span>` : '');
+    return `<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(80,60,40,0.12);"><span style="display:inline-flex;align-items:center;gap:7px;color:${FACTION_TRADE_COLORS[fi]};min-width:0;">${worldPanelFactionFlagThumb(fi, 20, 15)}<span>${escapeDebugHtml(snm)}</span></span><span style="color:${col};flex-shrink:0;text-align:right;max-width:52%;line-height:1.35;">${r > 0 ? '+' : ''}${r}${extra}</span></div>`;
   }).join('');
   let dipTable = '<table style="width:100%;border-collapse:collapse;font-size:10px;margin-top:4px;"><thead><tr><th scope="col"></th>';
   for (let j = 0; j < FACTION_COUNT; j++) {
@@ -21707,6 +21870,50 @@ function drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, opts) {
     }
   });
 
+  const sqM = G.storyQuest;
+  if (sqM) {
+    if (sqM.phase === 'intro') {
+      const port = findNearestPortDock(G.player.x, G.player.z);
+      if (port) {
+        const qx = wx2sx(port.dockX), qy = wz2sy(port.dockZ);
+        if (inBounds(qx, qy)) {
+          ctx.strokeStyle = 'rgba(220,160,255,0.95)'; ctx.lineWidth = mini ? 1.8 : 2.5; ctx.setLineDash([5, 4]);
+          ctx.beginPath(); ctx.arc(qx, qy, mini ? 8 : 12, 0, Math.PI * 2); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#e8c8f8'; ctx.font = (mini ? (w >= 220 ? '7px' : '6px') : 'bold 11px') + ' Georgia'; ctx.textAlign = 'center';
+          ctx.fillText(mini ? 'Harbor' : 'Harbor — ' + proceduralTownDisplayName(port), qx, qy - (mini ? 9 : 16));
+        }
+      }
+    }
+    if (sqM.phase === 'report' && sqM.turnInCx != null && sqM.turnInCz != null) {
+      const tip = getProceduralIslandMeta(sqM.turnInCx, sqM.turnInCz);
+      if (tip && tip.hasTown && tip.dockX != null) {
+        const qx = wx2sx(tip.dockX), qy = wz2sy(tip.dockZ);
+        if (inBounds(qx, qy)) {
+          ctx.strokeStyle = 'rgba(255,230,140,0.98)'; ctx.lineWidth = mini ? 2 : 3; ctx.setLineDash([]);
+          const box = mini ? 7 : 11;
+          ctx.strokeRect(qx - box, qy - box, box * 2, box * 2);
+          ctx.fillStyle = '#ffe8a8'; ctx.font = (mini ? (w >= 220 ? '7px' : '6px') : 'bold 11px') + (mini ? ' Georgia' : ' Georgia,serif'); ctx.textAlign = 'center';
+          ctx.fillText(mini ? 'Turn-in' : 'Bounty turn-in', qx, qy - (mini ? 9 : 17));
+        }
+      }
+    }
+    if (sqM.phase === 'active') {
+      G.npcs.forEach(n => {
+        if (!n.isStoryBounty || n.sinking) return;
+        const mine = n.missionOwnerPlayerId != null && G.myId != null && Number(n.missionOwnerPlayerId) === Number(G.myId);
+        if (mine && (n.storyStep | 0) !== (sqM.step | 0)) return;
+        const sx0 = wx2sx(n.x), sy0 = wz2sy(n.z);
+        if (!inBounds(sx0, sy0)) return;
+        ctx.strokeStyle = mine ? 'rgba(255,220,100,0.95)' : 'rgba(160,190,255,0.88)';
+        ctx.lineWidth = mine ? (mini ? 2.1 : 2.4) : (mini ? 1.4 : 1.65);
+        ctx.setLineDash(mine ? [] : [4, 3]);
+        ctx.beginPath(); ctx.arc(sx0, sy0, mine ? (mini ? 9.5 : 12) : (mini ? 7.5 : 11), 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+      });
+    }
+  }
+
   ensurePolitics();
   const letters = G.politics && G.politics.activeLetters ? G.politics.activeLetters : [];
   for (let li = 0; li < letters.length; li++) {
@@ -21858,10 +22065,12 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
       const tx = wx2sx(d.dockX), ty = wz2sy(d.dockZ);
       if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) continue;
       const fcol = FACTION_TRADE_COLORS[townFaction(d) % FACTION_COUNT];
-      ctx.fillStyle = fcol; ctx.fillRect(tx - 3, ty - 3, 6, 6);
-      ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
+      const tr = 5;
+      ctx.beginPath(); ctx.arc(tx, ty, tr, 0, Math.PI * 2);
+      ctx.fillStyle = fcol; ctx.fill();
+      ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
-      ctx.fillText(proceduralTownDisplayName(d), tx, ty - 7);
+      ctx.fillText(proceduralTownDisplayName(d), tx, ty - tr - 4);
     }
   } else {
     forEachProceduralIslandInWorldBounds(bMinX, bMaxX, bMinZ, bMaxZ, d => {
@@ -21891,10 +22100,12 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
         const tx = wx2sx(d.dockX), ty = wz2sy(d.dockZ);
         if (tx < -10 || tx > w + 10 || ty < -10 || ty > h + 10) return;
         const fcol = FACTION_TRADE_COLORS[townFaction(d) % FACTION_COUNT];
-        ctx.fillStyle = fcol; ctx.fillRect(tx - 3, ty - 3, 6, 6);
-        ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1; ctx.strokeRect(tx - 3, ty - 3, 6, 6);
+        const tr = 5;
+        ctx.beginPath(); ctx.arc(tx, ty, tr, 0, Math.PI * 2);
+        ctx.fillStyle = fcol; ctx.fill();
+        ctx.strokeStyle = '#d4a848'; ctx.lineWidth = 1.5; ctx.stroke();
         ctx.fillStyle = '#e8d090'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
-        ctx.fillText(proceduralTownDisplayName(d), tx, ty - 7);
+        ctx.fillText(proceduralTownDisplayName(d), tx, ty - tr - 4);
       }
     }, centerX, centerZ, mapSeedOpt);
   }
@@ -21913,13 +22124,6 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
     ctx.strokeStyle = hullCol; ctx.lineWidth = 1.5; ctx.beginPath();
     ctx.moveTo(sx, sy); ctx.lineTo(sx - Math.sin(n.rotation) * dirLen, sy - Math.cos(n.rotation) * dirLen); ctx.stroke();
     ctx.fillStyle = '#e8e0d8'; ctx.font = '10px Georgia,serif'; ctx.textAlign = 'center'; ctx.fillText(n.name, sx, sy - 8);
-    if (mapChartLayers.missions && n.isStoryBounty) {
-      const mine = n.missionOwnerPlayerId != null && G.myId != null && Number(n.missionOwnerPlayerId) === Number(G.myId);
-      ctx.strokeStyle = mine ? 'rgba(255,220,120,0.95)' : 'rgba(170,200,255,0.88)';
-      ctx.lineWidth = mine ? 2.4 : 1.65; ctx.setLineDash(mine ? [] : [4, 3]);
-      ctx.beginPath(); ctx.arc(sx, sy, merchant ? 11 : 12, 0, Math.PI * 2); ctx.stroke();
-      ctx.setLineDash([]);
-    }
   });
 
   G.otherPlayers.forEach(p => {
@@ -21945,34 +22149,6 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
 
   if (mapChartLayers.missions) {
     drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, { mini: false, debugShipLayers });
-  }
-
-  if (mapChartLayers.missions && G.storyQuest.phase === 'intro') {
-    const port = findNearestPortDock(G.player.x, G.player.z);
-    if (port) {
-      const qx = wx2sx(port.dockX), qy = wz2sy(port.dockZ);
-      if (qx > -14 && qx < w + 14 && qy > -14 && qy < h + 14) {
-        ctx.strokeStyle = 'rgba(220,160,255,0.95)'; ctx.lineWidth = 2.5; ctx.setLineDash([5, 4]);
-        ctx.beginPath(); ctx.arc(qx, qy, 12, 0, Math.PI * 2); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = '#e8c8f8'; ctx.font = 'bold 11px Georgia'; ctx.textAlign = 'center';
-        ctx.fillText('Harbor — ' + proceduralTownDisplayName(port), qx, qy - 16);
-      }
-    }
-  }
-
-  const sqR = G.storyQuest;
-  if (mapChartLayers.missions && sqR.phase === 'report' && sqR.turnInCx != null && sqR.turnInCz != null) {
-    const tip = getProceduralIslandMeta(sqR.turnInCx, sqR.turnInCz);
-    if (tip && tip.hasTown && tip.dockX != null) {
-      const qx = wx2sx(tip.dockX), qy = wz2sy(tip.dockZ);
-      if (qx > -20 && qx < w + 20 && qy > -20 && qy < h + 20) {
-        ctx.strokeStyle = 'rgba(255,230,140,0.98)'; ctx.lineWidth = 3; ctx.setLineDash([]);
-        ctx.strokeRect(qx - 11, qy - 11, 22, 22);
-        ctx.fillStyle = '#ffe8a8'; ctx.font = 'bold 11px Georgia,serif'; ctx.textAlign = 'center';
-        ctx.fillText('Bounty turn-in', qx, qy - 17);
-      }
-    }
   }
 
   }
@@ -22265,44 +22441,6 @@ function drawMinimap() {
     }
   });
   if (mapChartLayers.missions) {
-    if (G.storyQuest.phase === 'intro') {
-      const port = findNearestPortDock(G.player.x, G.player.z);
-      if (port) {
-        const qx = wx2sx(port.dockX), qy = wz2sy(port.dockZ);
-        if (qx > 0 && qx < w && qy > 0 && qy < h) {
-          ctx.strokeStyle = 'rgba(200,140,240,0.9)'; ctx.lineWidth = 1.8; ctx.setLineDash([3, 3]);
-          ctx.beginPath(); ctx.arc(qx, qy, 8, 0, Math.PI * 2); ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.fillStyle = '#e8c8f8'; ctx.font = (w >= 220 ? '8px' : '7px') + ' Georgia'; ctx.textAlign = 'center';
-          ctx.fillText('Harbor', qx, qy - 10);
-        }
-      }
-    }
-    const sqM = G.storyQuest;
-    if (sqM.phase === 'report' && sqM.turnInCx != null && sqM.turnInCz != null) {
-      const tip = getProceduralIslandMeta(sqM.turnInCx, sqM.turnInCz);
-      if (tip && tip.hasTown && tip.dockX != null) {
-        const qx = wx2sx(tip.dockX), qy = wz2sy(tip.dockZ);
-        if (qx > 0 && qx < w && qy > 0 && qy < h) {
-          ctx.strokeStyle = 'rgba(255,230,140,0.95)'; ctx.lineWidth = 2; ctx.setLineDash([]);
-          ctx.strokeRect(qx - 7, qy - 7, 14, 14);
-          ctx.fillStyle = '#ffe8b0'; ctx.font = (w >= 220 ? '7px' : '6px') + ' Georgia'; ctx.textAlign = 'center';
-          ctx.fillText('Turn-in', qx, qy - 10);
-        }
-      }
-    }
-    if (sqM.phase === 'active') {
-      G.npcs.forEach(n => {
-        if (!n.isStoryBounty || n.sinking) return;
-        const sx = wx2sx(n.x), sy = wz2sy(n.z);
-        if (sx <= 0 || sx >= w || sy <= 0 || sy >= h) return;
-        const mine = n.missionOwnerPlayerId != null && G.myId != null && Number(n.missionOwnerPlayerId) === Number(G.myId);
-        ctx.strokeStyle = mine ? 'rgba(255,220,100,0.95)' : 'rgba(160,190,255,0.82)';
-        ctx.lineWidth = mine ? 2.1 : 1.45; ctx.setLineDash(mine ? [] : [3, 3]);
-        ctx.beginPath(); ctx.arc(sx, sy, mine ? 9.5 : 7.5, 0, Math.PI * 2); ctx.stroke();
-        ctx.setLineDash([]);
-      });
-    }
     drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, { mini: true });
   }
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
@@ -22566,7 +22704,7 @@ function update(dt) {
       G.player.z = tzu;
       if (tRot != null) G.player.rotation = tRot;
       G.undockingAnim = null;
-      G.player.speed = Math.max(G.player.speed, 2);
+      G.player.speed = Math.max(G.player.speed, 2 * PLAYER_BASE_SPEED_MULT);
       G.sailsFurled = false;
     } else {
       const stepU = Math.min(6.8 * dt, distU);
@@ -22651,8 +22789,12 @@ function update(dt) {
       autoSailWTimer = 0;
     }
 
-    if (forward > 0.1) G.player.speed = Math.min(G.player.speed + 4 * dt * speedMult * forward, 12 * speedMult);
-    else if (forward < -0.1) G.player.speed = Math.max(G.player.speed - 6 * dt * Math.abs(forward), -3);
+    if (forward > 0.1) {
+      G.player.speed = Math.min(
+        G.player.speed + 4 * dt * speedMult * forward * PLAYER_BASE_SPEED_MULT,
+        12 * speedMult * PLAYER_BASE_SPEED_MULT
+      );
+    } else if (forward < -0.1) G.player.speed = Math.max(G.player.speed - 6 * dt * Math.abs(forward) * PLAYER_BASE_SPEED_MULT, -3 * PLAYER_BASE_SPEED_MULT);
     else G.player.speed *= (1 - 0.3 * dt);
     if (Math.abs(G.player.speed) < 0.02) G.player.speed = 0;
 
@@ -22763,6 +22905,11 @@ function update(dt) {
   if (storyBountyEnsureAcc >= 1.35) {
     storyBountyEnsureAcc = 0;
     ensureStoryBountyNpcPresent();
+  }
+  G._contractNpcRestoreAcc = (G._contractNpcRestoreAcc || 0) + dt;
+  if (G._contractNpcRestoreAcc >= 2) {
+    G._contractNpcRestoreAcc = 0;
+    if (isMultiplayerHost()) ensureActiveContractNpcsForHost();
   }
   resolvePlayerShipCollisionsAfterNpcs();
   if (!G.docked && !G.dockingAnim && !G.undockingAnim && !G.spectate && !G.playerSinking && !G.captainWalk?.active) {
