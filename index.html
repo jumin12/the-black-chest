@@ -5913,6 +5913,14 @@ function clearCustomMapAndReloadWorld(statusEl) {
   if (statusEl) statusEl.textContent = 'Procedural archipelago restored.';
 }
 
+/** Pier deck: short land leg + long seaward leg so the two long sides and the sea end sit in open water (T-berth at tip). */
+const PIER_DECK_WIDTH = 5;
+const PIER_LAND_HALF = 4.15;
+const PIER_SEA_HALF = 11.9;
+const PIER_TOTAL_LEN = PIER_LAND_HALF + PIER_SEA_HALF;
+/** After shoreline placement, shift the stored dock center seaward so `dockX/Z` matches pier mesh center. */
+const PIER_MESH_CENTER_SHIFT = (PIER_SEA_HALF - PIER_LAND_HALF) * 0.5;
+
 /** Pier end sits just past the procedural shoreline along dockAngle so three sides are in water. */
 function placeTownDockSeaward(meta) {
   if (!meta || !meta.hasTown) return;
@@ -5947,6 +5955,9 @@ function placeTownDockSeaward(meta) {
   }
   const ox = meta.dockX - wx0, oz = meta.dockZ - wz0;
   if (Math.abs(ox) + Math.abs(oz) > 0.25) meta.dockAngle = Math.atan2(ox, oz);
+  const daF = meta.dockAngle || 0;
+  meta.dockX += Math.sin(daF) * PIER_MESH_CENTER_SHIFT;
+  meta.dockZ += Math.cos(daF) * PIER_MESH_CENTER_SHIFT;
 }
 
 /** Deterministic island data for a chunk (matches generateIsland). Used for world map so all players see the full archipelago in view. */
@@ -6199,8 +6210,8 @@ function findNearestPortDock(wx, wz) {
   return best;
 }
 
-/** Multiple berths along the pier (offset added to seaward `along`; wider spacing avoids hull overlap). */
-const DOCK_BERTH_ALONG = [0, 6.8, -6.8];
+/** Lateral offsets at the pier seaward tip — ships tie abreast forming a T with the wharf. */
+const DOCK_BERTH_LATERAL = [0, 9.2, -9.2];
 const DOCK_TRIGGER_RADIUS = 42;
 function computeDockBerthSlots(meta) {
   if (!meta || meta.dockX == null) return [];
@@ -6209,22 +6220,24 @@ function computeDockBerthSlots(meta) {
   const widX = Math.cos(da), widZ = -Math.sin(da);
   const landX = (meta.worldX != null ? meta.worldX : meta.dockX) - meta.dockX;
   const landZ = (meta.worldZ != null ? meta.worldZ : meta.dockZ) - meta.dockZ;
-  const dot = widX * landX + widZ * landZ;
-  const seaSign = dot >= 0 ? -1 : 1;
-  /** Pier mesh is ~14 long centered on dockX/Z; (longX,longZ) points island→sea — berth at open-water end, not broadside to the wharf. */
-  const seaAlong = 5.85;
-  const lateralFromPier = 1.28;
-  const pierDeck = 2.35 * seaSign;
-  return DOCK_BERTH_ALONG.map((unusedAlong, index) => {
-    const along = seaAlong + unusedAlong;
-    const bx = meta.dockX + longX * along + widX * lateralFromPier * seaSign;
-    const bz = meta.dockZ + longZ * along + widZ * lateralFromPier * seaSign;
-    const clAL = along - 1.05, clAR = along + 1.05;
-    const cleatLX = meta.dockX + longX * clAL + widX * pierDeck;
-    const cleatLZ = meta.dockZ + longZ * clAL + widZ * pierDeck;
-    const cleatRX = meta.dockX + longX * clAR + widX * pierDeck;
-    const cleatRZ = meta.dockZ + longZ * clAR + widZ * pierDeck;
-    return { x: bx, z: bz, rot: da, index, cleatLX, cleatLZ, cleatRX, cleatRZ, along };
+  const landLen = Math.hypot(landX, landZ) || 1;
+  const lxn = landX / landLen, lzn = landZ / landLen;
+  /** Ship lies across the pier axis (T): heading ± width of the dock, bow away from the island when possible. */
+  let shipRot = da + Math.PI / 2;
+  let fwx = Math.sin(shipRot), fwz = Math.cos(shipRot);
+  if (fwx * lxn + fwz * lzn > 0) shipRot += Math.PI;
+  /** Past seaward deck edge so hull clears the T-head (uses wide-hull beam). */
+  const alongShip = PIER_SEA_HALF + 2.35 + 1.05;
+  const cleatAlong = PIER_SEA_HALF - 1.05;
+  const cleatHalf = 1.32;
+  return DOCK_BERTH_LATERAL.map((lat, index) => {
+    const bx = meta.dockX + longX * alongShip + widX * lat;
+    const bz = meta.dockZ + longZ * alongShip + widZ * lat;
+    const cleatLX = meta.dockX + longX * cleatAlong + widX * (lat - cleatHalf);
+    const cleatLZ = meta.dockZ + longZ * cleatAlong + widZ * (lat - cleatHalf);
+    const cleatRX = meta.dockX + longX * cleatAlong + widX * (lat + cleatHalf);
+    const cleatRZ = meta.dockZ + longZ * cleatAlong + widZ * (lat + cleatHalf);
+    return { x: bx, z: bz, rot: shipRot, index, cleatLX, cleatLZ, cleatRX, cleatRZ, along: alongShip };
   });
 }
 function distToDockTrigger(meta, wx, wz) {
@@ -7295,7 +7308,7 @@ function generateCustomMapChunk(cx, cz) {
       group.add(hg);
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
-      const dock = new THREE.Mesh(new THREE.BoxGeometry(5, 0.45, 14), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+      const dock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.45, PIER_TOTAL_LEN), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
       dock.position.set(e.x, surf + 0.45, e.z);
       dock.rotation.y = ang;
       dock.receiveShadow = true; dock.castShadow = true;
@@ -7549,14 +7562,13 @@ function generateIsland(cx, cz) {
 
     const dockLongX = Math.sin(dockAngle), dockLongZ = Math.cos(dockAngle);
     const dockWidX = Math.cos(dockAngle), dockWidZ = -Math.sin(dockAngle);
-    const halfDockLen = 7;
     const dockYLand = Math.max(
-      terrainYWorld(dockX + dockLongX * halfDockLen, dockZ + dockLongZ * halfDockLen),
-      terrainYWorld(dockX - dockLongX * halfDockLen, dockZ - dockLongZ * halfDockLen),
+      terrainYWorld(dockX + dockLongX * PIER_SEA_HALF, dockZ + dockLongZ * PIER_SEA_HALF),
+      terrainYWorld(dockX - dockLongX * PIER_LAND_HALF, dockZ - dockLongZ * PIER_LAND_HALF),
       terrainYWorld(dockX, dockZ)
     );
     const dockGround = dockYLand > 0 ? dockYLand : 0;
-    const dockGeo = new THREE.BoxGeometry(5, 0.4, 14);
+    const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.4, PIER_TOTAL_LEN);
     const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
     const dock = new THREE.Mesh(dockGeo, dockMat);
     const dockDeckClear = 0.52;
@@ -7569,9 +7581,10 @@ function generateIsland(cx, cz) {
     const dockUndersideY = dockCenterY - 0.2;
     const postH = 5.8;
     const postTopY = dockUndersideY - 0.06;
+    const postAlongStep = PIER_TOTAL_LEN / 3.5;
     for (let pi = 0; pi < 8; pi++) {
       const side = pi % 2 === 0 ? 1 : -1;
-      const along = (Math.floor(pi / 2) - 1.5) * 4;
+      const along = (Math.floor(pi / 2) - 1.5) * postAlongStep;
       const ppx = dockX + dockLongX * along + dockWidX * 2.3 * side;
       const ppz = dockZ + dockLongZ * along + dockWidZ * 2.3 * side;
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, postH, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
@@ -18821,11 +18834,15 @@ function showPortTab(tab) {
     content.appendChild(sideHdr);
 
     if (G.quests.length === 0) generateQuests();
+    let anyListedSideContract = false;
     G.quests.forEach((q, qi) => {
+      if (!isSideContractListedAtThisPort(q)) return;
+      anyListedSideContract = true;
       const d = document.createElement('div');
       d.style.cssText = `padding:10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;${q.accepted ? 'border-color:rgba(80,160,80,0.4);' : ''}`;
       d.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${q.desc}</div>
-        ${q.type === 'delivery' && q.destTown ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Deliver to: <strong style="color:#c4a878;">${q.destTown}</strong> (gold harbor marker on chart)</div>` : ''}
+        ${q.type === 'delivery' && q.originTown ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Posted at: <strong style="color:#c4a878;">${q.originTown}</strong>${q.destTown ? ` · Deliver to: <strong style="color:#c4a878;">${q.destTown}</strong>` : ''} (gold harbor marker on chart)</div>` : ''}
+        ${q.type === 'delivery' && !q.originTown && q.destTown ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Deliver to: <strong style="color:#c4a878;">${q.destTown}</strong> (gold harbor marker on chart)</div>` : ''}
         ${q.type === 'escort' ? `<div style="color:#9a8a78;font-size:10px;margin-top:4px;">Sign at: <strong style="color:#c4a878;">${q.originTown || 'listed port'}</strong> · Sail with the merchant to <strong style="color:#c4a878;">${q.destTown || 'destination'}</strong>${q.pendingReward ? ' · <span style="color:#88cc88;">Dock → Quests to collect fee</span>' : ''}</div>` : ''}
         <div style="display:flex;justify-content:space-between;margin-top:6px;">
           <span style="color:#d4a848;font-size:11px;">Reward: ${q.reward} gold</span>
@@ -18833,6 +18850,12 @@ function showPortTab(tab) {
         </div>`;
       content.appendChild(d);
     });
+    if (!anyListedSideContract && G.quests.some(q => !q.accepted && (q.type === 'escort' || q.type === 'delivery'))) {
+      const hint = document.createElement('div');
+      hint.style.cssText = 'color:#8a7a60;font-size:11px;padding:6px 0 4px;line-height:1.45;';
+      hint.textContent = 'No contracts posted at this harbor. Other ports have escort and cargo work on their boards.';
+      content.appendChild(hint);
+    }
   } else if (tab === 'ships') {
     const gHave = getInvCount('gold');
     const curSpec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
@@ -19184,6 +19207,18 @@ function createWorldQuestRng() {
     return s / 4294967296;
   };
 }
+/** Side contracts listed in Port → Quests only at the town that posts them (active contracts still show everywhere). */
+function isSideContractListedAtThisPort(q) {
+  if (!q || q.accepted) return true;
+  if (!G.nearDock || G.nearDock.cx == null || G.nearDock.cz == null) return true;
+  if (q.type === 'hunt') return true;
+  if (q.type === 'escort') return q.originCx === G.nearDock.cx && q.originCz === G.nearDock.cz;
+  if (q.type === 'delivery') {
+    if (q.originCx == null || q.originCz == null) return true;
+    return q.originCx === G.nearDock.cx && q.originCz === G.nearDock.cz;
+  }
+  return true;
+}
 function generateQuests() {
   G.quests = [];
   const rnd = createWorldQuestRng();
@@ -19248,13 +19283,21 @@ function generateQuests() {
     const items = ['wood', 'cloth', 'iron', 'rum'];
     const item = items[Math.floor(rnd() * items.length)];
     const count = 3 + Math.floor(rnd() * 5);
-    const dest = pool[Math.floor(rnd() * pool.length)];
+    const origin = pool[Math.floor(rnd() * pool.length)];
+    let dest = pool[Math.floor(rnd() * pool.length)];
+    for (let t = 0; t < 14 && dest.cx === origin.cx && dest.cz === origin.cz; t++) {
+      dest = pool[Math.floor(rnd() * pool.length)];
+    }
     const inm = getItemMeta(item);
     G.quests.push({
       type: 'delivery',
-      desc: `Deliver ${count} ${inm.name} to ${dest.townName}`,
+      desc: dest.cx === origin.cx && dest.cz === origin.cz
+        ? `Deliver ${count} ${inm.name} locally at ${origin.townName}`
+        : `Deliver ${count} ${inm.name} from ${origin.townName} to ${dest.townName}`,
       reward: 20 + count * 5,
       item, count,
+      originCx: origin.cx, originCz: origin.cz,
+      originTown: origin.townName,
       destCx: dest.cx, destCz: dest.cz,
       destTown: dest.townName,
       destDockX: dest.dockX, destDockZ: dest.dockZ,
@@ -19284,6 +19327,10 @@ window.acceptQuest = function(idx) {
     beginEscortQuest(q);
     notify(`Merchant under way — defend them until they reach ${q.destTown || 'the destination'}.`);
   } else if (q.type === 'delivery') {
+    if (q.originCx != null && q.originCz != null && (!G.nearDock || G.nearDock.cx !== q.originCx || G.nearDock.cz !== q.originCz)) {
+      notify(`Sign this cargo contract at ${q.originTown || 'the issuing port'}.`);
+      return;
+    }
     if (!tryAddQuestCargo(q.item, q.count)) {
       notify('Not enough cargo space for contract goods!');
       return;
@@ -21621,7 +21668,7 @@ function isStoryBriefHudObscured() {
   };
   if (isMobile && (G.docked || shown('port-panel'))) return true;
   if (typeof fullmapOpen !== 'undefined' && fullmapOpen) return true;
-  if (shown('dock-prompt')) return true;
+  if (isMobile && shown('dock-prompt')) return true;
   if (shown('log-panel')) return true;
   if (shown('chat-box') && !(shouldDockChatPanel() && G.mode === 'playing')) return true;
   if (shown('settings-modal')) return true;

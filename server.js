@@ -1813,6 +1813,9 @@ function sanitizeWorldQuests(arr) {
     if (type === 'delivery') {
       row.item = String(q.item != null ? q.item : 'wood').slice(0, 24);
       row.count = Math.max(1, Math.min(99, Math.floor(Number(q.count) || 1)));
+      row.originCx = q.originCx != null ? Math.floor(Number(q.originCx)) : null;
+      row.originCz = q.originCz != null ? Math.floor(Number(q.originCz)) : null;
+      row.originTown = q.originTown != null ? String(q.originTown).slice(0, 48) : '';
       row.destCx = q.destCx != null ? Math.floor(Number(q.destCx)) : null;
       row.destCz = q.destCz != null ? Math.floor(Number(q.destCz)) : null;
       row.destTown = q.destTown != null ? String(q.destTown).slice(0, 48) : '';
