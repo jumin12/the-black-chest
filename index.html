@@ -1202,7 +1202,15 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   padding-bottom:10px;border-bottom:1px solid rgba(140,100,40,0.32);
   flex-shrink:0;
 }
+.port-sidebar-head-info{display:flex;align-items:flex-start;gap:10px;min-width:0;flex:1;}
+.port-title-flag{
+  flex-shrink:0;width:44px;height:28px;object-fit:cover;border-radius:4px;
+  border:1px solid rgba(120,90,50,0.45);box-shadow:0 2px 6px rgba(0,0,0,0.35);
+  background:rgba(8,6,5,0.5);
+}
+.port-title-block{min-width:0;flex:1;}
 .port-sidebar-head h3{margin:0;font-size:18px;font-family:Georgia,serif;color:#d4a848;line-height:1.25;}
+.port-title-faction{font-size:11px;font-weight:normal;margin-top:5px;letter-spacing:0.04em;line-height:1.2;opacity:0.95;}
 .port-leave-btn{
   flex-shrink:0;background:linear-gradient(180deg,rgba(90,52,38,0.95),rgba(48,28,22,0.98));
   border:1px solid rgba(201,162,74,0.45);color:#f0e4c8;padding:8px 16px;border-radius:8px;
@@ -2375,7 +2383,13 @@ body.game-help-mobile-minimal #game-help-panel{
     <div class="port-panel-layout">
       <aside class="port-sidebar-col">
         <header class="port-sidebar-head">
-          <h3 id="port-title">Port Royal</h3>
+          <div class="port-sidebar-head-info">
+            <img id="port-title-flag" class="port-title-flag" alt="" width="44" height="28" decoding="async" />
+            <div class="port-title-block">
+              <h3 id="port-title">Port Royal</h3>
+              <div id="port-title-faction" class="port-title-faction"></div>
+            </div>
+          </div>
           <button type="button" id="port-leave" class="port-leave-btn">Set Sail</button>
         </header>
         <div class="port-tab-row">
@@ -2445,7 +2459,7 @@ body.game-help-mobile-minimal #game-help-panel{
         <div class="game-help-pane active" data-help-pane="basics" id="game-help-pane-basics">
           <div class="help-for-pc">
             <h3>Helm &amp; camera</h3>
-            <p><kbd>W</kbd> <kbd>S</kbd> trim sail · <kbd>A</kbd> <kbd>D</kbd> rudder (turns build gradually with speed, like a sailing ship). <kbd>Q</kbd> <kbd>E</kbd> swing the camera; middle-mouse drag orbits; wheel zooms between horizon and deck. <kbd>Home</kbd> snaps the chase cam astern.</p>
+            <p><kbd>W</kbd> <kbd>S</kbd> trim sail · <kbd>A</kbd> <kbd>D</kbd> rudder (turns build gradually with speed, like a sailing ship). <kbd>Q</kbd> <kbd>E</kbd> swing the camera; middle-mouse drag orbits; wheel zooms between horizon and deck.</p>
             <p><kbd>M</kbd> full chart · <kbd>Esc</kbd> settings / close panels.</p>
             <h3>Log &amp; chat</h3>
             <p><kbd>B</kbd> Captain&rsquo;s Log · <kbd>I</kbd> cargo · <kbd>C</kbd> crew · <kbd>T</kbd> chat.</p>
@@ -4443,6 +4457,34 @@ function migratePlayerCrewRecords() {
   for (const c of G.player.crew) normalizeCrewMemberRecord(c);
   ensureUniqueStationAssignments();
   ensurePlayerCrewTasks();
+}
+/** After load: recover from empty saves, invalid JSON shapes, or missing captain so the deck never loads bare. */
+function ensurePlayerCrewSanityAfterLoad() {
+  let changed = false;
+  if (!Array.isArray(G.player.crew)) {
+    G.player.crew = [];
+    changed = true;
+  }
+  const filtered = G.player.crew.filter(c => c && typeof c === 'object');
+  if (filtered.length !== G.player.crew.length) {
+    G.player.crew = filtered;
+    changed = true;
+  }
+  if (G.player.crew.length === 0) {
+    G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+    changed = true;
+  } else if (!G.player.crew.some(c => c && c.role === 'captain')) {
+    const first = G.player.crew.find(c => c && c.role !== 'prisoner');
+    if (first) {
+      first.role = 'captain';
+      first.task = 'helm';
+      changed = true;
+    } else {
+      G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+      changed = true;
+    }
+  }
+  if (changed) migratePlayerCrewRecords();
 }
 function getCaptainDisplayCrew() {
   const list = G.player.crew || [];
@@ -20232,10 +20274,21 @@ function dockAtPort() {
       document.body.classList.add('port-panel-open');
       document.getElementById('port-panel').style.display = 'block';
       const pt = document.getElementById('port-title');
+      const ptf = document.getElementById('port-title-faction');
+      const pfi = document.getElementById('port-title-flag');
       if (pt && G.nearDock) {
         const fid = townFaction(G.nearDock);
         const fc = FACTION_TRADE_COLORS[fid % FACTION_COUNT];
-        pt.innerHTML = `${proceduralTownDisplayName(G.nearDock)}<div style="font-size:11px;font-weight:normal;color:${fc};opacity:0.95;margin-top:5px;letter-spacing:0.04em;">${factionLabel(fid)}</div>`;
+        pt.textContent = proceduralTownDisplayName(G.nearDock);
+        if (ptf) {
+          ptf.textContent = factionLabel(fid);
+          ptf.style.color = fc;
+        }
+        if (pfi) {
+          const pngId = factionFlagPngIdForFaction(fid);
+          pfi.src = `assets/flags/flag${pngId}.png`;
+          pfi.alt = `${factionLabel(fid)} ensign`;
+        }
       }
       showPortTab('trade');
       checkPortQuestProgress();
@@ -24892,7 +24945,11 @@ function loadProgress() {
       normalizeInventoryMergeStacks();
     }
     G.player.cargoSlots = Array.isArray(data.cargoSlots) ? data.cargoSlots : [];
-    if (data.crew) G.player.crew = data.crew;
+    if (Array.isArray(data.crew) && data.crew.length > 0) {
+      G.player.crew = data.crew;
+    } else if (Array.isArray(data.crew) && data.crew.length === 0) {
+      G.player.crew = getDefaultStartingCrew().map(c => ({ ...c }));
+    }
     if (data.quests) G.quests = data.quests.filter(q => q && q.type !== 'explore');
     if (data.completedMissionLog && Array.isArray(data.completedMissionLog)) G.completedMissionLog = data.completedMissionLog.slice(0, 40);
     else G.completedMissionLog = [];
@@ -24990,6 +25047,7 @@ function loadProgress() {
       G._crewLastMealCycle = Math.floor(Number(data.lastCrewMealCycle));
     }
     migratePlayerCrewRecords();
+    ensurePlayerCrewSanityAfterLoad();
     /** Land checks use global `noise`; init before validate so Continue does not random-teleport (e.g. map edge). */
     noise = new SimplexNoise(G.worldSeed >>> 0);
     clampPlayerIntoWorldBounds();
@@ -25048,7 +25106,10 @@ function initMainMenuAttractor() {
 
 /* ============================== INIT ===================================== */
 const hasSave = loadProgress();
-if (!hasSave) migratePlayerCrewRecords();
+if (!hasSave) {
+  migratePlayerCrewRecords();
+  ensurePlayerCrewSanityAfterLoad();
+}
 updatePiratesPanel();
 noise = new SimplexNoise(G.worldSeed);
 if (!hasSave) ensurePlayerInOpenOcean();
