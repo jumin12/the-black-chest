@@ -17,6 +17,33 @@ function sanitizeClientFlagAssetId(v) {
   if (RESERVED_PLAYER_FLAG_ASSET_IDS.has(x)) return null;
   return x;
 }
+/** Compact boarding engagement relayed in `update` / `state` for multiplayer sync. */
+function sanitizeBoardingFromClient(b) {
+  if (b === null) return null;
+  if (typeof b !== 'object' || !b) return null;
+  const sid = Math.floor(Number(b.sid));
+  if (!Number.isFinite(sid)) return null;
+  const ph = b.ph === 'f' ? 'f' : 'h';
+  const nx = Number(b.nx);
+  const nz = Number(b.nz);
+  const nr = Number(b.nr);
+  if (!Number.isFinite(nx) || !Number.isFinite(nz) || !Number.isFinite(nr)) return null;
+  return {
+    sid,
+    ph,
+    t: Math.max(0, Math.min(999, Number(b.t) || 0)),
+    hd: Math.max(0.4, Math.min(60, Number(b.hd) || 2.45)),
+    pa: Math.max(0, Math.min(48, Math.floor(Number(b.pa) || 0))),
+    pH: Math.max(0, Math.min(48, Math.floor(Number(b.pH) || 0))),
+    ea: Math.max(0, Math.min(48, Math.floor(Number(b.ea) || 0))),
+    eH: Math.max(0, Math.min(48, Math.floor(Number(b.eH) || 0))),
+    pTo: Math.max(0, Math.min(96, Math.floor(Number(b.pTo) || 0))),
+    eTo: Math.max(0, Math.min(96, Math.floor(Number(b.eTo) || 0))),
+    nx: Math.max(-5e5, Math.min(5e5, nx)),
+    nz: Math.max(-5e5, Math.min(5e5, nz)),
+    nr: Math.max(-1e4, Math.min(1e4, nr))
+  };
+}
 /**
  * Persistent JSON directory (leaderboard, clans, world seed, map, bans, accounts).
  * Prefer env `DATA_DIR`. If unset, use a mounted path when present (Render disks often use `/var/data`)
@@ -1899,6 +1926,7 @@ wss.on('connection', (ws, req) => {
     riggingHealth: 100,
     morale: 100,
     deckWalk: null,
+    boarding: null,
     partyTag: '',
     clientIp
   };
@@ -2014,6 +2042,10 @@ wss.on('connection', (ws, req) => {
             } else {
               p.deckWalk = null;
             }
+          }
+          if (msg.boarding !== undefined) {
+            if (msg.boarding === null) p.boarding = null;
+            else p.boarding = sanitizeBoardingFromClient(msg.boarding);
           }
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {
@@ -2228,7 +2260,8 @@ wss.on('connection', (ws, req) => {
         case 'cannonball': {
           const a = msg.ammoType;
           const ammoType = a === 'grape' || a === 'chain' || a === 'grape_pellet' ? a : 'ball';
-          broadcast({ type: 'cannonball', shooterId: id, x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, ammoType }, id);
+          const cy = msg.y != null && Number.isFinite(Number(msg.y)) ? Number(msg.y) : null;
+          broadcast({ type: 'cannonball', shooterId: id, x: msg.x, z: msg.z, y: cy, dx: msg.dx, dz: msg.dz, ammoType }, id);
           break;
         }
         case 'sea_debris': {
@@ -3133,7 +3166,8 @@ setInterval(() => {
     dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
     riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
     morale: p.morale != null ? p.morale : 100,
-    deckWalk: p.deckWalk || null
+    deckWalk: p.deckWalk || null,
+    boarding: p.boarding != null ? p.boarding : null
   }));
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   broadcast({ type: 'state', players: snapshot, worldT: tickWorldT, wildlifeWorldT: tickWorldT });
