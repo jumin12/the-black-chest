@@ -9,6 +9,14 @@ const PORT = process.env.PORT || 3000;
 const SERVER_WORLD_T0_MS = Date.now();
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
 const TICK_RATE = 45;
+/** Matches client `RESERVED_PLAYER_FLAG_IDS` — national / reserved hull-flag PNGs. */
+const RESERVED_PLAYER_FLAG_ASSET_IDS = new Set([10, 13, 15, 16, 19, 21]);
+function sanitizeClientFlagAssetId(v) {
+  const x = Math.floor(Number(v));
+  if (!Number.isFinite(x) || x < 1 || x > 26) return null;
+  if (RESERVED_PLAYER_FLAG_ASSET_IDS.has(x)) return null;
+  return x;
+}
 /**
  * Persistent JSON directory (leaderboard, clans, world seed, map, bans, accounts).
  * Prefer env `DATA_DIR`. If unset, use a mounted path when present (Render disks often use `/var/data`)
@@ -1875,6 +1883,7 @@ wss.on('connection', (ws, req) => {
     shipName: '',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
+    flagAssetId: 1,
     color: `hsl(${Math.random() * 360}, 70%, 50%)`,
     name: `Pirate_${id}`,
     health: 100,
@@ -1978,6 +1987,10 @@ wss.on('connection', (ws, req) => {
           }
           if (msg.shipName !== undefined) p.shipName = String(msg.shipName || '').slice(0, 28);
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
+          if (msg.flagAssetId !== undefined) {
+            const a = sanitizeClientFlagAssetId(msg.flagAssetId);
+            if (a != null) p.flagAssetId = a;
+          }
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
             p.shipParts = {
               hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none',
@@ -2123,6 +2136,10 @@ wss.on('connection', (ws, req) => {
             if (st) p.shipType = st;
           }
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
+          if (msg.flagAssetId !== undefined) {
+            const a = sanitizeClientFlagAssetId(msg.flagAssetId);
+            if (a != null) p.flagAssetId = a;
+          }
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
             p.shipParts = {
               hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none',
@@ -3102,6 +3119,7 @@ setInterval(() => {
     captainKey: p.captainKey != null ? String(p.captainKey) : null,
     partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
+    flagAssetId: (() => { const fa = sanitizeClientFlagAssetId(p.flagAssetId); return fa != null ? fa : 1; })(),
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     crewData: p.crewData,
     docked: !!p.docked,
