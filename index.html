@@ -2779,6 +2779,8 @@ const G = {
   seaDebris: [],
   _lastSeaBattleActivityT: Infinity,
   _seaDebrisPurgeAt: null,
+  /** Host: periodic pass to teleport NPCs off land / beaches. */
+  _npcNavUnstickT: 0,
   combatPopups3D: [],
   swimmers: [],
   selectedAmmoType: 'ball',
@@ -6741,7 +6743,6 @@ function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta) % 4];
   npc.targetCruise = npcMaxForwardSpeed(npc) * (0.26 + sr() * 0.16);
   npc.tradeCruiseSpeed = npc.targetCruise;
-  clearNpcNavPath(npc);
 }
 
 /** Deterministic 0..1 PRNG for one chunk — island decoration matches across reloads for the same world seed. */
@@ -10658,6 +10659,56 @@ function hasMinClearanceFromLand(wx, wz, clear) {
   }
   return open >= 6;
 }
+/**
+ * Open-ocean captains keep a hull-sized margin off charted land; near destination docks we relax so they can tie up.
+ * Path queries use the same land/reef helpers as gameplay (procedural noise + loaded chunks), so they stay on the main thread
+ * in small batches — a web worker would need a full terrain duplicate and add sync overhead without improving frame time here.
+ */
+function npcUsesStrictShoreAvoidance(npc) {
+  if (!npc) return true;
+  if (npc.isTradeShip) {
+    const ph = npc.tradePhase || '';
+    if (ph === 'dock_dest' || ph === 'dock_home' || ph === 'loading_home') return false;
+    const tx = npc.tradeDestX, tz = npc.tradeDestZ;
+    if (tx != null && tz != null && Math.hypot(tx - npc.x, tz - npc.z) < 74) return false;
+  }
+  if (npc.isEscortCargo && npc.escortQuestActive) {
+    const ex = npc.escortDestX, ez = npc.escortDestZ;
+    if (ex != null && ez != null && Math.hypot(ex - npc.x, ez - npc.z) < 70) return false;
+  }
+  return true;
+}
+function npcDirectionRayClear(npc, angle, dist, segments) {
+  const n = Math.max(2, segments | 0);
+  const step = dist / n;
+  const st = npc.type || 'sloop';
+  const strict = npcUsesStrictShoreAvoidance(npc);
+  for (let s = 1; s <= n; s++) {
+    const x = npc.x + Math.sin(angle) * step * s;
+    const z = npc.z + Math.cos(angle) * step * s;
+    if (strict) {
+      if (shipFootprintOverlapsLand(x, z, angle, st)) return false;
+    } else if (isSeaObstructed(x, z)) return false;
+    if (seaReefBlocksPoint(x, z, 0.82)) return false;
+  }
+  return true;
+}
+/** Segments of free water along `angle` before land/reef (for scoring candidate headings). */
+function npcClearanceRayScore(npc, angle, rayStep, rayLen) {
+  let score = 0;
+  const st = npc.type || 'sloop';
+  const strict = npcUsesStrictShoreAvoidance(npc);
+  for (let s = 1; s <= rayLen; s++) {
+    const x = npc.x + Math.sin(angle) * rayStep * s;
+    const z = npc.z + Math.cos(angle) * rayStep * s;
+    if (strict) {
+      if (shipFootprintOverlapsLand(x, z, angle, st)) break;
+    } else if (isSeaObstructed(x, z)) break;
+    if (seaReefBlocksPoint(x, z, 0.78)) break;
+    score++;
+  }
+  return score;
+}
 function sampleOpenOceanPointInWorld(rng) {
   const lim = WORLD_EDGE_CLAMP * 0.86;
   const minClear = 62;
@@ -10675,305 +10726,22 @@ function sampleOpenOceanPointInWorld(rng) {
   }
   return { nx: (rng() * 2 - 1) * 600, nz: (rng() * 2 - 1) * 600 };
 }
-
-/** --- NPC long-range sea navigation (coarse grid A*, staggered; optional Web Worker for the search only) --- */
-const NPC_NAV_CELL = 72;
-const NPC_NAV_GRID_MAX = 24;
-const NPC_NAV_DIRECT_R = 210;
-const NPC_NAV_WP_CAPTURE_R = 62;
-const NPC_COAST_KEEP_CLEAR = 48;
-let _npcNavWorker = null;
-let _npcNavWorkerBroken = false;
-let _npcNavJobId = 0;
-const _npcNavJobs = new Map();
-
-/** Path grid only — must stay cheap (no multi-ray clearance); A* already routes around land cells. */
-function navGridCellBlocked(wx, wz) {
-  if (isSeaObstructed(wx, wz)) return true;
-  if (seaReefBlocksPoint(wx, wz, 1.05)) return true;
-  return false;
-}
-function segmentNavClear(x0, z0, x1, z1, segs) {
-  const n = Math.max(4, segs | 0);
-  for (let i = 0; i <= n; i++) {
-    const t = i / n;
-    const x = x0 + (x1 - x0) * t;
-    const z = z0 + (z1 - z0) * t;
-    if (navGridCellBlocked(x, z)) return false;
-  }
-  return true;
-}
-function clearNpcNavPath(npc) {
-  if (!npc) return;
-  npc._navWp = null;
-  npc._navGoalKey = null;
-  npc._navPlanT = -999;
-  npc._navReqId = (npc._navReqId | 0) + 1;
-}
-function buildNpcNavOccPackage(sx, sz, gx, gz) {
-  const cell = NPC_NAV_CELL;
-  const minX = Math.min(sx, gx), maxX = Math.max(sx, gx);
-  const minZ = Math.min(sz, gz), maxZ = Math.max(sz, gz);
-  const pad = cell * 6;
-  let x0 = minX - pad;
-  let x1 = maxX + pad;
-  let z0 = minZ - pad;
-  let z1 = maxZ + pad;
-  let gw = Math.ceil((x1 - x0) / cell);
-  let gh = Math.ceil((z1 - z0) / cell);
-  const maxD = NPC_NAV_GRID_MAX;
-  if (gw > maxD) {
-    const cx = (minX + maxX) * 0.5;
-    x0 = cx - maxD * cell * 0.5;
-    x1 = cx + maxD * cell * 0.5;
-    gw = maxD;
-  }
-  if (gh > maxD) {
-    const cz = (minZ + maxZ) * 0.5;
-    z0 = cz - maxD * cell * 0.5;
-    z1 = cz + maxD * cell * 0.5;
-    gh = maxD;
-  }
-  const occ = new Uint8Array(gw * gh);
-  const toI = (ix, iz) => iz * gw + ix;
-  for (let iz = 0; iz < gh; iz++) {
-    for (let ix = 0; ix < gw; ix++) {
-      const wx = x0 + (ix + 0.5) * cell;
-      const wz = z0 + (iz + 0.5) * cell;
-      occ[toI(ix, iz)] = navGridCellBlocked(wx, wz) ? 1 : 0;
-    }
-  }
-  let six = Math.floor((sx - x0) / cell);
-  let siz = Math.floor((sz - z0) / cell);
-  let gix = Math.floor((gx - x0) / cell);
-  let giz = Math.floor((gz - z0) / cell);
-  six = Math.max(0, Math.min(gw - 1, six));
-  siz = Math.max(0, Math.min(gh - 1, siz));
-  gix = Math.max(0, Math.min(gw - 1, gix));
-  giz = Math.max(0, Math.min(gh - 1, giz));
-  function nearestFree(ix, iz) {
-    if (!occ[toI(ix, iz)]) return [ix, iz];
-    for (let r = 1; r <= 6; r++) {
-      for (let dz = -r; dz <= r; dz++) {
-        for (let dx = -r; dx <= r; dx++) {
-          if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
-          const nx = ix + dx, nz = iz + dz;
-          if (nx < 0 || nx >= gw || nz < 0 || nz >= gh) continue;
-          if (!occ[toI(nx, nz)]) return [nx, nz];
-        }
-      }
-    }
-    return null;
-  }
-  const ss = nearestFree(six, siz);
-  const gg = nearestFree(gix, giz);
-  if (!ss || !gg) return null;
-  six = ss[0]; siz = ss[1];
-  gix = gg[0]; giz = gg[1];
-  if (occ[toI(six, siz)] || occ[toI(gix, giz)]) return null;
-  return { occ, gw, gh, six, siz, gix, giz, x0, z0, cell };
-}
-function npcNavAStarWaypoints(pkg) {
-  const { occ, gw, gh, six, siz, gix, giz, x0, z0, cell } = pkg;
-  const N = gw * gh;
-  const toI = (ix, iz) => iz * gw + ix;
-  const si = toI(six, siz);
-  const gi = toI(gix, giz);
-  const open = [];
-  const inOpen = new Uint8Array(N);
-  const came = new Int32Array(N);
-  const gscore = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    came[i] = -1;
-    gscore[i] = 1e20;
-  }
-  const h = (ix, iz) => Math.abs(ix - gix) + Math.abs(iz - giz);
-  gscore[si] = 0;
-  open.push(si);
-  inOpen[si] = 1;
-  let expansions = 0;
-  const MAX_EXP = 900;
-  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  while (open.length && expansions < MAX_EXP) {
-    expansions++;
-    let bi = 0;
-    let bf = 1e21;
-    for (let oi = 0; oi < open.length; oi++) {
-      const o = open[oi];
-      const ox = o % gw, oz = (o / gw) | 0;
-      const f = gscore[o] + h(ox, oz);
-      if (f < bf) { bf = f; bi = oi; }
-    }
-    const cur = open[bi];
-    open.splice(bi, 1);
-    inOpen[cur] = 0;
-    if (cur === gi) {
-      const idxs = [];
-      let c = cur;
-      while (c >= 0) {
-        idxs.push(c);
-        c = came[c];
-      }
-      idxs.reverse();
-      const out = [];
-      for (let i = 0; i < idxs.length; i++) {
-        const id = idxs[i];
-        const ix = id % gw, iz = (id / gw) | 0;
-        out.push({ x: x0 + (ix + 0.5) * cell, z: z0 + (iz + 0.5) * cell });
-      }
-      return out.length ? out : null;
-    }
-    const cx = cur % gw, cz = (cur / gw) | 0;
-    for (let d = 0; d < 4; d++) {
-      const nx = cx + dirs[d][0], nz = cz + dirs[d][1];
-      if (nx < 0 || nx >= gw || nz < 0 || nz >= gh) continue;
-      const ni = toI(nx, nz);
-      if (occ[ni]) continue;
-      const tent = gscore[cur] + 1;
-      if (tent < gscore[ni]) {
-        came[ni] = cur;
-        gscore[ni] = tent;
-        if (!inOpen[ni]) {
-          open.push(ni);
-          inOpen[ni] = 1;
-        }
-      }
-    }
-  }
-  return null;
-}
-function ensureNpcNavWorker() {
-  if (_npcNavWorkerBroken) return null;
-  if (_npcNavWorker) return _npcNavWorker;
-  try {
-    const w = new Worker('npc-nav-worker.js');
-    w.onmessage = (ev) => {
-      const d = ev.data || {};
-      const job = _npcNavJobs.get(d.rid);
-      _npcNavJobs.delete(d.rid);
-      if (!job || !G.npcs) return;
-      const npc = G.npcs.find(n => n.syncId === job.syncId);
-      if (!npc || (npc._navReqId | 0) !== job.reqId) return;
-      if (d.ok && d.wps && d.wps.length) {
-        npc._navWp = d.wps;
-        npc._navPlanT = G.time;
-      }
-    };
-    w.onerror = () => { _npcNavWorkerBroken = true; try { w.terminate(); } catch (e2) {} _npcNavWorker = null; };
-    _npcNavWorker = w;
-    return w;
-  } catch (e) {
-    _npcNavWorkerBroken = true;
-    return null;
-  }
-}
-function maybeUpdateNpcNavPath(npc, gx, gz) {
-  const distEnd = Math.hypot(gx - npc.x, gz - npc.z);
-  if (distEnd < NPC_NAV_DIRECT_R) {
-    npc._navWp = null;
-    return;
-  }
-  const dk = `${Math.round(gz / 70)}_${Math.round(gx / 70)}_${Math.round(npc.z / 140)}_${Math.round(npc.x / 140)}`;
-  const stale = npc._navGoalKey !== dk || (G.time - (npc._navPlanT || 0)) > 3.6 || !npc._navWp || !npc._navWp.length;
-  if (!stale) return;
-  if ((G._navPlanBudget | 0) >= 1) return;
-  const _glf = typeof _gameLoopFrame === 'number' ? _gameLoopFrame : 0;
-  if (((_glf + (npc.syncId | 0)) % 4) !== 0) return;
-  const pkg = buildNpcNavOccPackage(npc.x, npc.z, gx, gz);
-  if (!pkg) return;
-  G._navPlanBudget = (G._navPlanBudget | 0) + 1;
-  npc._navGoalKey = dk;
-  npc._navReqId = (npc._navReqId | 0) + 1;
-  const reqId = npc._navReqId;
-  const w = ensureNpcNavWorker();
-  if (w) {
-    const rid = ++_npcNavJobId;
-    _npcNavJobs.set(rid, { syncId: npc.syncId, reqId });
-    try {
-      w.postMessage({
-        rid,
-        occ: pkg.occ,
-        gw: pkg.gw,
-        gh: pkg.gh,
-        six: pkg.six,
-        siz: pkg.siz,
-        gix: pkg.gix,
-        giz: pkg.giz,
-        x0: pkg.x0,
-        z0: pkg.z0,
-        cell: pkg.cell
-      });
-    } catch (e) {
-      _npcNavJobs.delete(rid);
-      const wps = npcNavAStarWaypoints(pkg);
-      npc._navWp = wps;
-      npc._navPlanT = G.time;
-    }
-  } else {
-    const wps = npcNavAStarWaypoints(pkg);
-    npc._navWp = wps;
-    npc._navPlanT = G.time;
-  }
-}
-function navTargetAngle(npc, gx, gz) {
-  const distEnd = Math.hypot(gx - npc.x, gz - npc.z);
-  if (distEnd < NPC_NAV_DIRECT_R) return Math.atan2(gx - npc.x, gz - npc.z);
-  maybeUpdateNpcNavPath(npc, gx, gz);
-  if (npc._navWp && npc._navWp.length) {
-    const wp = npc._navWp[0];
-    const dw = Math.hypot(wp.x - npc.x, wp.z - npc.z);
-    if (dw < NPC_NAV_WP_CAPTURE_R) npc._navWp.shift();
-  }
-  const w2 = npc._navWp && npc._navWp.length ? npc._navWp[0] : null;
-  const tx = w2 ? w2.x : gx;
-  const tz = w2 ? w2.z : gz;
-  return Math.atan2(tx - npc.x, tz - npc.z);
-}
-function steerNpcCoastalBuffer(npc, dt, turnSharp) {
-  if (npc.escapeMode) return;
-  if (isSeaObstructed(npc.x, npc.z)) return;
-  const _glf2 = typeof _gameLoopFrame === 'number' ? _gameLoopFrame : 0;
-  if (((_glf2 + (npc.syncId | 0) * 2) % 3) !== 0) return;
-  const cx = npc.x, cz = npc.z, r = NPC_COAST_KEEP_CLEAR;
-  let marginOk = true;
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2;
-    if (isSeaObstructed(cx + Math.cos(a) * r, cz + Math.sin(a) * r)) { marginOk = false; break; }
-  }
-  if (marginOk) return;
-  const esc = findNpcOpenWaterHeading(npc, npc.isTradeShip ? 52 : 44);
-  if (esc == null) return;
-  const turn = turnSharp != null ? turnSharp : 2.25;
-  let diff = esc - npc.rotation;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  const mul = npc.isTradeShip ? 0.88 : 0.92;
-  npc.rotation += diff * turn * dt * mul * npcSailingTurnFactor(npc);
-  npc.wanderAngle = npc.rotation;
-}
-function updatePirateOceanWanderTarget(npc) {
-  if (npc.isTradeShip) return;
-  const tick = Math.floor(G.time / 20);
-  if (npc._wOceanTick === tick && npc._wOceanX != null) return;
-  npc._wOceanTick = tick;
-  let s = ((npc.syncId | 0) ^ 0x4f1bbcdc ^ Math.imul(tick, 2246822519)) >>> 0;
-  const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-  const pt = sampleOpenOceanPointInWorld(rnd);
-  npc._wOceanX = pt.nx;
-  npc._wOceanZ = pt.nz;
-}
-
 /** Best yaw (world) to sail toward open water from a blocked or coastal position. */
 function findNpcOpenWaterHeading(npc, testStep) {
   const step = testStep || 32;
   let bestA = null, best = -1;
+  const st = npc.type || 'sloop';
+  const strict = npcUsesStrictShoreAvoidance(npc);
   for (let i = 0; i < 24; i++) {
     const ang = (i / 24) * Math.PI * 2;
     let ok = 0;
     for (let s = 1; s <= 4; s++) {
       const tx = npc.x + Math.sin(ang) * step * s;
       const tz = npc.z + Math.cos(ang) * step * s;
-      if (!isSeaObstructed(tx, tz)) ok++;
+      if (strict) {
+        if (!shipFootprintOverlapsLand(tx, tz, ang, st)) ok++;
+        else break;
+      } else if (!isSeaObstructed(tx, tz)) ok++;
       else break;
     }
     if (ok > best) { best = ok; bestA = ang; }
@@ -10981,7 +10749,10 @@ function findNpcOpenWaterHeading(npc, testStep) {
   return best >= 1 ? bestA : null;
 }
 function nudgeNpcOffIsland(npc) {
-  if (!isSeaObstructed(npc.x, npc.z)) return;
+  const st = npc.type || 'sloop';
+  const badCenter = isSeaObstructed(npc.x, npc.z)
+    || (npcUsesStrictShoreAvoidance(npc) && shipFootprintOverlapsLand(npc.x, npc.z, npc.rotation, st));
+  if (!badCenter) return;
   const step = npc.isTradeShip ? 34 : 22;
   const push = npc.isTradeShip ? 11 : 4;
   const esc = findNpcOpenWaterHeading(npc, step);
@@ -10996,6 +10767,47 @@ function nudgeNpcOffIsland(npc) {
   const cx = Math.max(-lim, Math.min(lim, npc.x * 0.92));
   const cz = Math.max(-lim, Math.min(lim, npc.z * 0.92));
   npc.x = cx; npc.z = cz;
+}
+/** Teleport AI hull to the nearest valid water (save/load, stuck on mesh, or shoreline spawn). */
+function relocateNpcToOpenWater(npc) {
+  if (!npc || npc.sinking) return;
+  const st = npc.type || 'sloop';
+  const yaw = npc.rotation || 0;
+  const step = Math.max(2.4, shipHullRadius(st) * 0.24);
+  for (let ring = 1; ring <= 24; ring++) {
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * Math.PI * 2 + ring * 0.41;
+      const tx = npc.x + Math.cos(a) * step * ring;
+      const tz = npc.z + Math.sin(a) * step * ring;
+      if (shipFootprintOverlapsLand(tx, tz, yaw, st)) continue;
+      if (isSeaObstructed(tx, tz)) continue;
+      if (seaReefBlocksPoint(tx, tz, 0.92)) continue;
+      npc.x = tx;
+      npc.z = tz;
+      npc.speed = Math.min(npc.speed != null ? npc.speed : 0, npcMaxForwardSpeed(npc) * 0.18);
+      npc.escapeMode = false;
+      npc.stuckAcc = 0;
+      npc.navLastMoveClear = true;
+      return;
+    }
+  }
+  const pt = sampleOpenOceanPointInWorld(() => Math.random());
+  npc.x = pt.nx;
+  npc.z = pt.nz;
+  npc.speed = Math.min(npc.speed != null ? npc.speed : 0, npcMaxForwardSpeed(npc) * 0.18);
+  npc.escapeMode = false;
+}
+function ensureAllNpcsInNavigableWater() {
+  if (!G.npcs || !G.npcs.length) return;
+  const st = (n, t) => n.type || t || 'sloop';
+  for (let i = 0; i < G.npcs.length; i++) {
+    const npc = G.npcs[i];
+    if (!npc || npc.sinking || (npc.health != null && npc.health <= 0)) continue;
+    const ty = st(npc, 'sloop');
+    if (isSeaObstructed(npc.x, npc.z) || shipFootprintOverlapsLand(npc.x, npc.z, npc.rotation, ty)) {
+      relocateNpcToOpenWater(npc);
+    }
+  }
 }
 function npcSailBonus(npc) {
   if (npc.sailBonus != null) return npc.sailBonus;
@@ -11047,48 +10859,76 @@ function accelerateNpcToward(npc, dt, target) {
 }
 /** Ray along npc.rotation: true if sea for full distance. */
 function npcForwardRayClear(npc, dist, segments) {
-  const n = Math.max(2, segments | 0);
-  const step = dist / n;
-  for (let s = 1; s <= n; s++) {
-    const x = npc.x + Math.sin(npc.rotation) * step * s;
-    const z = npc.z + Math.cos(npc.rotation) * step * s;
-    if (isSeaObstructed(x, z)) return false;
-    if (seaReefBlocksPoint(x, z, 0.82)) return false;
-  }
-  return true;
+  return npcDirectionRayClear(npc, npc.rotation, dist, segments);
 }
 /** When land is ahead, steer toward the best arc around it (longest open ray among sampled headings). */
 function steerNpcClearanceAhead(npc, dt, turnSharp) {
-  if (!npc.escapeMode && !isSeaObstructed(npc.x, npc.z)) {
-    const look = npc.isTradeShip ? 64 : 48;
-    if (!npcForwardRayClear(npc, look, npc.isTradeShip ? 10 : 8)) {
-      const turn = turnSharp != null ? turnSharp : 2.35;
-      const arc = npc.isTradeShip ? 1.28 : 1.18;
-      const turnMul = npc.isTradeShip ? 0.82 : 0.72;
-      let bestAng = npc.rotation, bestScore = 0;
-      for (let i = -8; i <= 8; i++) {
-        const a = npc.rotation + (i / 8) * arc;
-        let score = 0;
-        const rayStep = npc.isTradeShip ? 9.2 : 8.5;
-        const rayLen = npc.isTradeShip ? 6 : 5;
-        for (let s = 1; s <= rayLen; s++) {
-          const x = npc.x + Math.sin(a) * rayStep * s;
-          const z = npc.z + Math.cos(a) * rayStep * s;
-          if (!isSeaObstructed(x, z) && !seaReefBlocksPoint(x, z, 0.78)) score++;
-          else break;
-        }
-        if (score > bestScore) { bestScore = score; bestAng = a; }
-      }
-      if (bestScore >= (npc.isTradeShip ? 4 : 3)) {
-        let diff = bestAng - npc.rotation;
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc);
-        npc.wanderAngle = npc.rotation;
-      }
-    }
+  if (npc.escapeMode) return;
+  const st = npc.type || 'sloop';
+  if (isSeaObstructed(npc.x, npc.z) || (npcUsesStrictShoreAvoidance(npc) && shipFootprintOverlapsLand(npc.x, npc.z, npc.rotation, st))) return;
+  const look = npc.isTradeShip ? 58 : 46;
+  if (npcForwardRayClear(npc, look, npc.isTradeShip ? 12 : 10)) return;
+  const turn = turnSharp != null ? turnSharp : 2.35;
+  const arc = npc.isTradeShip ? 1.28 : 1.18;
+  const turnMul = npc.isTradeShip ? 0.84 : 0.74;
+  let bestAng = npc.rotation, bestScore = 0;
+  for (let i = -15; i <= 15; i++) {
+    const a = npc.rotation + (i / 15) * arc;
+    const rayStep = npc.isTradeShip ? 9.6 : 8.7;
+    const rayLen = npc.isTradeShip ? 9 : 8;
+    const score = npcClearanceRayScore(npc, a, rayStep, rayLen);
+    if (score > bestScore) { bestScore = score; bestAng = a; }
   }
-  steerNpcCoastalBuffer(npc, dt, turnSharp);
+  if (bestScore >= (npc.isTradeShip ? 4 : 3)) {
+    let diff = bestAng - npc.rotation;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc);
+    npc.wanderAngle = npc.rotation;
+  }
+}
+/**
+ * Steer toward (gx,gz) while biasing headings that keep deep water under the hull (island avoidance before impact).
+ */
+function steerNpcGoalWithClearance(npc, gx, gz, dt, turnSharp) {
+  if (npc.escapeMode || gx == null || gz == null) return;
+  const dx = gx - npc.x, dz = gz - npc.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 6) return;
+  const desired = Math.atan2(dx, dz);
+  const trade = !!npc.isTradeShip;
+  const look = trade ? 58 : 48;
+  const segs = trade ? 12 : 10;
+  if (npcDirectionRayClear(npc, desired, look, segs)) {
+    let diff = desired - npc.rotation;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    const mul = trade ? 0.74 : 0.62;
+    npc.rotation += diff * mul * dt * npcSailingTurnFactor(npc);
+    npc.wanderAngle = npc.rotation;
+    return;
+  }
+  const arc = trade ? 1.44 : 1.24;
+  const half = trade ? 21 : 18;
+  const rayStep = trade ? 9.9 : 8.6;
+  const rayLen = trade ? 9 : 8;
+  let bestAng = desired, best = -1;
+  for (let i = -half; i <= half; i++) {
+    const a = desired + (i / half) * arc;
+    const sc = npcClearanceRayScore(npc, a, rayStep, rayLen);
+    const align = 0.26 + 0.74 * Math.max(0, Math.cos(a - desired));
+    const tot = sc * align;
+    if (tot > best) { best = tot; bestAng = a; }
+  }
+  const turn = turnSharp != null ? turnSharp : 2.35;
+  const turnMul = trade ? 0.9 : 0.8;
+  if (best >= 0.5) {
+    let diff = bestAng - npc.rotation;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc);
+    npc.wanderAngle = npc.rotation;
+  }
 }
 /** Stuck = moving forward but path blocked; then turn 180° and sail straight until open water ahead. */
 function updateNpcEscapeMode(npc, dt) {
@@ -11135,7 +10975,11 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
     npc.navLastMoveClear = true;
     return;
   }
-  if (!isSeaObstructed(nNewX, nNewZ)) {
+  const strictMove = npcUsesStrictShoreAvoidance(npc);
+  const blockedNext = strictMove
+    ? shipFootprintOverlapsLand(nNewX, nNewZ, npc.rotation, npc.type || 'sloop')
+    : isSeaObstructed(nNewX, nNewZ);
+  if (!blockedNext) {
     npc.x = nNewX;
     npc.z = nNewZ;
     npc.navLastMoveClear = true;
@@ -11157,14 +11001,17 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   const back = Math.atan2(npc.x - nNewX, npc.z - nNewZ);
   let bx = npc.x + Math.sin(back) * bump;
   let bz = npc.z + Math.cos(back) * bump;
-  if (!isSeaObstructed(bx, bz)) {
+  const st = npc.type || 'sloop';
+  const okBk = strictMove ? !shipFootprintOverlapsLand(bx, bz, npc.rotation, st) : !isSeaObstructed(bx, bz);
+  if (okBk) {
     npc.x = bx;
     npc.z = bz;
   } else {
     const side = npc.rotation + Math.PI / 2;
     bx = npc.x + Math.sin(side) * bump * 0.75;
     bz = npc.z + Math.cos(side) * bump * 0.75;
-    if (!isSeaObstructed(bx, bz)) { npc.x = bx; npc.z = bz; }
+    const okSd = strictMove ? !shipFootprintOverlapsLand(bx, bz, npc.rotation, st) : !isSeaObstructed(bx, bz);
+    if (okSd) { npc.x = bx; npc.z = bz; }
   }
   nudgeNpcOffIsland(npc);
 }
@@ -11501,6 +11348,7 @@ function spawnNPCs() {
   tryRestoreStoryBountyAfterNpcReset();
   initTownStockpiles();
   ensureSeaReefsPopulated();
+  ensureAllNpcsInNavigableWater();
 }
 
 function rebuildNPCShipMesh(npc) {
@@ -11703,7 +11551,6 @@ function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
 
 function updateNPCs(dt) {
   const host = isMultiplayerHost();
-  if (host) G._navPlanBudget = 0;
   G.npcs.forEach((npc, npcIdx) => {
     if (host) {
       if (npc.sinking) {
@@ -11720,11 +11567,7 @@ function updateNPCs(dt) {
           } else if (isMultiplayerHost()) {
             const sharp = 2.38;
             if (!npc.escapeMode) {
-              const targetAngle = navTargetAngle(npc, npc.escortDestX, npc.escortDestZ);
-              let tdiff = targetAngle - npc.rotation;
-              while (tdiff > Math.PI) tdiff -= Math.PI * 2;
-              while (tdiff < -Math.PI) tdiff += Math.PI * 2;
-              npc.rotation += tdiff * 0.76 * dt * npcSailingTurnFactor(npc);
+              steerNpcGoalWithClearance(npc, npc.escortDestX, npc.escortDestZ, dt, 2.38);
             }
             const tgtC = npcMaxForwardSpeed(npc) * 0.44;
             accelerateNpcToward(npc, dt, tgtC);
@@ -11800,11 +11643,7 @@ function updateNPCs(dt) {
               npc.speed = 0;
             } else {
               if (!npc.escapeMode) {
-                const targetAngle = navTargetAngle(npc, tx, tz);
-                let tdiff = targetAngle - npc.rotation;
-                while (tdiff > Math.PI) tdiff -= Math.PI * 2;
-                while (tdiff < -Math.PI) tdiff += Math.PI * 2;
-                npc.rotation += tdiff * 0.62 * dt * npcSailingTurnFactor(npc);
+                steerNpcGoalWithClearance(npc, tx, tz, dt, 2.55);
               }
               accelerateNpcToward(npc, dt, tgtC);
             }
@@ -11910,15 +11749,14 @@ function updateNPCs(dt) {
             npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
           }
         } else {
-          updatePirateOceanWanderTarget(npc);
-          const wx = npc._wOceanX != null ? npc._wOceanX : npc.x + Math.sin(npc.wanderAngle) * 200;
-          const wz = npc._wOceanZ != null ? npc._wOceanZ : npc.z + Math.cos(npc.wanderAngle) * 200;
-          const targetAngle = navTargetAngle(npc, wx, wz);
-          let diff = targetAngle - npc.rotation;
-          while (diff > Math.PI) diff -= Math.PI * 2;
-          while (diff < -Math.PI) diff += Math.PI * 2;
-          npc.rotation += diff * 0.52 * dt * npcSailingTurnFactor(npc);
-          npc.wanderAngle = npc.rotation;
+          const gxr = npc.wanderGx, gzr = npc.wanderGz;
+          const dWG = gxr != null && gzr != null ? Math.hypot(gxr - npc.x, gzr - npc.z) : 1e9;
+          if (gxr == null || gzr == null || dWG < 42) {
+            const pt = sampleOpenOceanPointInWorld(() => Math.random());
+            npc.wanderGx = pt.nx;
+            npc.wanderGz = pt.nz;
+          }
+          steerNpcGoalWithClearance(npc, npc.wanderGx, npc.wanderGz, dt, 2.12);
         }
       }
 
@@ -20975,6 +20813,13 @@ function update(dt) {
 
   updateChunks();
   updateNPCs(dt);
+  if (isMultiplayerHost()) {
+    G._npcNavUnstickT = (G._npcNavUnstickT || 0) + dt;
+    if (G._npcNavUnstickT >= 3.2) {
+      G._npcNavUnstickT = 0;
+      ensureAllNpcsInNavigableWater();
+    }
+  }
   tickEscortAbandonment(dt);
   G.npcs.forEach(npc => {
     if (!npc.mesh || npc.sinking) return;
