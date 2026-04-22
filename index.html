@@ -7067,6 +7067,7 @@ window.portAcceptMarqueLetter = function(offerId) {
     return;
   }
   if ((G.politics.activeLetters || []).some(L => L.offerId === offerId)) return;
+  const nd = G.nearDock;
   G.politics.activeLetters.push({
     offerId: o.id,
     issuer: o.issuer,
@@ -7075,7 +7076,9 @@ window.portAcceptMarqueLetter = function(offerId) {
     need: 2,
     done: 0,
     pirateOnly: !!o.pirateOnly,
-    desc: o.desc
+    desc: o.desc,
+    filedDockCx: nd && nd.cx != null ? nd.cx | 0 : null,
+    filedDockCz: nd && nd.cz != null ? nd.cz | 0 : null
   });
   notify('Letter of marque filed — fulfill it at sea.');
   saveProgressDebounced();
@@ -7370,6 +7373,18 @@ function collectAllTradingPorts() {
   }, 0, 0);
   return out;
 }
+/** First harbor with a governor board for this crown — used for marque chart hints. */
+function findAnyPortDockForFaction(fid) {
+  const f = (fid | 0) % FACTION_COUNT;
+  try {
+    const ports = collectAllTradingPorts();
+    for (let i = 0; i < ports.length; i++) {
+      const p = ports[i];
+      if ((townFaction(p) | 0) % FACTION_COUNT === f) return p;
+    }
+  } catch (e) {}
+  return null;
+}
 const TRADE_DELIVERY_UNITS = 12;
 function portStockKey(meta) {
   if (meta && meta.customTownId != null && String(meta.customTownId).length) return `c:${meta.customTownId}`;
@@ -7569,12 +7584,15 @@ const TRADE_DOCK_DIST = 40;
 const TRADE_DOCK_EDGE_SEC = 4.2;
 function syncTradeShipName(npc, homeMeta) {
   const nm = getItemMeta(npc.cargoGood);
-  const shortLab = (nm.name || npc.cargoGood).split(/\s+/)[0];
+  const shortLab = (nm.name || npc.cargoGood || 'cargo').split(/\s+/)[0];
   const homeFac = townFaction(homeMeta) % FACTION_COUNT;
   const vessel = proceduralFactionMerchantShipName(homeFac, (npc.syncId | 0) ^ ((homeMeta.cx | 0) * 31 + (homeMeta.cz | 0) * 17));
   let tradeName = `${vessel} · ${shortLab}`;
   if (tradeName.length > 28) tradeName = tradeName.slice(0, 27) + '…';
   npc.name = tradeName;
+  if (!npc.name || !String(npc.name).trim()) {
+    npc.name = `${vessel} · ${homeFac}-${(npc.syncId | 0) % 1000}`;
+  }
 }
 function assignNewTradeRoute(npc) {
   const list = collectPortsInArea(npc.x, npc.z, 24000);
@@ -9799,8 +9817,8 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
       cn.userData.cannonIndexOnSide = idx;
       cn.userData.barrelHalfLen = barrelLen * 0.5;
       cn.userData.basePos = cn.position.clone();
-      cn.userData.recoilVel = 0;
       cn.userData.recoilOffset = 0;
+      cn.userData.recoilVel = 0;
       g.add(cn);
     }
   }
@@ -11364,29 +11382,27 @@ function kickShipBroadsideCannon(shipRoot, fireSide, indexOnSide) {
     if (!ch.userData?.isShipCannon) return;
     if (ch.userData.cannonSide !== fireSide) return;
     if (ch.userData.cannonIndexOnSide !== indexOnSide) return;
-    const nv = (ch.userData.recoilVel || 0) + 0.92;
-    ch.userData.recoilVel = Math.min(1.25, nv);
+    const cap = 0.34;
+    const bump = 0.15;
+    const x0 = ch.userData.recoilOffset || 0;
+    ch.userData.recoilOffset = Math.min(cap, x0 + bump);
+    ch.userData.recoilVel = 0;
   });
 }
 
 function updateShipCannonRecoilOnGroup(root, dt) {
   if (!root) return;
-  const omega = 16;
+  const dtc = Math.min(0.05, Math.max(0, dt));
+  const k = Math.exp(-16 * dtc);
   root.traverse(ch => {
     if (!ch.userData?.isShipCannon) return;
     const bp = ch.userData.basePos;
     if (!bp) return;
-    let v = ch.userData.recoilVel || 0;
-    let x = ch.userData.recoilOffset || 0;
-    v += (-omega * omega * x - 2.45 * omega * v) * dt;
-    x += v * dt;
-    if (Math.abs(x) < 0.00025 && Math.abs(v) < 0.006) { x = 0; v = 0; ch.position.set(bp.x, bp.y, bp.z); }
-    const side = ch.userData.cannonSide;
-    const cap = 0.38;
-    if (x > cap) { x = cap; v *= 0.45; }
-    if (x < -cap) { x = -cap; v *= 0.45; }
-    ch.userData.recoilVel = v;
+    let x = (ch.userData.recoilOffset || 0) * k;
+    if (Math.abs(x) < 0.002) x = 0;
     ch.userData.recoilOffset = x;
+    ch.userData.recoilVel = 0;
+    const side = ch.userData.cannonSide;
     ch.position.set(bp.x - side * x, bp.y, bp.z);
   });
 }
@@ -12194,6 +12210,7 @@ function spawnOneFactionPatrol(factionId) {
   const facCol = FACTION_TRADE_COLORS[fid];
   const cannonPart = tradeShipCannonForType(st);
   const labels = ['Patrol', 'Squadron', 'Coast Guard', 'Guardship'];
+  const label = labels[Math.floor(sr() * labels.length)];
   const npc = {
     syncId: pid,
     x: nx, z: nz,
@@ -12201,7 +12218,7 @@ function spawnOneFactionPatrol(factionId) {
     speed: 0,
     health: 72 + sr() * 48,
     type: st,
-    name: `${FACTION_SHORT_NAMES[fid]} ${labels[Math.floor(sr() * labels.length)]}`,
+    name: `${FACTION_SHORT_NAMES[fid]} ${label} · ${(pid | 0) % 1000}`,
     factionId: fid,
     isFactionPatrol: true,
     patrolCannon: cannonPart,
@@ -14072,7 +14089,14 @@ function buildNpcFromNetSyncData(nd, nid) {
   const isPat = !!nd.pat;
   const ffi = nd.ffi != null ? (nd.ffi | 0) % FACTION_COUNT : 0;
   const tp = nd.t && SHIP_TYPES[nd.t] ? nd.t : 'sloop';
-  const nm = nd.n || (isMer ? 'Merchantman' : isPat ? 'Patrol' : 'Corsair');
+  const rawN = nd.n != null ? String(nd.n).trim() : '';
+  const fallbackNetNpcName = () => {
+    if (isPat) return `${FACTION_SHORT_NAMES[ffi]} Guard · ${(nid | 0) % 1000}`;
+    if (isMer) return `${proceduralFactionMerchantShipName(ffi, (nid | 0) ^ 0x5a5a)} · Trade`;
+    const cx = Math.floor((nd.x || 0) / CHUNK_SIZE), cz = Math.floor((nd.z || 0) / CHUNK_SIZE);
+    return proceduralPirateShipName(ffi, cx, cz, nid);
+  };
+  const nm = rawN || fallbackNetNpcName();
   const fc = nd.fc || FACTION_TRADE_COLORS[ffi];
   const fa = nd.fa != null && sanitizeFlagPngId(nd.fa) != null ? sanitizeFlagPngId(nd.fa) : factionFlagPngIdForFaction(ffi);
   const fp = AI_FLAG_POSITIONS[(nid | 0) % 3];
@@ -21525,6 +21549,144 @@ function toggleFullmap() {
     restoreMobileGameControls();
   }
 }
+/** Hunt / delivery / escort / letters of marque — full chart and minimap. */
+function drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, opts) {
+  opts = opts || {};
+  const mini = !!opts.mini;
+  const dbg = !!opts.debugShipLayers;
+  const pad = mini ? 0 : 14;
+  const inBounds = (sx, sy) => mini ? (sx > 0 && sx < w && sy > 0 && sy < h) : (sx > -pad && sx < w + pad && sy > -pad && sy < h + pad);
+  const npcVis = n => {
+    if (n.sinking) return false;
+    return mini ? mapChartNpcVisible(n) : npcVisibleForWorldMapOverlay(n, dbg);
+  };
+  if (!mapChartLayers.missions) return;
+
+  (G.quests || []).filter(q => q.accepted).forEach(q => {
+    if (q.type === 'hunt') {
+      G.npcs.forEach(n => {
+        if (!huntQuestMatchesNpc(q, n) || !npcVis(n)) return;
+        const sx = wx2sx(n.x), sy = wz2sy(n.z);
+        if (!inBounds(sx, sy)) return;
+        ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = mini ? 1.55 : 2; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.arc(sx, sy, mini ? 8.5 : 10, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#ffdd44'; ctx.font = (mini ? (w >= 220 ? '7px' : '6px') : '9px') + ' Georgia'; ctx.textAlign = 'center';
+        ctx.fillText('Hunt', sx, sy - (mini ? 10 : 13));
+      });
+    } else if (q.type === 'delivery') {
+      const strokeDock = (dockX, dockZ, col, label) => {
+        if (dockX == null || dockZ == null) return;
+        const sx = wx2sx(dockX), sy = wz2sy(dockZ);
+        if (!inBounds(sx, sy)) return;
+        ctx.strokeStyle = col; ctx.lineWidth = mini ? 1.5 : 2.1; ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.arc(sx, sy, mini ? 7 : 9.5, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = col; ctx.font = (mini ? '6px' : '9px') + ' Georgia'; ctx.textAlign = 'center';
+        ctx.fillText(label, sx, sy - (mini ? 9 : 12));
+      };
+      let oDockX = q.originDockX, oDockZ = q.originDockZ;
+      if ((oDockX == null || oDockZ == null) && q.originCx != null && q.originCz != null) {
+        const om = getProceduralIslandMeta(q.originCx | 0, q.originCz | 0);
+        if (om && om.dockX != null) { oDockX = om.dockX; oDockZ = om.dockZ; }
+      }
+      let dDockX = q.destDockX, dDockZ = q.destDockZ;
+      if ((dDockX == null || dDockZ == null) && q.destCx != null && q.destCz != null) {
+        const dm = getProceduralIslandMeta(q.destCx | 0, q.destCz | 0);
+        if (dm && dm.dockX != null) { dDockX = dm.dockX; dDockZ = dm.dockZ; }
+      }
+      strokeDock(oDockX, oDockZ, 'rgba(120,200,255,0.95)', 'Pickup');
+      strokeDock(dDockX, dDockZ, 'rgba(255,200,120,0.95)', 'Deliver');
+    } else if (q.type === 'escort' && !q.pendingReward) {
+      let oX = q.originDockX, oZ = q.originDockZ;
+      if ((oX == null || oZ == null) && q.originCx != null) {
+        const om = getProceduralIslandMeta(q.originCx | 0, q.originCz | 0);
+        if (om && om.dockX != null) { oX = om.dockX; oZ = om.dockZ; }
+      }
+      let dX = q.destDockX, dZ = q.destDockZ;
+      if ((dX == null || dZ == null) && q.destCx != null) {
+        const dm = getProceduralIslandMeta(q.destCx | 0, q.destCz | 0);
+        if (dm && dm.dockX != null) { dX = dm.dockX; dZ = dm.dockZ; }
+      }
+      const ring = (dockX, dockZ, col, label) => {
+        if (dockX == null) return;
+        const sx = wx2sx(dockX), sy = wz2sy(dockZ);
+        if (!inBounds(sx, sy)) return;
+        ctx.strokeStyle = col; ctx.lineWidth = mini ? 1.6 : 2.2; ctx.setLineDash([5, 3]);
+        ctx.beginPath(); ctx.arc(sx, sy, mini ? 8 : 11, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = col; ctx.font = (mini ? '6px' : '9px') + ' Georgia'; ctx.textAlign = 'center';
+        ctx.fillText(label, sx, sy - (mini ? 10 : 14));
+      };
+      ring(oX, oZ, 'rgba(160,255,200,0.92)', 'Escort start');
+      ring(dX, dZ, 'rgba(255,160,160,0.92)', 'Convoy port');
+      const cargoId = q.escortCargoSyncId;
+      if (cargoId != null) {
+        const cargo = G.npcs.find(n => n.syncId === cargoId && !n.sinking);
+        if (cargo && npcVis(cargo)) {
+          const sx = wx2sx(cargo.x), sy = wz2sy(cargo.z);
+          if (inBounds(sx, sy)) {
+            ctx.strokeStyle = 'rgba(255,240,160,0.95)'; ctx.lineWidth = mini ? 2 : 2.6; ctx.setLineDash([]);
+            ctx.beginPath(); ctx.arc(sx, sy, mini ? 9 : 12, 0, Math.PI * 2); ctx.stroke();
+            ctx.fillStyle = '#ffe8a8'; ctx.font = (mini ? '6px' : '8px') + ' Georgia'; ctx.textAlign = 'center';
+            ctx.fillText('Cargo', sx, sy - (mini ? 11 : 14));
+          }
+        }
+        G.npcs.forEach(n => {
+          if (!n.escortRaider || n.sinking || n.attackNpcSyncId == null || n.attackNpcSyncId !== cargoId) return;
+          if (!npcVis(n)) return;
+          const sx = wx2sx(n.x), sy = wz2sy(n.z);
+          if (!inBounds(sx, sy)) return;
+          ctx.strokeStyle = 'rgba(255,100,100,0.85)'; ctx.lineWidth = mini ? 1.3 : 1.8; ctx.setLineDash([2, 2]);
+          ctx.beginPath(); ctx.arc(sx, sy, mini ? 6 : 8, 0, Math.PI * 2); ctx.stroke();
+          ctx.setLineDash([]);
+        });
+      }
+    }
+  });
+
+  ensurePolitics();
+  const letters = G.politics && G.politics.activeLetters ? G.politics.activeLetters : [];
+  for (let li = 0; li < letters.length; li++) {
+    const L = letters[li];
+    let ip = null;
+    if (L.filedDockCx != null && L.filedDockCz != null) {
+      ip = getProceduralIslandMeta(L.filedDockCx | 0, L.filedDockCz | 0);
+    }
+    if (!ip || ip.dockX == null) {
+      const fp = findAnyPortDockForFaction(L.issuer);
+      if (fp) ip = fp;
+    }
+    if (ip && ip.dockX != null) {
+      const sx = wx2sx(ip.dockX), sy = wz2sy(ip.dockZ);
+      if (inBounds(sx, sy)) {
+        ctx.strokeStyle = 'rgba(210,180,255,0.95)'; ctx.lineWidth = mini ? 1.5 : 2.3; ctx.setLineDash([]);
+        ctx.beginPath(); ctx.arc(sx, sy, mini ? 7.5 : 10, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = '#e8d8ff'; ctx.font = (mini ? '6px' : '9px') + ' Georgia'; ctx.textAlign = 'center';
+        ctx.fillText('Marque', sx, sy - (mini ? 9 : 12));
+      }
+    }
+    if (!L.pirateOnly && L.target != null) {
+      let cnt = 0;
+      const cap = mini ? 2 : 4;
+      try {
+        const ports = collectAllTradingPorts();
+        for (let pi = 0; pi < ports.length; pi++) {
+          if (cnt >= cap) break;
+          const p = ports[pi];
+          if ((townFaction(p) | 0) % FACTION_COUNT !== (L.target | 0) % FACTION_COUNT) continue;
+          if (!p.hasTown || p.dockX == null) continue;
+          const sx = wx2sx(p.dockX), sy = wz2sy(p.dockZ);
+          if (!inBounds(sx, sy)) continue;
+          ctx.strokeStyle = 'rgba(255,120,120,0.78)'; ctx.lineWidth = mini ? 1.2 : 1.7; ctx.setLineDash([4, 4]);
+          ctx.beginPath(); ctx.arc(sx, sy, mini ? 5.5 : 7, 0, Math.PI * 2); ctx.stroke();
+          ctx.setLineDash([]);
+          cnt++;
+        }
+      } catch (e) {}
+    }
+  }
+}
 /** Shared world chart: full map + optional wind overlay + optional debug layer toggles. */
 function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   opts = opts || {};
@@ -21720,20 +21882,7 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   ctx.fillText(G.player.shipName || 'You', px, py + 18);
 
   if (mapChartLayers.missions) {
-  G.quests.filter(q => q.accepted).forEach(q => {
-    if (q.type === 'hunt') {
-      G.npcs.forEach(n => {
-        if (huntQuestMatchesNpc(q, n) && npcVisibleForWorldMapOverlay(n, debugShipLayers)) {
-          const nx = wx2sx(n.x), ny = wz2sy(n.z);
-          ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
-          ctx.beginPath(); ctx.arc(nx, ny, 10, 0, Math.PI * 2); ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.fillStyle = '#ffdd44'; ctx.font = '9px Georgia'; ctx.textAlign = 'center';
-          ctx.fillText('TARGET', nx, ny - 13);
-        }
-      });
-    }
-  });
+    drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, { mini: false, debugShipLayers });
   }
 
   if (mapChartLayers.missions && G.storyQuest.phase === 'intro') {
@@ -22092,20 +22241,7 @@ function drawMinimap() {
         ctx.setLineDash([]);
       });
     }
-    (G.quests || []).filter(q => q.accepted).forEach(q => {
-      if (q.type === 'hunt') {
-        G.npcs.forEach(n => {
-          if (!huntQuestMatchesNpc(q, n) || !mapChartNpcVisible(n)) return;
-          const sx = wx2sx(n.x), sy = wz2sy(n.z);
-          if (sx <= 0 || sx >= w || sy <= 0 || sy >= h) return;
-          ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.85; ctx.setLineDash([3, 3]);
-          ctx.beginPath(); ctx.arc(sx, sy, 8.5, 0, Math.PI * 2); ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.fillStyle = '#ffdd44'; ctx.font = (w >= 220 ? '7px' : '6px') + ' Georgia'; ctx.textAlign = 'center';
-          ctx.fillText('Hunt', sx, sy - 10);
-        });
-      }
-    });
+    drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, { mini: true });
   }
   ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, cy);
