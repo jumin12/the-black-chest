@@ -13885,35 +13885,110 @@ function parseJsonStringOffMainIfLarge(str, onOk, onErr) {
   }
 }
 
+/** Resolved once via `ensureServerEndpoints()` — same WebSocket + HTTP API host as `server.js`. */
+let _resolvedServerEndpoints = null;
+let _ensureServerEndpointsPromise = null;
+let wsConnectErrorNotified = false;
+function httpOriginFromWebSocketUrl(wsUrl) {
+  try {
+    const u = new URL(String(wsUrl).trim().replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:'));
+    return u.origin;
+  } catch (e) {
+    return null;
+  }
+}
+function normalizeUserWebSocketUrl(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (/^wss?:\/\//i.test(s)) return s;
+  if (/^https?:\/\//i.test(s)) return s.replace(/^http/i, 'ws');
+  return null;
+}
+function syncFallbackEndpointsFromQueryOrPage() {
+  const p = new URLSearchParams(location.search);
+  const qNorm = normalizeUserWebSocketUrl(p.get('server'));
+  if (qNorm) {
+    const http = httpOriginFromWebSocketUrl(qNorm);
+    return {
+      wss: qNorm,
+      httpOrigin: http || `${location.protocol}//${location.host}`
+    };
+  }
+  return {
+    wss: `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`,
+    httpOrigin: `${location.protocol}//${location.host}`
+  };
+}
+/**
+ * Static hosts (Vercel, Netlify, etc.) do not run WebSockets — set `assets/multiplayer-server.json`
+ * with the same `wss` URL as your Node `server.js`, or use `?server=wss://host` / localStorage `pirates_server_wss`.
+ */
+async function ensureServerEndpoints() {
+  if (_resolvedServerEndpoints) return _resolvedServerEndpoints;
+  if (_ensureServerEndpointsPromise) return _ensureServerEndpointsPromise;
+  _ensureServerEndpointsPromise = (async () => {
+    const fromQuery = syncFallbackEndpointsFromQueryOrPage();
+    const p = new URLSearchParams(location.search);
+    if (normalizeUserWebSocketUrl(p.get('server'))) {
+      _resolvedServerEndpoints = fromQuery;
+      return _resolvedServerEndpoints;
+    }
+    try {
+      const ls = localStorage.getItem('pirates_server_wss');
+      const lsNorm = normalizeUserWebSocketUrl(ls);
+      if (lsNorm) {
+        const http = httpOriginFromWebSocketUrl(lsNorm);
+        if (http) {
+          _resolvedServerEndpoints = { wss: lsNorm, httpOrigin: http };
+          return _resolvedServerEndpoints;
+        }
+      }
+    } catch (e) {}
+    try {
+      const r = await fetch(new URL('assets/multiplayer-server.json', location.href), { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        const w = j && typeof j.wss === 'string' ? j.wss.trim() : '';
+        if (w) {
+          const wNorm = normalizeUserWebSocketUrl(w);
+          if (wNorm) {
+            let httpOrig = j && typeof j.httpOrigin === 'string' ? j.httpOrigin.trim() : '';
+            if (!httpOrig) httpOrig = httpOriginFromWebSocketUrl(wNorm) || '';
+            if (httpOrig) {
+              _resolvedServerEndpoints = { wss: wNorm, httpOrigin: httpOrig };
+              return _resolvedServerEndpoints;
+            }
+          }
+        }
+      }
+    } catch (e) {}
+    _resolvedServerEndpoints = fromQuery;
+    return _resolvedServerEndpoints;
+  })();
+  return _ensureServerEndpointsPromise;
+}
 function getServerUrl() {
-  const p = new URLSearchParams(location.search), ex = p.get('server');
-  if (ex) return ex;
-  return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
+  if (_resolvedServerEndpoints) return _resolvedServerEndpoints.wss;
+  return syncFallbackEndpointsFromQueryOrPage().wss;
 }
 function getHealthUrl() {
-  const p = new URLSearchParams(location.search), ex = p.get('server');
-  if (ex) {
-    try {
-      const u = new URL(ex.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:'));
-      return `${u.protocol}//${u.host}/health`;
-    } catch (e) {}
-  }
-  return `${location.protocol}//${location.host}/health`;
+  if (_resolvedServerEndpoints) return `${_resolvedServerEndpoints.httpOrigin}/health`;
+  return `${syncFallbackEndpointsFromQueryOrPage().httpOrigin}/health`;
 }
 function getHttpOrigin() {
-  const p = new URLSearchParams(location.search), ex = p.get('server');
-  if (ex) {
-    try {
-      const u = new URL(ex.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:'));
-      return `${u.protocol}//${u.host}`;
-    } catch (e) {}
-  }
-  return `${location.protocol}//${location.host}`;
+  if (_resolvedServerEndpoints) return _resolvedServerEndpoints.httpOrigin;
+  return syncFallbackEndpointsFromQueryOrPage().httpOrigin;
 }
 
 function getWorldMapApiUrl() {
   return `${getHttpOrigin()}/api/world-map`;
 }
+try {
+  (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : setTimeout)(() => {
+    ensureServerEndpoints().catch(() => {});
+  }, 0);
+} catch (e) {}
 
 function queueFetchServerWorldMap(rev) {
   const targetRev = Number(rev) >>> 0;
@@ -14251,7 +14326,8 @@ function applySharedWorldFromServerSeed(s, opts) {
 }
 function startServerSeedPrefetch() {
   prefetchedServerSeed = null;
-  fetch(getHealthUrl(), { cache: 'no-store' })
+  ensureServerEndpoints()
+    .then(() => fetch(getHealthUrl(), { cache: 'no-store' }))
     .then(r => (r.ok ? r.json() : Promise.reject()))
     .then(j => {
       /* World chart revision must come from WebSocket `init` / `world_map` only. `/health` can race
@@ -14284,6 +14360,7 @@ function schedulePlayWorldNetFallback() {
   playWorldNetTimeoutId = setTimeout(async () => {
     playWorldNetTimeoutId = null;
     if (!G.playWorldAwaitingNetInit || G.mode !== 'playing') return;
+    try { await ensureServerEndpoints(); } catch (e) {}
     let s = prefetchedServerSeed;
     let fromHttp = s != null;
     if (s == null) {
@@ -14422,8 +14499,11 @@ function removeRemotePeer(lid) {
     otherShipGroups.delete(lidN);
   }
 }
-function connectToServer() {
+async function connectToServer() {
   if (wsUserBanned) return;
+  try {
+    await ensureServerEndpoints();
+  } catch (e) {}
   const url = getServerUrl();
   if (wsReconnectTimer) {
     clearTimeout(wsReconnectTimer);
@@ -14443,6 +14523,7 @@ function connectToServer() {
   try { socket = new WebSocket(url); } catch (e) { return; }
   ws = socket;
   ws.onopen = () => {
+    wsConnectErrorNotified = false;
     wsUserBanned = false;
     knownServerWorldMapRev = 0;
     serverWorldMapFetchToken++;
@@ -15157,7 +15238,12 @@ function connectToServer() {
     }
     } catch (err) {}
    };
-  ws.onerror = () => {};
+  ws.onerror = () => {
+    if (!wsConnectErrorNotified) {
+      wsConnectErrorNotified = true;
+      notify('Multiplayer: could not reach the game server. If the page is on static hosting (e.g. Vercel), set assets/multiplayer-server.json to your Node server wss URL, or use ?server=wss://your-host or localStorage pirates_server_wss.');
+    }
+  };
   ws.onclose = () => {
     if (wsUserBanned) return;
     if (wsSuppressReconnect) {
