@@ -11653,13 +11653,13 @@ function pushPlayerOutOfShipOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
   if (G.dockingAnim || G.undockingAnim) return;
   const px = G.player.x, pz = G.player.z;
-  const margin = 0.92;
+  const margin = 0.98;
   const pPos = { x: G.player.x, z: G.player.z };
   const pv = (!G.player.anchored && Math.abs(G.player.speed) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
   const mp = ws && ws.readyState === 1;
   const applyNpcRam = !mp || isMultiplayerHost();
   const localHarborExempt = playerInHarborRamExemptZone(px, pz, G.player.shipType);
-  for (let pass = 0; pass < 3; pass++) {
+  for (let pass = 0; pass < 4; pass++) {
     pPos.x = G.player.x;
     pPos.z = G.player.z;
     let moved = false;
@@ -11763,12 +11763,12 @@ function separateHostNpcsFromLocalPlayer() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked) return;
   const px = G.player.x, pz = G.player.z;
   if (playerInHarborRamExemptZone(px, pz, G.player.shipType)) return;
-  const margin = 0.92;
+  const margin = 0.98;
   G.npcs.forEach(npc => {
     if (npc.sinking || npc.health <= 0) return;
     const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, npc.type, px, pz, G.player.rotation, G.player.shipType, margin);
     if (!sep) return;
-    const push = sep.depth * 0.6;
+    const push = sep.depth * 0.72;
     const ox = npc.x, oz = npc.z;
     npc.x += sep.nx * push;
     npc.z += sep.nz * push;
@@ -11776,10 +11776,73 @@ function separateHostNpcsFromLocalPlayer() {
   });
 }
 
+/** Push two overlapping NPCs apart; if one new spot hits land, give the other a larger shove or slide. */
+function applyNpcOverlapResolutionPair(a, b, sep, penHalf) {
+  const ax0 = a.x - sep.nx * penHalf, az0 = a.z - sep.nz * penHalf;
+  const bx0 = b.x + sep.nx * penHalf, bz0 = b.z + sep.nz * penHalf;
+  const seaA = !isSeaObstructed(ax0, az0);
+  const seaB = !isSeaObstructed(bx0, bz0);
+  if (seaA) { a.x = ax0; a.z = az0; }
+  if (seaB) { b.x = bx0; b.z = bz0; }
+  if (seaA && seaB) return;
+  const full = penHalf * 2;
+  if (!seaA && !seaB) {
+    const bx1 = b.x + sep.nx * full * 1.05, bz1 = b.z + sep.nz * full * 1.05;
+    const ax1 = a.x - sep.nx * full * 1.05, az1 = a.z - sep.nz * full * 1.05;
+    if (!isSeaObstructed(bx1, bz1)) { b.x = bx1; b.z = bz1; return; }
+    if (!isSeaObstructed(ax1, az1)) { a.x = ax1; a.z = az1; return; }
+    const px = -sep.nz, pz = sep.nx;
+    const slide = penHalf * 0.85;
+    const axs = a.x + px * slide, azs = a.z + pz * slide;
+    const bxs = b.x - px * slide, bzs = b.z - pz * slide;
+    if (!isSeaObstructed(axs, azs)) { a.x = axs; a.z = azs; }
+    if (!isSeaObstructed(bxs, bzs)) { b.x = bxs; b.z = bzs; }
+    return;
+  }
+  if (!seaA) {
+    const bx2 = b.x + sep.nx * full, bz2 = b.z + sep.nz * full;
+    if (!isSeaObstructed(bx2, bz2)) { b.x = bx2; b.z = bz2; }
+  } else {
+    const ax2 = a.x - sep.nx * full, az2 = a.z - sep.nz * full;
+    if (!isSeaObstructed(ax2, az2)) { a.x = ax2; a.z = az2; }
+  }
+}
+
+/** Fallback when OBB SAT axes miss a deep crossing angle: keep hull circles from interpenetrating. */
+function relaxHostNpcNpcCircleOverlaps(list) {
+  const pad = 1.85;
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i], b = list[j];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const d = Math.hypot(dx, dz);
+        const need = shipHullRadius(a.type) + shipHullRadius(b.type) + pad;
+        if (d >= need || d < 1e-5) continue;
+        const nx = dx / d, nz = dz / d;
+        const pen = (need - d) * 0.52;
+        const ax = a.x - nx * pen, az = a.z - nz * pen;
+        const bx = b.x + nx * pen, bz = b.z + nz * pen;
+        const seaA = !isSeaObstructed(ax, az);
+        const seaB = !isSeaObstructed(bx, bz);
+        if (seaA) { a.x = ax; a.z = az; }
+        if (seaB) { b.x = bx; b.z = bz; }
+        if (!seaA && seaB) {
+          const bx2 = b.x + nx * pen * 1.8, bz2 = b.z + nz * pen * 1.8;
+          if (!isSeaObstructed(bx2, bz2)) { b.x = bx2; b.z = bz2; }
+        } else if (seaA && !seaB) {
+          const ax2 = a.x - nx * pen * 1.8, az2 = a.z - nz * pen * 1.8;
+          if (!isSeaObstructed(ax2, az2)) { a.x = ax2; a.z = az2; }
+        }
+      }
+    }
+  }
+}
+
 function relaxHostNpcNpcOverlaps() {
   const list = G.npcs.filter(n => !n.sinking && n.health > 0);
-  const margin = 0.9;
-  for (let pass = 0; pass < 3; pass++) {
+  const margin = 1.02;
+  for (let pass = 0; pass < 7; pass++) {
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const a = list[i], b = list[j];
@@ -11812,15 +11875,45 @@ function relaxHostNpcNpcOverlaps() {
               }
             }
           }
-          const pen = sep.depth * 0.5;
-          const ax = a.x - sep.nx * pen, az = a.z - sep.nz * pen;
-          const bx = b.x + sep.nx * pen, bz = b.z + sep.nz * pen;
-          if (!isSeaObstructed(ax, az)) { a.x = ax; a.z = az; }
-          if (!isSeaObstructed(bx, bz)) { b.x = bx; b.z = bz; }
+          const penHalf = sep.depth * 0.62;
+          applyNpcOverlapResolutionPair(a, b, sep, penHalf);
         }
       }
     }
   }
+  relaxHostNpcNpcCircleOverlaps(list);
+}
+
+/** Light steering bias so AI tries to open distance from very close ships (works with island avoidance). */
+function steerNpcAvoidCloseShips(npc, dt) {
+  if (npc.escapeMode) return;
+  if (npc.isTradeShip && npc.tradePhase === 'loading_home') return;
+  let wx = 0, wz = 0, wsum = 0;
+  const myR = shipHullRadius(npc.type);
+  for (let k = 0; k < G.npcs.length; k++) {
+    const o = G.npcs[k];
+    if (o === npc || o.sinking || (o.health != null && o.health <= 0)) continue;
+    const dx = npc.x - o.x, dz = npc.z - o.z;
+    const d = Math.hypot(dx, dz);
+    const need = myR + shipHullRadius(o.type) + 3.2;
+    if (d > need * 1.35 || d < 0.04) continue;
+    const inv = 1 / d;
+    const nx = dx * inv, nz = dz * inv;
+    const t = Math.max(0, 1 - d / (need * 1.35));
+    wx += nx * t;
+    wz += nz * t;
+    wsum += t;
+  }
+  if (wsum < 0.08) return;
+  wx /= wsum;
+  wz /= wsum;
+  const want = Math.atan2(wx, wz);
+  let diff = want - npc.rotation;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const gain = (npc.isTradeShip ? 0.42 : 0.55) * Math.min(1, wsum * 0.45);
+  npc.rotation += diff * gain * dt * npcSailingTurnFactor(npc);
+  npc.wanderAngle = npc.rotation;
 }
 
 function resolvePlayerShipCollisionsAfterNpcs() {
@@ -12784,6 +12877,7 @@ function updateNPCs(dt) {
       npc._wakePrevZ = npc.z;
       tickShipWakeSpawner(wakeKey, npc.x, npc.z, npc.rotation, effWakeSpd, dt);
     }
+    if (host && !npc.sinking && (npc.health == null || npc.health > 0)) steerNpcAvoidCloseShips(npc, dt);
     clampNpcIntoWorldBounds(npc);
   });
   if (host) {
