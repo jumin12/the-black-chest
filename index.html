@@ -13215,13 +13215,19 @@ function updateNPCs(dt) {
       }
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
-      const k = Math.min(1, 14 * dt);
+      const v = (npc.speed != null && Number.isFinite(Number(npc.speed))) ? Number(npc.speed) : 0;
+      if (Math.abs(v) > 0.012) {
+        npc.x += Math.sin(npc.rotation) * v * dt;
+        npc.z += Math.cos(npc.rotation) * v * dt;
+      }
+      const k = Math.min(1, 36 * dt);
       npc.x += (npc.syncX - npc.x) * k;
       npc.z += (npc.syncZ - npc.z) * k;
       let dr = npc.syncR - npc.rotation;
       while (dr > Math.PI) dr -= Math.PI * 2;
       while (dr < -Math.PI) dr += Math.PI * 2;
-      npc.rotation += dr * k;
+      const rk = Math.min(1, 36 * dt);
+      npc.rotation += dr * rk;
     }
 
     if (npc.sinking) {
@@ -22762,7 +22768,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
 
 /**
  * Predicts other captains' motion between ~45Hz state snapshots (same formula as local sail physics)
- * and softly pulls toward authoritative x/z/yaw so visuals stay smooth under jitter or packet bunching.
+ * and pulls tightly toward authoritative x/z/yaw so non-host views match host speed.
  */
 function advanceRemoteShipNetSmooth(sg, p, dt) {
   let ns = sg.userData.netSmooth;
@@ -22793,13 +22799,13 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const effSpd = (p.speed || 0) * windEffect * rigF * morF;
   ns.x += Math.sin(ns.ry) * effSpd * dt;
   ns.z += Math.cos(ns.ry) * effSpd * dt;
-  const pull = Math.min(1, (err > 2.5 ? 16 : 11) * dt);
+  const pull = Math.min(1, (err > 2.5 ? 34 : 24) * dt);
   ns.x += (p.x - ns.x) * pull;
   ns.z += (p.z - ns.z) * pull;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const yawRate = err > 4 ? 24 : 18;
+  const yawRate = err > 4 ? 48 : 36;
   ns.ry += dYaw * Math.min(1, yawRate * dt);
   return ns;
 }
@@ -22807,6 +22813,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE for smooth remote motion. */
 const NET_SYNC_HZ = 45;
+/** Host sends AI fleet at the same cadence as player `state` so non-hosts do not chase 8Hz samples. */
+const NPC_NET_SYNC_HZ = NET_SYNC_HZ;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 
 function update(dt) {
@@ -23916,7 +23924,7 @@ function update(dt) {
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
   if (isMultiplayerHost() && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
-    G.npcSyncTimer = 0.125;
+    G.npcSyncTimer = 1 / NPC_NET_SYNC_HZ;
     const npcData = G.npcs.filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       if (n.sinking) return true;
