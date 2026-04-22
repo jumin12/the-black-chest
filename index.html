@@ -4253,9 +4253,9 @@ function distPointToShipHullOBB(px, pz, shipX, shipZ, yaw, shipType) {
 }
 /** Min distance from segment to hull surface (samples; good for fast cannonballs). */
 function distSegmentToShipHullOBB(x0, z0, x1, z1, shipX, shipZ, yaw, shipType) {
-  let minD = Infinity;
-  for (let k = 0; k <= 10; k++) {
-    const t = k / 10;
+  let minD = distPointToShipHullOBB(x1, z1, shipX, shipZ, yaw, shipType);
+  for (let k = 0; k <= 16; k++) {
+    const t = k / 16;
     const px = x0 + (x1 - x0) * t;
     const pz = z0 + (z1 - z0) * t;
     const d = distPointToShipHullOBB(px, pz, shipX, shipZ, yaw, shipType);
@@ -11662,7 +11662,8 @@ function isMultiplayerHost() {
     G.multiplayerNpcAuthorityId = null;
     return true;
   }
-  if (G.myId == null) return false;
+  /* Before `init` assigns `myId`, we still need local NPC/AI authority (and solo WS). */
+  if (G.myId == null) return G.otherPlayers.size === 0;
   if (!G.otherPlayers.size) {
     G.multiplayerNpcAuthorityId = null;
     return true;
@@ -16519,13 +16520,16 @@ window.addEventListener('touchmove', e => {
   }
 }, { capture: true, passive: true });
 
-/** Nautical port/starboard — same mapping as PC keyboard (X port / Z starboard) on all mobile schemes. */
-function mobileBroadsideSignFromTouchButton(which) {
-  return which === 'port' ? -1 : 1;
-}
+/** Port/starboard under `touch-port` / `touch-starboard` (PC uses `pc-broadside-*` and keeps X/Z mapping). */
 function onMobileBroadsideTouch(e, which) {
   e.preventDefault();
-  doFireSide(mobileBroadsideSignFromTouchButton(which));
+  const el = e.currentTarget;
+  const fromSeaButtons = el && (el.id === 'touch-port' || el.id === 'touch-starboard');
+  /* Screen layout had port/starboard actions reversed on touch: swap relative to PC (Z/X) mapping. */
+  const sign = fromSeaButtons
+    ? (which === 'port' ? 1 : -1)
+    : (which === 'port' ? -1 : 1);
+  doFireSide(sign);
 }
 document.getElementById('touch-port')?.addEventListener('touchstart', e => onMobileBroadsideTouch(e, 'port'), { passive: false, capture: true });
 document.getElementById('touch-starboard')?.addEventListener('touchstart', e => onMobileBroadsideTouch(e, 'starboard'), { passive: false, capture: true });
@@ -23508,13 +23512,15 @@ function update(dt) {
         if (b.life <= 0) return;
         if (npc.sinking || npc.health <= 0) return;
         if (b.owner === 'npc' && b.sourceNpcSyncId === npc.syncId) return;
+        const adx = b.x - npc.x, adz = b.z - npc.z;
+        if (adx * adx + adz * adz > 78 * 78) return;
         const at = b.ammoType || 'ball';
         const isPellet = !!b.isPellet;
         let hitR = cannonballStrikeHitRadius(npc.type, at, isPellet);
         if (at === 'ball' && !isPellet) hitR *= 1.15;
         const nYaw = npc.rotation != null ? npc.rotation : 0;
         const distHit = distSegmentToShipHullOBB(px, pz, b.x, b.z, npc.x, npc.z, nYaw, npc.type);
-        if (distHit >= hitR || b.y < SEA_LEVEL - 4) return;
+        if (distHit >= hitR * 1.1 || b.y < SEA_LEVEL - 4) return;
         if (hitNpcsAsHost) {
           let dh = 15;
           if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
