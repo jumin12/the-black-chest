@@ -1690,7 +1690,12 @@ const server = http.createServer((req, res) => {
   res.end('Not found');
 });
 
-const wss = new WebSocketServer({ server });
+const _wsMaxPayload = Number(process.env.WS_MAX_PAYLOAD);
+const wss = new WebSocketServer({
+  server,
+  perMessageDeflate: false,
+  maxPayload: Number.isFinite(_wsMaxPayload) && _wsMaxPayload > 0 ? _wsMaxPayload : 16 * 1024 * 1024
+});
 
 function broadcast(data, excludeId) {
   const msg = JSON.stringify(data);
