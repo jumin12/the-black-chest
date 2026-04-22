@@ -999,6 +999,13 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .player-flag-png-swatch{width:46px;height:34px;border-radius:6px;border:2px solid rgba(100,80,55,0.45);cursor:pointer;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,0.25);padding:0;overflow:hidden;background:#0a1628;}
 .player-flag-png-swatch img{display:block;width:100%;height:100%;object-fit:cover;}
 .player-flag-png-swatch.sel{border-color:rgba(212,168,72,0.85);box-shadow:0 0 0 1px rgba(212,168,72,0.35),0 3px 12px rgba(0,0,0,0.35);}
+.flag-level-picker{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:6px;max-width:min(440px,92vw);}
+.flag-level-arrow{flex-shrink:0;width:42px;height:76px;border-radius:9px;border:2px solid rgba(180,140,60,0.5);background:linear-gradient(180deg,rgba(55,42,26,0.92),rgba(28,22,14,0.96));color:#d4a848;font-size:24px;font-weight:bold;cursor:pointer;font-family:Georgia,serif;line-height:1;touch-action:manipulation;}
+.flag-level-arrow:hover{filter:brightness(1.1);}
+.flag-level-arrow:active{transform:scale(0.97);}
+.flag-level-center{flex:1;display:flex;flex-direction:column;align-items:center;min-width:0;gap:4px;}
+.flag-level-center img{width:100%;max-width:208px;height:auto;aspect-ratio:4/3;border-radius:8px;border:2px solid rgba(100,80,55,0.45);object-fit:cover;background:#0a1628;box-shadow:0 4px 14px rgba(0,0,0,0.35);}
+.port-flag-level{margin-top:8px;}
 .crew-ship-fx-btn{font-size:9px;padding:3px 7px;border-radius:5px;border:1px solid rgba(140,120,90,0.45);background:rgba(35,28,20,0.85);color:#c9a860;cursor:pointer;font-family:Georgia,serif;line-height:1;flex-shrink:0;}
 .crew-ship-fx-btn:active{transform:scale(0.97);}
 .port-flag-shop{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;}
@@ -1725,11 +1732,15 @@ body.game-help-mobile-minimal #game-help-panel{
           <input type="checkbox" id="cap-parrot" style="width:18px;height:18px;accent-color:#d4a848;" /> Parrot
         </label>
         <label>Hull flag</label>
-        <div id="player-flag-png-row" class="player-flag-png-row" aria-label="Choose your hull flag"></div>
-        <label>Sail tint</label>
-        <div class="color-row" id="flag-colors"></div>
-        <label id="flag-emblem-label">Pennant emblem</label>
-        <div id="flag-emblem-row" class="flag-emblem-row" aria-label="Choose pirate flag design"></div>
+        <div id="creation-flag-picker" class="flag-level-picker" aria-label="Choose your hull flag">
+          <button type="button" id="creation-flag-prev" class="flag-level-arrow" aria-label="Previous flag">‹</button>
+          <div class="flag-level-center">
+            <img id="creation-flag-img" alt="" width="208" height="156" decoding="async" />
+            <div id="creation-flag-caption" style="font-size:10px;color:#9a9080;text-align:center;line-height:1.35;"></div>
+          </div>
+          <button type="button" id="creation-flag-next" class="flag-level-arrow" aria-label="Next flag">›</button>
+        </div>
+        <input type="hidden" id="creation-flag-asset-id" value="" />
         <div class="flag-preview-row">
           <canvas id="flag-preview" width="128" height="96" style="width:72px;height:54px;border-radius:6px;border:1px solid rgba(201,162,74,0.35);box-shadow:0 4px 12px rgba(0,0,0,0.35);"></canvas>
         </div>
@@ -2292,6 +2303,7 @@ body.game-help-mobile-minimal #game-help-panel{
           <div class="port-tab active" data-ptab="trade">Trade</div>
           <div class="port-tab" data-ptab="recruit">Recruit</div>
           <div class="port-tab" data-ptab="quests">Quests</div>
+          <div class="port-tab" data-ptab="governor">Court</div>
           <div class="port-tab" data-ptab="upgrades">Upgrades</div>
           <div class="port-tab" data-ptab="ships">Ships</div>
         </div>
@@ -2610,6 +2622,16 @@ const TOWN_NAME_LEXICON = (() => {
   return out;
 })();
 const TOWN_NAME_TAGS = ['', ' Reach', ' Roads', ' Moor', ' Cross', ' End', ' Vale', ' March', ' Gate', ' Stairs', ' Steps', ' Downs'];
+/** Faction-flavored colonial prefixes for New World settlement names (procedural ports). */
+const FACTION_COLONIAL_PREFIXES = [
+  ['New ', 'Fort ', 'Crown ', 'Royal ', 'Upper '],
+  ['Nieuw ', 'Vry ', 'Groote ', 'Kleine ', 'Oost '],
+  ['St. ', 'Pointe-', 'Belle ', 'Petit ', "L'"],
+  ['Puerto ', 'San ', 'Santa ', 'Nueva ', 'Villa '],
+  ['São ', 'Vila ', 'Porto ', 'Novo ', 'Santa ']
+];
+const DEFAULT_SAIL_TRIM_COLOR = '#c9b89a';
+const BANNED_FROM_PORT_RELATION = -40;
 
 /** Camera zoom level: higher = closer to the ship (deck view); lower = wider (horizon). */
 const CAM_ZOOM_HORIZON = 70;
@@ -2743,9 +2765,7 @@ const G = {
     riggingHealth: 100,
     anchored: false,
     shipName: 'The Black Wave',
-    flagColor: '#1a1a1a',
     flagAssetId: null,
-    flagEmblem: 'skull_crossbones',
     shipType: 'cutter',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     inventory: [
@@ -2832,6 +2852,8 @@ const G = {
   /** Per-port `{ cx,cz }` key → `{ goodId: count }` — trade stockpiles & debug display */
   townStockpiles: null,
   townEconomyAcc: 0,
+  /** Sid Meier–style politics: relations, wars, port control, inflation (see `ensurePolitics`). */
+  politics: null,
   /** Navigator spectate: `null` or `{ kind:'npc'|'player'|'dock', syncId?, playerId?, dockX?, dockZ?, facing? }` */
   spectate: null,
   /** Lifetime notoriety (persisted in save; synced to server when online). */
@@ -3119,13 +3141,14 @@ function spawnEscortRaiderPirates(cargoSyncId, nearPt, count, nameRng) {
       flagPosition: pickRandomAiFlagPosition(sr()),
       factionId: pirateFaction,
       flagColor: npcFlagColor,
+      flagAssetId: randomChoosableFlagRng(sr),
       sailBonus: 0.14,
       aggro: true,
       attackNpcSyncId: cargoSyncId,
       escortRaider: true
     };
     npc.speed = npcMaxForwardSpeed(npc) * (0.2 + sr() * 0.12);
-    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name);
+    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name, { flagAssetId: npc.flagAssetId });
     npc.crewData = ambientPirateCrewData((a * 7919 + (cargoSyncId | 0)) >>> 0);
     buildCrewMeshes(mesh, npc.crewData, npc.type);
     npc.mesh = mesh;
@@ -3209,6 +3232,7 @@ function beginEscortQuest(q) {
     tradeCannon: cannonPart,
     name: q.cargoShipName || `Merchant (${inm.name})`,
     flagColor: '#2a7a6a',
+    flagAssetId: factionFlagPngIdForFaction(townFaction({ cx: q.originCx, cz: q.originCz, hasTown: true })),
     flagPosition: pickRandomAiFlagPosition(Math.random),
     isTradeShip: true,
     isEscortCargo: true,
@@ -3229,7 +3253,7 @@ function beginEscortQuest(q) {
     cargoGood: q.cargoGood || 'cloth',
     cargoUnits: q.cargoUnits != null ? q.cargoUnits : 8
   };
-  const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: 'silk', cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true });
+  const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: 'silk', cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, flagAssetId: npc.flagAssetId });
   const sr = () => Math.random();
   npc.crewData = merchantCrewFromRng(sr);
   buildCrewMeshes(mesh, npc.crewData, npc.type);
@@ -3321,6 +3345,13 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
     }
     checkHuntQuestOnNpcSink(npc);
   }
+  if (npc.isTradeShip && !wasEscortContractShip && !npc.isStoryBounty) {
+    ensurePolitics();
+    const vf = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
+    adjustPlayerFactionRelation(vf, -8);
+    G.politics.crimes = Math.min(999, (G.politics.crimes || 0) + 5);
+  }
+  tryProgressFactionLetters(npc, kid);
   npc.sinking = true;
   npc.sinkTimer = 0;
   npc.speed = 0;
@@ -3583,11 +3614,12 @@ function spawnStoryBountyNpcForOwner(ownerPlayerId, story) {
     aggro: true,
     sailBonus: 0.1,
     flagColor: '#5a0808',
+    flagAssetId: randomChoosableFlagRng(sr),
     riggingHealth: 100
   };
   npc.speed = npcMaxForwardSpeed(npc) * (0.2 + sr() * 0.14);
   npc.flagPosition = pickRandomAiFlagPosition(sr());
-  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name);
+  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
   npc.crewData = storyBountyCrewData(ownerPlayerId, story.step, shipType);
   buildCrewMeshes(mesh, npc.crewData, npc.type);
   npc.mesh = mesh;
@@ -5998,7 +6030,9 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
     const baseIdx = th % TOWN_NAME_LEXICON.length;
     th = Math.imul(th, 1103515245) + 12345 >>> 0;
     const tagIdx = th % TOWN_NAME_TAGS.length;
-    meta.townName = TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx];
+    const facPre = FACTION_COLONIAL_PREFIXES[meta.faction % FACTION_COUNT];
+    const pre = facPre[th % facPre.length];
+    meta.townName = pre + TOWN_NAME_LEXICON[baseIdx] + TOWN_NAME_TAGS[tagIdx];
     meta.dockAngle = (hashChunk(cx + 99, cz + 99, worldSeedOpt) * 2 - 1) * Math.PI;
     placeTownDockSeaward(meta);
   }
@@ -6397,9 +6431,267 @@ function parseFactionsFromMapJson(data) {
 }
 function townFaction(meta) {
   if (!meta || !meta.hasTown) return 0;
+  ensurePolitics();
+  const k = portStockKey(meta);
+  if (G.politics.portController[k] != null) return (G.politics.portController[k] | 0) % FACTION_COUNT;
   return meta.faction != null ? (meta.faction | 0) % FACTION_COUNT : (((meta.cx * 7919 ^ meta.cz * 9341 ^ (G.worldSeed >>> 0)) >>> 0) % FACTION_COUNT);
 }
 function factionLabel(fid) { return FACTION_NAMES[(fid | 0) % FACTION_COUNT] || FACTION_NAMES[0]; }
+
+function ensurePolitics() {
+  if (G.politics && G.politics.relations) {
+    if (!Array.isArray(G.politics.activeLetters)) G.politics.activeLetters = [];
+    if (!Array.isArray(G.politics.courtOffers)) G.politics.courtOffers = [];
+    if (G.politics._courtSk === undefined) G.politics._courtSk = null;
+    return;
+  }
+  const matrix = [];
+  for (let i = 0; i < FACTION_COUNT; i++) {
+    const row = [];
+    for (let j = 0; j < FACTION_COUNT; j++) {
+      if (i === j) row.push(100);
+      else row.push(8 + ((i * 17 + j * 31 + (G.worldSeed | 0)) % 55) - 20);
+    }
+    matrix.push(row);
+  }
+  G.politics = {
+    joinedFaction: null,
+    relations: [0, 0, 0, 0, 0],
+    crimes: 0,
+    matrix,
+    portController: Object.create(null),
+    portGarrison: Object.create(null),
+    inflation: 1,
+    factionWealth: [1400, 1400, 1400, 1400, 1400],
+    factionMissions: [],
+    activeLetters: [],
+    courtOffers: [],
+    _courtSk: null
+  };
+}
+function goldPriceForPlayerFlagAsset(flagId) {
+  const id = normalizePlayerFlagAssetId(flagId);
+  if (id == null) return 220;
+  return Math.max(18, 20 + id * 5 + (id % 7) * 4 + ((id * 3) % 11));
+}
+function ensureCourtOffersForDock(dock) {
+  ensurePolitics();
+  const sk = dock ? ensureStockpileForPort(dock) : null;
+  if (!sk || !dock) return;
+  if (G.politics._courtSk === sk && G.politics.courtOffers.length) return;
+  G.politics._courtSk = sk;
+  const here = townFaction(dock) % FACTION_COUNT;
+  const offers = [];
+  for (let j = 0; j < FACTION_COUNT; j++) {
+    if (j === here) continue;
+    const war = factionsConsideredAtWar(here, j);
+    const roll = (sk.length + j * 17 + here * 5) % 10;
+    if (war || roll < 5) {
+      offers.push({
+        id: `ct_${sk}_${here}_${j}_${war ? 'w' : 'c'}`,
+        issuer: here,
+        target: j,
+        reward: war ? 88 + roll * 9 : 52 + roll * 6,
+        war,
+        desc: war
+          ? `Letter of marque: sink two ${FACTION_NAMES[j]} merchantmen preying on our convoys.`
+          : `Sealed order: waylay two ${FACTION_NAMES[j]} merchant hulls — let none trace it to us.`
+      });
+    }
+  }
+  if (!offers.length) {
+    offers.push({
+      id: `ct_${sk}_${here}_corsair`,
+      issuer: here,
+      target: null,
+      reward: 48 + ((sk.length | 0) % 30),
+      war: false,
+      pirateOnly: true,
+      desc: 'Harbor defense: sink two pirate cruisers haunting our approaches.'
+    });
+  }
+  G.politics.courtOffers = offers.slice(0, 5);
+}
+function tryProgressFactionLetters(npc, killerPlayerId) {
+  if (killerPlayerId != null && killerPlayerId !== G.myId) return;
+  ensurePolitics();
+  const letters = G.politics.activeLetters;
+  if (!letters.length) return;
+  for (let i = 0; i < letters.length; i++) {
+    const L = letters[i];
+    if (L.done >= L.need) continue;
+    let match = false;
+    if (L.pirateOnly) {
+      match = !npc.isTradeShip && !npc.isStoryBounty;
+    } else if (npc.isTradeShip && L.target != null) {
+      const hf = npc.homeFaction != null ? (npc.homeFaction | 0) % FACTION_COUNT : townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
+      match = hf === (L.target | 0);
+    }
+    if (!match) continue;
+    L.done++;
+    notify(`${FACTION_NAMES[L.issuer]} letter — ${L.done}/${L.need}.`);
+    if (L.done >= L.need) {
+      const g = Math.max(0, L.reward | 0);
+      let row = G.player.inventory.find(x => x.id === 'gold');
+      if (!row) { row = { id: 'gold', name: 'Gold Coins', icon: '', count: 0 }; G.player.inventory.push(row); }
+      row.count += g;
+      adjustPlayerFactionRelation(L.issuer, 8);
+      notify(`The governor pays ${g}g for a fulfilled letter.`);
+      letters.splice(i, 1);
+      i--;
+      bumpNotoriety({ gold: g });
+      reconcileSlotsWithInventory();
+      saveProgressDebounced();
+    }
+  }
+}
+window.portAcceptMarqueLetter = function(offerId) {
+  if (!G.docked) return;
+  ensurePolitics();
+  const o = (G.politics.courtOffers || []).find(x => x.id === offerId);
+  if (!o) return;
+  if ((G.politics.activeLetters || []).length >= 4) {
+    notify('Your captain’s log already holds four active letters.');
+    return;
+  }
+  if ((G.politics.activeLetters || []).some(L => L.offerId === offerId)) return;
+  G.politics.activeLetters.push({
+    offerId: o.id,
+    issuer: o.issuer,
+    target: o.target,
+    reward: o.reward | 0,
+    need: 2,
+    done: 0,
+    pirateOnly: !!o.pirateOnly,
+    desc: o.desc
+  });
+  notify('Letter of marque filed — fulfill it at sea.');
+  saveProgressDebounced();
+  showPortTab('governor');
+};
+window.portSwearToFaction = function(fid) {
+  if (!G.docked) return;
+  ensurePolitics();
+  G.politics.joinedFaction = (fid | 0) % FACTION_COUNT;
+  notify(`You sail under ${FACTION_NAMES[G.politics.joinedFaction]}.`);
+  saveProgressDebounced();
+  if (ws?.readyState === 1) sendUpdate();
+  showPortTab('governor');
+};
+window.portRenounceFaction = function() {
+  if (!G.docked) return;
+  ensurePolitics();
+  G.politics.joinedFaction = null;
+  notify('You renounce your commission — you are a free agent again.');
+  saveProgressDebounced();
+  if (ws?.readyState === 1) sendUpdate();
+  showPortTab('governor');
+};
+window.portBuyGovernorPardon = function() {
+  if (!G.docked) return;
+  ensurePolitics();
+  const crimes = G.politics.crimes | 0;
+  if (crimes < 1) { notify('You have no crimes that need wiping.'); return; }
+  const cost = Math.max(40, crimes * 16 + crimes * crimes * 2);
+  const gold = G.player.inventory.find(i => i.id === 'gold');
+  if (!gold || gold.count < cost) { notify('The governor demands the full fine in gold.'); return; }
+  gold.count -= cost;
+  G.politics.crimes = 0;
+  for (let f = 0; f < FACTION_COUNT; f++) adjustPlayerFactionRelation(f, 10);
+  reconcileSlotsWithInventory();
+  notify('The governor signs your pardon — harbors may welcome you again.');
+  saveProgressDebounced();
+  if (ws?.readyState === 1) sendUpdate();
+  showPortTab('governor');
+  updateShipPanel();
+};
+function playerFactionRelation(fid) {
+  ensurePolitics();
+  return G.politics.relations[(fid | 0) % FACTION_COUNT] || 0;
+}
+function adjustPlayerFactionRelation(fid, delta) {
+  ensurePolitics();
+  const i = (fid | 0) % FACTION_COUNT;
+  G.politics.relations[i] = Math.max(-100, Math.min(100, (G.politics.relations[i] || 0) + delta));
+}
+function factionsConsideredAtWar(a, b) {
+  ensurePolitics();
+  const i = (a | 0) % FACTION_COUNT, j = (b | 0) % FACTION_COUNT;
+  if (i === j) return false;
+  return (G.politics.matrix[i][j] + G.politics.matrix[j][i]) / 2 < 18;
+}
+function playerBannedFromFactionPort(fid) {
+  return playerFactionRelation(fid) <= BANNED_FROM_PORT_RELATION;
+}
+function randomChoosableFlagRng(rng) {
+  const ids = PLAYER_FLAG_CHOICE_IDS;
+  return ids[Math.floor(rng() * ids.length)] || DEFAULT_PLAYER_FLAG_ASSET;
+}
+function factionFlagPngIdForFaction(fid) {
+  return FACTION_FLAG_PNG_IDS[(fid | 0) % FACTION_COUNT] || FACTION_FLAG_PNG_IDS[0];
+}
+function playerCombatPowerEstimate() {
+  const st = SHIP_TYPES[G.player.shipType || 'sloop'] || SHIP_TYPES.sloop;
+  const mh = G.player.maxHealth != null ? G.player.maxHealth : 100;
+  const hp = G.player.health != null ? G.player.health : mh;
+  const partId = G.player.shipParts && G.player.shipParts.cannon;
+  const cp = SHIP_PARTS.cannon.find(c => c.id === partId);
+  const gun = cp && (cp.damage | 0) > 0 ? (cp.damage | 0) : 0;
+  return hp * 0.85 + mh * 0.35 + (st.hullLen || 18) * 1.1 + gun * 2.2 + countSailorCrew() * 1.5;
+}
+function npcCombatPowerEstimate(npc) {
+  const st = SHIP_TYPES[npc.type || 'sloop'] || SHIP_TYPES.sloop;
+  const hp = npc.health != null ? npc.health : 50;
+  const merc = npc.isTradeShip;
+  const cannonTier = merc ? (npc.tradeCannon || tradeShipCannonForType(npc.type)) : 'light';
+  const gun = cannonTier === 'heavy' ? 22 : cannonTier === 'medium' ? 15 : 8;
+  const crew = npc.crewData && npc.crewData.length ? npc.crewData.length : 3;
+  return hp * 0.9 + (st.hullLen || 18) * (merc ? 0.85 : 1.05) + gun * 2 + crew * 1.4 + (npc.isTroopTransport ? 25 : 0);
+}
+function tradeGoodBuyPrice(goodRow, stockKey, townStock) {
+  ensurePolitics();
+  const base = goodRow.buy;
+  const wh = townStock && goodRow.id ? (townStock[goodRow.id] || 0) : 40;
+  const scarcity = 1 + Math.max(0, 50 - wh) * 0.022;
+  const glut = wh > 95 ? 1 - Math.min(0.22, (wh - 95) * 0.004) : 1;
+  const inf = G.politics.inflation != null ? G.politics.inflation : 1;
+  return Math.max(1, Math.floor(base * scarcity * glut * inf));
+}
+function tradeGoodSellPrice(goodRow, stockKey, townStock) {
+  ensurePolitics();
+  const base = goodRow.sell;
+  const wh = townStock && goodRow.id ? (townStock[goodRow.id] || 0) : 40;
+  const demand = wh < 35 ? 1.08 + (35 - wh) * 0.006 : 1;
+  const oversupply = wh > 88 ? 1 - Math.min(0.18, (wh - 88) * 0.005) : 1;
+  const inf = G.politics.inflation != null ? G.politics.inflation : 1;
+  return Math.max(1, Math.floor(base * demand * oversupply / Math.max(0.75, inf)));
+}
+function ensurePortGarrisonForKey(k) {
+  ensurePolitics();
+  if (!k) return;
+  if (G.politics.portGarrison[k]) return;
+  let h = 0;
+  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0;
+  G.politics.portGarrison[k] = { men: 160 + (h % 240), payrollDue: 30 + (h % 50) };
+}
+function tickPoliticsEconomy(dt) {
+  if (G.mode !== 'playing') return;
+  ensurePolitics();
+  G.politics._econAcc = (G.politics._econAcc || 0) + dt;
+  if (G.politics._econAcc < 14) return;
+  G.politics._econAcc = 0;
+  G.politics.inflation = Math.max(0.82, Math.min(1.38, G.politics.inflation + (Math.random() - 0.48) * 0.012));
+  for (let i = 0; i < FACTION_COUNT; i++) {
+    G.politics.factionWealth[i] = Math.max(200, G.politics.factionWealth[i] + (Math.random() * 28 - 11) | 0);
+  }
+  for (let k = 0; k < 2; k++) {
+    const i = (Math.random() * FACTION_COUNT) | 0;
+    const j = (Math.random() * FACTION_COUNT) | 0;
+    if (i === j) continue;
+    const d = (Math.random() * 7 - 3) | 0;
+    G.politics.matrix[i][j] = Math.max(-100, Math.min(100, G.politics.matrix[i][j] + d));
+  }
+}
 
 function loadOrGetFlagPngTexture(flagNum) {
   const key = String(flagNum);
@@ -8713,10 +9005,9 @@ function otherPlayerShipCacheKey(p) {
       }).join(',')}`
     : '_';
   const ptag = String(p.partyTag || '').slice(0, 24);
-  const fe = normalizePlayerFlagEmblem(p.flagEmblem);
   const fa = normalizePlayerFlagAssetId(p.flagAssetId);
   const faSeg = fa != null ? String(fa) : '-';
-  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${sp.flag || 'mast'}|${fc}|${crewSeg}|t:${ptag}|e:${fe}|fa:${faSeg}`;
+  return `${p.shipType || 'sloop'}|${nm}|${sp.hull}|${sp.sail}|${sp.cannon}|${sp.figurehead}|${sp.flag || 'mast'}|${fc}|${crewSeg}|t:${ptag}|fa:${faSeg}`;
 }
 
 function refreshOtherPlayerShipCacheKey(p) {
@@ -8724,161 +9015,20 @@ function refreshOtherPlayerShipCacheKey(p) {
   p._netShipCacheKey = otherPlayerShipCacheKey(p);
 }
 
-/** Catalog for creation + port chandler (gold prices; first is free starter). */
-const PIRATE_FLAG_EMBLEMS = [
-  { id: 'skull_crossbones', name: 'Skull & crossbones', price: 0 },
-  { id: 'main_menu_crest', name: 'Main menu crest', price: 0 },
-  { id: 'crossed_sabers', name: 'Crossed sabers', price: 62 },
-  { id: 'hourglass', name: 'Hourglass', price: 55 },
-  { id: 'bleeding_heart', name: 'Bleeding heart', price: 72 },
-  { id: 'skull_hourglass', name: 'Skull & hourglass', price: 78 },
-  { id: 'cannon_crossbones', name: 'Cannon & bones', price: 85 },
-  { id: 'wings_skull', name: 'Winged skull', price: 88 },
-  { id: 'crossed_daggers', name: 'Crossed daggers', price: 65 }
-];
-const DEFAULT_FLAG_EMBLEM = 'skull_crossbones';
-function normalizePlayerFlagEmblem(id) {
-  const s = id != null ? String(id).trim() : '';
-  if (PIRATE_FLAG_EMBLEMS.some(e => e.id === s)) return s;
-  return DEFAULT_FLAG_EMBLEM;
-}
-function pirateFlagPalette(hex) {
-  let r = 26, g = 26, b = 26;
-  if (hex && typeof hex === 'string' && hex.startsWith('#')) {
-    const h = hex.slice(1);
-    if (h.length >= 6) {
-      r = parseInt(h.slice(0, 2), 16) || 0;
-      g = parseInt(h.slice(2, 4), 16) || 0;
-      b = parseInt(h.slice(4, 6), 16) || 0;
-    }
-  }
-  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  if (lum < 0.42) return { ink: '#f0e4d4', bone: '#fff8ee', acc: '#d4a860', dim: 'rgba(0,0,0,0.4)' };
-  return { ink: '#1a1008', bone: '#f5ebe0', acc: '#5a3020', dim: 'rgba(255,255,255,0.2)' };
-}
-/** Draw emblem in 64×48 space (ctx already scaled) or pass cw,ch for auto-scale. */
-function drawPirateFlagToCanvas(ctx, cw, ch, flagColorHex, emblemId) {
-  const id = normalizePlayerFlagEmblem(emblemId);
-  const pal = pirateFlagPalette(flagColorHex || '#1a1a1a');
-  const W = 64, H = 48;
-  ctx.save();
-  ctx.imageSmoothingEnabled = true;
-  if (ctx.imageSmoothingQuality) ctx.imageSmoothingQuality = 'high';
-  if (cw !== W || ch !== H) {
-    ctx.scale(cw / W, ch / H);
-  }
-  ctx.fillStyle = flagColorHex || '#1a1a1a';
-  ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = pal.ink;
-  ctx.fillStyle = pal.bone;
-  ctx.lineWidth = 1.35;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  const bone = () => {
-    ctx.strokeStyle = pal.ink;
-    ctx.fillStyle = pal.bone;
-  };
-  bone();
-  if (id === 'skull_crossbones') {
-    ctx.beginPath(); ctx.arc(32, 17, 7.2, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = pal.ink;
-    ctx.beginPath(); ctx.arc(28.8, 15, 1.15, 0, Math.PI * 2); ctx.arc(35.2, 15, 1.15, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = pal.bone; ctx.beginPath(); ctx.moveTo(28.5, 20.5); ctx.quadraticCurveTo(32, 24.5, 35.5, 20.5); ctx.stroke();
-    ctx.strokeStyle = pal.ink; ctx.lineWidth = 2.1;
-    ctx.beginPath(); ctx.moveTo(17, 27); ctx.lineTo(47, 37); ctx.moveTo(47, 27); ctx.lineTo(17, 37); ctx.stroke();
-  } else if (id === 'crossed_sabers') {
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(14, 38); ctx.quadraticCurveTo(22, 28, 32, 12); ctx.quadraticCurveTo(38, 8, 44, 10); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(50, 38); ctx.quadraticCurveTo(42, 28, 32, 12); ctx.stroke();
-    ctx.fillStyle = pal.acc;
-    ctx.fillRect(30, 10, 4, 6); ctx.fillRect(30, 32, 4, 8);
-  } else if (id === 'hourglass') {
-    ctx.lineWidth = 1.6;
-    ctx.beginPath(); ctx.moveTo(22, 10); ctx.lineTo(42, 10); ctx.lineTo(38, 24); ctx.lineTo(42, 38); ctx.lineTo(22, 38); ctx.lineTo(26, 24); ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = pal.dim; ctx.beginPath(); ctx.moveTo(26, 14); ctx.lineTo(38, 14); ctx.lineTo(35, 24); ctx.lineTo(38, 34); ctx.lineTo(26, 34); ctx.lineTo(29, 24); ctx.closePath(); ctx.fill();
-  } else if (id === 'bleeding_heart') {
-    ctx.beginPath(); ctx.moveTo(32, 36); ctx.bezierCurveTo(14, 22, 18, 8, 32, 16); ctx.bezierCurveTo(46, 8, 50, 22, 32, 36); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#8a2020';
-    ctx.beginPath(); ctx.moveTo(32, 30); ctx.lineTo(30, 38); ctx.lineTo(34, 38); ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(28, 26); ctx.lineTo(26, 34); ctx.lineTo(30, 32); ctx.closePath(); ctx.fill();
-  } else if (id === 'skull_hourglass') {
-    ctx.beginPath(); ctx.arc(32, 13, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = pal.ink; ctx.beginPath(); ctx.arc(30, 12, 0.9, 0, Math.PI * 2); ctx.arc(34, 12, 0.9, 0, Math.PI * 2); ctx.fill();
-    bone();
-    ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(24, 22); ctx.lineTo(40, 22); ctx.lineTo(37, 32); ctx.lineTo(40, 42); ctx.lineTo(24, 42); ctx.lineTo(27, 32); ctx.closePath(); ctx.fill(); ctx.stroke();
-  } else if (id === 'cannon_crossbones') {
-    ctx.fillStyle = pal.ink;
-    ctx.fillRect(18, 18, 28, 10); ctx.strokeRect(18, 18, 28, 10);
-    ctx.beginPath(); ctx.arc(46, 23, 3, 0, Math.PI * 2); ctx.fill();
-    bone(); ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(16, 34); ctx.lineTo(48, 40); ctx.moveTo(48, 34); ctx.lineTo(16, 40); ctx.stroke();
-  } else if (id === 'wings_skull') {
-    ctx.beginPath(); ctx.moveTo(8, 22); ctx.quadraticCurveTo(18, 8, 28, 18); ctx.quadraticCurveTo(22, 22, 18, 26); ctx.quadraticCurveTo(12, 24, 8, 22); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(56, 22); ctx.quadraticCurveTo(46, 8, 36, 18); ctx.quadraticCurveTo(42, 22, 46, 26); ctx.quadraticCurveTo(52, 24, 56, 22); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.arc(32, 22, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = pal.ink; ctx.beginPath(); ctx.arc(29.2, 20.5, 1, 0, Math.PI * 2); ctx.arc(34.8, 20.5, 1, 0, Math.PI * 2); ctx.fill();
-  } else if (id === 'crossed_daggers') {
-    ctx.lineWidth = 2.2;
-    ctx.beginPath(); ctx.moveTo(18, 12); ctx.lineTo(46, 36); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(46, 12); ctx.lineTo(18, 36); ctx.stroke();
-    ctx.fillStyle = pal.acc;
-    ctx.beginPath(); ctx.moveTo(18, 12); ctx.lineTo(22, 14); ctx.lineTo(20, 18); ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(46, 12); ctx.lineTo(42, 14); ctx.lineTo(44, 18); ctx.closePath(); ctx.fill();
-  } else if (id === 'main_menu_crest') {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const ox = 32, oy = 24;
-    const brass = '#c9a24a';
-    ctx.font = 'bold 34px Georgia, "Times New Roman", serif';
-    ctx.fillStyle = 'rgba(201, 162, 74, 0.28)';
-    for (let k = 0; k < 10; k++) {
-      const a = (k / 10) * Math.PI * 2;
-      ctx.fillText('\u2620', ox + Math.cos(a) * 2.1, oy + Math.sin(a) * 2.1);
-    }
-    ctx.fillStyle = 'rgba(201, 162, 74, 0.4)';
-    ctx.fillText('\u2620', ox + 1.1, oy + 1.1);
-    ctx.fillStyle = brass;
-    ctx.globalAlpha = 0.55;
-    ctx.fillText('\u2620', ox, oy);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = pal.ink;
-    ctx.fillText('\u2620', ox, oy);
-  } else {
-    ctx.font = 'bold 26px Georgia,serif'; ctx.fillStyle = pal.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('\u2620', 32, 24);
-  }
-  ctx.restore();
-}
-
 /** Hull flag: pole + hinge; `flagPlace` mast | side | stern. Mast flags parent to `mastRigForMastFlag` so they topple with rigging. */
-function attachPirateFlagToShip(g, spec, flagColor, flagPlace, mastRigForMastFlag, flagEmblemId, flagAssetIdOpt) {
+function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAssetIdOpt) {
   const poleMat = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
   const mH = spec.hullLen * 0.7;
   const mastIdx = Math.max(0, spec.masts - 1);
   const mZ = (mastIdx - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
   const mastBaseY = spec.hullH * 0.6;
-  const fcW = 256, fcH = 192;
-  const pngId = normalizePlayerFlagAssetId(flagAssetIdOpt);
-  let ftex;
-  if (pngId != null) {
-    ftex = loadOrGetFlagPngTexture(pngId);
-    ftex.generateMipmaps = true;
-    ftex.minFilter = THREE.LinearMipmapLinearFilter;
-    ftex.magFilter = THREE.LinearFilter;
-    if (renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy) {
-      ftex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    }
-  } else {
-    const fc = document.createElement('canvas'); fc.width = fcW; fc.height = fcH;
-    const ctx = fc.getContext('2d');
-    drawPirateFlagToCanvas(ctx, fcW, fcH, flagColor, flagEmblemId);
-    ftex = new THREE.CanvasTexture(fc);
-    ftex.generateMipmaps = true;
-    ftex.minFilter = THREE.LinearMipmapLinearFilter;
-    ftex.magFilter = THREE.LinearFilter;
-    if (renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy) {
-      ftex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    }
+  const useId = normalizePlayerFlagAssetId(flagAssetIdOpt) ?? DEFAULT_PLAYER_FLAG_ASSET;
+  const ftex = loadOrGetFlagPngTexture(useId);
+  ftex.generateMipmaps = true;
+  ftex.minFilter = THREE.LinearMipmapLinearFilter;
+  ftex.magFilter = THREE.LinearFilter;
+  if (renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy) {
+    ftex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   }
   const flagRig = new THREE.Group();
   let poleH = spec.hullLen * 0.36;
@@ -8915,7 +9065,6 @@ function attachPirateFlagToShip(g, spec, flagColor, flagPlace, mastRigForMastFla
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   meshOpts = meshOpts || {};
   const hideShipNameLabel = !!meshOpts.hideShipNameLabel;
-  const flagEmblem = normalizePlayerFlagEmblem(meshOpts.flagEmblem);
   const flagAssetForMesh = meshOpts.flagAssetId != null ? normalizePlayerFlagAssetId(meshOpts.flagAssetId) : null;
   parts = normalizeShipParts(parts);
   const flagPlace = parts.flag || 'mast';
@@ -9112,18 +9261,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   }
 
   const mastForFlag = flagPlace === 'mast' ? (lastMainMastRig || null) : null;
-  attachPirateFlagToShip(g, spec, flagColor, flagPlace, mastForFlag, flagEmblem, flagAssetForMesh);
-
-  if (flagColor) {
-    const fc = new THREE.Color(flagColor);
-    g.traverse(ch => {
-      if (ch.userData && ch.userData.isSail && ch.material && ch.material.color) {
-        const b = ch.material.color.clone();
-        b.lerp(fc, 0.2);
-        ch.material.color.copy(b);
-      }
-    });
-  }
+  attachPirateFlagToShip(g, spec, flagPlace, mastForFlag, flagAssetForMesh);
 
   if (shipName && !hideShipNameLabel) {
     const swatch = flagColor ? String(flagColor) : '';
@@ -10415,12 +10553,12 @@ function rebuildPlayerShip() {
   disposeObject3DSubtree(playerShipGroup);
   while (playerShipGroup.children.length) playerShipGroup.remove(playerShipGroup.children[0]);
   ensurePlayerCrewTasks();
-  const ship = buildShipMesh(G.player.shipType, G.player.shipParts, G.player.flagColor || '#1a1a1a', '', { honorPlayerLoadout: true, flagEmblem: G.player.flagEmblem, flagAssetId: getEffectivePlayerFlagAssetId() });
+  const ship = buildShipMesh(G.player.shipType, G.player.shipParts, DEFAULT_SAIL_TRIM_COLOR, '', { honorPlayerLoadout: true, flagAssetId: getEffectivePlayerFlagAssetId() });
   playerShipGroup.add(ship);
   buildCrewMeshes(ship, G.player.crew, G.player.shipType);
 
   const spec = SHIP_TYPES[G.player.shipType];
-  shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', G.player.flagColor || '', G.party?.tag || '');
+  shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', DEFAULT_SAIL_TRIM_COLOR, G.party?.tag || '');
   shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
   playerShipGroup.add(shipNameSprite);
   updateCargo3DMesh();
@@ -10437,7 +10575,7 @@ function updatePlayerShipNametagOnly() {
       disposeObject3DSubtree(shipNameSprite);
       shipNameSprite = null;
     }
-    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', G.player.flagColor || '', G.party?.tag || '');
+    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', DEFAULT_SAIL_TRIM_COLOR, G.party?.tag || '');
     shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     playerShipGroup.add(shipNameSprite);
   } catch (e) {}
@@ -11173,6 +11311,8 @@ function spawnTradeShips() {
     }
     const sailPick = sr() > 0.55 ? 'silk' : 'basic';
     const cannonPart = tradeShipCannonForType(st);
+    const homeFac = townFaction(home) % FACTION_COUNT;
+    const isTroop = sr() < 0.13;
     const npc = {
       syncId: TRADE_NPC_SYNC_START + tradeSyncIdx,
       x: nx, z: nz,
@@ -11182,9 +11322,15 @@ function spawnTradeShips() {
       type: st,
       tradeCannon: cannonPart,
       name: '',
-      flagColor: FACTION_TRADE_COLORS[townFaction(home) % FACTION_COUNT],
+      homeFaction: homeFac,
+      flagColor: FACTION_TRADE_COLORS[homeFac],
+      flagAssetId: factionFlagPngIdForFaction(homeFac),
       flagPosition: pickRandomAiFlagPosition(sr()),
       isTradeShip: true,
+      isTroopTransport: isTroop,
+      troopFaction: homeFac,
+      troopCount: isTroop ? (90 + Math.floor(sr() * 200)) : 0,
+      troopGold: isTroop ? (180 + Math.floor(sr() * 420)) : 0,
       aggro: false,
       homeDockX: home.dockX,
       homeDockZ: home.dockZ,
@@ -11202,7 +11348,7 @@ function spawnTradeShips() {
     npc.tradePhase = 'loading_home';
     npc.tradeTimer = 6 + sr() * 14;
     syncTradeShipName(npc, home);
-    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true });
+    const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, flagAssetId: npc.flagAssetId });
     npc.crewData = merchantCrewFromRng(sr);
     buildCrewMeshes(mesh, npc.crewData, npc.type);
     npc.mesh = mesh;
@@ -11262,9 +11408,10 @@ function spawnNPCs() {
     const npcFlagColor = FACTION_TRADE_COLORS[pirateFaction];
     npc.factionId = pirateFaction;
     npc.flagColor = npcFlagColor;
+    npc.flagAssetId = randomChoosableFlagRng(sr);
     npc.sailBonus = 0.1;
     npc.speed = npcMaxForwardSpeed(npc) * (0.14 + sr() * 0.1);
-    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name);
+    const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name, { flagAssetId: npc.flagAssetId });
     npc.crewData = ambientPirateCrewData((npcSeed + i * 997) >>> 0);
     buildCrewMeshes(mesh, npc.crewData, npc.type);
     npc.mesh = mesh; scene.add(mesh);
@@ -11298,7 +11445,8 @@ function rebuildNPCShipMesh(npc) {
     scene.remove(npc.mesh);
     npc.mesh = null;
   }
-  const mesh = buildShipMesh(npc.type, parts, npc.flagColor, npc.name, { merchantHull: merchant });
+  const fc = npc.flagColor || DEFAULT_SAIL_TRIM_COLOR;
+  const mesh = buildShipMesh(npc.type, parts, fc, npc.name, { merchantHull: merchant, flagAssetId: npc.flagAssetId });
   buildCrewMeshes(mesh, npcCrew, npc.type);
   npc.mesh = mesh;
   scene.add(mesh);
@@ -11512,6 +11660,16 @@ function updateNPCs(dt) {
         npc.fireCooldown -= dt;
         if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
         const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+        ensurePolitics();
+        const mPfid = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
+        const mRel = playerFactionRelation(mPfid);
+        const mWarJ = G.politics.joinedFaction != null && factionsConsideredAtWar(mPfid, G.politics.joinedFaction);
+        if (!npc.aggro && !G.playerSinking && G.player.health > 0 && distToPlayer < 142) {
+          if (mRel <= -35 || mWarJ) {
+            npc.aggro = true;
+            npc.underFireTimer = Math.max(npc.underFireTimer || 0, 3.6);
+          }
+        }
         if (npc.aggro && (G.playerSinking || G.player.health <= 0 || distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) {
           npc.aggro = false;
         }
@@ -11544,6 +11702,15 @@ function updateNPCs(dt) {
           applyNpcMoveWithIslandEscape(npc, dt, sharp);
           updateNpcEscapeMode(npc, dt);
         } else {
+        if (!npc.aggro && distToPlayer < 128 && mRel > -35 && !mWarJ && !npc.isTroopTransport && npcCombatPowerEstimate(npc) < playerCombatPowerEstimate() * 0.9) {
+          const dx = npc.x - G.player.x, dz = npc.z - G.player.z;
+          const away = Math.atan2(dx, dz);
+          let diff = away - npc.rotation;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          npc.rotation += diff * 0.5 * dt * npcSailingTurnFactor(npc);
+          npc.wanderAngle = npc.rotation;
+        }
         if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
         const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.35;
         const phase = npc.tradePhase || 'to_dest';
@@ -11610,9 +11777,28 @@ function updateNPCs(dt) {
           if (npc.tradeTimer <= 0) {
             if (phase === 'dock_dest') {
               initTownStockpiles();
-              const dq = npc.cargoUnits != null ? npc.cargoUnits : TRADE_DELIVERY_UNITS;
               const dk = portStockKey({ cx: npc.destCx, cz: npc.destCz, hasTown: true });
-              addTownStockpile(dk, npc.cargoGood, dq);
+              if (npc.isTroopTransport) {
+                ensurePolitics();
+                ensurePortGarrisonForKey(dk);
+                const destFac = townFaction({ cx: npc.destCx, cz: npc.destCz, hasTown: true });
+                const atk = (npc.troopFaction | 0) % FACTION_COUNT;
+                const troops = npc.troopCount | 0;
+                const g = G.politics.portGarrison[dk];
+                if (destFac !== atk) {
+                  g.men = Math.max(0, (g.men || 200) - troops);
+                  G.politics.factionWealth[atk] = Math.max(80, (G.politics.factionWealth[atk] || 1000) - Math.min(160, npc.troopGold | 0));
+                  if (g.men <= 0) {
+                    G.politics.portController[dk] = atk;
+                    g.men = 100 + (troops % 130);
+                  }
+                } else {
+                  g.men = (g.men || 200) + Math.floor(troops * 0.12);
+                }
+              } else {
+                const dq = npc.cargoUnits != null ? npc.cargoUnits : TRADE_DELIVERY_UNITS;
+                addTownStockpile(dk, npc.cargoGood, dq);
+              }
               const destMeta = getProceduralIslandMeta(npc.destCx | 0, npc.destCz | 0);
               if (destMeta && destMeta.hasTown) npc.cargoGood = portExportsGood(destMeta);
               const homeM = getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
@@ -11658,6 +11844,22 @@ function updateNPCs(dt) {
       const aimz = focus ? focus.z : G.player.z;
       const distToTarget = Math.hypot(aimx - npc.x, aimz - npc.z);
       const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+      ensurePolitics();
+      const pirF = npc.factionId != null ? (npc.factionId | 0) % FACTION_COUNT : 0;
+      if (!focus && !npc.escortRaider && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
+        if (playerFactionRelation(pirF) <= -36 || (G.politics.joinedFaction != null && factionsConsideredAtWar(pirF, G.politics.joinedFaction))) {
+          npc.aggro = true;
+          npc.underFireTimer = Math.max(npc.underFireTimer || 0, 2.9);
+        } else if (!npc.aggro && distToPlayer < 152 && npcCombatPowerEstimate(npc) < playerCombatPowerEstimate() * 0.92) {
+          const dx = npc.x - G.player.x, dz = npc.z - G.player.z;
+          const away = Math.atan2(dx, dz);
+          let diff = away - npc.rotation;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          npc.rotation += diff * 0.42 * dt * npcSailingTurnFactor(npc);
+          npc.wanderAngle = npc.rotation;
+        }
+      }
       const sharp = (focus && distToTarget < 115) || (!focus && npc.aggro && distToPlayer < 110) ? 2.55 : 2.05;
 
       if (!npc.escapeMode) {
@@ -12636,8 +12838,7 @@ function syncCaptainNameToServer() {
     shipName: G.player.shipName,
     shipType: G.player.shipType,
     shipParts: G.player.shipParts,
-    flagColor: G.player.flagColor || '#1a1a1a',
-    flagEmblem: normalizePlayerFlagEmblem(G.player.flagEmblem),
+    flagColor: DEFAULT_SAIL_TRIM_COLOR,
     flagAssetId: getEffectivePlayerFlagAssetId(),
     crew: buildCrewSyncPayload(),
     captainToken
@@ -12824,8 +13025,7 @@ function connectToServer() {
       shipName: G.player.shipName,
       shipType: G.player.shipType,
       shipParts: G.player.shipParts,
-      flagColor: G.player.flagColor || '#1a1a1a',
-      flagEmblem: normalizePlayerFlagEmblem(G.player.flagEmblem),
+      flagColor: DEFAULT_SAIL_TRIM_COLOR,
       flagAssetId: getEffectivePlayerFlagAssetId(),
       crew: buildCrewSyncPayload(),
       captainToken
@@ -13344,6 +13544,7 @@ function connectToServer() {
             const shipType = nd.t && SHIP_TYPES[nd.t] ? nd.t : (STORY_SHIP_ORDER[step] || 'sloop');
             const name = nd.n || STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
             const flagColor = nd.fc || '#5a0808';
+            const fa0 = nd.fa != null && normalizePlayerFlagAssetId(nd.fa) != null ? normalizePlayerFlagAssetId(nd.fa) : randomChoosableFlagRng(() => (nid % 997) / 997);
             npc = {
               syncId: nid,
               missionOwnerPlayerId: moNet,
@@ -13353,6 +13554,7 @@ function connectToServer() {
               type: shipType,
               name,
               flagColor,
+              flagAssetId: fa0,
               flagPosition: nd.flag === 'mast' || nd.flag === 'side' || nd.flag === 'stern' ? nd.flag : AI_FLAG_POSITIONS[(nid | 0) % 3],
               wanderAngle: 0, wanderTimer: 5,
               underFireTimer: 0, fireJitter: 0,
@@ -13363,7 +13565,7 @@ function connectToServer() {
               syncX: nd.x, syncZ: nd.z, syncR: nd.r,
               riggingHealth: nd.rg != null ? Math.max(0, Math.min(100, nd.rg)) : 100
             };
-            const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name);
+            const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
             const moC = moNet != null && Number.isFinite(Number(moNet)) ? Math.floor(Number(moNet)) : (sbMeta ? sbMeta.ownerPlayerId : 0);
             npc.crewData = storyBountyCrewData(moC, step, shipType);
             buildCrewMeshes(mesh, npc.crewData, npc.type);
@@ -13373,6 +13575,7 @@ function connectToServer() {
           }
           if (!npc) return;
           if (nd.mo != null && Number.isFinite(Number(nd.mo))) npc.missionOwnerPlayerId = Math.floor(Number(nd.mo));
+          if (nd.fa != null && normalizePlayerFlagAssetId(nd.fa) != null) npc.flagAssetId = normalizePlayerFlagAssetId(nd.fa);
           if (nd.t && SHIP_TYPES[nd.t] && (
             nd.t !== npc.type ||
             (nd.fc && nd.fc !== npc.flagColor) ||
@@ -13509,8 +13712,7 @@ function sendUpdate() {
     shipType: G.player.shipType,
     shipName: G.player.shipName,
     shipParts: { ...G.player.shipParts },
-    flagColor: G.player.flagColor || '#1a1a1a',
-    flagEmblem: normalizePlayerFlagEmblem(G.player.flagEmblem),
+    flagColor: DEFAULT_SAIL_TRIM_COLOR,
     flagAssetId: getEffectivePlayerFlagAssetId(),
     crewData: buildCrewSyncPayload(),
     deckWalk: (G.captainWalk && G.captainWalk.active) ? {
@@ -16852,7 +17054,7 @@ let cargoPreviewMeshSig = '';
 let cargoInvUiSig = '';
 function getCargoPreviewMeshSig() {
   const c = (G.player.crew || []).map(m => `${m.name}:${m.role}:${m.health}`).join('|');
-  return `${G.player.shipType}|${JSON.stringify(G.player.shipParts)}|${c}|${G.player.flagColor}|${normalizePlayerFlagEmblem(G.player.flagEmblem)}|${getEffectivePlayerFlagAssetId()}|${G.player.shipName}`;
+  return `${G.player.shipType}|${JSON.stringify(G.player.shipParts)}|${c}|${getEffectivePlayerFlagAssetId()}|${G.player.shipName}`;
 }
 function getCargoInventoryUiSig() {
   return (G.player.cargoSlots || []).map(s => (s && s.count > 0) ? `${s.id}:${s.count}` : '').join(',');
@@ -17243,9 +17445,8 @@ function updateCargo3DMesh() {
     });
     cargoShipPreview = null;
   }
-  const fc = G.player.flagColor || '#1a1a1a';
   const nm = G.player.shipName || 'Ship';
-  cargoShipPreview = buildShipMesh(G.player.shipType, G.player.shipParts, fc, nm, { honorPlayerLoadout: true, flagEmblem: G.player.flagEmblem, flagAssetId: getEffectivePlayerFlagAssetId() });
+  cargoShipPreview = buildShipMesh(G.player.shipType, G.player.shipParts, DEFAULT_SAIL_TRIM_COLOR, nm, { honorPlayerLoadout: true, flagAssetId: getEffectivePlayerFlagAssetId() });
   const crewForMesh = G.player.crew.map((c, i) => ({
     name: c.name, role: c.role, color: c.color || '#4a4a4a', hat: c.hat || 'none', outfit: c.outfit || 'vest',
     parrot: !!c.parrot, health: c.health ?? 100,
@@ -17367,9 +17568,8 @@ function updateYardShipPreviewForType(shipType) {
     disposeObject3DSubtree(yardShipGroup);
     yardShipGroup = null;
   }
-  const fc = G.player.flagColor || '#1a1a1a';
   const parts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
-  yardShipGroup = buildShipMesh(shipType, parts, fc, '', { honorPlayerLoadout: true, flagEmblem: G.player.flagEmblem, flagAssetId: getEffectivePlayerFlagAssetId() });
+  yardShipGroup = buildShipMesh(shipType, parts, DEFAULT_SAIL_TRIM_COLOR, '', { honorPlayerLoadout: true, flagAssetId: getEffectivePlayerFlagAssetId() });
   yardShipGroup.rotation.y = yardShipYaw;
   yardShipScene.add(yardShipGroup);
   yardShipPreviewType = shipType;
@@ -18350,6 +18550,27 @@ function updateWorldPanel() {
     return `<div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(30,20,12,0.45);border:1px solid rgba(140,100,40,0.12);border-radius:5px;margin-bottom:4px;">
       <span style="color:${c};font-size:12px;">${nm}</span><span style="color:#e0d6c2;font-size:12px;">${facPorts[fi]} ports</span></div>`;
   }).join('');
+  ensurePolitics();
+  const inf = G.politics.inflation != null ? G.politics.inflation : 1;
+  const jf = G.politics.joinedFaction;
+  const relYou = FACTION_NAMES.map((nm, fi) => {
+    const r = playerFactionRelation(fi);
+    const col = r <= BANNED_FROM_PORT_RELATION ? '#cc8888' : r >= 24 ? '#88c8a8' : '#c9a878';
+    return `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(80,60,40,0.12);"><span style="color:${FACTION_TRADE_COLORS[fi]};">${nm}</span><span style="color:${col};">${r > 0 ? '+' : ''}${r}</span></div>`;
+  }).join('');
+  let dipRows = '';
+  for (let i = 0; i < FACTION_COUNT; i++) {
+    for (let j = i + 1; j < FACTION_COUNT; j++) {
+      const a = G.politics.matrix[i][j];
+      const b = G.politics.matrix[j][i];
+      const avg = (a + b) / 2;
+      const war = avg < 18;
+      dipRows += `<div style="font-size:10px;color:#9a9080;padding:3px 0;display:flex;justify-content:space-between;gap:6px;"><span>${FACTION_NAMES[i]} ↔ ${FACTION_NAMES[j]}</span><span style="color:${war ? '#cc8888' : '#88a898'};">${war ? 'hostile' : 'calm'} (${avg | 0})</span></div>`;
+    }
+  }
+  const letters = (G.politics.activeLetters || []).length
+    ? (G.politics.activeLetters || []).map(L => `<div style="font-size:10px;color:#c8c0a8;margin:4px 0;line-height:1.35;">${FACTION_NAMES[L.issuer]}: ${L.desc} — <strong>${L.done}/${L.need}</strong></div>`).join('')
+    : '<div style="font-size:10px;color:#7a6a58;">No letters of marque in your log.</div>';
   el.innerHTML = `
     <div style="color:#d4a848;font-size:12px;text-align:center;margin-bottom:10px;letter-spacing:1px;">WORLD ALMANAC</div>
     <div style="color:#9a8a78;font-size:10px;line-height:1.5;margin-bottom:10px;">Procedural archipelago · seed <span style="color:#c4a878;">${G.worldSeed}</span><br>
@@ -18363,6 +18584,15 @@ function updateWorldPanel() {
     </div>
     <div style="color:#d4a848;font-size:10px;text-transform:uppercase;margin-bottom:6px;">Powers of the chart</div>
     ${facRows}
+    <div style="color:#d4a848;font-size:10px;text-transform:uppercase;margin:14px 0 6px;">Diplomacy &amp; prices</div>
+    <div style="color:#9a9080;font-size:10px;line-height:1.45;margin-bottom:8px;">Market inflation index: <strong style="color:#c9a24a;">${inf.toFixed(2)}</strong>
+      ${jf != null ? ` · Your commission: <strong style="color:${FACTION_TRADE_COLORS[jf % FACTION_COUNT]}">${FACTION_NAMES[jf]}</strong>` : ''}</div>
+    <div style="color:#c9a878;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Your standing</div>
+    <div style="margin-bottom:10px;">${relYou}</div>
+    <div style="color:#c9a878;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Courts &amp; crowns</div>
+    <div style="margin-bottom:10px;max-height:140px;overflow-y:auto;">${dipRows}</div>
+    <div style="color:#c9a878;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Active letters</div>
+    <div style="margin-bottom:12px;">${letters}</div>
     <div style="color:#d4a848;font-size:10px;text-transform:uppercase;margin:14px 0 6px;">Fleet &amp; activity</div>
     <div style="color:#e0d6c2;font-size:12px;line-height:1.55;">
       <div>Ships at sea (not sunk): <strong>${totalNpcs}</strong></div>
@@ -18668,6 +18898,12 @@ function disposeRemoteDockRopes(playerId) {
 
 function dockAtPort() {
   if (!G.nearDock) return;
+  ensurePolitics();
+  const banF = townFaction(G.nearDock);
+  if (playerBannedFromFactionPort(banF)) {
+    notify(`${FACTION_NAMES[banF]} forbids you from their harbors — seek a governor’s pardon or mend relations.`);
+    return;
+  }
   const berthIdx = findFreeDockBerth(G.nearDock);
   if (berthIdx < 0) {
     notify('The harbor is full — no free berth.');
@@ -18806,16 +19042,25 @@ function showPortTab(tab) {
       const haveCt = getInvCount(g.id);
       const wh = townStock ? Math.max(0, (townStock[g.id] || 0) | 0) : null;
       const stockLine = wh != null ? `Town stock: ${wh}` : 'Town stock: —';
-      const canBuy = wh != null && wh >= 1 && gHave >= g.buy;
+      const buyP = stockKey && townStock ? tradeGoodBuyPrice(g, stockKey, townStock) : g.buy;
+      const sellP = stockKey && townStock ? tradeGoodSellPrice(g, stockKey, townStock) : g.sell;
+      const canBuy = wh != null && wh >= 1 && gHave >= buyP;
       const d = document.createElement('div');
       d.className = 'port-trade-row';
       d.style.cssText = 'padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
       d.innerHTML = `<div class="port-trade-icon">${itemIconSvgMarkup(g.id, 30)}</div><div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${g.name}</div><div style="color:#8a7a60;font-size:10px;">Have: ${haveCt} · ${stockLine}</div></div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
-          <button type="button" class="port-buy-good-btn" data-good="${g.id}" data-price="${g.buy}" ${canBuy ? '' : 'disabled'} style="background:${canBuy ? 'rgba(40,80,40,0.4)' : 'rgba(40,50,40,0.25)'};border:1px solid ${canBuy ? 'rgba(80,160,80,0.4)' : 'rgba(80,100,80,0.2)'};color:${canBuy ? '#88cc88' : '#666'};padding:4px 10px;border-radius:4px;cursor:${canBuy ? 'pointer' : 'not-allowed'};font-size:11px;font-family:Georgia,serif;">Buy ${g.buy}g</button>
-          <button onclick="portSell('${g.id}',${g.sell})" style="background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Sell ${g.sell}g</button>
+          <button type="button" class="port-buy-good-btn" data-good="${g.id}" data-price="${buyP}" ${canBuy ? '' : 'disabled'} style="background:${canBuy ? 'rgba(40,80,40,0.4)' : 'rgba(40,50,40,0.25)'};border:1px solid ${canBuy ? 'rgba(80,160,80,0.4)' : 'rgba(80,100,80,0.2)'};color:${canBuy ? '#88cc88' : '#666'};padding:4px 10px;border-radius:4px;cursor:${canBuy ? 'pointer' : 'not-allowed'};font-size:11px;font-family:Georgia,serif;">Buy ${buyP}g</button>
+          <button type="button" class="port-sell-good-btn" data-good="${g.id}" data-price="${sellP}" style="background:rgba(80,40,40,0.4);border:1px solid rgba(160,80,80,0.4);color:#cc8888;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Sell ${sellP}g</button>
         </div>`;
       content.appendChild(d);
+    });
+    content.querySelectorAll('.port-sell-good-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const gid = btn.getAttribute('data-good');
+        const pr = Number(btn.getAttribute('data-price'));
+        window.portSell(gid, pr);
+      });
     });
     content.querySelectorAll('.port-buy-good-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -18939,6 +19184,58 @@ function showPortTab(tab) {
       hint.textContent = 'No contracts posted at this harbor. Other ports have escort and cargo work on their boards.';
       content.appendChild(hint);
     }
+  } else if (tab === 'governor') {
+    ensurePolitics();
+    ensureCourtOffersForDock(G.nearDock);
+    const dock = G.nearDock;
+    const here = dock ? townFaction(dock) % FACTION_COUNT : 0;
+    const gHave = getInvCount('gold');
+    const jf = G.politics.joinedFaction;
+    const crimes = G.politics.crimes | 0;
+    const pardonCost = Math.max(40, crimes * 16 + crimes * crimes * 2);
+    const relLine = (fid) => {
+      const r = playerFactionRelation(fid);
+      const col = r <= -36 ? '#cc8888' : r >= 28 ? '#88c8a8' : '#d4a848';
+      return `<span style="color:${col};">${r > 0 ? '+' : ''}${r}</span>`;
+    };
+    content.innerHTML = `<div style="color:#d4a848;font-size:12px;margin-bottom:8px;letter-spacing:0.06em;">GOVERNOR&rsquo;S COURT — ${FACTION_NAMES[here]}</div>
+      <p style="color:#9a9080;font-size:10px;line-height:1.45;margin:0 0 12px;">Swear service, buy a pardon for your crimes, and take sealed letters against rival powers.</p>
+      <div style="padding:10px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.25);border-radius:6px;margin-bottom:10px;">
+        <div style="color:#e0d6c2;font-size:12px;margin-bottom:6px;">Allegiance</div>
+        <div style="color:#8a7a60;font-size:10px;margin-bottom:8px;">${jf != null ? `You serve <strong style="color:${FACTION_TRADE_COLORS[jf % FACTION_COUNT]}">${FACTION_NAMES[jf]}</strong>.` : 'Independent — no crown pays your commission.'}</div>
+        ${jf == null
+          ? `<button type="button" id="port-swear-btn" style="background:rgba(50,70,90,0.5);border:1px solid rgba(120,160,200,0.45);color:#c8e0f0;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Swear to ${FACTION_NAMES[here]} (this colony)</button>`
+          : `<button type="button" id="port-renounce-btn" style="background:rgba(70,50,50,0.45);border:1px solid rgba(180,120,120,0.4);color:#e8c0c0;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Renounce commission</button>`}
+      </div>
+      <div style="padding:10px;background:rgba(22,40,32,0.45);border:1px solid rgba(100,160,120,0.35);border-radius:6px;margin-bottom:10px;">
+        <div style="color:#a8e8c8;font-size:12px;margin-bottom:6px;">Royal pardon</div>
+        <div style="color:#8a7a60;font-size:10px;margin-bottom:8px;">Crimes on record: <strong style="color:#c9a24a;">${crimes}</strong> · Est. fine <strong style="color:#d4a848;">${pardonCost}g</strong></div>
+        <button type="button" id="port-pardon-btn" style="background:rgba(40,80,55,0.5);border:1px solid rgba(120,200,140,0.45);color:#c8f0d8;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;" ${gHave < pardonCost || crimes < 1 ? 'disabled' : ''}>Seal pardon (${pardonCost}g)</button>
+      </div>
+      <div style="color:#d4a848;font-size:10px;text-transform:uppercase;margin:12px 0 6px;letter-spacing:1px;">Letters of marque (${FACTION_NAMES[here]})</div>
+      <div id="port-court-letters" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <div style="color:#8a7a60;font-size:10px;margin-top:12px;line-height:1.45;">Your standing: ${FACTION_NAMES.map((nm, i) => `${nm} ${relLine(i)}`).join(' · ')}</div>`;
+    const letterBox = content.querySelector('#port-court-letters');
+    (G.politics.courtOffers || []).forEach(offer => {
+      const taken = (G.politics.activeLetters || []).some(L => L.offerId === offer.id);
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;';
+      row.innerHTML = `<div style="color:#e0d6c2;font-size:12px;line-height:1.4;">${offer.desc}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:6px;">
+          <span style="color:#d4a848;font-size:11px;">Reward ${offer.reward}g</span>
+          ${taken ? '<span style="color:#88cc88;font-size:10px;">Accepted</span>' : `<button type="button" class="port-letter-btn" data-offer="${offer.id}" style="background:rgba(50,40,20,0.55);border:1px solid rgba(180,140,60,0.45);color:#d4a848;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:10px;font-family:Georgia,serif;">Accept</button>`}
+        </div>`;
+      letterBox.appendChild(row);
+    });
+    content.querySelector('#port-swear-btn')?.addEventListener('click', () => window.portSwearToFaction(here));
+    content.querySelector('#port-renounce-btn')?.addEventListener('click', () => window.portRenounceFaction());
+    content.querySelector('#port-pardon-btn')?.addEventListener('click', () => window.portBuyGovernorPardon());
+    content.querySelectorAll('.port-letter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const oid = btn.getAttribute('data-offer');
+        if (oid) window.portAcceptMarqueLetter(oid);
+      });
+    });
   } else if (tab === 'ships') {
     const gHave = getInvCount('gold');
     const curSpec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
@@ -19025,48 +19322,57 @@ function showPortTab(tab) {
         </div>
       </div>
       <div style="color:#8a7a60;font-size:10px;text-transform:uppercase;margin:6px 0;letter-spacing:1px;">Upgrades</div>`;
-    const curEmb = normalizePlayerFlagEmblem(G.player.flagEmblem);
-    const fcPort = G.player.flagColor || '#1a1a1a';
+    const curFlag = getEffectivePlayerFlagAssetId();
+    const ids = PLAYER_FLAG_CHOICE_IDS;
+    let portPickIdx = Math.max(0, ids.indexOf(curFlag));
+    if (portPickIdx < 0) portPickIdx = 0;
     const fh = document.createElement('div');
     fh.style.cssText = 'margin-bottom:14px;padding:10px;background:rgba(22,32,42,0.45);border:1px solid rgba(100,130,160,0.35);border-radius:8px;';
-    fh.innerHTML = `<div style="color:#a8c8e8;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Chandler — pirate pennants</div>
-      <p style="color:#9a9080;font-size:10px;line-height:1.45;margin:0 0 10px;">Fly a new emblem on your current colors (<span style="color:#c9a24a;">${fcPort}</span>). Preview matches your hull jack.</p>
-      <div id="port-flag-shop" class="port-flag-shop"></div>`;
+    fh.innerHTML = `<div style="color:#a8c8e8;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Chandler — hull banners</div>
+      <p style="color:#9a9080;font-size:10px;line-height:1.45;margin:0 0 10px;">Purchase a registered jack from the same catalog you chose at embarkation.</p>
+      <div class="flag-level-picker port-flag-level" id="port-flag-picker">
+        <button type="button" id="port-flag-prev" class="flag-level-arrow" aria-label="Previous flag">‹</button>
+        <div class="flag-level-center">
+          <img id="port-flag-img" alt="" width="200" height="150" decoding="async" />
+          <div id="port-flag-cap" style="font-size:10px;color:#9a9080;text-align:center;"></div>
+        </div>
+        <button type="button" id="port-flag-next" class="flag-level-arrow" aria-label="Next flag">›</button>
+      </div>
+      <div style="display:flex;justify-content:center;margin-top:10px;">
+        <button type="button" id="port-flag-buy" style="background:rgba(50,70,90,0.55);border:1px solid rgba(120,160,200,0.45);color:#c8e0f0;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Buy banner</button>
+      </div>`;
     content.appendChild(fh);
-    const shop = fh.querySelector('#port-flag-shop');
-    PIRATE_FLAG_EMBLEMS.forEach(def => {
-      if (def.price <= 0) return;
-      const owned = def.id === curEmb;
-      const card = document.createElement('div');
-      card.className = 'port-flag-card';
-      const cvs = document.createElement('canvas');
-      cvs.width = 256;
-      cvs.height = 128;
-      drawPirateFlagToCanvas(cvs.getContext('2d'), 256, 128, fcPort, def.id);
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.style.cssText = 'width:100%;padding:6px 8px;border-radius:5px;font-size:10px;font-family:Georgia,serif;cursor:pointer;border:1px solid rgba(140,160,120,0.45);';
-      if (owned) {
-        btn.disabled = true;
-        btn.style.opacity = '0.65';
-        btn.style.background = 'rgba(50,60,50,0.4)';
-        btn.style.color = '#a8c8a8';
-        btn.textContent = 'Flying';
-      } else {
-        const can = gHave >= def.price;
-        btn.style.background = can ? 'rgba(50,70,90,0.55)' : 'rgba(40,40,40,0.35)';
-        btn.style.color = can ? '#c8e0f0' : '#666';
-        btn.textContent = `${def.price}g — ${def.name}`;
-        btn.disabled = !can;
-        btn.addEventListener('click', () => window.portBuyFlagEmblem(def.id, def.price));
+    const portImg = fh.querySelector('#port-flag-img');
+    const portCap = fh.querySelector('#port-flag-cap');
+    const portBuyBtn = fh.querySelector('#port-flag-buy');
+    const syncPortFlagUi = () => {
+      const id = ids[portPickIdx];
+      const price = goldPriceForPlayerFlagAsset(id);
+      const flying = id === curFlag;
+      if (portImg) portImg.src = `assets/flags/flag${id}.png`;
+      if (portCap) {
+        portCap.innerHTML = flying
+          ? `<span style="color:#88cc88;">Flying this jack</span> · catalog #${id}`
+          : `Banner #${id} · <strong style="color:#d4a848;">${price}g</strong>`;
       }
-      card.appendChild(cvs);
-      const t = document.createElement('div');
-      t.style.cssText = 'font-size:10px;color:#c8c0b0;margin-bottom:6px;line-height:1.3;';
-      t.textContent = def.name;
-      card.appendChild(t);
-      card.appendChild(btn);
-      shop.appendChild(card);
+      if (portBuyBtn) {
+        portBuyBtn.disabled = flying || gHave < price;
+        portBuyBtn.textContent = flying ? 'Hoisted' : `Purchase (${price}g)`;
+        portBuyBtn.style.opacity = flying ? '0.55' : '1';
+      }
+    };
+    syncPortFlagUi();
+    fh.querySelector('#port-flag-prev')?.addEventListener('click', () => {
+      portPickIdx = (portPickIdx - 1 + ids.length) % ids.length;
+      syncPortFlagUi();
+    });
+    fh.querySelector('#port-flag-next')?.addEventListener('click', () => {
+      portPickIdx = (portPickIdx + 1) % ids.length;
+      syncPortFlagUi();
+    });
+    portBuyBtn?.addEventListener('click', () => {
+      const id = ids[portPickIdx];
+      window.portBuyPlayerFlag(id);
     });
     Object.entries(SHIP_PARTS).forEach(([slot, opts]) => {
       const current = G.player.shipParts[slot];
@@ -19087,20 +19393,19 @@ function showPortTab(tab) {
   }
 }
 
-window.portBuyFlagEmblem = function(emblemId, price) {
-  if (!G.docked) { notify('Dock at a port to buy colors and gear.'); return; }
-  const id = normalizePlayerFlagEmblem(emblemId);
-  const def = PIRATE_FLAG_EMBLEMS.find(e => e.id === id);
-  if (!def || def.price <= 0) return;
-  if (normalizePlayerFlagEmblem(G.player.flagEmblem) === id) { notify('You already fly that pennant.'); return; }
-  const pr = Math.max(1, Math.floor(Number(price) || def.price));
+window.portBuyPlayerFlag = function(flagAssetNum) {
+  if (!G.docked) { notify('Dock at a port to buy gear.'); return; }
+  const id = normalizePlayerFlagAssetId(flagAssetNum);
+  if (id == null) { notify('That banner is not sold here.'); return; }
+  if (getEffectivePlayerFlagAssetId() === id) { notify('You already fly that jack.'); return; }
+  const pr = goldPriceForPlayerFlagAsset(id);
   const gold = G.player.inventory.find(i => i.id === 'gold');
-  if (!gold || gold.count < pr) { notify('Not enough gold for that pennant.'); return; }
+  if (!gold || gold.count < pr) { notify('Not enough gold for that banner.'); return; }
   gold.count -= pr;
-  G.player.flagEmblem = id;
+  G.player.flagAssetId = id;
   reconcileSlotsWithInventory();
   rebuildPlayerShip();
-  notify(`New pennant hoisted — ${def.name}.`);
+  notify(`New jack hoisted — banner ${id}.`);
   saveProgressDebounced();
   if (ws?.readyState === 1) sendUpdate();
   showPortTab('upgrades');
@@ -20554,6 +20859,7 @@ function update(dt) {
   if (G.captainWalk.active && !canUseCaptainWalk()) setCaptainWalkActive(false);
   updateSeaDebrisBattleClock(dt);
   tickTownEconomy(dt);
+  tickPoliticsEconomy(dt);
   const wHere = getWindAt(G.player.x, G.player.z);
   G.wind.angle = wHere.angle;
   G.wind.speed = wHere.speed;
@@ -20984,9 +21290,9 @@ function update(dt) {
       const captainName = networkPlayerCaptainName(p);
       const shipTitle = (p.shipName && String(p.shipName).trim()) ? String(p.shipName).trim() : captainName;
       const visualParts = normalizeShipPartsForRemoteView(p.shipParts);
-      const sm = buildShipMesh(st, visualParts, p.flagColor || p.color || '#4488cc', shipTitle, { flagEmblem: p.flagEmblem, flagAssetId: p.flagAssetId });
+      const sm = buildShipMesh(st, visualParts, DEFAULT_SAIL_TRIM_COLOR, shipTitle, { flagAssetId: p.flagAssetId });
       if (captainName && (shipTitle !== captainName || String(p.partyTag || '').trim())) {
-        const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, (p.flagColor || p.color || ''), String(p.partyTag || '').slice(0, 24));
+        const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, DEFAULT_SAIL_TRIM_COLOR, String(p.partyTag || '').slice(0, 24));
         const spec = SHIP_TYPES[st];
         capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
         for (let ci = sm.children.length - 1; ci >= 0; ci--) {
@@ -21624,6 +21930,7 @@ function update(dt) {
       t: n.type,
       n: n.name,
       fc: n.flagColor,
+      fa: n.flagAssetId != null ? n.flagAssetId : undefined,
       mo: n.missionOwnerPlayerId != null ? n.missionOwnerPlayerId : undefined
     }));
     ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
@@ -21937,7 +22244,7 @@ function makeColorRow(container, colors, selectedColor) {
     const sw = document.createElement('div');
     sw.className = 'color-swatch' + (c === selectedColor ? ' sel' : '');
     sw.style.background = c; sw.dataset.color = c;
-    sw.onclick = () => { container.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('sel')); sw.classList.add('sel'); drawCrewPreview(); if (typeof drawFlagPreview === 'function') drawFlagPreview(); if (typeof updatePreviewShip === 'function') updatePreviewShip(); if (container.id === 'flag-colors' && typeof buildFlagEmblemPicker === 'function') buildFlagEmblemPicker(getCreationSelectedFlagEmblem()); };
+    sw.onclick = () => { container.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('sel')); sw.classList.add('sel'); drawCrewPreview(); if (typeof updatePreviewShip === 'function') updatePreviewShip(); };
     container.appendChild(sw);
   });
 }
@@ -22083,10 +22390,8 @@ function updatePreviewShip() {
   }
   const allCrew = getCrewFromUI();
   const shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
-  const prevFlagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
-  const prevEmb = (G.mode === 'playing' && G.player.flagEmblem) ? G.player.flagEmblem : getCreationSelectedFlagEmblem();
   const prevFlagAsset = getCreationSelectedFlagAssetId();
-  previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, prevFlagColor, shipName, { honorPlayerLoadout: true, hideShipNameLabel: true, flagEmblem: prevEmb, flagAssetId: prevFlagAsset });
+  previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, DEFAULT_SAIL_TRIM_COLOR, shipName, { honorPlayerLoadout: true, hideShipNameLabel: true, flagAssetId: prevFlagAsset });
   buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
     ...c, health: 100, task: ['helm','cannons','sails','lookout'][i] || 'idle'
   })), G.player.shipType);
@@ -22152,105 +22457,78 @@ function renderPreview() {
   if (document.getElementById('create-screen')?.style.display !== 'none') requestAnimationFrame(renderPreview);
 }
 
-function getCreationSelectedFlagEmblem() {
-  const el = document.querySelector('#flag-emblem-row .flag-emblem-swatch.sel');
-  return normalizePlayerFlagEmblem(el && el.dataset.emblem ? el.dataset.emblem : DEFAULT_FLAG_EMBLEM);
+let _creationFlagPickIdx = 0;
+function syncCreationFlagPickerUi() {
+  const ids = PLAYER_FLAG_CHOICE_IDS;
+  const i = ((_creationFlagPickIdx % ids.length) + ids.length) % ids.length;
+  const id = ids[i];
+  const hid = document.getElementById('creation-flag-asset-id');
+  if (hid) hid.value = String(id);
+  const img = document.getElementById('creation-flag-img');
+  if (img) img.src = `assets/flags/flag${id}.png`;
+  const cap = document.getElementById('creation-flag-caption');
+  if (cap) cap.textContent = `Catalog ${i + 1} / ${ids.length} · jack #${id}`;
+}
+function bindCreationFlagPicker() {
+  const prev = document.getElementById('creation-flag-prev');
+  const next = document.getElementById('creation-flag-next');
+  if (prev && !prev.dataset.bound) {
+    prev.dataset.bound = '1';
+    prev.addEventListener('click', () => {
+      _creationFlagPickIdx--;
+      syncCreationFlagPickerUi();
+      drawFlagPreview();
+      if (typeof updatePreviewShip === 'function') updatePreviewShip();
+    });
+  }
+  if (next && !next.dataset.bound) {
+    next.dataset.bound = '1';
+    next.addEventListener('click', () => {
+      _creationFlagPickIdx++;
+      syncCreationFlagPickerUi();
+      drawFlagPreview();
+      if (typeof updatePreviewShip === 'function') updatePreviewShip();
+    });
+  }
+}
+function initCreationFlagPickerIndexForId(assetId) {
+  const ids = PLAYER_FLAG_CHOICE_IDS;
+  const x = normalizePlayerFlagAssetId(assetId) ?? DEFAULT_PLAYER_FLAG_ASSET;
+  const ix = ids.indexOf(x);
+  _creationFlagPickIdx = ix >= 0 ? ix : 0;
+  syncCreationFlagPickerUi();
 }
 function getCreationSelectedFlagAssetId() {
-  const el = document.querySelector('#player-flag-png-row .player-flag-png-swatch.sel');
-  if (el && el.dataset.flagId != null) {
-    const x = normalizePlayerFlagAssetId(el.dataset.flagId);
+  const hid = document.getElementById('creation-flag-asset-id');
+  if (hid && hid.value !== '') {
+    const x = normalizePlayerFlagAssetId(Number(hid.value));
     if (x != null) return x;
   }
-  return getEffectivePlayerFlagAssetId();
-}
-function buildPlayerFlagPicker(selectedId) {
-  const row = document.getElementById('player-flag-png-row');
-  if (!row) return;
-  const sel = normalizePlayerFlagAssetId(selectedId) ?? DEFAULT_PLAYER_FLAG_ASSET;
-  row.innerHTML = '';
-  PLAYER_FLAG_CHOICE_IDS.forEach(id => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'player-flag-png-swatch' + (id === sel ? ' sel' : '');
-    b.dataset.flagId = String(id);
-    b.title = `Flag ${id}`;
-    const img = document.createElement('img');
-    img.src = `assets/flags/flag${id}.png`;
-    img.alt = '';
-    img.loading = 'lazy';
-    b.appendChild(img);
-    b.addEventListener('click', () => {
-      row.querySelectorAll('.player-flag-png-swatch').forEach(s => s.classList.remove('sel'));
-      b.classList.add('sel');
-      drawFlagPreview();
-      if (typeof updatePreviewShip === 'function') updatePreviewShip();
-    });
-    row.appendChild(b);
-  });
-}
-function buildFlagEmblemPicker(selectedId) {
-  const row = document.getElementById('flag-emblem-row');
-  if (!row) return;
-  const sel = normalizePlayerFlagEmblem(selectedId);
-  const flagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
-  row.innerHTML = '';
-  PIRATE_FLAG_EMBLEMS.forEach(def => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'flag-emblem-swatch' + (def.id === sel ? ' sel' : '');
-    b.dataset.emblem = def.id;
-    b.title = def.name;
-    const cvs = document.createElement('canvas');
-    cvs.width = 128;
-    cvs.height = 96;
-    drawPirateFlagToCanvas(cvs.getContext('2d'), 128, 96, flagColor, def.id);
-    b.appendChild(cvs);
-    b.addEventListener('click', () => {
-      row.querySelectorAll('.flag-emblem-swatch').forEach(s => s.classList.remove('sel'));
-      b.classList.add('sel');
-      drawFlagPreview();
-      if (typeof updatePreviewShip === 'function') updatePreviewShip();
-    });
-    row.appendChild(b);
-  });
+  const ids = PLAYER_FLAG_CHOICE_IDS;
+  const i = ((_creationFlagPickIdx % ids.length) + ids.length) % ids.length;
+  return ids[i] ?? DEFAULT_PLAYER_FLAG_ASSET;
 }
 function drawFlagPreview() {
   const cv = document.getElementById('flag-preview');
   if (!cv) return;
   const ctx = cv.getContext('2d'), w = 128, h = 96;
-  const flagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
-  const emblem = getCreationSelectedFlagEmblem();
-  const pngRow = document.getElementById('player-flag-png-row');
-  if (pngRow && pngRow.querySelector('.player-flag-png-swatch')) {
-    const aid = getCreationSelectedFlagAssetId();
-    const img = new Image();
-    img.onload = () => {
-      ctx.clearRect(0, 0, w, h);
-      try { ctx.drawImage(img, 0, 0, w, h); } catch (e) {}
-      ctx.strokeStyle = 'rgba(180,140,60,0.5)'; ctx.lineWidth = 2; ctx.strokeRect(1, 1, w - 2, h - 2);
-    };
-    img.onerror = () => {
-      drawPirateFlagToCanvas(ctx, w, h, flagColor, emblem);
-      ctx.strokeStyle = 'rgba(180,140,60,0.5)'; ctx.lineWidth = 2; ctx.strokeRect(1, 1, w - 2, h - 2);
-    };
-    img.src = `assets/flags/flag${aid}.png`;
-  } else {
-    drawPirateFlagToCanvas(ctx, w, h, flagColor, emblem);
+  const aid = getCreationSelectedFlagAssetId();
+  const img = new Image();
+  img.onload = () => {
+    ctx.clearRect(0, 0, w, h);
+    try { ctx.drawImage(img, 0, 0, w, h); } catch (e) {}
     ctx.strokeStyle = 'rgba(180,140,60,0.5)'; ctx.lineWidth = 2; ctx.strokeRect(1, 1, w - 2, h - 2);
-  }
-  const row = document.getElementById('flag-emblem-row');
-  if (row && row.children.length) {
-    const fc = flagColor;
-    row.querySelectorAll('.flag-emblem-swatch').forEach(sw => {
-      const c = sw.querySelector('canvas');
-      if (c) {
-        c.width = 128;
-        c.height = 96;
-        drawPirateFlagToCanvas(c.getContext('2d'), 128, 96, fc, sw.dataset.emblem);
-      }
-    });
-  }
+  };
+  img.onerror = () => {
+    ctx.fillStyle = '#1a1410';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#a09070';
+    ctx.font = '11px Georgia,serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`#${aid}`, w / 2, h / 2);
+    ctx.strokeStyle = 'rgba(180,140,60,0.5)'; ctx.lineWidth = 2; ctx.strokeRect(1, 1, w - 2, h - 2);
+  };
+  img.src = `assets/flags/flag${aid}.png`;
 }
 
 function applyCreateScreenCrewEditVis(isEdit) {
@@ -22260,22 +22538,14 @@ function applyCreateScreenCrewEditVis(isEdit) {
     if (lab && lab.tagName === 'LABEL') lab.style.display = isEdit ? 'none' : '';
     shipIn.style.display = isEdit ? 'none' : '';
   }
-  const fpngRow = document.getElementById('player-flag-png-row');
-  if (fpngRow) {
-    const labP = fpngRow.previousElementSibling;
+  const fpick = document.getElementById('creation-flag-picker');
+  if (fpick) {
+    const labP = fpick.previousElementSibling;
     if (labP && labP.tagName === 'LABEL') labP.style.display = isEdit ? 'none' : '';
-    fpngRow.style.display = isEdit ? 'none' : '';
+    fpick.style.display = isEdit ? 'none' : '';
   }
-  const fc = document.getElementById('flag-colors');
-  if (fc) {
-    const lab = fc.previousElementSibling;
-    if (lab && lab.tagName === 'LABEL') lab.style.display = isEdit ? 'none' : '';
-    fc.style.display = isEdit ? 'none' : '';
-  }
-  const fel = document.getElementById('flag-emblem-label');
-  if (fel) fel.style.display = isEdit ? 'none' : '';
-  const fer = document.getElementById('flag-emblem-row');
-  if (fer) fer.style.display = isEdit ? 'none' : '';
+  const fhid = document.getElementById('creation-flag-asset-id');
+  if (fhid) fhid.style.display = 'none';
   const fp = document.getElementById('flag-preview');
   if (fp) {
     const row = fp.closest('.flag-preview-row');
@@ -22405,10 +22675,8 @@ function buildCreationUI() {
   makeColorRow(document.getElementById('cap-colors'), CREW_COLORS, '#8b0000');
   makeOptionRow(document.getElementById('cap-hat'), HAT_OPTIONS, 'tricorn', 'hat');
   makeOptionRow(document.getElementById('cap-outfit'), OUTFIT_OPTIONS, 'coat', 'outfit');
-  const FLAG_COLORS = ['#1a1a1a','#8b0000','#1a3a6a','#2a6a2a','#6a2a6a','#d4a848','#aa4400','#336655','#555555','#880044'];
-  makeColorRow(document.getElementById('flag-colors'), FLAG_COLORS, '#1a1a1a');
-  buildPlayerFlagPicker(normalizePlayerFlagAssetId(G.player.flagAssetId) ?? DEFAULT_PLAYER_FLAG_ASSET);
-  buildFlagEmblemPicker(G.player.flagEmblem || DEFAULT_FLAG_EMBLEM);
+  initCreationFlagPickerIndexForId(normalizePlayerFlagAssetId(G.player.flagAssetId) ?? DEFAULT_PLAYER_FLAG_ASSET);
+  bindCreationFlagPicker();
   drawFlagPreview();
   document.getElementById('cap-parrot').onchange = () => { drawCrewPreview(); updatePreviewShip(); };
   document.getElementById('cap-name').oninput = () => { drawCrewPreview(); updatePreviewShip(); };
@@ -22784,9 +23052,7 @@ function beginVoyageAfterCharacter() {
 function launchGame() {
   clearCrewHighlight();
   G.player.shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
-  G.player.flagColor = document.querySelector('#flag-colors .color-swatch.sel')?.dataset.color || '#1a1a1a';
   G.player.flagAssetId = typeof getCreationSelectedFlagAssetId === 'function' ? getCreationSelectedFlagAssetId() : getEffectivePlayerFlagAssetId();
-  G.player.flagEmblem = typeof getCreationSelectedFlagEmblem === 'function' ? getCreationSelectedFlagEmblem() : DEFAULT_FLAG_EMBLEM;
   const allCrew = getCrewFromUI();
   G.player.crew = allCrew.map((c, i) => ({
     name: c.name, role: c.role, health: 100, color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
@@ -23112,8 +23378,6 @@ function applyDefaultStartingLoadout(opts) {
   let savedShipName = '';
   let savedShipType = null;
   let savedParts = null;
-  let savedFlag = null;
-  let savedFlagEmblem = null;
   let savedFlagAsset = null;
   if (keep) {
     const curCap = G.player.crew && G.player.crew.find(c => c && c.role === 'captain');
@@ -23121,8 +23385,6 @@ function applyDefaultStartingLoadout(opts) {
     savedShipName = G.player.shipName || '';
     savedShipType = G.player.shipType || null;
     savedParts = G.player.shipParts ? { ...normalizeShipParts(G.player.shipParts) } : null;
-    savedFlag = G.player.flagColor || null;
-    savedFlagEmblem = G.player.flagEmblem || null;
     savedFlagAsset = G.player.flagAssetId;
   }
   G.player.shipType = 'cutter';
@@ -23137,14 +23399,11 @@ function applyDefaultStartingLoadout(opts) {
     if (savedShipName) G.player.shipName = savedShipName;
     if (savedShipType) G.player.shipType = savedShipType;
     if (savedParts) G.player.shipParts = savedParts;
-    if (savedFlag) G.player.flagColor = savedFlag;
-    if (savedFlagEmblem) G.player.flagEmblem = normalizePlayerFlagEmblem(savedFlagEmblem);
     if (savedFlagAsset != null) {
       const fa = normalizePlayerFlagAssetId(savedFlagAsset);
       G.player.flagAssetId = fa != null ? fa : null;
     }
   } else {
-    G.player.flagEmblem = DEFAULT_FLAG_EMBLEM;
     G.player.flagAssetId = null;
     const capIdx = G.player.crew.findIndex(c => c && c.role === 'captain');
     if (capIdx >= 0) G.player.crew[capIdx].name = randomCaptainNameForServer();
@@ -23188,9 +23447,15 @@ function saveProgress() {
       x: G.player.x, z: G.player.z, rotation: G.player.rotation,
       health: G.player.health, shipType: G.player.shipType,
       shipName: G.player.shipName,
-      flagColor: G.player.flagColor,
-      flagEmblem: normalizePlayerFlagEmblem(G.player.flagEmblem),
       flagAssetId: getEffectivePlayerFlagAssetId(),
+      politics: (() => {
+        try {
+          ensurePolitics();
+          return JSON.parse(JSON.stringify(G.politics));
+        } catch (e) {
+          return null;
+        }
+      })(),
       shipParts: G.player.shipParts,
       inventory: G.player.inventory,
       cargoSlots: G.player.cargoSlots,
@@ -23282,8 +23547,34 @@ function loadProgress() {
     } else {
       G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
     }
-    if (data.flagColor) G.player.flagColor = data.flagColor;
-    G.player.flagEmblem = normalizePlayerFlagEmblem(data.flagEmblem);
+    if (data.politics && typeof data.politics === 'object') {
+      ensurePolitics();
+      const p = data.politics;
+      if ('joinedFaction' in p) {
+        G.politics.joinedFaction = (p.joinedFaction == null || p.joinedFaction === '') ? null : Math.max(0, Math.min(FACTION_COUNT - 1, Number(p.joinedFaction) | 0));
+      }
+      if (Array.isArray(p.relations) && p.relations.length >= FACTION_COUNT) {
+        for (let i = 0; i < FACTION_COUNT; i++) G.politics.relations[i] = Math.max(-100, Math.min(100, Number(p.relations[i]) || 0));
+      }
+      if (typeof p.crimes === 'number' || typeof p.crimes === 'string') G.politics.crimes = Math.max(0, Math.min(999, Number(p.crimes) | 0));
+      if (p.matrix && Array.isArray(p.matrix)) {
+        for (let i = 0; i < FACTION_COUNT && i < p.matrix.length; i++) {
+          const row = p.matrix[i];
+          if (!Array.isArray(row)) continue;
+          for (let j = 0; j < FACTION_COUNT && j < row.length; j++) {
+            G.politics.matrix[i][j] = Math.max(-100, Math.min(100, Number(row[j]) || 0));
+          }
+        }
+      }
+      if (p.portController && typeof p.portController === 'object') G.politics.portController = { ...p.portController };
+      if (p.portGarrison && typeof p.portGarrison === 'object') G.politics.portGarrison = { ...p.portGarrison };
+      if (p.inflation != null && Number.isFinite(Number(p.inflation))) G.politics.inflation = Math.max(0.5, Math.min(1.6, Number(p.inflation)));
+      if (Array.isArray(p.factionWealth) && p.factionWealth.length >= FACTION_COUNT) {
+        for (let i = 0; i < FACTION_COUNT; i++) G.politics.factionWealth[i] = Math.max(0, Number(p.factionWealth[i]) | 0);
+      }
+      if (Array.isArray(p.activeLetters)) G.politics.activeLetters = p.activeLetters.filter(Boolean).slice(0, 8);
+      if (Array.isArray(p.courtOffers)) G.politics.courtOffers = p.courtOffers.filter(Boolean).slice(0, 8);
+    }
     if (data.flagAssetId != null) {
       const fa = normalizePlayerFlagAssetId(data.flagAssetId);
       G.player.flagAssetId = fa != null ? fa : null;
