@@ -10677,21 +10677,20 @@ function sampleOpenOceanPointInWorld(rng) {
 }
 
 /** --- NPC long-range sea navigation (coarse grid A*, staggered; optional Web Worker for the search only) --- */
-const NPC_NAV_CELL = 54;
-const NPC_NAV_GRID_MAX = 30;
+const NPC_NAV_CELL = 72;
+const NPC_NAV_GRID_MAX = 24;
 const NPC_NAV_DIRECT_R = 210;
 const NPC_NAV_WP_CAPTURE_R = 62;
 const NPC_COAST_KEEP_CLEAR = 48;
-const NPC_COAST_NAV_GRID = 34;
 let _npcNavWorker = null;
 let _npcNavWorkerBroken = false;
 let _npcNavJobId = 0;
 const _npcNavJobs = new Map();
 
-function navCellBlocked(wx, wz) {
+/** Path grid only — must stay cheap (no multi-ray clearance); A* already routes around land cells. */
+function navGridCellBlocked(wx, wz) {
   if (isSeaObstructed(wx, wz)) return true;
   if (seaReefBlocksPoint(wx, wz, 1.05)) return true;
-  if (!hasMinClearanceFromLand(wx, wz, NPC_COAST_NAV_GRID)) return true;
   return false;
 }
 function segmentNavClear(x0, z0, x1, z1, segs) {
@@ -10700,7 +10699,7 @@ function segmentNavClear(x0, z0, x1, z1, segs) {
     const t = i / n;
     const x = x0 + (x1 - x0) * t;
     const z = z0 + (z1 - z0) * t;
-    if (navCellBlocked(x, z)) return false;
+    if (navGridCellBlocked(x, z)) return false;
   }
   return true;
 }
@@ -10741,7 +10740,7 @@ function buildNpcNavOccPackage(sx, sz, gx, gz) {
     for (let ix = 0; ix < gw; ix++) {
       const wx = x0 + (ix + 0.5) * cell;
       const wz = z0 + (iz + 0.5) * cell;
-      occ[toI(ix, iz)] = navCellBlocked(wx, wz) ? 1 : 0;
+      occ[toI(ix, iz)] = navGridCellBlocked(wx, wz) ? 1 : 0;
     }
   }
   let six = Math.floor((sx - x0) / cell);
@@ -10781,6 +10780,7 @@ function npcNavAStarWaypoints(pkg) {
   const si = toI(six, siz);
   const gi = toI(gix, giz);
   const open = [];
+  const inOpen = new Uint8Array(N);
   const came = new Int32Array(N);
   const gscore = new Float32Array(N);
   for (let i = 0; i < N; i++) {
@@ -10790,8 +10790,9 @@ function npcNavAStarWaypoints(pkg) {
   const h = (ix, iz) => Math.abs(ix - gix) + Math.abs(iz - giz);
   gscore[si] = 0;
   open.push(si);
+  inOpen[si] = 1;
   let expansions = 0;
-  const MAX_EXP = 1600;
+  const MAX_EXP = 900;
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   while (open.length && expansions < MAX_EXP) {
     expansions++;
@@ -10805,6 +10806,7 @@ function npcNavAStarWaypoints(pkg) {
     }
     const cur = open[bi];
     open.splice(bi, 1);
+    inOpen[cur] = 0;
     if (cur === gi) {
       const idxs = [];
       let c = cur;
@@ -10831,7 +10833,10 @@ function npcNavAStarWaypoints(pkg) {
       if (tent < gscore[ni]) {
         came[ni] = cur;
         gscore[ni] = tent;
-        if (open.indexOf(ni) < 0) open.push(ni);
+        if (!inOpen[ni]) {
+          open.push(ni);
+          inOpen[ni] = 1;
+        }
       }
     }
   }
@@ -10869,9 +10874,11 @@ function maybeUpdateNpcNavPath(npc, gx, gz) {
     return;
   }
   const dk = `${Math.round(gz / 70)}_${Math.round(gx / 70)}_${Math.round(npc.z / 140)}_${Math.round(npc.x / 140)}`;
-  const stale = npc._navGoalKey !== dk || (G.time - (npc._navPlanT || 0)) > 2.4 || !npc._navWp || !npc._navWp.length;
+  const stale = npc._navGoalKey !== dk || (G.time - (npc._navPlanT || 0)) > 3.6 || !npc._navWp || !npc._navWp.length;
   if (!stale) return;
   if ((G._navPlanBudget | 0) >= 1) return;
+  const _glf = typeof _gameLoopFrame === 'number' ? _gameLoopFrame : 0;
+  if (((_glf + (npc.syncId | 0)) % 4) !== 0) return;
   const pkg = buildNpcNavOccPackage(npc.x, npc.z, gx, gz);
   if (!pkg) return;
   G._navPlanBudget = (G._navPlanBudget | 0) + 1;
@@ -10925,7 +10932,15 @@ function navTargetAngle(npc, gx, gz) {
 function steerNpcCoastalBuffer(npc, dt, turnSharp) {
   if (npc.escapeMode) return;
   if (isSeaObstructed(npc.x, npc.z)) return;
-  if (hasMinClearanceFromLand(npc.x, npc.z, NPC_COAST_KEEP_CLEAR)) return;
+  const _glf2 = typeof _gameLoopFrame === 'number' ? _gameLoopFrame : 0;
+  if (((_glf2 + (npc.syncId | 0) * 2) % 3) !== 0) return;
+  const cx = npc.x, cz = npc.z, r = NPC_COAST_KEEP_CLEAR;
+  let marginOk = true;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    if (isSeaObstructed(cx + Math.cos(a) * r, cz + Math.sin(a) * r)) { marginOk = false; break; }
+  }
+  if (marginOk) return;
   const esc = findNpcOpenWaterHeading(npc, npc.isTradeShip ? 52 : 44);
   if (esc == null) return;
   const turn = turnSharp != null ? turnSharp : 2.25;
@@ -11039,28 +11054,27 @@ function npcForwardRayClear(npc, dist, segments) {
     const z = npc.z + Math.cos(npc.rotation) * step * s;
     if (isSeaObstructed(x, z)) return false;
     if (seaReefBlocksPoint(x, z, 0.82)) return false;
-    if (!hasMinClearanceFromLand(x, z, 28)) return false;
   }
   return true;
 }
 /** When land is ahead, steer toward the best arc around it (longest open ray among sampled headings). */
 function steerNpcClearanceAhead(npc, dt, turnSharp) {
   if (!npc.escapeMode && !isSeaObstructed(npc.x, npc.z)) {
-    const look = npc.isTradeShip ? 72 : 54;
-    if (!npcForwardRayClear(npc, look, npc.isTradeShip ? 15 : 12)) {
+    const look = npc.isTradeShip ? 64 : 48;
+    if (!npcForwardRayClear(npc, look, npc.isTradeShip ? 10 : 8)) {
       const turn = turnSharp != null ? turnSharp : 2.35;
       const arc = npc.isTradeShip ? 1.28 : 1.18;
       const turnMul = npc.isTradeShip ? 0.82 : 0.72;
       let bestAng = npc.rotation, bestScore = 0;
-      for (let i = -14; i <= 14; i++) {
-        const a = npc.rotation + (i / 14) * arc;
+      for (let i = -8; i <= 8; i++) {
+        const a = npc.rotation + (i / 8) * arc;
         let score = 0;
         const rayStep = npc.isTradeShip ? 9.2 : 8.5;
-        const rayLen = npc.isTradeShip ? 9 : 8;
+        const rayLen = npc.isTradeShip ? 6 : 5;
         for (let s = 1; s <= rayLen; s++) {
           const x = npc.x + Math.sin(a) * rayStep * s;
           const z = npc.z + Math.cos(a) * rayStep * s;
-          if (!isSeaObstructed(x, z) && !seaReefBlocksPoint(x, z, 0.78) && hasMinClearanceFromLand(x, z, 32)) score++;
+          if (!isSeaObstructed(x, z) && !seaReefBlocksPoint(x, z, 0.78)) score++;
           else break;
         }
         if (score > bestScore) { bestScore = score; bestAng = a; }
