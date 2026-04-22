@@ -3131,12 +3131,13 @@ function bumpNotoriety(d) {
   }
 }
 
-/** Session id of the captain who fired this shot (for host-side kill credit). */
+/** Session id of the captain who fired this shot (for host-side kill credit). NPC shots return null — do not credit the local player. */
 function getCannonballKillerPlayerId(b) {
   if (!b) return G.myId != null ? G.myId : null;
   if (b.owner === 'player') return G.myId != null ? G.myId : null;
   if (b.owner === 'other_player' && b.sourcePlayerId != null) return b.sourcePlayerId;
-  return G.myId != null ? G.myId : null;
+  if (b.owner === 'npc') return null;
+  return null;
 }
 
 function normalizeEscortRaidersForCargo(cargoSyncId) {
@@ -3424,7 +3425,9 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
     failEscortQuest('The contract vessel was sunk — escort failed.', npc.syncId);
   }
   const wasEscortContractShip = !!npc.isEscortCargo;
-  const kid = killerPlayerId != null ? killerPlayerId : G.myId;
+  const kid = killerPlayerId != null && Number.isFinite(Number(killerPlayerId))
+    ? Math.floor(Number(killerPlayerId)) : null;
+  const iKilled = kid != null && Number(kid) === Number(G.myId);
   const missionOwner = npc.missionOwnerPlayerId != null ? npc.missionOwnerPlayerId : (npc.isStoryBounty ? G.myId : null);
   const storyMission = !!(npc.isStoryBounty && missionOwner != null);
   const goldLoot = storyMission ? 0 : (wasEscortContractShip ? 0 : 30);
@@ -3444,9 +3447,9 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
     try {
       ws.send(JSON.stringify({
         type: 'npc_kill_credit',
-        killerId: kid != null ? kid : G.myId,
-        sinksAi: 1,
-        gold: goldLoot,
+        killerId: kid,
+        sinksAi: (!storyMission && kid != null) ? 1 : 0,
+        gold: (!storyMission && kid != null) ? goldLoot : 0,
         storyOwnerId: storyOutcome !== 'none' ? missionOwner : null,
         storyOutcome,
         huntNpcName: npc.name || '',
@@ -3456,23 +3459,21 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
   } else {
     if (storyOutcome === 'complete' && missionOwner === G.myId) {
       onStoryBountySunkByPlayer(npc);
-      bumpNotoriety({ sinksAi: 1 });
+      if (iKilled) bumpNotoriety({ sinksAi: 1 });
     } else if (storyOutcome === 'reroll' && missionOwner === G.myId) {
       storyBountyRerollLocal();
-      bumpNotoriety({ sinksAi: 1 });
-    } else if (!storyMission && !wasEscortContractShip) {
+      if (iKilled) bumpNotoriety({ sinksAi: 1 });
+    } else if (!storyMission && !wasEscortContractShip && iKilled) {
       notify(`Sinking ${npc.name}! +30 gold`);
       const gi = G.player.inventory.find(x => x.id === 'gold');
       if (gi) gi.count += 30;
       bumpNotoriety({ sinksAi: 1, gold: 30 });
-    } else if (!storyMission && wasEscortContractShip) {
-      bumpNotoriety({ sinksAi: 1 });
-    } else {
+    } else if (!storyMission && wasEscortContractShip && iKilled) {
       bumpNotoriety({ sinksAi: 1 });
     }
-    checkHuntQuestOnNpcSink(npc);
+    if (iKilled) checkHuntQuestOnNpcSink(npc);
   }
-  if (npc.isTradeShip && !wasEscortContractShip && !npc.isStoryBounty) {
+  if (npc.isTradeShip && !wasEscortContractShip && !npc.isStoryBounty && iKilled) {
     ensurePolitics();
     const vf = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
     adjustPlayerFactionRelation(vf, -8);
@@ -7007,7 +7008,7 @@ function ensureCourtOffersForDock(dock) {
   G.politics.courtOffers = offers.slice(0, 5);
 }
 function tryProgressFactionLetters(npc, killerPlayerId) {
-  if (killerPlayerId != null && killerPlayerId !== G.myId) return;
+  if (killerPlayerId == null || Number(killerPlayerId) !== Number(G.myId)) return;
   ensurePolitics();
   const letters = G.politics.activeLetters;
   if (!letters.length) return;
@@ -11363,26 +11364,27 @@ function kickShipBroadsideCannon(shipRoot, fireSide, indexOnSide) {
     if (!ch.userData?.isShipCannon) return;
     if (ch.userData.cannonSide !== fireSide) return;
     if (ch.userData.cannonIndexOnSide !== indexOnSide) return;
-    ch.userData.recoilVel = (ch.userData.recoilVel || 0) + 0.92;
+    const nv = (ch.userData.recoilVel || 0) + 0.92;
+    ch.userData.recoilVel = Math.min(1.25, nv);
   });
 }
 
 function updateShipCannonRecoilOnGroup(root, dt) {
   if (!root) return;
-  const omega = 13.5;
+  const omega = 16;
   root.traverse(ch => {
     if (!ch.userData?.isShipCannon) return;
     const bp = ch.userData.basePos;
     if (!bp) return;
     let v = ch.userData.recoilVel || 0;
     let x = ch.userData.recoilOffset || 0;
-    v += (-omega * omega * x - 2 * omega * v) * dt;
+    v += (-omega * omega * x - 2.45 * omega * v) * dt;
     x += v * dt;
-    if (Math.abs(x) < 0.0004 && Math.abs(v) < 0.008) { x = 0; v = 0; }
+    if (Math.abs(x) < 0.00025 && Math.abs(v) < 0.006) { x = 0; v = 0; ch.position.set(bp.x, bp.y, bp.z); }
     const side = ch.userData.cannonSide;
-    const cap = 0.42;
-    if (x > cap) { x = cap; v *= 0.5; }
-    if (x < -cap) { x = -cap; v *= 0.5; }
+    const cap = 0.38;
+    if (x > cap) { x = cap; v *= 0.45; }
+    if (x < -cap) { x = -cap; v *= 0.45; }
     ch.userData.recoilVel = v;
     ch.userData.recoilOffset = x;
     ch.position.set(bp.x - side * x, bp.y, bp.z);
@@ -13550,7 +13552,7 @@ function spawnLandCannonImpact(x, z, impactY) {
 
 function addFloatingLootMesh(x, z, type, count, netId) {
   const cnt = count != null ? count : (type === 'gold' ? 15 : type === 'cannonballs' ? 6 : type === 'food' ? 8 : 4);
-  const li = { type, count: cnt, x, z, collected: false };
+  const li = { type, count: cnt, x, z, collected: false, spawnAt: G.time };
   if (netId != null) li.netId = netId;
   G.floatingItems.push(li);
   if (netId != null) G.lootByNetId.set(netId, li);
@@ -13595,6 +13597,20 @@ function removeLootByNetId(netId) {
       removeFloatingLootVisuals(item);
       G.floatingItems.splice(i, 1);
     }
+  }
+}
+/** Remove floating cargo that has been adrift longer than `maxAgeSec` (default 10 minutes). */
+function pruneFloatingLootOlderThan(maxAgeSec) {
+  const max = maxAgeSec != null ? maxAgeSec : 600;
+  const t = G.time;
+  for (let i = G.floatingItems.length - 1; i >= 0; i--) {
+    const it = G.floatingItems[i];
+    if (!it || it.collected) continue;
+    const t0 = it.spawnAt != null ? it.spawnAt : t;
+    if (t - t0 < max) continue;
+    if (it.netId != null) G.lootByNetId.delete(it.netId);
+    removeFloatingLootVisuals(it);
+    G.floatingItems.splice(i, 1);
   }
 }
 
@@ -14460,7 +14476,7 @@ function connectToServer() {
         }
         if (hull > 0) showCombatPopupWorld(npc.x, npc.z, `Ram · −${hull} hull`, { life: 1.35 });
         if (npc.health <= 0 && !npc.sinking) {
-          const rid = fromId != null && Number.isFinite(fromId) ? fromId : G.myId;
+          const rid = fromId != null && Number.isFinite(fromId) ? fromId : null;
           runNpcSinkOutcome(npc, rid);
         }
         break;
@@ -15140,8 +15156,8 @@ window.addEventListener('keydown', e => {
     if (G.captainWalk?.active) tryCaptainWalkJump();
     else doFire();
   }
-  if (k === 'z' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(-1);
-  if (k === 'x' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(1);
+  if (k === 'z' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(1);
+  if (k === 'x' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(-1);
   if (e.key === 'Escape') {
     if (G.spectate) {
       endSpectateMode();
@@ -16076,7 +16092,7 @@ window.addEventListener('touchmove', e => {
   }
 }, { capture: true, passive: true });
 
-/** Nautical port/starboard — same mapping as PC (Z port / X starboard) on all mobile schemes. */
+/** Nautical port/starboard — same mapping as PC keyboard (X port / Z starboard) on all mobile schemes. */
 function mobileBroadsideSignFromTouchButton(which) {
   return which === 'port' ? -1 : 1;
 }
@@ -22303,6 +22319,11 @@ let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 function update(dt) {
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
+  G._lootCleanupAcc = (G._lootCleanupAcc || 0) + dt;
+  if (G._lootCleanupAcc >= 45) {
+    G._lootCleanupAcc = 0;
+    pruneFloatingLootOlderThan(600);
+  }
   updateAmbientSeaAudio(dt);
   if (G.captainWalk.active && !canUseCaptainWalk()) setCaptainWalkActive(false);
   updateSeaDebrisBattleClock(dt);
@@ -23120,6 +23141,7 @@ function update(dt) {
       continue;
     }
     const distToPlayer = Math.hypot(sw.position.x - G.player.x, sw.position.z - G.player.z);
+    if (distToPlayer > 8) u.brigFullPickupNotified = false;
     if (distToPlayer < 6 && !G.playerSinking) {
       let collected = false;
       if (sw.userData.crewRestore) {
@@ -23138,8 +23160,12 @@ function update(dt) {
       } else {
         const pSpec = SHIP_TYPES[G.player.shipType];
         if (countPrisonerCrew() >= pSpec.maxPrisoners) {
-          notify('Brig full — no room for more prisoners!');
+          if (!u.brigFullPickupNotified) {
+            notify('Brig full — no room for more prisoners!');
+            u.brigFullPickupNotified = true;
+          }
         } else {
+          u.brigFullPickupNotified = false;
           notify('Prisoner captured!');
           const pris = normalizeCrewMemberRecord({ name: ['Barnacle Bill','Peg Leg Pete','Scurvy Sam','Old Bones'][Math.floor(Math.random()*4)], role: 'prisoner', health: 80, task: 'idle', color: '#5a5a5a' });
           G.player.crew.push(pris);
@@ -23264,6 +23290,7 @@ function update(dt) {
     if (s.userData.life <= 0) { scene.remove(s); s.children.forEach(c => { c.geometry.dispose(); c.material.dispose(); }); splashes.splice(i, 1); }
   }
 
+  let cargoPickupBlockedByFullHold = false;
   for (let fi = G.floatingItems.length - 1; fi >= 0; fi--) {
     const item = G.floatingItems[fi];
     if (item.collected) continue;
@@ -23272,10 +23299,10 @@ function update(dt) {
         ? Number(item.count)
         : (item.type === 'gold' ? 20 : 3);
       if (!canFitStackInCargoSlots(item.type, amt)) {
-        if (G._cargoHoldFullLastNotify == null) G._cargoHoldFullLastNotify = 0;
-        if (G.time - G._cargoHoldFullLastNotify > 2.2) {
-          notify('Cargo hold is full — make space to collect this.');
-          G._cargoHoldFullLastNotify = G.time;
+        cargoPickupBlockedByFullHold = true;
+        if (!G._cargoHoldFullNotifyShown) {
+          notify('Cargo hold is full — make space to collect nearby flotsam.');
+          G._cargoHoldFullNotifyShown = true;
         }
         continue;
       }
@@ -23304,6 +23331,7 @@ function update(dt) {
       });
     }
   }
+  if (!cargoPickupBlockedByFullHold) G._cargoHoldFullNotifyShown = false;
 
   let nearestDock = null, nearestDockDist = Infinity;
   G.islands.forEach(isl => {
