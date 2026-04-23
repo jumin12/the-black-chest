@@ -22,13 +22,16 @@ function sanitizeBoardingFromClient(b) {
   if (b === null) return null;
   if (typeof b !== 'object' || !b) return null;
   const sid = Math.floor(Number(b.sid));
-  if (!Number.isFinite(sid)) return null;
+  if (!Number.isFinite(sid) || sid === 0) return null;
   const ph = b.ph === 'f' ? 'f' : 'h';
   const nx = Number(b.nx);
   const nz = Number(b.nz);
   const nr = Number(b.nr);
   if (!Number.isFinite(nx) || !Number.isFinite(nz) || !Number.isFinite(nr)) return null;
-  return {
+  const ex = Number(b.ex);
+  const ez = Number(b.ez);
+  const er = Number(b.er);
+  const o = {
     sid,
     ph,
     t: Math.max(0, Math.min(999, Number(b.t) || 0)),
@@ -43,6 +46,12 @@ function sanitizeBoardingFromClient(b) {
     nz: Math.max(-5e5, Math.min(5e5, nz)),
     nr: Math.max(-1e4, Math.min(1e4, nr))
   };
+  if (Number.isFinite(ex) && Number.isFinite(ez) && Number.isFinite(er)) {
+    o.ex = Math.max(-5e5, Math.min(5e5, ex));
+    o.ez = Math.max(-5e5, Math.min(5e5, ez));
+    o.er = Math.max(-1e4, Math.min(1e4, er));
+  }
+  return o;
 }
 /**
  * Persistent JSON directory (leaderboard, clans, world seed, map, bans, accounts).
