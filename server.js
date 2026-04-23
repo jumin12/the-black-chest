@@ -2596,11 +2596,13 @@ wss.on('connection', (ws, req) => {
         case 'boarding_spoils': {
           const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
           const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
-          if (!Number.isFinite(targetId) || !players.has(targetId) || gold === 0) break;
+          if (!Number.isFinite(targetId) || !players.has(targetId)) break;
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
             try {
-              tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, gold, scuttle: !!msg.scuttle }));
+              const pl = players.get(id);
+              const fromName = (pl && (pl.shipName || pl.name)) ? String(pl.shipName || pl.name).slice(0, 32) : 'Captain';
+              tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, fromName, gold, scuttle: !!msg.scuttle }));
             } catch (e) {}
           }
           break;
