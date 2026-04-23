@@ -11913,6 +11913,8 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
 }
 function tryStartDefenderFromNetwork(attackerId, bo) {
   if (G.boarding || G.docked || G.playerSinking) return;
+  if (G.boardingVictimAwaitingDecision) return;
+  if (!bo || bo.ph === 'e') return;
   if (G.myId == null) return;
   const sidN = Math.floor(Number(bo.sid));
   if (!(sidN > 0) || netPlayerId(bo.sid) !== G.myId) return;
@@ -12134,20 +12136,19 @@ function showBoardingSpoilsModal(won, b) {
       try { sendUpdate(); } catch (e) {}
     }
     if (h) h.textContent = 'Defeat';
-    if (txt) txt.textContent = 'Waiting for the victor to choose mercy or scuttle. You cannot continue until their decision arrives.';
+    if (txt) txt.textContent = 'Waiting for the victor to choose mercy or scuttle. The game will continue automatically when their decision arrives — there is nothing to click here.';
     if (rowLoot) rowLoot.style.display = 'none';
     if (rowPr) rowPr.style.display = 'none';
     const contBtn = document.getElementById('boarding-spoils-continue');
-    if (contBtn) {
-      contBtn.style.display = 'none';
-      contBtn.disabled = true;
-      contBtn.onclick = null;
-    }
     if (act) {
       act.style.display = 'none';
       act.querySelectorAll('button').forEach(bt => {
-        if (bt) { bt.style.display = 'none'; bt.disabled = true; }
+        if (bt) bt.style.display = 'none';
       });
+    }
+    if (contBtn) {
+      contBtn.style.display = 'none';
+      contBtn.onclick = null;
     }
     if (G.boarding) G.boarding = null;
     clearBoardingBodyMarkers();
@@ -12549,6 +12550,7 @@ function ingestRemoteBoardingState(players) {
     const pid = netPlayerId(row.id);
     if (pid == null || pid === G.myId) continue;
     const bo = row.boarding;
+    if (bo.ph === 'e') continue;
     if (Math.floor(Number(bo.sid)) > 0 && netPlayerId(bo.sid) === G.myId && !G.boarding) {
       tryStartDefenderFromNetwork(pid, bo);
     }
@@ -16137,27 +16139,22 @@ async function connectToServer() {
         const fromId = msg.from != null ? Number(msg.from) : null;
         if (G.boardingVictimAwaitingDecision) {
           const exp = G.boardingVictimAwaitingDecision.partnerId;
-          if (fromId == null || !Number.isFinite(fromId) || Number(netPlayerId(fromId)) !== Number(exp)) break;
+          if (fromId == null || !Number.isFinite(fromId) || Number(fromId) !== Number(exp)) break;
         }
         let capName = 'Enemy captain';
         if (fromId != null && Number.isFinite(fromId)) {
-          const row = G.otherPlayers.get(netPlayerId(fromId));
+          const row = G.otherPlayers.get(fromId);
           if (row) capName = networkPlayerCaptainName(row) || row.name || capName;
         }
-        {
-          const smEnd = document.getElementById('boarding-spoils-modal');
-          if (smEnd) smEnd.style.display = 'none';
+        if (G.boardingVictimAwaitingDecision) {
+          const sm = document.getElementById('boarding-spoils-modal');
+          if (sm) sm.style.display = 'none';
           const rowLoot = document.getElementById('boarding-spoils-loot')?.closest('.boarding-spoils-row');
           const rowPr = document.getElementById('boarding-spoils-pris')?.closest('.boarding-spoils-row');
-          const actEnd = document.querySelector('.boarding-spoils-actions');
+          const act = document.querySelector('.boarding-spoils-actions');
           if (rowLoot) rowLoot.style.display = '';
           if (rowPr) rowPr.style.display = '';
-          if (actEnd) {
-            actEnd.style.display = '';
-            actEnd.querySelectorAll('button').forEach(bt => { if (bt) { bt.style.display = ''; bt.disabled = false; } });
-          }
-          const contEnd = document.getElementById('boarding-spoils-continue');
-          if (contEnd) { contEnd.style.display = 'none'; contEnd.disabled = true; contEnd.onclick = null; }
+          if (act) act.style.display = '';
         }
         clearBoardingVictimAwaiting('');
         const have = getInvCount('gold');
@@ -16166,7 +16163,7 @@ async function connectToServer() {
         try { reconcileSlotsWithInventory(); } catch (e) {}
         if (msg.scuttle) {
           G.lastAttacker = `${capName} — boarding`;
-          G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? netPlayerId(fromId) : null;
+          G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
           G.player.health = 0;
           notify(`Your hull is opened — ${take}g seized. You are going under!`, 7200);
           try { beginLocalPlayerSinkDeathFlow(); } catch (e) { console.error(e); }
