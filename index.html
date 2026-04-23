@@ -11578,7 +11578,7 @@ function syncFloatingNametagVisibility() {
 /* Boarding: PvP (min playerId sim) + AI (attacker sim; host copies enemy hull */
 /*  from other players' boarding in state for authoritative npc_sync).        */
 /* -------------------------------------------------------------------------- */
-const BOARDING_MAX_RANGE = 40;
+const BOARDING_MAX_RANGE = BROADSIDE_RANGE / 3;
 const BOARDING_PULL_DUR = 2.4;
 const boardingRopeLineMeshes = [];
 function clearBoardingRopeLineMeshes() {
@@ -11618,8 +11618,10 @@ function applyHostForeignNpcBoardingFromPeers() {
     const npc = G.npcs.find(n => n.syncId === syncId);
     if (!npc || npc.sinking) continue;
     if (bo.ex == null || bo.ez == null || bo.er == null) continue;
+    const ex = Number(bo.ex), ez = Number(bo.ez), er = Number(bo.er);
+    if (!Number.isFinite(ex) || !Number.isFinite(ez) || !Number.isFinite(er)) continue;
     npc._boardingHostLock = true;
-    npc.x = bo.ex; npc.z = bo.ez; npc.rotation = bo.er; npc.speed = 0;
+    npc.x = ex; npc.z = ez; npc.rotation = er; npc.speed = 0;
   }
 }
 function countCrewFighters(crewArray) {
@@ -11820,8 +11822,9 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
   if (G.boarding.phase === 'pull') {
     G.boarding._p0x = G.player.x; G.boarding._p0z = G.player.z;
   }
-  G.player.anchored = true;
+  G.anchorDropping = false;
   G.player.speed = 0;
+  try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
   notify('Boarded — all hands! Repel!', 5000);
 }
 function startPlayerBoardingAttack(targetId) {
@@ -11852,8 +11855,9 @@ function startPlayerBoardingAttack(targetId) {
     _p0x: G.player.x, _p0z: G.player.z, _e0x: op.x, _e0z: op.z,
     nameOur: myN, nameTheir: theirN, surrenderPool: 0, isDefender: false, fightAcc: 0
   };
-  G.player.anchored = true;
+  G.anchorDropping = false;
   G.player.speed = 0;
+  try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
   notify('Grappling hooks away!', 3000);
 }
 function startNpcBoardingAttack(npc) {
@@ -11876,8 +11880,9 @@ function startNpcBoardingAttack(npc) {
     nameOur: myN, nameTheir: theirN, surrenderPool: 0, isDefender: false, fightAcc: 0, npcLoot: { gold: 20 + ((npc.syncId | 0) % 40), wood: 4 + ((npc.syncId | 0) % 5) }
   };
   npc._boardingHostLock = true;
-  G.player.anchored = true;
+  G.anchorDropping = false;
   G.player.speed = 0;
+  try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
   notify('Boarding party away!', 3000);
 }
 function boardingCombatTick() {
@@ -12138,7 +12143,6 @@ function tickBoardingEngagement(dt) {
     while (dr < -Math.PI) dr += Math.PI * 2;
     G.player.rotation += dr * Math.min(1, 5 * dt);
     G.player.speed = 0;
-    G.player.anchored = true;
     b.tNet = Math.min(200, (b.tNet | 0) + 1);
     if (b.npcSyncId != null && b.attackerId != null && G.myId != null && Number(b.attackerId) === Number(G.myId)) {
       const npc = G.npcs.find(n => n.syncId === b.npcSyncId);
@@ -12162,7 +12166,7 @@ function tickBoardingEngagement(dt) {
       b.tNet = Math.min(999, (b.tNet | 0) + 1);
     }
     if (b.lockPX != null) { G.player.x = b.lockPX; G.player.z = b.lockPZ; G.player.rotation = b.lockPR; }
-    G.player.speed = 0; G.player.anchored = true;
+    G.player.speed = 0;
     if (b.npcSyncId != null && b.attackerId != null && G.myId != null && Number(b.attackerId) === Number(G.myId)) {
       const npc = G.npcs.find(n => n.syncId === b.npcSyncId);
       if (npc) { npc._boardingHostLock = true; npc.x = b.lockEX; npc.z = b.lockEZ; npc.rotation = b.lockER; npc.speed = 0; }
@@ -24088,8 +24092,8 @@ let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 function update(dt) {
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
-  try { applyHostForeignNpcBoardingFromPeers(); } catch (e) {}
   tickBoardingEngagement(dt);
+  try { applyHostForeignNpcBoardingFromPeers(); } catch (e) {}
   cullSplashesToBudget();
   cullDamageChunksToBudget();
   G._lootCleanupAcc = (G._lootCleanupAcc || 0) + dt;
