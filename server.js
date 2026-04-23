@@ -23,7 +23,7 @@ function sanitizeBoardingFromClient(b) {
   if (typeof b !== 'object' || !b) return null;
   const sid = Math.floor(Number(b.sid));
   if (!Number.isFinite(sid) || sid === 0) return null;
-  const ph = b.ph === 'f' ? 'f' : 'h';
+  const ph = (b.ph === 'f' || b.ph === 'S' || b.ph === 'W' || b.ph === 'h') ? b.ph : 'h';
   const nx = Number(b.nx);
   const nz = Number(b.nz);
   const nr = Number(b.nr);
@@ -2597,12 +2597,11 @@ wss.on('connection', (ws, req) => {
           const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
           const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
+          if (targetId === id) break;
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
             try {
-              const pl = players.get(id);
-              const fromName = (pl && (pl.shipName || pl.name)) ? String(pl.shipName || pl.name).slice(0, 32) : 'Captain';
-              tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, fromName, gold, scuttle: !!msg.scuttle }));
+              tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, gold, scuttle: !!msg.scuttle }));
             } catch (e) {}
           }
           break;
