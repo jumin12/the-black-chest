@@ -11796,7 +11796,7 @@ function showBoardingHud(ourName, theirName, pAlive, eAlive, pTot, eTot, swapBar
 function packBoardingForNetwork() {
   const b = G.boarding;
   if (!b) return null;
-  if (b.partnerPlayerId != null && b.npcSyncId == null && !boardingIAmSimLeader(b)) return null;
+  if (b.partnerPlayerId != null && b.npcSyncId == null && !boardingIAmSimLeader(b) && b.phase === 'fight') return null;
   if (b.phase === 'spoils' && b.partnerPlayerId != null && b._pvpTerminalForNet) {
     const snap = b._pvpTerminalForNet;
     b._pvpTerminalForNet = null;
@@ -11808,7 +11808,9 @@ function packBoardingForNetwork() {
     : Math.floor(Number(b.partnerPlayerId) || 0);
   if (!Number.isFinite(sid) || sid === 0) return null;
   const ph = b.phase === 'fight' ? 'f' : 'h';
-  const t = Math.min(999, Math.max(0, b.tNet | 0));
+  const t = b.phase === 'pull'
+    ? Math.min(200, Math.max(0, Math.floor(Math.min(1, b.pullT || 0) * 200)))
+    : Math.min(999, Math.max(0, b.tNet | 0));
   const pa = Math.min(48, Math.max(0, b.pAtk | 0));
   const ea = Math.min(48, Math.max(0, b.eAtk | 0));
   const pH = Math.min(48, Math.max(0, b.pHeart | 0));
@@ -11828,7 +11830,6 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
   if (!bo || typeof bo !== 'object') return;
   const b = G.boarding;
   if (!b) return;
-  b.tNet = bo.t | 0;
   b.pAtk = bo.pa | 0;
   b.eAtk = bo.ea | 0;
   b.pHeart = bo.pH | 0;
@@ -11836,6 +11837,10 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
   b.pTotal = bo.pTo | 0;
   b.eTotal = bo.eTo | 0;
   b.phase = bo.ph === 'f' ? 'fight' : 'pull';
+  if (b.phase === 'pull' && G.myId != null && leaderId != null && G.myId !== leaderId) {
+    b.pullT = Math.min(1, (bo.t | 0) / 200);
+  }
+  b.tNet = bo.t | 0;
   if (G.myId == null || leaderId == null) return;
   if (G.myId === leaderId) {
     if (bo.nx != null) { b.lockPX = bo.nx; b.lockPZ = bo.nz; b.lockPR = bo.nr; }
@@ -11854,22 +11859,27 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
   if (!atk) return;
   const aName = atk ? (atk.shipName || networkPlayerCaptainName(atk)) : 'Attacker';
   const myN = (G.player.shipName || '').trim() || 'Your ship';
-  const locks = computeBoardingLocks(G.player.x, G.player.z, G.player.rotation, atk.x, atk.z, G.player.shipType, atk.shipType || 'sloop');
+  const ax = Number(bo.nx), az = Number(bo.nz), ar = Number(bo.nr);
+  const axU = Number.isFinite(ax) ? ax : atk.x;
+  const azU = Number.isFinite(az) ? az : atk.z;
+  const arU = Number.isFinite(ar) ? ar : (atk.rotation || 0);
+  const al = computeBoardingLocks(axU, azU, arU, G.player.x, G.player.z, atk.shipType || 'sloop', G.player.shipType);
   const p0 = getRemotePlayerCrewRoster(atk);
   const pTot = countCrewFighters(G.player.crew);
   const eTot = countCrewFighters(p0);
+  const pullT0 = bo.ph !== 'f' ? Math.min(1, (bo.t | 0) / 200) : 0;
   G.boarding = {
     phase: bo.ph === 'f' ? 'fight' : 'pull',
-    pullT: 0,
+    pullT: pullT0,
     partnerPlayerId: attackerId,
     npcSyncId: null,
     attackerId,
     tNet: bo.t | 0,
     pAtk: bo.pa | 0, eAtk: bo.ea | 0, pHeart: bo.pH | 0, eHeart: bo.eH | 0, pTotal: bo.pTo | 0, eTotal: bo.eTo | 0,
     pTotStart: pTot, eTotStart: eTot,
-    lockPX: locks.lockPX, lockPZ: locks.lockPZ, lockPR: locks.lockPR,
-    lockEX: locks.lockEX, lockEZ: locks.lockEZ, lockER: locks.lockER,
-    _p0x: G.player.x, _p0z: G.player.z, _e0x: atk.x, _e0z: atk.z,
+    lockPX: al.lockEX, lockPZ: al.lockEZ, lockPR: al.lockER,
+    lockEX: al.lockPX, lockEZ: al.lockPZ, lockER: al.lockPR,
+    _p0x: G.player.x, _p0z: G.player.z, _e0x: axU, _e0z: azU,
     nameOur: myN, nameTheir: aName, surrenderPool: 0, isDefender: true, fightAcc: 0
   };
   if (G.boarding.phase === 'pull') {
@@ -12391,7 +12401,15 @@ function tickBoardingEngagement(dt) {
     if ((b.pAtk | 0) <= 0 || (b.eAtk | 0) <= 0) endBoardingResolution();
   }
   if (b.phase === 'pull') {
-    b.pullT = (b.pullT || 0) + dt / BOARDING_PULL_DUR;
+    let pvpPullFromLeaderOnly = false;
+    if (b.partnerPlayerId != null && G.myId != null && !boardingIAmSimLeader(b)) {
+      const lid = Math.min(G.myId, b.partnerPlayerId);
+      const lRow = G.otherPlayers.get(lid);
+      pvpPullFromLeaderOnly = !!(lRow && lRow.boarding);
+    }
+    if (!pvpPullFromLeaderOnly) {
+      b.pullT = (b.pullT || 0) + dt / BOARDING_PULL_DUR;
+    }
     const u = 1 - Math.pow(1 - Math.min(1, b.pullT), 1.4);
     G.player.x = b._p0x + (b.lockPX - b._p0x) * u;
     G.player.z = b._p0z + (b.lockPZ - b._p0z) * u;
@@ -12400,7 +12418,15 @@ function tickBoardingEngagement(dt) {
     while (dr < -Math.PI) dr += Math.PI * 2;
     G.player.rotation += dr * Math.min(1, 5 * dt);
     G.player.speed = 0;
-    b.tNet = Math.min(200, (b.tNet | 0) + 1);
+    if (b.partnerPlayerId != null && boardingIAmSimLeader(b)) {
+      b.tNet = Math.min(200, Math.max(0, Math.floor(Math.min(1, b.pullT || 0) * 200)));
+    } else if (b.partnerPlayerId != null && !boardingIAmSimLeader(b)) {
+      if (!pvpPullFromLeaderOnly) {
+        b.tNet = Math.min(200, Math.max(0, Math.floor(Math.min(1, b.pullT || 0) * 200)));
+      }
+    } else {
+      b.tNet = Math.min(200, (b.tNet | 0) + 1);
+    }
     if (b.npcSyncId != null && b.attackerId != null && G.myId != null && Number(b.attackerId) === Number(G.myId)) {
       const npc = G.npcs.find(n => n.syncId === b.npcSyncId);
       if (npc) {
@@ -15772,8 +15798,9 @@ async function connectToServer() {
       if (G.mode !== 'playing' || !G.playWorldAwaitingNetInit) return;
       const s = (prefetchedServerSeed != null ? Number(prefetchedServerSeed) : G.worldSeed) >>> 0;
       applySharedWorldFromServerSeed(s);
+      try { resetMenuBoardingState(); } catch (e) {}
       notify('World sync recovered.', 3200);
-    }, 680);
+    }, 1100);
   };
   ws.onmessage = (e) => {
     let msg;
@@ -15836,6 +15863,9 @@ async function connectToServer() {
             G.otherPlayers.set(pid, row);
             refreshOtherPlayerShipCacheKey(G.otherPlayers.get(pid));
           });
+          if (G.mode === 'playing') {
+            try { ingestRemoteBoardingState(msg.players); } catch (e) {}
+          }
         }
         recalcMultiplayerNpcAuthorityFromPeers();
         if (G.mode === 'playing' && !voyageSaveExistsInStorage()) {
@@ -15862,6 +15892,10 @@ async function connectToServer() {
           if (playWorldNetTimeoutId) {
             clearTimeout(playWorldNetTimeoutId);
             playWorldNetTimeoutId = null;
+          }
+          if (voyageSaveExistsInStorage()) {
+            try { resetMenuBoardingState(); } catch (e) {}
+            try { flushGameViewRender(); } catch (e) {}
           }
         }
         break;
