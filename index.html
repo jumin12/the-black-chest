@@ -11575,7 +11575,8 @@ function syncFloatingNametagVisibility() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Boarding (PvP + host-only NPC)                                              */
+/* Boarding: PvP (min playerId sim) + AI (attacker sim; host copies enemy hull */
+/*  from other players' boarding in state for authoritative npc_sync).        */
 /* -------------------------------------------------------------------------- */
 const BOARDING_MAX_RANGE = 40;
 const BOARDING_PULL_DUR = 2.4;
@@ -11598,9 +11599,28 @@ function boardingSimLeaderId(partnerId) {
 }
 function boardingIAmSimLeader(b) {
   if (!b) return true;
-  if (b.npcSyncId != null) return isMultiplayerHost() || !ws || ws.readyState !== 1;
+  if (b.npcSyncId != null) {
+    if (G.myId == null || b.attackerId == null) return !ws || ws.readyState !== 1;
+    return Number(b.attackerId) === Number(G.myId);
+  }
   const l = boardingSimLeaderId(b.partnerPlayerId);
   return G.myId != null && l === Number(G.myId);
+}
+/** When another captain boards an AI ship, the MP host does not run their tick — copy locked hull ex/er from state so npc_sync matches the attacker. */
+function applyHostForeignNpcBoardingFromPeers() {
+  if (G.mode !== 'playing' || !isMultiplayerHost()) return;
+  for (const row of G.otherPlayers.values()) {
+    const bo = row && row.boarding;
+    if (!bo || bo.sid == null) continue;
+    const sidN = Math.floor(Number(bo.sid));
+    if (sidN >= 0) continue;
+    const syncId = -(sidN + 1);
+    const npc = G.npcs.find(n => n.syncId === syncId);
+    if (!npc || npc.sinking) continue;
+    if (bo.ex == null || bo.ez == null || bo.er == null) continue;
+    npc._boardingHostLock = true;
+    npc.x = bo.ex; npc.z = bo.ez; npc.rotation = bo.er; npc.speed = 0;
+  }
 }
 function countCrewFighters(crewArray) {
   if (!Array.isArray(crewArray)) return 3;
@@ -11839,10 +11859,6 @@ function startPlayerBoardingAttack(targetId) {
 function startNpcBoardingAttack(npc) {
   if (G.boarding || G.docked || G.playerSinking) return;
   if (!npc || npc.sinking || (npc.health != null && npc.health <= 0)) return;
-  if (ws && ws.readyState === 1 && !isMultiplayerHost()) {
-    notify('Only the voyage host can board AI ships in multiplayer.', 4200);
-    return;
-  }
   if (Math.hypot(G.player.x - npc.x, G.player.z - npc.z) > BOARDING_MAX_RANGE) {
     notify('Too far to board.', 3000);
     return;
@@ -12062,12 +12078,10 @@ function updateBoardingUiOverlay() {
     });
   }
   let npcT = null;
-  if (isMultiplayerHost() || !ws || ws.readyState !== 1) {
-    for (const n of G.npcs) {
-      if (!n.sinking && (n.health == null || n.health > 0)) {
-        const d = Math.hypot(n.x - G.player.x, n.z - G.player.z);
-        if (d < BOARDING_MAX_RANGE && d < bestD) { bestD = d; npcT = n; }
-      }
+  for (const n of G.npcs) {
+    if (!n.sinking && (n.health == null || n.health > 0)) {
+      const d = Math.hypot(n.x - G.player.x, n.z - G.player.z);
+      if (d < BOARDING_MAX_RANGE && d < bestD) { bestD = d; npcT = n; }
     }
   }
   if (bestId != null) {
@@ -12126,7 +12140,7 @@ function tickBoardingEngagement(dt) {
     G.player.speed = 0;
     G.player.anchored = true;
     b.tNet = Math.min(200, (b.tNet | 0) + 1);
-    if (b.npcSyncId != null && isMultiplayerHost()) {
+    if (b.npcSyncId != null && b.attackerId != null && G.myId != null && Number(b.attackerId) === Number(G.myId)) {
       const npc = G.npcs.find(n => n.syncId === b.npcSyncId);
       if (npc) {
         npc._boardingHostLock = true;
@@ -12149,7 +12163,7 @@ function tickBoardingEngagement(dt) {
     }
     if (b.lockPX != null) { G.player.x = b.lockPX; G.player.z = b.lockPZ; G.player.rotation = b.lockPR; }
     G.player.speed = 0; G.player.anchored = true;
-    if (b.npcSyncId != null && isMultiplayerHost()) {
+    if (b.npcSyncId != null && b.attackerId != null && G.myId != null && Number(b.attackerId) === Number(G.myId)) {
       const npc = G.npcs.find(n => n.syncId === b.npcSyncId);
       if (npc) { npc._boardingHostLock = true; npc.x = b.lockEX; npc.z = b.lockEZ; npc.rotation = b.lockER; npc.speed = 0; }
     }
@@ -24074,6 +24088,7 @@ let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 function update(dt) {
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
+  try { applyHostForeignNpcBoardingFromPeers(); } catch (e) {}
   tickBoardingEngagement(dt);
   cullSplashesToBudget();
   cullDamageChunksToBudget();
