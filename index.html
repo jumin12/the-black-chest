@@ -1943,6 +1943,7 @@ body.game-help-mobile-minimal #game-help-panel{
         <button type="button" class="primary" id="boarding-spoils-keep" title="Seize the hull (NPC)">Keep ship</button>
         <button type="button" id="boarding-spoils-scut">Scuttle for cargo</button>
         <button type="button" id="boarding-spoils-done">Take loot &amp; go</button>
+        <button type="button" id="boarding-spoils-continue" style="display:none;">Continue</button>
       </div>
     </div>
   </div>
@@ -3002,8 +3003,6 @@ const G = {
   /** @type {null | { heights: Float32Array, gridN: number, waterThreshold: number, maxLandHeight: number, worldEdgeClamp: number, entities: object[], towns: object[], wind?: object, seed?: number }} */
   customMap: null,
   playWorldAwaitingNetInit: false,
-  /** Set only on "Continue voyage" — skip redundant full world rebuild when `init` seed matches hydrated save. */
-  continueVoyageHydrateLocal: false,
   fallbackWorldSeed: 42,
   time: 0,
   dt: 0,
@@ -11641,11 +11640,21 @@ function boardingSimLeaderId(partnerId) {
   if (partnerId == null) return Number(G.myId);
   return Math.min(Number(G.myId), Number(partnerId));
 }
+/** PvP: only the boarder (attacker) simulates and broadcasts — not min(playerIds), or nobody syncs when defender has a lower id. */
+function boardingPvPAuthorityId(b) {
+  if (!b || b.npcSyncId != null || b.partnerPlayerId == null) return null;
+  const a = b.attackerId != null ? netPlayerId(b.attackerId) : null;
+  return a != null ? a : boardingSimLeaderId(b.partnerPlayerId);
+}
 function boardingIAmSimLeader(b) {
   if (!b) return true;
   if (b.npcSyncId != null) {
     if (G.myId == null || b.attackerId == null) return !ws || ws.readyState !== 1;
     return Number(b.attackerId) === Number(G.myId);
+  }
+  if (b.partnerPlayerId != null) {
+    const auth = boardingPvPAuthorityId(b);
+    return G.myId != null && auth != null && Number(G.myId) === Number(auth);
   }
   const l = boardingSimLeaderId(b.partnerPlayerId);
   return G.myId != null && l === Number(G.myId);
@@ -11798,6 +11807,7 @@ function showBoardingHud(ourName, theirName, pAlive, eAlive, pTot, eTot, swapBar
 function packBoardingForNetwork() {
   const b = G.boarding;
   if (!b) return null;
+  if (b.partnerPlayerId != null && b.npcSyncId == null && !boardingIAmSimLeader(b)) return null;
   if (b.phase === 'spoils' && b.partnerPlayerId != null && b._pvpTerminalForNet) {
     const snap = b._pvpTerminalForNet;
     b._pvpTerminalForNet = null;
@@ -11820,7 +11830,7 @@ function packBoardingForNetwork() {
     sid, ph, t, hd: 2.45, pa, pH, ea, eH, pTo, eTo,
     nx: G.player.x, nz: G.player.z, nr: G.player.rotation
   };
-  if (ph !== 'f') o.pu = Math.min(1, Math.max(0, b.pullT || 0));
+  if (b.phase === 'pull') o.pl = Math.max(0, Math.min(1, Number(b.pullT) || 0));
   if (b.lockEX != null && b.lockER != null) {
     o.ex = b.lockEX; o.ez = b.lockEZ; o.er = b.lockER;
   }
@@ -11838,9 +11848,7 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
   b.pTotal = bo.pTo | 0;
   b.eTotal = bo.eTo | 0;
   b.phase = bo.ph === 'f' ? 'fight' : 'pull';
-  if (bo.pu != null && Number.isFinite(Number(bo.pu)) && bo.ph !== 'f') {
-    b.pullT = Math.max(0, Math.min(1, Number(bo.pu)));
-  }
+  if (bo.pl != null && Number.isFinite(Number(bo.pl))) b.pullT = Math.max(0, Math.min(1, Number(bo.pl)));
   if (G.myId == null || leaderId == null) return;
   if (G.myId === leaderId) {
     if (bo.nx != null) { b.lockPX = bo.nx; b.lockPZ = bo.nz; b.lockPR = bo.nr; }
@@ -11863,10 +11871,9 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
   const p0 = getRemotePlayerCrewRoster(atk);
   const pTot = countCrewFighters(G.player.crew);
   const eTot = countCrewFighters(p0);
-  const pull0 = bo.pu != null && Number.isFinite(Number(bo.pu)) ? Math.max(0, Math.min(1, Number(bo.pu))) : 0;
   G.boarding = {
     phase: bo.ph === 'f' ? 'fight' : 'pull',
-    pullT: pull0,
+    pullT: 0,
     partnerPlayerId: attackerId,
     npcSyncId: null,
     attackerId,
@@ -12067,14 +12074,37 @@ function showBoardingSpoilsModal(won, b) {
     if (txt) txt.textContent = 'Waiting for the other captain to decide your ship\'s fate…';
     if (rowLoot) rowLoot.style.display = 'none';
     if (rowPr) rowPr.style.display = 'none';
-    if (act) act.style.display = 'none';
+    const contBtn = document.getElementById('boarding-spoils-continue');
+    if (act) {
+      act.style.display = 'flex';
+      if (contBtn) contBtn.style.display = 'block';
+      act.querySelectorAll('button').forEach(bt => {
+        if (bt && bt.id && bt.id !== 'boarding-spoils-continue') bt.style.display = 'none';
+      });
+    }
     if (G.boarding) G.boarding = null;
     clearBoardingBodyMarkers();
     const tw0 = document.getElementById('boarding-tw-wrap');
     if (tw0) { tw0.style.display = 'none'; tw0.removeAttribute('data-remote-only'); }
     if (m) m.style.display = 'flex';
+    if (contBtn) {
+      contBtn.onclick = () => {
+        try { clearBoardingVictimAwaiting('You cut away and do what you can to stay afloat.'); } catch (e) {}
+        if (m) m.style.display = 'none';
+        if (contBtn) { contBtn.style.display = 'none'; contBtn.onclick = null; }
+        if (act) {
+          act.querySelectorAll('button').forEach(bt => { if (bt) bt.style.display = ''; });
+        }
+        if (rowLoot) rowLoot.style.display = '';
+        if (rowPr) rowPr.style.display = '';
+      };
+    }
     return;
   }
+  (function () {
+    const cHide = document.getElementById('boarding-spoils-continue');
+    if (cHide) { cHide.style.display = 'none'; cHide.onclick = null; }
+  })();
   if (rowLoot) rowLoot.style.display = '';
   if (rowPr) rowPr.style.display = '';
   if (act) act.style.display = '';
@@ -12249,11 +12279,7 @@ function updateBoardingRopes() {
         return;
       }
       if (sidN <= 0) return;
-      const pidN = netPlayerId(pid);
-      const oppN = netPlayerId(bo.sid);
-      if (pidN == null || oppN == null) return;
-      if (pidN !== Math.min(pidN, oppN)) return;
-      const a = Math.min(pidN, oppN), c = Math.max(pidN, oppN);
+      const a = Math.min(Number(pid), sidN), c = Math.max(Number(pid), sidN);
       const key = a + ':' + c;
       if (seenPairs.has(key)) return;
       seenPairs.add(key);
@@ -12289,10 +12315,6 @@ function tickRemoteBoardingSpectatorUi() {
       return;
     }
     if (!(sidN > 0)) return;
-    const pidN = netPlayerId(pid);
-    const oppN = netPlayerId(bo.sid);
-    if (pidN == null || oppN == null) return;
-    if (pidN !== Math.min(pidN, oppN)) return;
     const ox = Number(bo.nx), oz = Number(bo.nz);
     if (!Number.isFinite(ox) || !Number.isFinite(oz)) return;
     const d = Math.hypot(ox - G.player.x, oz - G.player.z);
@@ -12318,12 +12340,11 @@ function tickRemoteBoardingSpectatorUi() {
   } else {
     const opp = G.otherPlayers.get(netPlayerId(bo.sid));
     nameB = opp ? ((opp.shipName && String(opp.shipName).trim()) || networkPlayerCaptainName(opp)) : 'Ship';
-    const lid = Math.min(netPlayerId(pid) || 0, netPlayerId(bo.sid) || 0);
-    const rowIsLeader = (netPlayerId(pid) === lid);
-    pAlive = rowIsLeader ? (bo.pa | 0) : (bo.ea | 0);
-    eAlive = rowIsLeader ? (bo.ea | 0) : (bo.pa | 0);
-    pTot = rowIsLeader ? (bo.pTo | 0) : (bo.eTo | 0);
-    eTot = rowIsLeader ? (bo.eTo | 0) : (bo.pTo | 0);
+    /* `row` is the boarding attacker (sole authoritative row in sync); do not swap with min(id). */
+    pAlive = bo.pa | 0;
+    eAlive = bo.ea | 0;
+    pTot = bo.pTo | 0;
+    eTot = bo.eTo | 0;
   }
   showBoardingHud(nameA, nameB, pAlive, eAlive, pTot, eTot, false);
   if (tw) tw.setAttribute('data-remote-only', '1');
@@ -12394,26 +12415,18 @@ function tickBoardingEngagement(dt) {
   if (G.captainWalk && G.captainWalk.active) setCaptainWalkActive(false);
   const b = G.boarding;
   if (b.phase === 'spoils') return;
-  if (b.partnerPlayerId != null && G.myId != null) {
-    const lid = Math.min(G.myId, b.partnerPlayerId);
-    const aid = b.attackerId != null ? Number(b.attackerId) : null;
-    if (b.phase === 'pull' && aid != null) {
-      if (G.myId !== aid) {
-        const aRow = G.otherPlayers.get(aid);
-        if (aRow && aRow.boarding) mergeBoardingFromLeaderPayload(aRow.boarding, aid);
-      }
-    } else if (G.myId !== lid) {
-      const lRow = G.otherPlayers.get(lid);
-      if (lRow && lRow.boarding) mergeBoardingFromLeaderPayload(lRow.boarding, lid);
+  if (b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null) {
+    const auth = boardingPvPAuthorityId(b);
+    if (auth != null && G.myId !== auth) {
+      const lRow = G.otherPlayers.get(auth);
+      if (lRow && lRow.boarding) mergeBoardingFromLeaderPayload(lRow.boarding, auth);
     }
   }
   if (b.partnerPlayerId != null && b.phase === 'fight' && !boardingIAmSimLeader(b)) {
     if ((b.pAtk | 0) <= 0 || (b.eAtk | 0) <= 0) endBoardingResolution();
   }
   if (b.phase === 'pull') {
-    const pvp = b.partnerPlayerId != null && b.npcSyncId == null;
-    const amAttacker = pvp && b.attackerId != null && Number(b.attackerId) === Number(G.myId);
-    if (!pvp || amAttacker) {
+    if (b.npcSyncId != null || boardingIAmSimLeader(b)) {
       b.pullT = (b.pullT || 0) + dt / BOARDING_PULL_DUR;
     }
     const u = 1 - Math.pow(1 - Math.min(1, b.pullT), 1.4);
@@ -15712,6 +15725,10 @@ function clearBoardingVictimAwaiting(notifyMsg) {
   try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
   const sm = document.getElementById('boarding-spoils-modal');
   if (sm) sm.style.display = 'none';
+  const contW = document.getElementById('boarding-spoils-continue');
+  if (contW) { contW.style.display = 'none'; contW.onclick = null; }
+  const actW = document.querySelector('.boarding-spoils-actions');
+  if (actW) actW.querySelectorAll('button').forEach(bt => { if (bt) bt.style.display = ''; });
   const lootR = document.getElementById('boarding-spoils-loot');
   const prR = document.getElementById('boarding-spoils-pris');
   if (lootR) lootR.style.display = '';
@@ -15795,13 +15812,6 @@ async function connectToServer() {
     setTimeout(() => {
       if (G.mode !== 'playing' || !G.playWorldAwaitingNetInit) return;
       const s = (prefetchedServerSeed != null ? Number(prefetchedServerSeed) : G.worldSeed) >>> 0;
-      if (G.continueVoyageHydrateLocal && (G.worldSeed >>> 0) === (s >>> 0) && G.chunks && G.chunks.size > 0) {
-        G.playWorldAwaitingNetInit = false;
-        G.continueVoyageHydrateLocal = false;
-        if (playWorldNetTimeoutId) { clearTimeout(playWorldNetTimeoutId); playWorldNetTimeoutId = null; }
-        flushGameViewRender();
-        return;
-      }
       applySharedWorldFromServerSeed(s);
       notify('World sync recovered.', 3200);
     }, 680);
@@ -15823,14 +15833,7 @@ async function connectToServer() {
         }
         if (msg.seed != null) {
           const s = Number(msg.seed) >>> 0;
-          const alreadyHydrated = G.continueVoyageHydrateLocal && G.playWorldAwaitingNetInit && (G.worldSeed >>> 0) === (s >>> 0)
-            && G.chunks && G.chunks.size > 0;
-          if (alreadyHydrated) {
-            G.worldSeed = s;
-            G.seed = s;
-            noise = new SimplexNoise(G.worldSeed);
-            flushGameViewRender();
-          } else if (G.mode === 'playing' && (G.playWorldAwaitingNetInit || (G.worldSeed >>> 0) !== s)) {
+          if (G.mode === 'playing' && (G.playWorldAwaitingNetInit || (G.worldSeed >>> 0) !== s)) {
             const hadServerOrCustomChart = !!(G.customMap && G.customMap.heights) || appliedServerWorldMapRev > 0;
             applySharedWorldFromServerSeed(s, { relocateAfterDroppingServerChart: hadServerOrCustomChart });
           } else {
@@ -15897,7 +15900,6 @@ async function connectToServer() {
         if (isMultiplayerHost()) syncHostStoryBountyFleet();
         if (G.mode === 'playing') {
           G.playWorldAwaitingNetInit = false;
-          G.continueVoyageHydrateLocal = false;
           if (playWorldNetTimeoutId) {
             clearTimeout(playWorldNetTimeoutId);
             playWorldNetTimeoutId = null;
@@ -26741,7 +26743,6 @@ function beginVoyageAfterCharacter() {
   G.mode = 'playing';
   G.player.speed = 1;
   G.fallbackWorldSeed = CANONICAL_DEFAULT_WORLD_SEED >>> 0;
-  G.continueVoyageHydrateLocal = false;
   G.playWorldAwaitingNetInit = true;
   G.remotePlayerStories.clear();
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
@@ -27696,7 +27697,6 @@ document.getElementById('start-btn').onclick = () => {
     G.mode = 'playing';
     G.player.speed = Math.max(G.player.speed, 1);
     G.fallbackWorldSeed = CANONICAL_DEFAULT_WORLD_SEED >>> 0;
-    G.continueVoyageHydrateLocal = true;
     G.playWorldAwaitingNetInit = true;
     G.remotePlayerStories.clear();
     G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });

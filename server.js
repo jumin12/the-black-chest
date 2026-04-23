@@ -46,13 +46,13 @@ function sanitizeBoardingFromClient(b) {
     nz: Math.max(-5e5, Math.min(5e5, nz)),
     nr: Math.max(-1e4, Math.min(1e4, nr))
   };
-  if (b.pu != null && Number.isFinite(Number(b.pu)) && ph !== 'f') {
-    o.pu = Math.max(0, Math.min(1, Number(b.pu)));
-  }
   if (Number.isFinite(ex) && Number.isFinite(ez) && Number.isFinite(er)) {
     o.ex = Math.max(-5e5, Math.min(5e5, ex));
     o.ez = Math.max(-5e5, Math.min(5e5, ez));
     o.er = Math.max(-1e4, Math.min(1e4, er));
+  }
+  if (b.pl != null && Number.isFinite(Number(b.pl))) {
+    o.pl = Math.max(0, Math.min(1, Number(b.pl)));
   }
   return o;
 }
@@ -2609,7 +2609,7 @@ wss.on('connection', (ws, req) => {
           const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
           const scuttle = !!msg.scuttle;
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
-          if (gold === 0 && !scuttle) break;
+          /* Mercy with 0 gold must still notify the victim (client used to block and left them stuck). */
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
             try {
