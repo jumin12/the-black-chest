@@ -2587,17 +2587,11 @@ wss.on('connection', (ws, req) => {
         case 'boarding_spoils': {
           const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
           const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
-          const wood = Math.max(0, Math.min(400, Math.floor(Number(msg.wood) || 0)));
-          if (!Number.isFinite(targetId) || !players.has(targetId) || (gold === 0 && wood === 0)) break;
-          const vict = players.get(targetId);
-          const fromP = players.get(id);
-          const fromName = fromP && (fromP.shipName || fromP.name) ? String(fromP.shipName || fromP.name).slice(0, 32) : 'Captain';
+          if (!Number.isFinite(targetId) || !players.has(targetId) || gold === 0) break;
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
             try {
-              tws.send(JSON.stringify({
-                type: 'boarding_spoils', from: id, gold, wood, scuttle: !!msg.scuttle, name: fromName, targetShip: vict && vict.shipName ? String(vict.shipName).slice(0, 28) : ''
-              }));
+              tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, gold, scuttle: !!msg.scuttle }));
             } catch (e) {}
           }
           break;
