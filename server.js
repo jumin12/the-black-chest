@@ -2384,6 +2384,14 @@ wss.on('connection', (ws, req) => {
           });
           break;
         }
+        case 'npc_boarding_sink': {
+          const npcSyncId = msg.npcSyncId != null ? Math.floor(Number(msg.npcSyncId)) : NaN;
+          const fromId = msg.fromId != null ? Math.floor(Number(msg.fromId)) : NaN;
+          if (!Number.isFinite(npcSyncId) || !Number.isFinite(fromId)) break;
+          if (fromId !== id) break;
+          broadcastAll({ type: 'npc_boarding_sink', npcSyncId, fromId });
+          break;
+        }
         case 'delete_captain_career': {
           const stripPid = msg.stripLeaderboardPlayerId != null ? Math.floor(Number(msg.stripLeaderboardPlayerId)) : null;
           /** Session-only captains (no server account): drop their leaderboard row by socket player id. */

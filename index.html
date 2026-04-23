@@ -1739,7 +1739,7 @@ body.game-help-mobile-minimal #game-help-panel{
 .debug-panel-footer button:hover{filter:brightness(1.08);}
 #debug-cheats-items .part-slot,#debug-ship-builder .part-slot{margin-bottom:4px;}
 /* Boarding (Total War–style control bar + spoils) */
-#board-prompt-btn{display:none;position:fixed;z-index:36;pointer-events:auto;padding:7px 14px;border-radius:10px;border:1px solid rgba(200,140,80,0.55);background:linear-gradient(180deg,#5a3818,#2a1808);color:#f0e0c8;font-family:Georgia,serif;font-size:12px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4);}
+#board-prompt-btn{display:none;position:fixed;z-index:36;pointer-events:auto;padding:7px 14px;border-radius:10px;border:1px solid rgba(200,140,80,0.55);background:linear-gradient(180deg,#5a3818,#2a1808);color:#f0e0c8;font-family:Georgia,serif;font-size:12px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4);transform:translate(-50%,-100%);left:0;top:0;}
 #board-prompt-btn:hover{filter:brightness(1.08);}
 #boarding-tw-wrap{display:none;position:fixed;left:50%;top:35%;right:auto;bottom:auto;z-index:35;pointer-events:none;padding:0 10px;transform:translate(-50%,-100%);max-width:min(720px,calc(100vw - 20px));}
 #boarding-tw-inner{max-width:720px;margin:0 auto;pointer-events:none;}
@@ -3749,13 +3749,21 @@ function applyLocalNpcKillLootFromNet(msg) {
  */
 function runNpcSinkOutcome(npc, killerPlayerId) {
   if (!npc || npc.sinking) return;
+  const kid0 = killerPlayerId != null && Number.isFinite(Number(killerPlayerId))
+    ? Math.floor(Number(killerPlayerId)) : null;
+  const iKilled0 = kid0 != null && Number(kid0) === Number(G.myId);
+  if (ws?.readyState === 1 && !isMultiplayerHost() && iKilled0) {
+    try {
+      ws.send(JSON.stringify({ type: 'npc_boarding_sink', npcSyncId: npc.syncId, fromId: G.myId }));
+    } catch (e) {}
+    return;
+  }
   if (npc.isEscortCargo && npc.escortQuestActive) {
     failEscortQuest('The contract vessel was sunk — escort failed.', npc.syncId);
   }
   const wasEscortContractShip = !!npc.isEscortCargo;
-  const kid = killerPlayerId != null && Number.isFinite(Number(killerPlayerId))
-    ? Math.floor(Number(killerPlayerId)) : null;
-  const iKilled = kid != null && Number(kid) === Number(G.myId);
+  const kid = kid0;
+  const iKilled = iKilled0;
   const missionOwner = npc.missionOwnerPlayerId != null ? npc.missionOwnerPlayerId : (npc.isStoryBounty ? G.myId : null);
   const storyMission = !!(npc.isStoryBounty && missionOwner != null);
   const goldLoot = storyMission ? 0 : (wasEscortContractShip ? 0 : 30);
@@ -3809,6 +3817,7 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
     G.politics.crimes = Math.min(999, (G.politics.crimes || 0) + 5);
   }
   tryProgressFactionLetters(npc, kid);
+  npc._boardingHostLock = false;
   npc.sinking = true;
   npc.sinkTimer = 0;
   npc.speed = 0;
@@ -11787,6 +11796,12 @@ function showBoardingHud(ourName, theirName, pAlive, eAlive, pTot, eTot, swapBar
 function packBoardingForNetwork() {
   const b = G.boarding;
   if (!b) return null;
+  if (b.partnerPlayerId != null && b.npcSyncId == null && !boardingIAmSimLeader(b)) return null;
+  if (b.phase === 'spoils' && b.partnerPlayerId != null && b._pvpTerminalForNet) {
+    const snap = b._pvpTerminalForNet;
+    b._pvpTerminalForNet = null;
+    return Object.assign({}, snap, { sid: Math.floor(Number(b.partnerPlayerId) || 0) });
+  }
   if (b.phase === 'spoils' || b.phase === 'await_opponent') return null;
   const sid = b.npcSyncId != null
     ? boardingEncodedNpcSid(b.npcSyncId)
@@ -11833,7 +11848,8 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
 function tryStartDefenderFromNetwork(attackerId, bo) {
   if (G.boarding || G.docked || G.playerSinking) return;
   if (G.myId == null) return;
-  if (netPlayerId(bo.sid) !== G.myId) return;
+  const sidN = Math.floor(Number(bo.sid));
+  if (!(sidN > 0) || netPlayerId(bo.sid) !== G.myId) return;
   const atk = G.otherPlayers.get(attackerId);
   if (!atk) return;
   const aName = atk ? (atk.shipName || networkPlayerCaptainName(atk)) : 'Attacker';
@@ -11949,9 +11965,31 @@ function boardingCombatTick() {
 }
 function endBoardingResolution() {
   const b = G.boarding;
-  if (!b) return;
+  if (!b || b.phase !== 'fight') return;
   const youWin = b.isDefender ? ((b.eAtk | 0) > 0) : ((b.pAtk | 0) > 0);
   const won = youWin;
+  if (b.partnerPlayerId != null && boardingIAmSimLeader(b)) {
+    const term = {
+      ph: 'f',
+      t: Math.min(999, Math.max(0, b.tNet | 0)),
+      hd: 2.45,
+      pa: Math.min(48, Math.max(0, b.pAtk | 0)),
+      pH: Math.min(48, Math.max(0, b.pHeart | 0)),
+      ea: Math.min(48, Math.max(0, b.eAtk | 0)),
+      eH: Math.min(48, Math.max(0, b.eHeart | 0)),
+      pTo: Math.min(96, Math.max(0, b.pTotal | 0)),
+      eTo: Math.min(96, Math.max(0, b.eTotal | 0)),
+      nx: G.player.x,
+      nz: G.player.z,
+      nr: G.player.rotation
+    };
+    if (b.lockEX != null && b.lockEZ != null && b.lockER != null) {
+      term.ex = b.lockEX;
+      term.ez = b.lockEZ;
+      term.er = b.lockER;
+    }
+    b._pvpTerminalForNet = term;
+  }
   b.phase = 'spoils';
   b.outcomeWon = youWin;
   if (!youWin) {
@@ -12190,6 +12228,20 @@ function updateBoardingRopes() {
       const bo = row && row.boarding;
       if (!bo || bo.sid == null) return;
       const sidN = Math.floor(Number(bo.sid));
+      if (sidN < 0) {
+        const syncId = -(sidN + 1);
+        const key = 'npc:' + syncId + ':' + pid;
+        if (seenPairs.has(key)) return;
+        seenPairs.add(key);
+        if (G.boarding && G.boarding.npcSyncId != null && G.boarding.npcSyncId === syncId
+          && G.boarding.attackerId != null && Number(G.boarding.attackerId) === Number(G.myId)) return;
+        const ox = Number(bo.nx), oz = Number(bo.nz), or = Number(bo.nr);
+        const ex = Number(bo.ex), ez = Number(bo.ez);
+        if (!Number.isFinite(ox) || !Number.isFinite(oz) || !Number.isFinite(ex) || !Number.isFinite(ez)) return;
+        const pType = row.shipType || 'sloop';
+        meshIdx = writeBoardingRopePair(meshIdx, ox, oz, or, pType, ex, ez);
+        return;
+      }
       if (sidN <= 0) return;
       const a = Math.min(Number(pid), sidN), c = Math.max(Number(pid), sidN);
       const key = a + ':' + c;
@@ -12216,11 +12268,21 @@ function tickRemoteBoardingSpectatorUi() {
     const bo = row && row.boarding;
     if (!bo || (bo.ph !== 'f' && bo.ph !== 'h')) return;
     const sidN = Math.floor(Number(bo.sid));
+    if (sidN < 0) {
+      const syncId = -(sidN + 1);
+      const npc = G.npcs.find(n => n.syncId === syncId);
+      const ox = Number(bo.nx), oz = Number(bo.nz);
+      if (!Number.isFinite(ox) || !Number.isFinite(oz)) return;
+      const d = Math.hypot(ox - G.player.x, oz - G.player.z);
+      const npcName = (npc && npc.name) ? String(npc.name) : 'Enemy';
+      if (d < bestD) { bestD = d; best = { row, bo, pid, sidN, isNpc: true, npcName }; }
+      return;
+    }
     if (!(sidN > 0)) return;
     const ox = Number(bo.nx), oz = Number(bo.nz);
     if (!Number.isFinite(ox) || !Number.isFinite(oz)) return;
     const d = Math.hypot(ox - G.player.x, oz - G.player.z);
-    if (d < bestD) { bestD = d; best = { row, bo, pid, sidN }; }
+    if (d < bestD) { bestD = d; best = { row, bo, pid, sidN, isNpc: false }; }
   });
   const tw = document.getElementById('boarding-tw-wrap');
   if (!best) {
@@ -12230,16 +12292,25 @@ function tickRemoteBoardingSpectatorUi() {
     }
     return;
   }
-  const { row, bo, pid } = best;
-  const opp = G.otherPlayers.get(netPlayerId(bo.sid));
-  const nameA = (row.shipName && String(row.shipName).trim()) || networkPlayerCaptainName(row) || 'Ship';
-  const nameB = opp ? ((opp.shipName && String(opp.shipName).trim()) || networkPlayerCaptainName(opp)) : 'Ship';
-  const lid = Math.min(netPlayerId(pid) || 0, netPlayerId(bo.sid) || 0);
-  const rowIsLeader = (netPlayerId(pid) === lid);
-  const pAlive = rowIsLeader ? (bo.pa | 0) : (bo.ea | 0);
-  const eAlive = rowIsLeader ? (bo.ea | 0) : (bo.pa | 0);
-  const pTot = rowIsLeader ? (bo.pTo | 0) : (bo.eTo | 0);
-  const eTot = rowIsLeader ? (bo.eTo | 0) : (bo.pTo | 0);
+  const { row, bo, pid, isNpc, npcName } = best;
+  let nameA = (row.shipName && String(row.shipName).trim()) || networkPlayerCaptainName(row) || 'Ship';
+  let nameB = 'Ship';
+  let pAlive = bo.pa | 0;
+  let eAlive = bo.ea | 0;
+  let pTot = bo.pTo | 0;
+  let eTot = bo.eTo | 0;
+  if (isNpc) {
+    nameB = npcName || 'Enemy';
+  } else {
+    const opp = G.otherPlayers.get(netPlayerId(bo.sid));
+    nameB = opp ? ((opp.shipName && String(opp.shipName).trim()) || networkPlayerCaptainName(opp)) : 'Ship';
+    const lid = Math.min(netPlayerId(pid) || 0, netPlayerId(bo.sid) || 0);
+    const rowIsLeader = (netPlayerId(pid) === lid);
+    pAlive = rowIsLeader ? (bo.pa | 0) : (bo.ea | 0);
+    eAlive = rowIsLeader ? (bo.ea | 0) : (bo.pa | 0);
+    pTot = rowIsLeader ? (bo.pTo | 0) : (bo.eTo | 0);
+    eTot = rowIsLeader ? (bo.eTo | 0) : (bo.pTo | 0);
+  }
   showBoardingHud(nameA, nameB, pAlive, eAlive, pTot, eTot, false);
   if (tw) tw.setAttribute('data-remote-only', '1');
   const mx = (Number(bo.nx) + Number(bo.ex)) * 0.5;
@@ -12249,7 +12320,7 @@ function tickRemoteBoardingSpectatorUi() {
 function updateBoardingUiOverlay() {
   const btn = document.getElementById('board-prompt-btn');
   if (!btn) return;
-  if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.boarding) {
+  if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.boarding || !isFloatingNametagVisibleNow()) {
     btn.style.display = 'none';
     return;
   }
@@ -12274,27 +12345,29 @@ function updateBoardingUiOverlay() {
     btn.style.display = 'block';
     const sg = otherShipGroups.get(bestId);
     if (sg && camera) {
-      const v = new THREE.Vector3(0, (SHIP_TYPES[best.shipType] || SHIP_TYPES.sloop).hullH + 2.2, 0);
+      const spec = SHIP_TYPES[best.shipType] || SHIP_TYPES.sloop;
+      const v = new THREE.Vector3(0, spec.hullH + spec.hullLen * 0.7 + 2 + 0.55, 0);
       v.applyMatrix4(sg.matrixWorld);
       v.project(camera);
       const w = window.innerWidth, h = window.innerHeight;
       const x = (v.x * 0.5 + 0.5) * w, y = (-v.y * 0.5 + 0.5) * h;
-      btn.style.left = (x - btn.offsetWidth * 0.5) + 'px';
-      btn.style.top = (y - 28) + 'px';
+      btn.style.left = x + 'px';
+      btn.style.top = y + 'px';
     }
     btn.textContent = 'Board';
     btn.onclick = () => startPlayerBoardingAttack(bestId);
   } else if (npcT) {
     btn.style.display = 'block';
     if (npcT.mesh) {
-      const v = new THREE.Vector3(0, 2, 0);
+      const spec = SHIP_TYPES[npcT.type] || SHIP_TYPES.sloop;
+      const v = new THREE.Vector3(0, spec.hullH + spec.hullLen * 0.7 + 2 + 0.55, 0);
       npcT.mesh.updateMatrixWorld();
       v.applyMatrix4(npcT.mesh.matrixWorld);
       v.project(camera);
       const w = window.innerWidth, h = window.innerHeight;
       const x = (v.x * 0.5 + 0.5) * w, y = (-v.y * 0.5 + 0.5) * h;
-      btn.style.left = (x - btn.offsetWidth * 0.5) + 'px';
-      btn.style.top = (y - 28) + 'px';
+      btn.style.left = x + 'px';
+      btn.style.top = y + 'px';
     }
     btn.textContent = 'Board';
     btn.onclick = () => startNpcBoardingAttack(npcT);
@@ -12313,6 +12386,9 @@ function tickBoardingEngagement(dt) {
       const lRow = G.otherPlayers.get(lid);
       if (lRow && lRow.boarding) mergeBoardingFromLeaderPayload(lRow.boarding, lid);
     }
+  }
+  if (b.partnerPlayerId != null && b.phase === 'fight' && !boardingIAmSimLeader(b)) {
+    if ((b.pAtk | 0) <= 0 || (b.eAtk | 0) <= 0) endBoardingResolution();
   }
   if (b.phase === 'pull') {
     b.pullT = (b.pullT || 0) + dt / BOARDING_PULL_DUR;
@@ -12380,7 +12456,9 @@ function ingestRemoteBoardingState(players) {
     const pid = netPlayerId(row.id);
     if (pid == null || pid === G.myId) continue;
     const bo = row.boarding;
-    if (bo.sid === Number(G.myId) && !G.boarding) tryStartDefenderFromNetwork(pid, bo);
+    if (Math.floor(Number(bo.sid)) > 0 && netPlayerId(bo.sid) === G.myId && !G.boarding) {
+      tryStartDefenderFromNetwork(pid, bo);
+    }
   }
 }
 
@@ -15690,6 +15768,12 @@ async function connectToServer() {
     }));
     sendUpdate();
     syncWorldProgressToServerIfNeeded();
+    setTimeout(() => {
+      if (G.mode !== 'playing' || !G.playWorldAwaitingNetInit) return;
+      const s = (prefetchedServerSeed != null ? Number(prefetchedServerSeed) : G.worldSeed) >>> 0;
+      applySharedWorldFromServerSeed(s);
+      notify('World sync recovered.', 3200);
+    }, 680);
   };
   ws.onmessage = (e) => {
     let msg;
@@ -16076,6 +16160,21 @@ async function connectToServer() {
           const rid = fromId != null && Number.isFinite(fromId) ? fromId : null;
           runNpcSinkOutcome(npc, rid);
         }
+        break;
+      }
+      case 'npc_boarding_sink': {
+        if (!isMultiplayerHost()) break;
+        const fromId = msg.fromId != null ? Math.floor(Number(msg.fromId)) : NaN;
+        const npcSyncId = msg.npcSyncId != null ? Math.floor(Number(msg.npcSyncId)) : NaN;
+        if (!Number.isFinite(fromId) || !Number.isFinite(npcSyncId)) break;
+        if (fromId === G.myId) break;
+        const npc = G.npcs.find(n => n.syncId === npcSyncId);
+        if (!npc || npc.sinking) break;
+        const spid = netPlayerId(fromId);
+        const shooter = spid != null ? G.otherPlayers.get(spid) : null;
+        if (!shooter || shooter.x == null || shooter.z == null) break;
+        if (Math.hypot(shooter.x - npc.x, shooter.z - npc.z) > 260) break;
+        runNpcSinkOutcome(npc, fromId);
         break;
       }
       case 'captain_career_deleted':
