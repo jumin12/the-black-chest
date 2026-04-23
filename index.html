@@ -2693,18 +2693,8 @@ function clampNpcIntoWorldBounds(npc) {
   npc.z = Math.max(-lim, Math.min(lim, npc.z));
 }
 const RENDER_DIST = isMobile ? (isLowEndMobile ? 1 : 2) : 3;
-/** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload + wildlife hide use the same band). */
+/** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload only; visibility uses `RENDER_DIST` ring). */
 const CHUNK_UNLOAD_MARGIN = isLowEndMobile ? 1 : 2;
-/** Match `getProceduralIslandMeta` worst-case `radius` after size-class scaling (terrain mesh is ~radius×1.1 from chunk anchor). */
-const PROC_ISLAND_RADIUS_MAX = 285;
-const CHUNK_JITTER_MAX = CHUNK_SIZE * 0.17;
-/** Ships / VFX use the same streaming anchor as `updateChunks` (not the orbit camera); radius ~ furthest land vertex for |Δchunk|∞ ≤ RENDER_DIST. */
-const WILDLIFE_CULL_RADIUS =
-  RENDER_DIST * Math.SQRT2 * CHUNK_SIZE +
-  CHUNK_SIZE * 0.5 +
-  CHUNK_JITTER_MAX * 2 +
-  PROC_ISLAND_RADIUS_MAX * 1.15;
-const WILDLIFE_CULL_R2 = WILDLIFE_CULL_RADIUS * WILDLIFE_CULL_RADIUS;
 function mainCanvasPixelRatio() {
   const raw = Math.max(0.5, window.devicePixelRatio || 1);
   let cap = isMobile ? 1.36 : 1.65;
@@ -8937,36 +8927,32 @@ function wildlifeCullCenterXZ() {
   }
   return { x: wx, z: wz };
 }
-function wildlifeIsNearCullCenter(wx, wz, cx, cz) {
-  const dx = wx - cx, dz = wz - cz;
-  return dx * dx + dz * dz <= WILDLIFE_CULL_R2;
-}
-/** Same Chebyshev chunk ring as `updateChunks` / `generateIsland` (not prune margin) — hulls never draw from chunks that are not streamed. */
+/** Same Chebyshev chunk ring as `updateChunks` / `generateIsland` (not prune margin). */
 function terrainStreamChunkIndicesAtWorld(wx, wz) {
   return { pcx: Math.floor(wx / CHUNK_SIZE), pcz: Math.floor(wz / CHUNK_SIZE) };
 }
-function isHullInTerrainStreamRing(shipWx, shipWz, streamPcx, streamPcz) {
-  const { pcx: scx, pcz: scz } = terrainStreamChunkIndicesAtWorld(shipWx, shipWz);
+function isInTerrainStreamChunkRing(worldX, worldZ, streamPcx, streamPcz) {
+  const { pcx: scx, pcz: scz } = terrainStreamChunkIndicesAtWorld(worldX, worldZ);
   return Math.max(Math.abs(scx - streamPcx), Math.abs(scz - streamPcz)) <= RENDER_DIST;
 }
-/** Hide distant NPC and remote-player hulls using the same band as islands / wildlife (player / spectate anchor — matches `updateChunks`). */
+/** Hide distant NPC and remote-player hulls (player / spectate anchor — matches `updateChunks`). */
 function updateShipMeshCullVisibility() {
   const c = wildlifeCullCenterXZ();
   const { pcx, pcz } = terrainStreamChunkIndicesAtWorld(c.x, c.z);
   for (let i = 0; i < G.npcs.length; i++) {
     const npc = G.npcs[i];
     if (!npc.mesh) continue;
-    npc.mesh.visible = isHullInTerrainStreamRing(npc.x, npc.z, pcx, pcz);
+    npc.mesh.visible = isInTerrainStreamChunkRing(npc.x, npc.z, pcx, pcz);
   }
   otherShipGroups.forEach(sg => {
     if (!sg) return;
-    sg.visible = isHullInTerrainStreamRing(sg.position.x, sg.position.z, pcx, pcz);
+    sg.visible = isInTerrainStreamChunkRing(sg.position.x, sg.position.z, pcx, pcz);
   });
 }
-/** Toggle open-ocean reef meshes, flotsam, and VFX debris by distance (same band as islands / fish). */
+/** Reefs, flotsam, loot visuals — same chunk ring as islands and hulls. */
 function updateDecorationCullVisibility() {
   const c = wildlifeCullCenterXZ();
-  const cx = c.x, cz = c.z;
+  const { pcx, pcz } = terrainStreamChunkIndicesAtWorld(c.x, c.z);
   const roots = G.seaReefRoots;
   if (roots && roots.length) {
     for (let i = 0; i < roots.length; i++) {
@@ -8974,21 +8960,21 @@ function updateDecorationCullVisibility() {
       if (!g) continue;
       const rx = g.userData.reefCullX != null ? g.userData.reefCullX : 0;
       const rz = g.userData.reefCullZ != null ? g.userData.reefCullZ : 0;
-      g.visible = wildlifeIsNearCullCenter(rx, rz, cx, cz);
+      g.visible = isInTerrainStreamChunkRing(rx, rz, pcx, pcz);
     }
   }
   for (let i = G.seaDebris.length - 1; i >= 0; i--) {
     const d = G.seaDebris[i];
-    if (d) d.visible = wildlifeIsNearCullCenter(d.position.x, d.position.z, cx, cz);
+    if (d) d.visible = isInTerrainStreamChunkRing(d.position.x, d.position.z, pcx, pcz);
   }
   for (let i = G.damageChunks.length - 1; i >= 0; i--) {
     const ch = G.damageChunks[i];
-    if (ch) ch.visible = wildlifeIsNearCullCenter(ch.position.x, ch.position.z, cx, cz);
+    if (ch) ch.visible = isInTerrainStreamChunkRing(ch.position.x, ch.position.z, pcx, pcz);
   }
   for (let fi = 0; fi < G.floatingItems.length; fi++) {
     const item = G.floatingItems[fi];
     if (item && item.lootVisual) {
-      item.lootVisual.visible = wildlifeIsNearCullCenter(item.x, item.z, cx, cz);
+      item.lootVisual.visible = isInTerrainStreamChunkRing(item.x, item.z, pcx, pcz);
     }
   }
 }
@@ -9125,6 +9111,7 @@ function smoothstep01(u) {
 function updateAmbientSharkPairs(dt) {
   const t = getWildlifeWorldTime();
   const cc = wildlifeCullCenterXZ();
+  const { pcx, pcz } = terrainStreamChunkIndicesAtWorld(cc.x, cc.z);
   for (const pair of ambientSharkPairs) {
     const t0 = pair.orbitT0 != null ? pair.orbitT0 : t;
     const orbitRamp = smoothstep01((t - t0) / 9);
@@ -9161,7 +9148,7 @@ function updateAmbientSharkPairs(dt) {
     pair.mB.rotation.y = Math.atan2(vxb, vzb);
     applyPredatorSharkSwimMotion(pair.mB, 0.92, -Math.sin(a2) * 0.085);
     const mx = (ax + bx) * 0.5, mz = (az + bz) * 0.5;
-    const vis = wildlifeIsNearCullCenter(mx, mz, cc.x, cc.z);
+    const vis = isInTerrainStreamChunkRing(mx, mz, pcx, pcz);
     pair.mA.visible = vis;
     pair.mB.visible = vis;
   }
@@ -9262,10 +9249,11 @@ function updateRescueSharkEscorts(dt) {
   const departSpeed = 16;
   const t = getWildlifeWorldTime();
   const cc = wildlifeCullCenterXZ();
+  const { pcx, pcz } = terrainStreamChunkIndicesAtWorld(cc.x, cc.z);
   const applyRescueSharkCull = (e) => {
     const mx = (e.mA.position.x + e.mB.position.x) * 0.5;
     const mz = (e.mA.position.z + e.mB.position.z) * 0.5;
-    const vis = wildlifeIsNearCullCenter(mx, mz, cc.x, cc.z);
+    const vis = isInTerrainStreamChunkRing(mx, mz, pcx, pcz);
     e.mA.visible = vis;
     e.mB.visible = vis;
   };
@@ -9670,6 +9658,7 @@ const FISH_SWIM_TIME_MULT = 0.5;
 function updateFish(dt) {
   const t = getWildlifeWorldTime() * FISH_SWIM_TIME_MULT;
   const cc = wildlifeCullCenterXZ();
+  const { pcx, pcz } = terrainStreamChunkIndicesAtWorld(cc.x, cc.z);
   schoolLeaders.forEach(l => {
     if (l.anchorX == null) {
       const ax = l.x != null ? l.x : 0;
@@ -9725,7 +9714,7 @@ function updateFish(dt) {
     f.position.x = tx;
     f.position.z = tz;
     f.position.y = worldSeaSurfaceY(f.position.x, f.position.z) + l.floatOffset + Math.sin(t * 3 + f.userData.wiggle) * 0.08;
-    f.visible = wildlifeIsNearCullCenter(tx, tz, cc.x, cc.z);
+    f.visible = isInTerrainStreamChunkRing(tx, tz, pcx, pcz);
     const a = t * l.wA + l.phA;
     const b = t * l.wB + l.phB;
     const vx = Math.cos(a) * l.wA * l.amp + Math.cos(b * 1.17) * l.wB * 1.17 * l.amp * 0.38;
@@ -9739,6 +9728,7 @@ function updateFish(dt) {
 function updateSeagulls(dt) {
   const wt = getWildlifeWorldTime();
   const cc = wildlifeCullCenterXZ();
+  const { pcx, pcz } = terrainStreamChunkIndicesAtWorld(cc.x, cc.z);
   seagulls.forEach(sg => {
     const p = (sg.userData.t0Phase != null ? sg.userData.t0Phase : 0) + wt * sg.userData.speed;
     sg.position.x = sg.userData.cx + Math.cos(p) * sg.userData.radius;
@@ -9748,7 +9738,7 @@ function updateSeagulls(dt) {
     const wingFlap = Math.sin(wt * 2.6 + p * 3) * 0.4;
     sg.userData.wingL.rotation.z = wingFlap;
     sg.userData.wingR.rotation.z = -wingFlap;
-    sg.visible = wildlifeIsNearCullCenter(sg.position.x, sg.position.z, cc.x, cc.z);
+    sg.visible = isInTerrainStreamChunkRing(sg.position.x, sg.position.z, pcx, pcz);
   });
 }
 
