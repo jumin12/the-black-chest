@@ -39,8 +39,8 @@ function sanitizeBoardingFromClient(b) {
     eH: Math.max(0, Math.min(48, Math.floor(Number(b.eH) || 0))),
     pTo: Math.max(0, Math.min(96, Math.floor(Number(b.pTo) || 0))),
     eTo: Math.max(0, Math.min(96, Math.floor(Number(b.eTo) || 0))),
-    cA: Math.max(0, Math.min(32, Math.floor(Number(b.cA) || 0))),
-    cE: Math.max(0, Math.min(32, Math.floor(Number(b.cE) || 0))),
+    aC: Math.max(0, Math.min(48, Math.floor(Number(b.aC) || 0))),
+    dC: Math.max(0, Math.min(48, Math.floor(Number(b.dC) || 0))),
     nx: Math.max(-5e5, Math.min(5e5, nx)),
     nz: Math.max(-5e5, Math.min(5e5, nz)),
     nr: Math.max(-1e4, Math.min(1e4, nr))
