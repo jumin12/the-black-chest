@@ -2297,6 +2297,18 @@ wss.on('connection', (ws, req) => {
           broadcast({ type: 'ship_hit_fx', x, z, y: Number.isFinite(y) ? y : null }, id);
           break;
         }
+        case 'npc_damage_popup': {
+          const wx = Number(msg.wx);
+          const wz = Number(msg.wz);
+          if (!Number.isFinite(wx) || !Number.isFinite(wz)) break;
+          const wy = msg.wy != null && Number.isFinite(Number(msg.wy)) ? Number(msg.wy) : null;
+          const text = msg.text != null ? String(msg.text).slice(0, 220) : '';
+          if (!text) break;
+          const cssClass = msg.cssClass != null ? String(msg.cssClass).slice(0, 24) : '';
+          const life = msg.life != null && Number.isFinite(Number(msg.life)) ? Math.max(0.5, Math.min(8, Number(msg.life))) : 2.1;
+          broadcast({ type: 'npc_damage_popup', wx, wz, wy, text, cssClass, life }, id);
+          break;
+        }
         case 'world_story_push': {
           const st = sanitizeWorldStory(msg.story);
           playerStories.set(id, st);

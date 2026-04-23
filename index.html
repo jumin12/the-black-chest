@@ -3239,7 +3239,11 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
   if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
   else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
   else if (at === 'ball') popMsg = `Round shot · −${dh}`;
-  showCombatPopupWorld(npc.x, npc.z, `${npc.name}: ${popMsg} (${Math.max(0, Math.round(npc.health))} HP)`, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '', life: 2.1 });
+  const hullAfter = Math.max(0, Math.round(npc.health));
+  const popName = npc.name;
+  const popWx = npc.x, popWz = npc.z;
+  const popWy = worldSeaSurfaceY(npc.x, npc.z) + 3.6;
+  showCombatPopupWorld(popWx, popWz, `${popName}: ${popMsg} (${hullAfter} HP)`, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '', life: 2.1, wy: popWy });
   spawnDamageChunks(bx, by, bz);
   if (ws?.readyState === 1) {
     try { ws.send(JSON.stringify({ type: 'ship_hit_fx', x: bx, y: by, z: bz })); } catch (e) {}
@@ -3253,6 +3257,19 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
   if (npc.health <= 0) {
     const kid = killerPlayerId != null && Number.isFinite(Number(killerPlayerId)) ? Number(killerPlayerId) : null;
     runNpcSinkOutcome(npc, kid);
+  }
+  if (isMultiplayerHost() && ws?.readyState === 1) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'npc_damage_popup',
+        wx: popWx,
+        wz: popWz,
+        wy: popWy,
+        text: `${popName}: ${popMsg} (${hullAfter} HP)`,
+        cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '',
+        life: 2.1
+      }));
+    } catch (e) {}
   }
 }
 
@@ -4911,6 +4928,10 @@ function setPlayerCrewStation(crewIdx, targetRole) {
 function notifyStackPush(text, durationMs, className) {
   const stack = document.getElementById('notification-stack');
   if (!stack) return;
+  const MAX_NOTIFY_ROWS = 16;
+  while (stack.children.length >= MAX_NOTIFY_ROWS) {
+    try { stack.removeChild(stack.firstChild); } catch (e) { break; }
+  }
   const row = document.createElement('div');
   row.className = 'notify-stack-item' + (className ? ' ' + String(className) : '');
   row.textContent = text;
@@ -15029,6 +15050,18 @@ async function connectToServer() {
         }
         break;
       }
+      case 'npc_damage_popup': {
+        if (G.mode !== 'playing') break;
+        const wx = Number(msg.wx), wz = Number(msg.wz);
+        if (!Number.isFinite(wx) || !Number.isFinite(wz)) break;
+        const wy = msg.wy != null && Number.isFinite(Number(msg.wy)) ? Number(msg.wy) : SEA_LEVEL + 3.6;
+        const txt = msg.text != null ? String(msg.text) : '';
+        if (!txt) break;
+        const life = msg.life != null && Number.isFinite(Number(msg.life)) ? Number(msg.life) : 2.1;
+        const cssClass = msg.cssClass != null ? String(msg.cssClass) : '';
+        showCombatPopupWorld(wx, wz, txt, { wy, life, cssClass });
+        break;
+      }
       case 'cannonball': {
         const cby = msg.y != null && Number.isFinite(Number(msg.y)) ? Number(msg.y) : undefined;
         fireCannonball(msg.x, msg.z, msg.dx, msg.dz, cby, 'other_player', msg.shooterId != null ? Number(msg.shooterId) : null, msg.ammoType);
@@ -17927,40 +17960,53 @@ function showCombatPopupWorld(wx, wz, text, opts) {
   });
 }
 
+const _combatPopupProj = new THREE.Vector3();
+let _combatPopupStatsPadY = 0;
+let _combatPopupStatsPadFrame = -1;
 function updateCombatPopups(dt) {
   if (!G.combatPopups3D || !G.combatPopups3D.length || typeof camera === 'undefined') return;
   const cw = window.innerWidth, ch = window.innerHeight;
   const pxScr = 0.5 * cw, pyScr = 0.42 * ch;
   const avoidR = Math.min(cw, ch) * 0.21;
+  let statsPadY = _combatPopupStatsPadY;
+  if (G.mode === 'playing') {
+    const f = typeof _gameLoopFrame === 'number' ? _gameLoopFrame : 0;
+    if (f !== _combatPopupStatsPadFrame) {
+      _combatPopupStatsPadFrame = f;
+      statsPadY = 0;
+      const st = document.getElementById('stats-ammo-stack');
+      if (st) {
+        const rst = window.getComputedStyle(st);
+        if (rst.display !== 'none' && rst.visibility !== 'hidden') {
+          const br = st.getBoundingClientRect();
+          if (br.height >= 2) statsPadY = br.bottom + 6;
+        }
+      }
+      _combatPopupStatsPadY = statsPadY;
+    }
+  } else {
+    statsPadY = 0;
+    _combatPopupStatsPadY = 0;
+  }
   for (let i = G.combatPopups3D.length - 1; i >= 0; i--) {
     const p = G.combatPopups3D[i];
     p.t += dt;
-    const v = new THREE.Vector3(p.wx, p.wy, p.wz);
-    v.project(camera);
-    if (p.t >= p.life || v.z > 1) {
+    _combatPopupProj.set(p.wx, p.wy, p.wz);
+    _combatPopupProj.project(camera);
+    if (p.t >= p.life || _combatPopupProj.z > 1) {
       p.el.remove();
       G.combatPopups3D.splice(i, 1);
       continue;
     }
-    let sx = (v.x * 0.5 + 0.5) * cw;
-    let sy = (-v.y * 0.5 + 0.5) * ch;
+    let sx = (_combatPopupProj.x * 0.5 + 0.5) * cw;
+    let sy = (-_combatPopupProj.y * 0.5 + 0.5) * ch;
     const dx = sx - pxScr, dy = sy - pyScr;
     if (Math.hypot(dx, dy) < avoidR) {
       const d = Math.hypot(dx, dy) || 1;
       sx = pxScr + (dx / d) * (avoidR + 18);
       sy = pyScr + (dy / d) * (avoidR + 18);
     }
-    if (G.mode === 'playing') {
-      const st = document.getElementById('stats-ammo-stack');
-      if (st) {
-        const rst = window.getComputedStyle(st);
-        if (rst.display !== 'none' && rst.visibility !== 'hidden') {
-          const br = st.getBoundingClientRect();
-          const pad = br.bottom + 6;
-          if (br.height >= 2 && sy < pad) sy = pad;
-        }
-      }
-    }
+    if (statsPadY > 0 && sy < statsPadY) sy = statsPadY;
     p.el.style.left = `${sx}px`;
     p.el.style.top = `${sy}px`;
     p.el.style.transform = 'translate(-50%, -100%)';
@@ -24745,7 +24791,17 @@ const CLIENT_AUTOSAVE_INTERVAL_SEC = 60;
 let _gameLoopFrame = 0;
 function gameLoop(time) {
   requestAnimationFrame(gameLoop);
-  const dt = Math.min((time - lastTime) / 1000, 0.1);
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    lastTime = time;
+    document.body.classList.toggle('game-playing', G.mode === 'playing');
+    return;
+  }
+  let dt = (time - lastTime) / 1000;
+  if (lastTime <= 0) {
+    lastTime = time;
+    return;
+  }
+  dt = Math.min(dt, 0.1);
   lastTime = time;
   _gameLoopFrame++;
   document.body.classList.toggle('game-playing', G.mode === 'playing');
@@ -26351,6 +26407,10 @@ document.getElementById('touch-broadsides-layer').style.display = 'none';
 
 function menuRender() {
   if (G.mode !== 'playing') {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      requestAnimationFrame(menuRender);
+      return;
+    }
     try {
       G.time += 0.016;
       waterUniforms.uTime.value = G.time;
