@@ -2089,8 +2089,12 @@ wss.on('connection', (ws, req) => {
             }
           }
           if (msg.boarding !== undefined) {
-            if (msg.boarding === null) p.boarding = null;
-            else p.boarding = sanitizeBoardingFromClient(msg.boarding);
+            if (msg.boarding === null) {
+              p.boarding = null;
+            } else {
+              const s = sanitizeBoardingFromClient(msg.boarding);
+              if (s != null) p.boarding = s;
+            }
           }
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {

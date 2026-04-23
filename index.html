@@ -11805,13 +11805,42 @@ function showBoardingHud(ourName, theirName, pAlive, eAlive, pTot, eTot, swapBar
     if (fb) fb.style.width = (et) + '%';
   }
 }
+/** PvP defender (non-authority): was returning null and overwrote the row with `boarding: null` every 45 updates → desync, broken ropes, bad visibility. */
+function packPvPNonAuthorityBoardingForNetwork() {
+  const b = G.boarding;
+  if (!b || b.npcSyncId != null || b.partnerPlayerId == null) return null;
+  if (G.myId == null) return null;
+  const sid = Math.floor(Number(b.partnerPlayerId) || 0);
+  if (!Number.isFinite(sid) || sid === 0) return null;
+  if (b.phase === 'await_opponent') return null;
+  const ph = b.phase === 'spoils' ? 'e' : b.phase === 'fight' ? 'f' : 'h';
+  const t = Math.min(999, Math.max(0, b.tNet | 0));
+  const pa = Math.min(48, Math.max(0, b.pAtk | 0));
+  const ea = Math.min(48, Math.max(0, b.eAtk | 0));
+  const pH = Math.min(48, Math.max(0, b.pHeart | 0));
+  const eH = Math.min(48, Math.max(0, b.eHeart | 0));
+  const pTo = Math.min(96, Math.max(0, b.pTotal | 0));
+  const eTo = Math.min(96, Math.max(0, b.eTotal | 0));
+  const o = {
+    sid, ph, t, hd: 2.45, pa, pH, ea, eH, pTo, eTo,
+    nx: G.player.x, nz: G.player.z, nr: G.player.rotation
+  };
+  if (b.phase === 'pull') o.pl = Math.max(0, Math.min(1, Number(b.pullT) || 0));
+  if (b.lockEX != null && b.lockER != null) {
+    o.ex = b.lockEX; o.ez = b.lockEZ; o.er = b.lockER;
+  }
+  return o;
+}
 function packBoardingForNetwork() {
   const b = G.boarding;
   if (!b) return null;
-  if (b.partnerPlayerId != null && b.npcSyncId == null && !boardingIAmSimLeader(b)) return null;
-  /* PvP end: keep relaying the terminal snapshot until cleared (one-shot was cleared next frame → server null → defender froze). */
-  if (b.partnerPlayerId != null && b.npcSyncId == null && b._pvpTermSnap) {
-    return Object.assign({}, b._pvpTermSnap, { sid: Math.floor(Number(b.partnerPlayerId) || 0) });
+  if (b.partnerPlayerId != null && b.npcSyncId == null) {
+    if (b._pvpTermSnap) {
+      return Object.assign({}, b._pvpTermSnap, { sid: Math.floor(Number(b.partnerPlayerId) || 0) });
+    }
+    if (!boardingIAmSimLeader(b)) {
+      return packPvPNonAuthorityBoardingForNetwork();
+    }
   }
   if (b.phase === 'spoils' || b.phase === 'await_opponent') return null;
   const sid = b.npcSyncId != null
