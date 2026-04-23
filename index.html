@@ -2695,7 +2695,15 @@ function clampNpcIntoWorldBounds(npc) {
 const RENDER_DIST = isMobile ? (isLowEndMobile ? 1 : 2) : 3;
 /** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload + wildlife hide use the same band). */
 const CHUNK_UNLOAD_MARGIN = isLowEndMobile ? 1 : 2;
-const WILDLIFE_CULL_RADIUS = CHUNK_SIZE * (RENDER_DIST + CHUNK_UNLOAD_MARGIN + 1.1);
+/** Match `getProceduralIslandMeta` worst-case `radius` after size-class scaling (terrain mesh is ~radius×1.1 from chunk anchor). */
+const PROC_ISLAND_RADIUS_MAX = 285;
+const CHUNK_JITTER_MAX = CHUNK_SIZE * 0.17;
+/** Ships / VFX use the same streaming anchor as `updateChunks` (not the orbit camera); radius ~ furthest land vertex for |Δchunk|∞ ≤ RENDER_DIST. */
+const WILDLIFE_CULL_RADIUS =
+  RENDER_DIST * Math.SQRT2 * CHUNK_SIZE +
+  CHUNK_SIZE * 0.5 +
+  CHUNK_JITTER_MAX * 2 +
+  PROC_ISLAND_RADIUS_MAX * 1.15;
 const WILDLIFE_CULL_R2 = WILDLIFE_CULL_RADIUS * WILDLIFE_CULL_RADIUS;
 function mainCanvasPixelRatio() {
   const raw = Math.max(0.5, window.devicePixelRatio || 1);
@@ -4837,11 +4845,11 @@ function getStationSkillLevel(stationRole, skillKey) {
 function getGunnerySkillLevel() {
   return getStationSkillLevel('gunner', 'gunning');
 }
-/** HUD wedge half-angle (rad): high gunnery = tighter arc (matches shot spread). */
+/** HUD wedge half-angle (rad): high gunnery = tighter arc; round/grape shots draw yaw uniformly in ±this angle. */
 function getPlayerBroadsideHudHalfAngle() {
   const lv = getGunnerySkillLevel();
   const t = Math.max(0, Math.min(1, (lv - 1) / 4));
-  return BROADSIDE_ANGLE * (1.24 - t * 0.54);
+  return BROADSIDE_ANGLE * (1.24 - t * 0.54) * 0.8;
 }
 function getNavigationStationMult() {
   return crewStationSkillMult('navigator', 'navigation');
@@ -8922,17 +8930,18 @@ function anchorWildlifeClockFromServer(worldT) {
   _wildlifeSmoothOff = Math.max(-0.4, Math.min(0.4, _wildlifeSmoothOff));
 }
 function wildlifeCullCenterXZ() {
+  let wx = G.player.x, wz = G.player.z;
   if (G.spectate) {
     const t = resolveSpectateTargetXZR();
-    if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) return { x: t.x, z: t.z };
+    if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) { wx = t.x; wz = t.z; }
   }
-  return { x: camera.position.x, z: camera.position.z };
+  return { x: wx, z: wz };
 }
 function wildlifeIsNearCullCenter(wx, wz, cx, cz) {
   const dx = wx - cx, dz = wz - cz;
   return dx * dx + dz * dz <= WILDLIFE_CULL_R2;
 }
-/** Hide distant NPC and remote-player hulls using the same band as islands / wildlife (camera or spectate anchor). */
+/** Hide distant NPC and remote-player hulls using the same band as islands / wildlife (player / spectate anchor — matches `updateChunks`). */
 function updateShipMeshCullVisibility() {
   const c = wildlifeCullCenterXZ();
   const cx = c.x, cz = c.z;
@@ -17612,9 +17621,7 @@ function executeBroadsideVolley(info, opts) {
   /** Broadside world direction + mesh `cannonSide` both use the same sign as `fireSide` (1 = starboard, −1 = port). */
   const broadsideAngle = rot + fireSide * Math.PI / 2;
   const dirX0 = Math.sin(broadsideAngle), dirZ0 = Math.cos(broadsideAngle);
-  const gunLv = getGunnerySkillLevel();
-  const grapeSpreadMul = Math.max(0.38, 1.08 - gunLv * 0.13);
-  const roundYawErr = (Math.PI / 180) * (3.4 - gunLv * 0.62);
+  const hudHalf = getPlayerBroadsideHudHalfAngle();
   const guns = [];
   for (let i = 0; i < perSide; i++) {
     const localZ = (i - Math.floor(perSide / 2) + 0.5) * 1.5;
@@ -17637,7 +17644,7 @@ function executeBroadsideVolley(info, opts) {
       const wx = g.wx, wy = g.wy, wz = g.wz;
       let dirX = dirX0, dirZ = dirZ0;
       if (ammoKind !== 'grape') {
-        const yawJ = (Math.random() - 0.5) * 2 * roundYawErr;
+        const yawJ = (Math.random() - 0.5) * 2 * hudHalf;
         const c = Math.cos(yawJ), s = Math.sin(yawJ);
         dirX = dirX0 * c - dirZ0 * s;
         dirZ = dirX0 * s + dirZ0 * c;
@@ -17646,7 +17653,7 @@ function executeBroadsideVolley(info, opts) {
       if (ammoKind === 'grape') {
         const pelletsPerGun = 10;
         for (let p = 0; p < pelletsPerGun; p++) {
-          const spread = ((Math.random() - 0.5) * 0.58 + (Math.random() - 0.5) * 0.28) * grapeSpreadMul;
+          const spread = (Math.random() - 0.5) * 2 * hudHalf;
           const c = Math.cos(spread), s = Math.sin(spread);
           const pdx = dirX0 * c - dirZ0 * s;
           const pdz = dirX0 * s + dirZ0 * c;
