@@ -1776,6 +1776,13 @@ function isNavigatorAdminTokenOk(token) {
   return !!(exp && exp > Date.now());
 }
 
+/** World bounds: keep `state` snapshots valid so clients never see NaN / frozen remotes. */
+const PLAYER_STATE_CLAMP = 4.8e5;
+function clampPlayerCoord(n, fallback) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return fallback;
+  return Math.max(-PLAYER_STATE_CLAMP, Math.min(PLAYER_STATE_CLAMP, v));
+}
 function findWsByPlayerId(pid) {
   for (const c of wss.clients) {
     if (c.readyState === 1 && c.playerId === pid) return c;
@@ -2035,10 +2042,16 @@ wss.on('connection', (ws, req) => {
         case 'update': {
           const p = players.get(id);
           if (!p) break;
-          if (msg.x !== undefined) p.x = msg.x;
-          if (msg.z !== undefined) p.z = msg.z;
-          if (msg.rotation !== undefined) p.rotation = msg.rotation;
-          if (msg.speed !== undefined) p.speed = msg.speed;
+          if (msg.x !== undefined) p.x = clampPlayerCoord(msg.x, p.x);
+          if (msg.z !== undefined) p.z = clampPlayerCoord(msg.z, p.z);
+          if (msg.rotation !== undefined) {
+            const r = Number(msg.rotation);
+            p.rotation = Number.isFinite(r) ? Math.max(-1e4, Math.min(1e4, r)) : p.rotation;
+          }
+          if (msg.speed !== undefined) {
+            const s = Number(msg.speed);
+            p.speed = Number.isFinite(s) ? Math.max(-120, Math.min(120, s)) : p.speed;
+          }
           if (msg.health !== undefined) p.health = msg.health;
           if (msg.docked !== undefined) p.docked = !!msg.docked;
           if (msg.dockX !== undefined) p.dockX = msg.dockX;
@@ -2087,7 +2100,10 @@ wss.on('connection', (ws, req) => {
           }
           if (msg.boarding !== undefined) {
             if (msg.boarding === null) p.boarding = null;
-            else p.boarding = sanitizeBoardingFromClient(msg.boarding);
+            else {
+              const sb = sanitizeBoardingFromClient(msg.boarding);
+              if (sb != null) p.boarding = sb;
+            }
           }
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {
