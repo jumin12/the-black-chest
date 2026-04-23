@@ -14991,7 +14991,8 @@ async function connectToServer() {
         break;
       }
       case 'cannonball': {
-        fireCannonball(msg.x, msg.z, msg.dx, msg.dz, undefined, 'other_player', msg.shooterId != null ? Number(msg.shooterId) : null, msg.ammoType);
+        const cby = msg.y != null && Number.isFinite(Number(msg.y)) ? Number(msg.y) : undefined;
+        fireCannonball(msg.x, msg.z, msg.dx, msg.dz, cby, 'other_player', msg.shooterId != null ? Number(msg.shooterId) : null, msg.ammoType);
         const sid = msg.shooterId;
         if (sid != null && otherShipGroups.has(sid)) {
           const og = otherShipGroups.get(sid);
@@ -16710,8 +16711,8 @@ function bindEdgeBroadsideTap(el, fireSide) {
     if (edgeCannonGesture && edgeCannonGesture.fireSide === fireSide) clearEdgeCannonGesture();
   }, { passive: true });
 }
-bindEdgeBroadsideTap(document.getElementById('touch-edge-left'), -1);
-bindEdgeBroadsideTap(document.getElementById('touch-edge-right'), 1);
+bindEdgeBroadsideTap(document.getElementById('touch-edge-left'), 1);
+bindEdgeBroadsideTap(document.getElementById('touch-edge-right'), -1);
 
 (function bindDeckSpyglassMobile() {
   const b = document.getElementById('deck-spyglass-btn');
@@ -17541,7 +17542,7 @@ function executeBroadsideVolley(info, opts) {
           if (p === 0) spawnCannonMuzzleSmoke(wx, wy, wz, dirX0, dirZ0, smokeVel);
           fireCannonball(wx, wz, pdx, pdz, wy, 'player', G.myId, 'grape_pellet');
           if (ws?.readyState === 1) {
-            ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: pdx, dz: pdz, ammoType: 'grape_pellet', shooterId: G.myId }));
+            ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, y: wy, dx: pdx, dz: pdz, ammoType: 'grape_pellet', shooterId: G.myId }));
           }
         }
         if (ws?.readyState === 1) {
@@ -17551,7 +17552,7 @@ function executeBroadsideVolley(info, opts) {
         spawnCannonMuzzleSmoke(wx, wy, wz, dirX, dirZ, smokeVel);
         fireCannonball(wx, wz, dirX, dirZ, wy, 'player', G.myId, ammoKind);
         if (ws?.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, dx: dirX, dz: dirZ, ammoType: ammoKind, shooterId: G.myId }));
+          ws.send(JSON.stringify({ type: 'cannonball', x: wx, z: wz, y: wy, dx: dirX, dz: dirZ, ammoType: ammoKind, shooterId: G.myId }));
           ws.send(JSON.stringify({ type: 'cannon_fx', x: wx, y: wy, z: wz, dx: dirX, dz: dirZ }));
         }
       }
@@ -17838,16 +17839,21 @@ function showClanInviteOnlinePopup() {
   });
 })();
 
+const MAX_COMBAT_POPUPS_3D = 28;
 function showCombatPopupWorld(wx, wz, text, opts) {
   if (G.mode !== 'playing') return;
   opts = opts || {};
   const root = document.getElementById('combat-popups-root');
   if (!root) return;
+  if (!G.combatPopups3D) G.combatPopups3D = [];
+  while (G.combatPopups3D.length >= MAX_COMBAT_POPUPS_3D) {
+    const old = G.combatPopups3D.shift();
+    if (old && old.el) try { old.el.remove(); } catch (e) {}
+  }
   const el = document.createElement('div');
   el.className = 'combat-popup' + (opts.cssClass ? ' ' + opts.cssClass : '');
   el.textContent = text;
   root.appendChild(el);
-  if (!G.combatPopups3D) G.combatPopups3D = [];
   G.combatPopups3D.push({
     el,
     wx,
@@ -23265,6 +23271,8 @@ let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 function update(dt) {
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
+  cullSplashesToBudget();
+  cullDamageChunksToBudget();
   G._lootCleanupAcc = (G._lootCleanupAcc || 0) + dt;
   if (G._lootCleanupAcc >= 45) {
     G._lootCleanupAcc = 0;
