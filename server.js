@@ -23,14 +23,13 @@ function sanitizeBoardingFromClient(b) {
   if (typeof b !== 'object' || !b) return null;
   const sid = Math.floor(Number(b.sid));
   if (!Number.isFinite(sid)) return null;
-  const ph = b.ph === 'f' || b.ph === 'd' ? b.ph : 'h';
+  const ph = b.ph === 'f' ? 'f' : 'h';
   const nx = Number(b.nx);
   const nz = Number(b.nz);
   const nr = Number(b.nr);
   if (!Number.isFinite(nx) || !Number.isFinite(nz) || !Number.isFinite(nr)) return null;
   return {
     sid,
-    ty: b.ty === 'n' ? 'n' : 'p',
     ph,
     t: Math.max(0, Math.min(999, Number(b.t) || 0)),
     hd: Math.max(0.4, Math.min(60, Number(b.hd) || 2.45)),
@@ -2583,6 +2582,18 @@ wss.on('connection', (ws, req) => {
           reconcileLeaderboardRows();
           saveLeaderboard();
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+          break;
+        }
+        case 'boarding_spoils': {
+          const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
+          const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
+          if (!Number.isFinite(targetId) || !players.has(targetId) || gold === 0) break;
+          const tws = findWsByPlayerId(targetId);
+          if (tws && tws.readyState === 1) {
+            try {
+              tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, gold, scuttle: !!msg.scuttle }));
+            } catch (e) {}
+          }
           break;
         }
         case 'party_chart_markers': {
