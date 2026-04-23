@@ -4408,14 +4408,14 @@ function distSegmentToPointXZ(x0, z0, x1, z1, px, pz) {
 /** Half-beam / half-length along ship-local X (starboard) and Z (bow), tuned to extruded hull mesh + bow style + hull part. */
 function shipHullObbHalfExtents(shipType, hullPartId) {
   const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
-  let hw = spec.hullW * 0.5 * 1.12;
-  let hl = spec.hullLen * 0.5 * 1.1;
+  let hw = spec.hullW * 0.5 * 1.04;
+  let hl = spec.hullLen * 0.5 * 1.03;
   const bs = spec.bowStyle;
-  if (bs === 'blunt') hl *= 1.06;
-  else if (bs === 'wide') { hw *= 1.045; hl *= 1.02; }
-  else if (bs === 'pointed') { hl *= 1.035; hw *= 0.99; }
-  if (hullPartId === 'reinforced') { hw *= 1.06; hl *= 1.03; }
-  else if (hullPartId === 'darkwood') { hw *= 1.03; hl *= 1.025; }
+  if (bs === 'blunt') hl *= 1.03;
+  else if (bs === 'wide') { hw *= 1.025; hl *= 1.012; }
+  else if (bs === 'pointed') { hl *= 1.018; hw *= 0.995; }
+  if (hullPartId === 'reinforced') { hw *= 1.04; hl *= 1.02; }
+  else if (hullPartId === 'darkwood') { hw *= 1.02; hl *= 1.015; }
   return { hw, hl };
 }
 /** Unsigned distance from (px,pz) to ship hull oriented box (0 inside). */
@@ -4798,6 +4798,15 @@ function normalizeCrewMemberRecord(c) {
     if (!c.skills || typeof c.skills !== 'object') c.skills = randomRecruitSkills();
     else for (const k of CREW_SKILL_KEYS) c.skills[k] = clampSkillLv(c.skills[k]);
     c.missedMeals = 0;
+    if (!c.hat) {
+      const hats = ['bandana', 'hood', 'none'];
+      c.hat = hats[Math.floor(Math.random() * hats.length)];
+    }
+    if (!c.outfit) c.outfit = Math.random() < 0.55 ? 'shirt' : 'vest';
+    if (!c.color || !/^#[0-9a-fA-F]{6}$/.test(String(c.color).trim())) {
+      const prCols = ['#5a4a3a', '#4a3a2a', '#6a5a4a', '#3a3530', '#7a6a5a', '#4a4a4a', '#5a4a4a', '#6a4a3a'];
+      c.color = prCols[Math.floor(Math.random() * prCols.length)];
+    }
     return c;
   }
   if (!c.skills || typeof c.skills !== 'object') c.skills = inferCrewSkillsFromLegacyRole(c);
@@ -10370,6 +10379,13 @@ function buildCrewMeshes(group, crewList, shipType) {
     if (member.role === 'prisoner') {
       const chain = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.02, 6, 12), new THREE.MeshLambertMaterial({ color: 0x444444 }));
       chain.position.set(0, 0.45, 0.1); chain.rotation.x = Math.PI / 2; cg.add(chain);
+      if (member.hat === 'bandana') {
+        const band = new THREE.Mesh(new THREE.SphereGeometry(0.13, 6, 4, 0, Math.PI * 2, 0, Math.PI * 0.5), new THREE.MeshLambertMaterial({ color: new THREE.Color(member.color || 0x884444) }));
+        band.position.y = 0.72; cg.add(band);
+      } else if (member.hat === 'hood') {
+        const hood = new THREE.Mesh(new THREE.SphereGeometry(0.15, 6, 6), new THREE.MeshLambertMaterial({ color: 0x2a2a2a }));
+        hood.position.y = 0.73; hood.scale.set(1, 0.8, 1.1); cg.add(hood);
+      }
     } else if (member.hat === 'tricorn') {
       const hatBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 0.04, 6), new THREE.MeshLambertMaterial({ color: 0x1a1008 }));
       hatBrim.position.y = 0.82; cg.add(hatBrim);
@@ -11580,6 +11596,21 @@ function syncFloatingNametagVisibility() {
 /* -------------------------------------------------------------------------- */
 const BOARDING_MAX_RANGE = BROADSIDE_RANGE / 3;
 const BOARDING_PULL_DUR = 2.4;
+function boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) {
+  const d = Math.hypot(px - ex, pz - ez);
+  const pr = shipHullRadius(pShipType || 'sloop');
+  const nr = shipHullRadius(eShipType || 'sloop');
+  return Math.max(0, d - (pr + nr) * 0.5);
+}
+function isBoardingRangeToTarget(px, pz, ex, ez, pShipType, eShipType) {
+  return boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) <= BOARDING_MAX_RANGE;
+}
+function canNpcBeBoarded(npc) {
+  if (!npc || npc.sinking) return false;
+  if (npc.health != null && npc.health <= 0) return false;
+  if (npc.isTradeShip && npc.tradePhase === 'loading_home') return false;
+  return true;
+}
 const boardingRopeLineMeshes = [];
 function clearBoardingRopeLineMeshes() {
   for (const ln of boardingRopeLineMeshes) {
@@ -11835,7 +11866,7 @@ function startPlayerBoardingAttack(targetId) {
   if (!op || op.docked) return;
   if (G.myId == null) return;
   const d = Math.hypot(G.player.x - op.x, G.player.z - op.z);
-  if (d > BOARDING_MAX_RANGE) {
+  if (!isBoardingRangeToTarget(G.player.x, G.player.z, op.x, op.z, G.player.shipType, op.shipType || 'sloop')) {
     notify('Too far to grapple — sail closer alongside.', 3000);
     return;
   }
@@ -11862,8 +11893,8 @@ function startPlayerBoardingAttack(targetId) {
 }
 function startNpcBoardingAttack(npc) {
   if (G.boarding || G.docked || G.playerSinking) return;
-  if (!npc || npc.sinking || (npc.health != null && npc.health <= 0)) return;
-  if (Math.hypot(G.player.x - npc.x, G.player.z - npc.z) > BOARDING_MAX_RANGE) {
+  if (!npc || !canNpcBeBoarded(npc) || (npc.health != null && npc.health <= 0)) return;
+  if (!isBoardingRangeToTarget(G.player.x, G.player.z, npc.x, npc.z, G.player.shipType, npc.type)) {
     notify('Too far to board.', 3000);
     return;
   }
@@ -12074,19 +12105,21 @@ function updateBoardingUiOverlay() {
     btn.style.display = 'none';
     return;
   }
-  let best = null, bestD = 1e9, bestId = null;
+  const pSt = G.player.shipType || 'sloop';
+  let best = null, bestGap = 1e9, bestId = null;
   if (G.otherPlayers && G.otherPlayers.size) {
     G.otherPlayers.forEach((op, pid) => {
       if (op.docked) return;
-      const d = Math.hypot(G.player.x - op.x, G.player.z - op.z);
-      if (d < BOARDING_MAX_RANGE && d < bestD) { bestD = d; best = op; bestId = pid; }
+      const g = boardingSurfaceGapMeters(G.player.x, G.player.z, op.x, op.z, pSt, op.shipType || 'sloop');
+      if (g <= BOARDING_MAX_RANGE && g < bestGap) { bestGap = g; best = op; bestId = pid; }
     });
   }
   let npcT = null;
   for (const n of G.npcs) {
+    if (!canNpcBeBoarded(n)) continue;
     if (!n.sinking && (n.health == null || n.health > 0)) {
-      const d = Math.hypot(n.x - G.player.x, n.z - G.player.z);
-      if (d < BOARDING_MAX_RANGE && d < bestD) { bestD = d; npcT = n; }
+      const g = boardingSurfaceGapMeters(G.player.x, G.player.z, n.x, n.z, pSt, n.type);
+      if (g <= BOARDING_MAX_RANGE && g < bestGap) { bestGap = g; npcT = n; }
     }
   }
   if (bestId != null) {
@@ -12803,7 +12836,7 @@ function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
   if (shipFootprintOverlapsLand(tx, tz, yaw, shipType)) return false;
   if (!G.npcs || !G.npcs.length) return true;
   const hp = hullPart != null ? hullPart : (G.player.shipParts && G.player.shipParts.hull);
-  const margin = 1.03;
+  const margin = 0.99;
   const st = shipType || 'sloop';
   for (let i = 0; i < G.npcs.length; i++) {
     const npc = G.npcs[i];
@@ -12817,7 +12850,7 @@ function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
 
 function relaxPlayerNpcCircleOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0 || G.boarding) return;
-  const pad = 1.35;
+  const pad = 1.08;
   const pType = G.player.shipType || 'sloop';
   const ph = G.player.shipParts && G.player.shipParts.hull;
   let pr = shipHullRadius(pType);
@@ -12837,7 +12870,7 @@ function relaxPlayerNpcCircleOverlaps() {
       const need = pr + nr + pad;
       if (d >= need - 1e-4 || d < 1e-5) continue;
       const nx = dx / d, nz = dz / d;
-      const push = Math.min(need - d, 8.5) * 0.72;
+      const push = Math.min(need - d, 5.2) * 0.5;
       const ox = G.player.x, oz = G.player.z;
       G.player.x += nx * push;
       G.player.z += nz * push;
@@ -12854,14 +12887,14 @@ function pushPlayerOutOfShipOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
   if (G.dockingAnim || G.boarding) return;
   const px = G.player.x, pz = G.player.z;
-  const margin = 1.025;
+  const margin = 0.99;
   const pHull = G.player.shipParts && G.player.shipParts.hull;
   const pPos = { x: G.player.x, z: G.player.z };
   const pv = (!G.player.anchored && Math.abs(G.player.speed) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
   const mp = ws && ws.readyState === 1;
   const applyNpcRam = !mp || isMultiplayerHost();
   const pTypeEx = G.player.shipType || 'sloop';
-  for (let pass = 0; pass < 6; pass++) {
+  for (let pass = 0; pass < 5; pass++) {
     pPos.x = G.player.x;
     pPos.z = G.player.z;
     let moved = false;
@@ -12911,7 +12944,7 @@ function pushPlayerOutOfShipOverlaps() {
             notify(`Ramming impact — ${Math.round(stP.dmg)} hull damage`);
           }
         }
-        const push = sep.depth * 0.9;
+        const push = sep.depth * 0.62;
         G.player.x += sep.nx * push;
         G.player.z += sep.nz * push;
         moved = true;
@@ -12945,7 +12978,7 @@ function pushPlayerOutOfShipOverlaps() {
               notify(`Ram! −${Math.round(stP.dmg)} hull`);
             }
           }
-          const push = sepOp.depth * 0.9;
+          const push = sepOp.depth * 0.62;
           G.player.x += sepOp.nx * push;
           G.player.z += sepOp.nz * push;
           moved = true;
@@ -12968,13 +13001,13 @@ function separateHostNpcsFromLocalPlayer() {
   const px = G.player.x, pz = G.player.z;
   const pType = G.player.shipType || 'sloop';
   const pHull = G.player.shipParts && G.player.shipParts.hull;
-  const margin = 1.025;
+  const margin = 0.99;
   G.npcs.forEach(npc => {
     if (npc.sinking || npc.health <= 0) return;
     if (playerInHarborRamExemptZone(px, pz, pType) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) return;
     const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, npc.type, px, pz, G.player.rotation, G.player.shipType, margin, npcCollisionHullPart(npc), pHull);
     if (!sep) return;
-    const push = sep.depth * 0.82;
+    const push = sep.depth * 0.55;
     const ox = npc.x, oz = npc.z;
     npc.x += sep.nx * push;
     npc.z += sep.nz * push;
@@ -14066,14 +14099,14 @@ function updateNPCs(dt) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
       } else {
-        const posK = 1 - Math.exp(-(err > 8 ? 34 : 26) * dt);
+        const posK = 1 - Math.exp(-(err > 8 ? 20 : 15) * dt);
         npc.x += ex * posK;
         npc.z += ez * posK;
       }
       let dr = authR - npc.rotation;
       while (dr > Math.PI) dr -= Math.PI * 2;
       while (dr < -Math.PI) dr += Math.PI * 2;
-      const kRot = 1 - Math.exp(-40 * dt);
+      const kRot = 1 - Math.exp(-22 * dt);
       npc.rotation += dr * Math.min(1, kRot);
     }
 
@@ -24071,13 +24104,13 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.x += Math.sin(th) * v * dt;
     ns.z += Math.cos(th) * v * dt;
   }
-  const posK = 1 - Math.exp(-(err > 5.5 ? 32 : 24) * dt);
+  const posK = 1 - Math.exp(-(err > 5.5 ? 19 : 15) * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-40 * dt);
+  const rotK = 1 - Math.exp(-22 * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
@@ -25505,7 +25538,7 @@ let autoSaveTimer = 0;
 const CLIENT_AUTOSAVE_INTERVAL_SEC = 60;
 let _gameLoopFrame = 0;
 /** After this many ms with no input and calm seas, skip half of WebGL frames to reduce GPU OOM / tab kills when AFK. */
-const IDLE_RENDER_THROTTLE_MS = 120000;
+const IDLE_RENDER_THROTTLE_MS = 420000;
 function gameLoop(time) {
   requestAnimationFrame(gameLoop);
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
