@@ -23,7 +23,7 @@ function sanitizeBoardingFromClient(b) {
   if (typeof b !== 'object' || !b) return null;
   const sid = Math.floor(Number(b.sid));
   if (!Number.isFinite(sid) || sid === 0) return null;
-  const ph = b.ph === 'f' ? 'f' : 'h';
+  const ph = b.ph === 'e' ? 'e' : b.ph === 'f' ? 'f' : 'h';
   const nx = Number(b.nx);
   const nz = Number(b.nz);
   const nr = Number(b.nr);
