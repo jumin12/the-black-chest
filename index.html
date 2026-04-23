@@ -2142,7 +2142,7 @@ body.game-help-mobile-minimal #game-help-panel{
     <div id="dock-hint" style="color:#a09070;font-size:11px;margin:4px 0 6px;">Press E to dock</div>
     <button type="button" id="dock-btn" style="background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;border:1px solid #b8942a;padding:8px 24px;border-radius:5px;cursor:pointer;font-family:Georgia,serif;font-size:14px;touch-action:manipulation;">Dock</button>
   </div>
-  <div id="board-ship-prompt" style="display:none;position:fixed;left:0;top:0;z-index:126;pointer-events:none;">
+  <div id="board-ship-prompt" style="display:none;position:fixed;left:0;top:0;z-index:10030;pointer-events:none;">
     <button type="button" id="board-ship-btn" style="pointer-events:auto;background:linear-gradient(180deg,#6a1a1a,#3a0a0a);color:#f8e0d8;border:1px solid #b85a4a;padding:5px 14px;border-radius:5px;cursor:pointer;font-family:Georgia,serif;font-size:12px;touch-action:manipulation;box-shadow:0 4px 12px rgba(0,0,0,0.4);">Board</button>
   </div>
   <div id="boarding-combat-hud" style="display:none;position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:120;min-width:min(420px,92vw);max-width:96vw;pointer-events:none;">
@@ -4402,14 +4402,15 @@ function distSegmentToPointXZ(x0, z0, x1, z1, px, pz) {
 /** Half-beam / half-length along ship-local X (starboard) and Z (bow), tuned to extruded hull mesh + bow style + hull part. */
 function shipHullObbHalfExtents(shipType, hullPartId) {
   const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
-  let hw = spec.hullW * 0.5 * 1.12;
-  let hl = spec.hullLen * 0.5 * 1.1;
+  /* Tight to model hull; loose boxes made ship–ship contact feel “early.” */
+  let hw = spec.hullW * 0.5 * 1.03;
+  let hl = spec.hullLen * 0.5 * 1.03;
   const bs = spec.bowStyle;
-  if (bs === 'blunt') hl *= 1.06;
-  else if (bs === 'wide') { hw *= 1.045; hl *= 1.02; }
-  else if (bs === 'pointed') { hl *= 1.035; hw *= 0.99; }
-  if (hullPartId === 'reinforced') { hw *= 1.06; hl *= 1.03; }
-  else if (hullPartId === 'darkwood') { hw *= 1.03; hl *= 1.025; }
+  if (bs === 'blunt') hl *= 1.02;
+  else if (bs === 'wide') { hw *= 1.02; hl *= 1.015; }
+  else if (bs === 'pointed') { hl *= 1.02; hw *= 0.99; }
+  if (hullPartId === 'reinforced') { hw *= 1.04; hl *= 1.02; }
+  else if (hullPartId === 'darkwood') { hw *= 1.02; hl *= 1.015; }
   return { hw, hl };
 }
 /** Unsigned distance from (px,pz) to ship hull oriented box (0 inside). */
@@ -12179,7 +12180,7 @@ function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
   if (shipFootprintOverlapsLand(tx, tz, yaw, shipType)) return false;
   if (!G.npcs || !G.npcs.length) return true;
   const hp = hullPart != null ? hullPart : (G.player.shipParts && G.player.shipParts.hull);
-  const margin = 1.03;
+  const margin = 0.92;
   const st = shipType || 'sloop';
   for (let i = 0; i < G.npcs.length; i++) {
     const npc = G.npcs[i];
@@ -12193,7 +12194,8 @@ function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
 
 function relaxPlayerNpcCircleOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
-  const pad = 1.35;
+  /** Tight: large pad forced hulls apart well before the OBB touched (ramming / boarding). */
+  const pad = 0.42;
   const pType = G.player.shipType || 'sloop';
   const ph = G.player.shipParts && G.player.shipParts.hull;
   let pr = shipHullRadius(pType);
@@ -12203,6 +12205,7 @@ function relaxPlayerNpcCircleOverlaps() {
     let moved = false;
     for (const npc of G.npcs) {
       if (npc.sinking || npc.health <= 0) continue;
+      if (G.boardingEngage && G.boardingEngage.active && G.boardingEngage.kind === 'npc' && G.boardingEngage.npcRef === npc) continue;
       if (playerInHarborRamExemptZone(G.player.x, G.player.z, pType) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) continue;
       let nr = shipHullRadius(npc.type);
       const nh = npcCollisionHullPart(npc);
@@ -12230,7 +12233,8 @@ function pushPlayerOutOfShipOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
   if (G.dockingAnim) return;
   const px = G.player.x, pz = G.player.z;
-  const margin = 1.025;
+  /** Tighter OBB = contact closer to the modeled hull (still uses hull part ids). */
+  const margin = 0.9;
   const pHull = G.player.shipParts && G.player.shipParts.hull;
   const pPos = { x: G.player.x, z: G.player.z };
   const pv = (!G.player.anchored && Math.abs(G.player.speed) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
@@ -12243,6 +12247,7 @@ function pushPlayerOutOfShipOverlaps() {
     let moved = false;
     G.npcs.forEach(npc => {
       if (npc.sinking || npc.health <= 0) return;
+      if (G.boardingEngage && G.boardingEngage.active && G.boardingEngage.kind === 'npc' && G.boardingEngage.npcRef === npc) return;
       if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) return;
       const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, npc.type, margin, pHull, npcCollisionHullPart(npc));
       if (!sep) return;
@@ -12297,28 +12302,49 @@ function pushPlayerOutOfShipOverlaps() {
       for (const op of G.otherPlayers.values()) {
         if (op.x == null || op.z == null) continue;
         if (op.docked) continue;
+        const oid = op.id != null ? op.id : 0;
+        if (G.boardingEngage && G.boardingEngage.active && G.boardingEngage.kind === 'player' && (G.boardingEngage.opponentPlayerId | 0) === (oid | 0)) continue;
         if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(op.x, op.z, op.shipType || 'sloop')) continue;
         const opHull = op.shipParts && op.shipParts.hull;
         const sepOp = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, op.x, op.z, op.rotation || 0, op.shipType || 'sloop', margin, pHull, opHull);
         if (!sepOp) continue;
         {
-          const oid = op.id != null ? op.id : 0;
-          const rKey = G.myId != null ? `me${G.myId}|pl${oid}` : `me|pl${oid}`;
-          if (canApplyRamPair(rKey, G.time)) {
-            const ov = networkShipVelocityXZ(op);
-            const stP = computeRamStrike(pPos, op, G.player.shipType, op.shipType || 'sloop', G.player.rotation, pv.vx, pv.vz, ov.vx, ov.vz);
-            if (stP.dmg > 0) {
-              G.player.health = Math.max(0, G.player.health - stP.dmg);
-              {
-                const hHit = playerShipAudioWorldXYZ();
-                playShipDamageSound(0.82, hHit.x, hHit.y, hHit.z);
-              }
-              const rgP = ramRiggingLossFromBowDot(stP.bowDot, stP.closing);
-              if (rgP > 0) {
-                G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - rgP);
-                applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
-              }
-              notify(`Ram! −${Math.round(stP.dmg)} hull`);
+          const rKeyIn = G.myId != null ? `pvrI${G.myId}|pl${oid}` : `pvrI|pl${oid}`;
+          const rKeyOut = G.myId != null ? `pvrO${G.myId}|pl${oid}` : `pvrO|pl${oid}`;
+          const ov = networkShipVelocityXZ(op);
+          const stIn = computeRamStrike(pPos, op, G.player.shipType, op.shipType || 'sloop', G.player.rotation, pv.vx, pv.vz, ov.vx, ov.vz);
+          if (canApplyRamPair(rKeyIn, G.time) && stIn.dmg > 0) {
+            G.player.health = Math.max(0, G.player.health - stIn.dmg);
+            {
+              const hHit = playerShipAudioWorldXYZ();
+              playShipDamageSound(0.82, hHit.x, hHit.y, hHit.z);
+            }
+            const rgP = ramRiggingLossFromBowDot(stIn.bowDot, stIn.closing);
+            if (rgP > 0) {
+              G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - rgP);
+              applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
+            }
+            notify(`Ram! −${Math.round(stIn.dmg)} hull`);
+          }
+          if (mp && canApplyRamPair(rKeyOut, G.time)) {
+            const stOpp = computeRamStrike(
+              { x: op.x, z: op.z },
+              pPos,
+              op.shipType || 'sloop',
+              G.player.shipType,
+              op.rotation || 0,
+              ov.vx, ov.vz, pv.vx, pv.vz
+            );
+            if (stOpp.dmg > 0) {
+              const rgO = ramRiggingLossFromBowDot(stOpp.bowDot, stOpp.closing);
+              try {
+                ws.send(JSON.stringify({
+                  type: 'pvp_ram_report',
+                  targetId: oid,
+                  hull: Math.min(32, Math.round(stOpp.dmg)),
+                  rigging: rgO > 0 ? Math.min(50, Math.round(rgO)) : 0
+                }));
+              } catch (e) {}
             }
           }
           const push = sepOp.depth * 0.9;
@@ -12344,7 +12370,7 @@ function separateHostNpcsFromLocalPlayer() {
   const px = G.player.x, pz = G.player.z;
   const pType = G.player.shipType || 'sloop';
   const pHull = G.player.shipParts && G.player.shipParts.hull;
-  const margin = 1.025;
+  const margin = 0.92;
   G.npcs.forEach(npc => {
     if (npc.sinking || npc.health <= 0) return;
     if (playerInHarborRamExemptZone(px, pz, pType) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) return;
@@ -15018,14 +15044,22 @@ async function connectToServer() {
         if (sid == null) break;
         const p = G.otherPlayers.get(sid);
         if (p) {
-          p.shipType = msg.shipType;
-          p.shipParts = msg.shipParts;
+          if (msg.shipType != null) p.shipType = msg.shipType;
+          if (msg.shipParts) p.shipParts = msg.shipParts;
+          if (msg.health != null) p.health = Math.max(0, Math.min(100, Number(msg.health) || 0));
+          if (msg.riggingHealth != null) p.riggingHealth = Math.max(0, Math.min(100, Number(msg.riggingHealth) || 0));
           refreshOtherPlayerShipCacheKey(p);
-          if (otherShipGroups.has(sid)) {
+          const needRebuild = !otherShipGroups.has(sid) || otherShipGroups.get(sid).userData.cacheKey !== p._netShipCacheKey;
+          if (needRebuild) {
+            if (otherShipGroups.has(sid)) {
+              const og = otherShipGroups.get(sid);
+              disposeObject3DSubtree(og);
+              scene.remove(og);
+              otherShipGroups.delete(sid);
+            }
+          } else if (p.riggingHealth != null) {
             const og = otherShipGroups.get(sid);
-            disposeObject3DSubtree(og);
-            scene.remove(og);
-            otherShipGroups.delete(sid);
+            if (og) applyRiggingVisualToGroup(og, p.riggingHealth);
           }
         }
         break;
@@ -15168,6 +15202,24 @@ async function connectToServer() {
         const hy = msg.hy != null && Number.isFinite(Number(msg.hy)) ? Number(msg.hy) : (worldSeaSurfaceY(npc.x, npc.z) + 1.2);
         const hz = msg.hz != null && Number.isFinite(Number(msg.hz)) ? Number(msg.hz) : npc.z;
         applyAuthorizedNpcDamageFromPlayerShot(npc, fromId, at, isPellet, hx, hy, hz);
+        break;
+      }
+      case 'pvp_ram_apply': {
+        if (msg.targetId == null || G.myId == null) break;
+        if (Number(msg.targetId) !== Number(G.myId)) break;
+        const h = Math.max(0, Math.min(36, Math.floor(Number(msg.hull) || 0)));
+        const r = Math.max(0, Math.min(50, Math.floor(Number(msg.rigging) || 0)));
+        if (h === 0 && r === 0) break;
+        if (h) {
+          G.player.health = Math.max(0, G.player.health - h);
+          const hHit = playerShipAudioWorldXYZ();
+          playShipDamageSound(0.82, hHit.x, hHit.y, hHit.z);
+        }
+        if (r) {
+          G.player.riggingHealth = Math.max(0, (G.player.riggingHealth != null ? G.player.riggingHealth : 100) - r);
+          applyRiggingVisualToGroup(playerShipGroup, G.player.riggingHealth);
+        }
+        if (h > 0) notify(`Ram from another ship! −${h} hull`);
         break;
       }
       case 'npc_ram_report': {
@@ -23462,8 +23514,63 @@ const BOARDING_RANGE = 20;
 const BOARDING_HAUL_SEC = 3.2;
 const BOARDING_ROPE_COLOR = 0x7a6a4a;
 const boardRopes = [];
+/** `sessionId` -> two THREE.Line (third-party boarding pairs, both ships in `otherPlayers`). */
+const remotePlayerBoardRopes = new Map();
 const _mvWorld = new THREE.Vector3();
+const _vBoardCam = new THREE.Vector3();
 let _boardingDomInited = false;
+function disposeRemotePlayerBoardRope(sid) {
+  const arr = remotePlayerBoardRopes.get(sid);
+  if (!arr) return;
+  arr.forEach(r => {
+    try { scene.remove(r); r.geometry?.dispose(); r.material?.dispose(); } catch (e) {}
+  });
+  remotePlayerBoardRopes.delete(sid);
+}
+function updateRemotePlayerPairBoardRopes() {
+  if (G.mode !== 'playing' || G.spectate) return;
+  const want = new Set();
+  const ensureRopes = sid => {
+    if (remotePlayerBoardRopes.has(sid)) return remotePlayerBoardRopes.get(sid);
+    const ropes = [];
+    for (let ri = 0; ri < 2; ri++) {
+      const ropeMat = new THREE.LineBasicMaterial({ color: BOARDING_ROPE_COLOR });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+      const line = new THREE.Line(g, ropeMat);
+      line.frustumCulled = false;
+      scene.add(line);
+      ropes.push(line);
+    }
+    remotePlayerBoardRopes.set(sid, ropes);
+    return ropes;
+  };
+  G.otherPlayers.forEach((p, pid) => {
+    if (!p || !p.boarding) return;
+    if (p.boarding.sid >= 2000000) return;
+    const sid = p.boarding.sid;
+    const dec = decodeBoardingSessionPlayer(sid);
+    if (!dec) return;
+    const pa = G.otherPlayers.get(dec.a), pb = G.otherPlayers.get(dec.b);
+    if (!pa || !pb || !pa.boarding || !pb.boarding) return;
+    if (pa.boarding.sid !== sid || pb.boarding.sid !== sid) return;
+    if (pa.x == null || pb.x == null) return;
+    if (want.has(sid)) return;
+    want.add(sid);
+    const ropes = ensureRopes(sid);
+    const stA = pa.shipType || 'sloop', stB = pb.shipType || 'sloop';
+    const ya = pa.rotation != null ? pa.rotation : 0, yb = pb.rotation != null ? pb.rotation : 0;
+    for (let ri = 0; ri < 2; ri++) {
+      const seg = computeBoardRopeBetweenShips(ri, pa.x, pa.z, ya, stA, pb.x, pb.z, yb, stB);
+      const line = ropes[ri], arr = line.geometry.attributes.position.array;
+      arr[0] = seg.sx; arr[1] = seg.sy; arr[2] = seg.sz; arr[3] = seg.ax; arr[4] = seg.ay; arr[5] = seg.az;
+      line.geometry.attributes.position.needsUpdate = true;
+    }
+  });
+  for (const [sid] of Array.from(remotePlayerBoardRopes.entries())) {
+    if (!want.has(sid)) disposeRemotePlayerBoardRope(sid);
+  }
+}
 function disposeBoardRopes() {
   while (boardRopes.length) {
     const r = boardRopes.pop();
@@ -23605,13 +23712,18 @@ function findBoardableTarget() {
 }
 function worldToScreenForBoarding(wx, wy, wz) {
   if (typeof playerShipGroup === 'undefined' || !camera || !renderer) return null;
+  try { camera.updateMatrixWorld(true); } catch (e) {}
+  _vBoardCam.set(wx, wy, wz);
+  _vBoardCam.applyMatrix4(camera.matrixWorldInverse);
+  /* Camera looks down −Z; points behind the camera have positive view-space Z. */
+  if (_vBoardCam.z > 0.35) return null;
   _mvWorld.set(wx, wy, wz);
   _mvWorld.project(camera);
   const w = window.innerWidth, h = window.innerHeight;
   const x = (0.5 * _mvWorld.x + 0.5) * w;
   const y = (-0.5 * _mvWorld.y + 0.5) * h;
-  if (_mvWorld.z > 0.5) return null;
-  return { x, y, vis: _mvWorld.z < 0.98 };
+  if (Math.abs(_mvWorld.x) > 1.55 || Math.abs(_mvWorld.y) > 1.55) return null;
+  return { x, y, vis: true };
 }
 function initBoardingDomOnce() {
   if (_boardingDomInited) return;
@@ -23648,14 +23760,18 @@ function updateBoardingPrompt() {
     st = t.npc.type || 'sloop';
   }
   const s = worldToScreenForBoarding(ax, ay, az);
+  wrap.style.display = 'block';
+  const btnH = 36;
   if (!s || s.vis === false) {
-    wrap.style.display = 'none';
+    /* Still in boarding range: show a visible control if projection fails (steep pitch, edge case). */
+    wrap.style.left = '50%';
+    wrap.style.right = 'auto';
+    wrap.style.transform = 'translateX(-50%)';
+    wrap.style.top = Math.round(Math.min(window.innerHeight - btnH - 24, Math.max(96, window.innerHeight * 0.28))) + 'px';
     return;
   }
-  wrap.style.display = 'block';
-  const pad = 8;
+  wrap.style.transform = 'none';
   /** Position button just under floating nametag (nametag is above this anchor). */
-  const btnH = 32;
   wrap.style.left = Math.round(Math.min(window.innerWidth - 120, Math.max(4, s.x - 46))) + 'px';
   wrap.style.top = Math.round(Math.min(window.innerHeight - btnH - 4, s.y - 4)) + 'px';
 }
@@ -23971,6 +24087,28 @@ function showBoardingOutcomePanel(won) {
     if (loot) loot.textContent = `Coin ${g} · Supplies from the prize`;
   }
   be._outcomeGold = g;
+  be._prizeShip = null;
+  if (won && be) {
+    if (be.kind === 'player' && be.opponentPlayerId) {
+      const op = G.otherPlayers.get(be.opponentPlayerId);
+      if (op) {
+        be._prizeShip = {
+          shipType: op.shipType || 'sloop',
+          shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...(op.shipParts || {}) },
+          health: Math.max(1, Math.min(100, op.health != null ? Number(op.health) : 100)),
+          riggingHealth: Math.max(0, Math.min(100, op.riggingHealth != null ? Number(op.riggingHealth) : 100))
+        };
+      }
+    } else if (be.kind === 'npc' && be.npcRef) {
+      const n = be.npcRef;
+      be._prizeShip = {
+        shipType: n.type || 'sloop',
+        shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...(n.shipParts && typeof n.shipParts === 'object' ? n.shipParts : {}) },
+        health: Math.max(1, Math.min(100, n.health != null ? Number(n.health) : 100)),
+        riggingHealth: Math.max(0, Math.min(100, n.riggingHealth != null ? n.riggingHealth : getNpcRiggingHealth(n)))
+      };
+    }
+  }
   const wMax = be && be.prisonersAvail != null ? be.prisonersAvail : 0;
   const pm = document.getElementById('boarding-prisoner-count');
   const pmax = document.getElementById('boarding-prisoner-max');
@@ -23980,8 +24118,14 @@ function showBoardingOutcomePanel(won) {
   const s = document.getElementById('boarding-prize-scuttle');
   if (k && s) { s.checked = true; if (be && be.kind === 'npc' && (be.npcRef && be.npcRef.isTradeShip)) { k.checked = true; s.checked = false; } }
   const pri = document.getElementById('boarding-prize-keep-txt');
-  if (pri) pri.textContent = (be && be.kind === 'npc' && be.npcRef && be.npcRef.cargoGood)
-    ? `Transfer cargo good (${String(be.npcRef.cargoGood).slice(0, 18)}…)` : 'Ransack cargo (gold focus)';
+  if (pri) {
+    if (be && (be.kind === 'player' || be.kind === 'npc')) {
+      pri.textContent = be._prizeShip
+        ? 'Take prize hull (hull, sails, and battle damage as captured)'
+        : (be.kind === 'npc' && be.npcRef && be.npcRef.cargoGood
+          ? `Transfer cargo good (${String(be.npcRef.cargoGood).slice(0, 18)}…)` : 'Ransack cargo (gold focus)');
+    } else pri.textContent = 'Ransack cargo (gold focus)';
+  }
 }
 function confirmBoardingOutcome() {
   const bd = document.getElementById('boarding-outcome-backdrop');
@@ -23996,13 +24140,30 @@ function confirmBoardingOutcome() {
   }
   const scuttle = document.getElementById('boarding-prize-scuttle') && document.getElementById('boarding-prize-scuttle').checked;
   const keepPrize = document.getElementById('boarding-prize-keep') && document.getElementById('boarding-prize-keep').checked;
-  if (scuttle) {
+  if (keepPrize && be._prizeShip) {
+    const ps = be._prizeShip;
+    G.player.shipType = ps.shipType;
+    G.player.shipParts = { ...G.player.shipParts, ...ps.shipParts };
+    G.player.health = Math.max(1, Math.min(100, ps.health));
+    G.player.riggingHealth = Math.max(0, Math.min(100, ps.riggingHealth));
+    if (ws?.readyState === 1) {
+      try {
+        ws.send(JSON.stringify({
+          type: 'ship_update',
+          shipType: G.player.shipType,
+          shipParts: { ...G.player.shipParts },
+          health: G.player.health,
+          riggingHealth: G.player.riggingHealth != null ? G.player.riggingHealth : 100
+        }));
+      } catch (e) {}
+    }
+  } else if (scuttle) {
     try {
       const w = G.player.inventory.find(x => x.id === 'wood');
       if (w) w.count += 18; else G.player.inventory.push({ id: 'wood', name: 'Timber', icon: '', count: 18 });
     } catch (e) {}
   }
-  if (keepPrize && be.kind === 'npc' && be.npcRef && be.npcRef.cargoGood) {
+  if (keepPrize && !be._prizeShip && be.kind === 'npc' && be.npcRef && be.npcRef.cargoGood) {
     const u = be.npcRef.cargoUnits != null ? (be.npcRef.cargoUnits | 0) : 8;
     tryAddQuestCargo(be.npcRef.cargoGood, Math.max(1, Math.min(28, u)));
   }
@@ -24049,6 +24210,18 @@ function updateBoardingEngagementFrame(dt) {
     const be = G.boardingEngage;
     be.nx = G.player.x; be.nz = G.player.z; be.nr = G.player.rotation;
     be.hullDist = be.opponentPlayerId ? (() => { const p = G.otherPlayers.get(be.opponentPlayerId); return p ? Math.hypot(p.x - G.player.x, p.z - G.player.z) : 10; })() : 6;
+    if (be.kind === 'player' && be.phase === 'haul' && be.role === 'defender' && boardRopes.length) {
+      const op = G.otherPlayers.get(be.opponentPlayerId);
+      if (op) {
+        const stL = G.player.shipType || 'sloop', stR = op.shipType || 'sloop';
+        for (let ri = 0; ri < boardRopes.length; ri++) {
+          const r = boardRopes[ri];
+          if (!r || !r.geometry) continue;
+          const seg = computeBoardRopeBetweenShips(ri, G.player.x, G.player.z, G.player.rotation, stL, op.x, op.z, op.rotation || 0, stR);
+          r.geometry.setFromPoints([new THREE.Vector3(seg.sx, seg.sy, seg.sz), new THREE.Vector3(seg.ax, seg.ay, seg.az)]);
+        }
+      }
+    }
   }
   if (G.boardingHaulAnim) tickBoardingHaul(dt);
   if (G.boardingEngage && G.boardingEngage.active) {
@@ -24064,6 +24237,7 @@ function updateBoardingEngagementFrame(dt) {
       if (bu && bt) { bu.style.flex = String(Math.max(0.1, w)); bt.style.flex = String(Math.max(0.1, w2)); }
     }
   }
+  updateRemotePlayerPairBoardRopes();
 }
 function update(dt) {
   if (G.mode !== 'playing') return;
