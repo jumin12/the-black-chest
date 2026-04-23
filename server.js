@@ -23,13 +23,14 @@ function sanitizeBoardingFromClient(b) {
   if (typeof b !== 'object' || !b) return null;
   const sid = Math.floor(Number(b.sid));
   if (!Number.isFinite(sid)) return null;
-  const ph = b.ph === 'f' ? 'f' : 'h';
+  const ph = b.ph === 'f' || b.ph === 'd' ? b.ph : 'h';
   const nx = Number(b.nx);
   const nz = Number(b.nz);
   const nr = Number(b.nr);
   if (!Number.isFinite(nx) || !Number.isFinite(nz) || !Number.isFinite(nr)) return null;
   return {
     sid,
+    ty: b.ty === 'n' ? 'n' : 'p',
     ph,
     t: Math.max(0, Math.min(999, Number(b.t) || 0)),
     hd: Math.max(0.4, Math.min(60, Number(b.hd) || 2.45)),
@@ -39,8 +40,6 @@ function sanitizeBoardingFromClient(b) {
     eH: Math.max(0, Math.min(48, Math.floor(Number(b.eH) || 0))),
     pTo: Math.max(0, Math.min(96, Math.floor(Number(b.pTo) || 0))),
     eTo: Math.max(0, Math.min(96, Math.floor(Number(b.eTo) || 0))),
-    aC: Math.max(0, Math.min(48, Math.floor(Number(b.aC) || 0))),
-    dC: Math.max(0, Math.min(48, Math.floor(Number(b.dC) || 0))),
     nx: Math.max(-5e5, Math.min(5e5, nx)),
     nz: Math.max(-5e5, Math.min(5e5, nz)),
     nr: Math.max(-1e4, Math.min(1e4, nr))
@@ -2245,16 +2244,7 @@ wss.on('connection', (ws, req) => {
           if (!p) break;
           if (msg.shipType) p.shipType = msg.shipType;
           if (msg.shipParts) p.shipParts = { ...p.shipParts, ...msg.shipParts };
-          if (msg.health !== undefined) p.health = Math.max(0, Math.min(100, Number(msg.health) || 0));
-          if (msg.riggingHealth !== undefined) p.riggingHealth = Math.max(0, Math.min(100, Number(msg.riggingHealth) || 0));
-          broadcast({
-            type: 'ship_update',
-            id,
-            shipType: p.shipType,
-            shipParts: p.shipParts,
-            health: p.health,
-            riggingHealth: p.riggingHealth
-          }, id);
+          broadcast({ type: 'ship_update', id, shipType: p.shipType, shipParts: p.shipParts }, id);
           break;
         }
         case 'chat': {
@@ -2351,22 +2341,6 @@ wss.on('connection', (ws, req) => {
         }
         case 'npc_cannon': {
           broadcast({ type: 'npc_cannon', x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, y: msg.y }, id);
-          break;
-        }
-        case 'pvp_ram_report': {
-          const targetId = Math.floor(Number(msg.targetId));
-          const hull = Math.max(0, Math.min(36, Math.floor(Number(msg.hull) || 0)));
-          const rig = Math.max(0, Math.min(50, Math.floor(Number(msg.rigging) || 0)));
-          if (hull === 0 && rig === 0) break;
-          if (!Number.isFinite(targetId) || targetId === id) break;
-          if (!players.has(targetId)) break;
-          broadcastAll({
-            type: 'pvp_ram_apply',
-            fromId: id,
-            targetId,
-            hull,
-            rigging: rig
-          });
           break;
         }
         case 'npc_ram_report': {
