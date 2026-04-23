@@ -11750,6 +11750,7 @@ function clearBoardingBodyMarkers() {
 }
 function abortActiveBoarding(msg) {
   if (!G.boarding) return;
+  try { delete G.boarding._pvpTermSnap; } catch (e) {}
   clearBoardingRopeLineMeshes();
   clearBoardingBodyMarkers();
   if (G.boarding.npcSyncId != null) {
@@ -11808,10 +11809,9 @@ function packBoardingForNetwork() {
   const b = G.boarding;
   if (!b) return null;
   if (b.partnerPlayerId != null && b.npcSyncId == null && !boardingIAmSimLeader(b)) return null;
-  if (b.phase === 'spoils' && b.partnerPlayerId != null && b._pvpTerminalForNet) {
-    const snap = b._pvpTerminalForNet;
-    b._pvpTerminalForNet = null;
-    return Object.assign({}, snap, { sid: Math.floor(Number(b.partnerPlayerId) || 0) });
+  /* PvP end: keep relaying the terminal snapshot until cleared (one-shot was cleared next frame → server null → defender froze). */
+  if (b.partnerPlayerId != null && b.npcSyncId == null && b._pvpTermSnap) {
+    return Object.assign({}, b._pvpTermSnap, { sid: Math.floor(Number(b.partnerPlayerId) || 0) });
   }
   if (b.phase === 'spoils' || b.phase === 'await_opponent') return null;
   const sid = b.npcSyncId != null
@@ -11840,6 +11840,27 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
   if (!bo || typeof bo !== 'object') return;
   const b = G.boarding;
   if (!b) return;
+  if (bo.ph === 'e') {
+    if (b.phase === 'spoils') return;
+    b.tNet = bo.t | 0;
+    b.pAtk = bo.pa | 0;
+    b.eAtk = bo.ea | 0;
+    b.pHeart = bo.pH | 0;
+    b.eHeart = bo.eH | 0;
+    b.pTotal = bo.pTo | 0;
+    b.eTotal = bo.eTo | 0;
+    if (bo.pl != null && Number.isFinite(Number(bo.pl))) b.pullT = Math.max(0, Math.min(1, Number(bo.pl)));
+    if (G.myId == null || leaderId == null) return;
+    if (G.myId === leaderId) {
+      if (bo.nx != null) { b.lockPX = bo.nx; b.lockPZ = bo.nz; b.lockPR = bo.nr; }
+      if (bo.ex != null) { b.lockEX = bo.ex; b.lockEZ = bo.ez; b.lockER = bo.er; }
+    } else {
+      if (bo.ex != null) { b.lockPX = bo.ex; b.lockPZ = bo.ez; b.lockPR = bo.er; }
+      if (bo.nx != null) { b.lockEX = bo.nx; b.lockEZ = bo.nz; b.lockER = bo.nr; }
+    }
+    if (b.phase === 'fight' && b.partnerPlayerId != null && b.npcSyncId == null) endBoardingResolution();
+    return;
+  }
   b.tNet = bo.t | 0;
   b.pAtk = bo.pa | 0;
   b.eAtk = bo.ea | 0;
@@ -11983,7 +12004,7 @@ function endBoardingResolution() {
   const won = youWin;
   if (b.partnerPlayerId != null && boardingIAmSimLeader(b)) {
     const term = {
-      ph: 'f',
+      ph: 'e',
       t: Math.min(999, Math.max(0, b.tNet | 0)),
       hd: 2.45,
       pa: Math.min(48, Math.max(0, b.pAtk | 0)),
@@ -12001,7 +12022,7 @@ function endBoardingResolution() {
       term.ez = b.lockEZ;
       term.er = b.lockER;
     }
-    b._pvpTerminalForNet = term;
+    b._pvpTermSnap = term;
   }
   b.phase = 'spoils';
   b.outcomeWon = youWin;
@@ -12413,8 +12434,7 @@ function updateBoardingUiOverlay() {
 function tickBoardingEngagement(dt) {
   if (!G.boarding) return;
   if (G.captainWalk && G.captainWalk.active) setCaptainWalkActive(false);
-  const b = G.boarding;
-  if (b.phase === 'spoils') return;
+  let b = G.boarding;
   if (b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null) {
     const auth = boardingPvPAuthorityId(b);
     if (auth != null && G.myId !== auth) {
@@ -12422,6 +12442,9 @@ function tickBoardingEngagement(dt) {
       if (lRow && lRow.boarding) mergeBoardingFromLeaderPayload(lRow.boarding, auth);
     }
   }
+  if (!G.boarding) return;
+  b = G.boarding;
+  if (b.phase === 'spoils') return;
   if (b.partnerPlayerId != null && b.phase === 'fight' && !boardingIAmSimLeader(b)) {
     if ((b.pAtk | 0) <= 0 || (b.eAtk | 0) <= 0) endBoardingResolution();
   }
