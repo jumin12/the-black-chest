@@ -2243,16 +2243,7 @@ wss.on('connection', (ws, req) => {
           if (!p) break;
           if (msg.shipType) p.shipType = msg.shipType;
           if (msg.shipParts) p.shipParts = { ...p.shipParts, ...msg.shipParts };
-          if (msg.health !== undefined) p.health = Math.max(0, Math.min(100, Number(msg.health) || 0));
-          if (msg.riggingHealth !== undefined) p.riggingHealth = Math.max(0, Math.min(100, Number(msg.riggingHealth) || 0));
-          broadcast({
-            type: 'ship_update',
-            id,
-            shipType: p.shipType,
-            shipParts: p.shipParts,
-            health: p.health,
-            riggingHealth: p.riggingHealth
-          }, id);
+          broadcast({ type: 'ship_update', id, shipType: p.shipType, shipParts: p.shipParts }, id);
           break;
         }
         case 'chat': {
@@ -2349,22 +2340,6 @@ wss.on('connection', (ws, req) => {
         }
         case 'npc_cannon': {
           broadcast({ type: 'npc_cannon', x: msg.x, z: msg.z, dx: msg.dx, dz: msg.dz, y: msg.y }, id);
-          break;
-        }
-        case 'pvp_ram_report': {
-          const targetId = Math.floor(Number(msg.targetId));
-          const hull = Math.max(0, Math.min(36, Math.floor(Number(msg.hull) || 0)));
-          const rig = Math.max(0, Math.min(50, Math.floor(Number(msg.rigging) || 0)));
-          if (hull === 0 && rig === 0) break;
-          if (!Number.isFinite(targetId) || targetId === id) break;
-          if (!players.has(targetId)) break;
-          broadcastAll({
-            type: 'pvp_ram_apply',
-            fromId: id,
-            targetId,
-            hull,
-            rigging: rig
-          });
           break;
         }
         case 'npc_ram_report': {
