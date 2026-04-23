@@ -11811,9 +11811,8 @@ function isMultiplayerHost() {
   }
   const my = Number(G.myId);
   const oids = Array.from(G.otherPlayers.keys()).map(Number).filter(Number.isFinite);
-  const connected = new Set([my, ...oids]);
-  if (G.multiplayerNpcAuthorityId != null && connected.has(G.multiplayerNpcAuthorityId)) {
-    return my === G.multiplayerNpcAuthorityId;
+  if (G.multiplayerNpcAuthorityId != null && Number.isFinite(Number(G.multiplayerNpcAuthorityId))) {
+    return my === Number(G.multiplayerNpcAuthorityId);
   }
   const minId = Math.min(my, ...oids);
   G.multiplayerNpcAuthorityId = minId;
@@ -14918,6 +14917,12 @@ async function connectToServer() {
         }
         break;
       }
+      case 'npc_authority': {
+        const aid = netPlayerId(msg.playerId);
+        if (aid == null) break;
+        G.multiplayerNpcAuthorityId = aid;
+        break;
+      }
       case 'state': {
         const wT = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
         if (wT != null) anchorWildlifeClockFromServer(wT);
@@ -17324,8 +17329,15 @@ function bootstrapGameAudioOnUserGesture() {
   void ensureShipTravelBuffer().catch(() => {});
   primeShipTravelAudioElement();
 }
-['pointerdown', 'keydown'].forEach(ev => {
-  window.addEventListener(ev, bootstrapGameAudioOnUserGesture, { capture: true, passive: true });
+let clientLastInputMs = typeof performance !== 'undefined' ? performance.now() : 0;
+function bumpClientInputActivity() {
+  if (typeof performance !== 'undefined') clientLastInputMs = performance.now();
+}
+['pointerdown', 'keydown', 'touchstart'].forEach(ev => {
+  window.addEventListener(ev, e => {
+    bumpClientInputActivity();
+    bootstrapGameAudioOnUserGesture();
+  }, { capture: true, passive: true });
 });
 
 let _gameAudioSuspendedByPage = false;
@@ -17347,7 +17359,10 @@ function resumeGameAudioIfPageVisible() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') suspendAllGameAudioForPageExit();
-  else resumeGameAudioIfPageVisible();
+  else {
+    bumpClientInputActivity();
+    resumeGameAudioIfPageVisible();
+  }
 }, { capture: true });
 window.addEventListener('pagehide', e => {
   if (e.persisted) {
@@ -24789,6 +24804,8 @@ function updateHUD() {
 let autoSaveTimer = 0;
 const CLIENT_AUTOSAVE_INTERVAL_SEC = 60;
 let _gameLoopFrame = 0;
+/** After this many ms with no input and calm seas, skip half of WebGL frames to reduce GPU OOM / tab kills when AFK. */
+const IDLE_RENDER_THROTTLE_MS = 120000;
 function gameLoop(time) {
   requestAnimationFrame(gameLoop);
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
@@ -24807,8 +24824,25 @@ function gameLoop(time) {
   document.body.classList.toggle('game-playing', G.mode === 'playing');
   /* While on the main menu / creation flow, `menuRender` owns the WebGL view. Do not `render()` here too — double 60fps world draws OOM/thermal-throttle GPUs and can crash mobile tabs. In play, this loop is the only renderer. */
   if (G.mode === 'playing') {
-    update(dt);
-    render();
+    try {
+      update(dt);
+    } catch (e) {
+      console.error('[playground] update error:', e);
+    }
+    let skipRender = false;
+    if (typeof performance !== 'undefined') {
+      const idleMs = performance.now() - clientLastInputMs;
+      const calmBattle = (G.time - G._lastSeaBattleActivityT) > 60;
+      const noPopups = !G.combatPopups3D || !G.combatPopups3D.length;
+      if (idleMs > IDLE_RENDER_THROTTLE_MS && calmBattle && noPopups && (_gameLoopFrame & 1) === 0) skipRender = true;
+    }
+    if (!skipRender) {
+      try {
+        render();
+      } catch (e) {
+        console.error('[playground] render error:', e);
+      }
+    }
   }
   updateCombatFireEdgesUI();
   if (G.mode === 'playing') {

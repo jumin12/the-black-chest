@@ -1725,6 +1725,19 @@ function broadcastAll(data) {
   });
 }
 
+/** Lowest connected player id simulates NPC traffic; broadcast on join/leave so clients migrate immediately if the prior host tab dies. */
+function broadcastNpcAuthority() {
+  const ids = [];
+  for (const c of wss.clients) {
+    if (c.readyState !== 1 || c.playerId == null) continue;
+    const n = Number(c.playerId);
+    if (Number.isFinite(n)) ids.push(n);
+  }
+  if (!ids.length) return;
+  const playerId = Math.min(...ids);
+  broadcastAll({ type: 'npc_authority', playerId });
+}
+
 function serverPopulationPayload() {
   return {
     type: 'server_pop',
@@ -1903,6 +1916,8 @@ function collectAdminPlayerList() {
 }
 
 wss.on('connection', (ws, req) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
   const clientIp = normalizeClientIp(req);
   ws.clientIp = clientIp;
   if (bannedIps.has(clientIp)) {
@@ -2002,6 +2017,7 @@ wss.on('connection', (ws, req) => {
 
   broadcast({ type: 'player_join', player: playerData }, id);
   broadcastServerPopulation();
+  broadcastNpcAuthority();
 
   ws.on('message', (raw) => {
     try {
@@ -3205,10 +3221,13 @@ wss.on('connection', (ws, req) => {
           break;
         }
       }
-    } catch (e) { }
+    } catch (e) {
+      console.error('[playground] ws message error:', e && e.message ? e.message : e);
+    }
   });
 
   ws.on('close', () => {
+    try {
     clearCaptainSocketSlot(ws);
     const left = players.get(id);
     const leftCk = left && left.captainKey ? normalizeCaptainKey(String(left.captainKey))
@@ -3217,6 +3236,7 @@ wss.on('connection', (ws, req) => {
     players.delete(id);
     broadcast({ type: 'player_leave', id });
     broadcastServerPopulation();
+    broadcastNpcAuthority();
     if (leftCk) {
       const prLeft = getPartyForCaptainKey(leftCk);
       if (prLeft) broadcastPartySync(prLeft.id);
@@ -3230,10 +3250,32 @@ wss.on('connection', (ws, req) => {
       }
       broadcast({ type: 'leaderboard', entries: leaderboardHistory });
     } catch (e) {}
+    } catch (e) {
+      console.error('[playground] ws close handler error:', e && e.message ? e.message : e);
+    }
   });
 });
 
+/** Detect frozen/crashed browser tabs that never send TCP close — terminate stale sockets so NPC authority migrates. */
+const WS_PING_INTERVAL_MS = Math.max(15000, Number(process.env.WS_PING_INTERVAL_MS) || 38000);
+const wsHeartbeat = setInterval(() => {
+  try {
+    wss.clients.forEach(ws => {
+      if (ws.readyState !== 1) return;
+      if (ws.isAlive === false) {
+        try { ws.terminate(); } catch (e) {}
+        return;
+      }
+      ws.isAlive = false;
+      try { ws.ping(); } catch (e) {}
+    });
+  } catch (e) {
+    console.error('[playground] ws ping sweep error:', e && e.message ? e.message : e);
+  }
+}, WS_PING_INTERVAL_MS);
+
 setInterval(() => {
+  try {
   if (players.size === 0) return;
   const snapshot = Array.from(players.values()).map(p => ({
     id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
@@ -3256,7 +3298,19 @@ setInterval(() => {
   }));
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   broadcast({ type: 'state', players: snapshot, worldT: tickWorldT, wildlifeWorldT: tickWorldT });
+  } catch (e) {
+    console.error('[playground] state tick error:', e && e.message ? e.message : e);
+  }
 }, 1000 / TICK_RATE);
+
+process.on('uncaughtException', err => {
+  console.error('[playground] uncaughtException — process will exit (restart via PM2/systemd):', err);
+  try { clearInterval(wsHeartbeat); } catch (e) {}
+  process.exit(1);
+});
+process.on('unhandledRejection', reason => {
+  console.error('[playground] unhandledRejection:', reason);
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Pirate game server running on port ${PORT}`);
