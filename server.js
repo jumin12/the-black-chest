@@ -23,7 +23,7 @@ function sanitizeBoardingFromClient(b) {
   if (typeof b !== 'object' || !b) return null;
   const sid = Math.floor(Number(b.sid));
   if (!Number.isFinite(sid) || sid === 0) return null;
-  const ph = (b.ph === 'f' || b.ph === 'S' || b.ph === 'W' || b.ph === 'h') ? b.ph : 'h';
+  const ph = b.ph === 'f' ? 'f' : 'h';
   const nx = Number(b.nx);
   const nz = Number(b.nz);
   const nr = Number(b.nr);
@@ -1776,13 +1776,6 @@ function isNavigatorAdminTokenOk(token) {
   return !!(exp && exp > Date.now());
 }
 
-/** World bounds: keep `state` snapshots valid so clients never see NaN / frozen remotes. */
-const PLAYER_STATE_CLAMP = 4.8e5;
-function clampPlayerCoord(n, fallback) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return fallback;
-  return Math.max(-PLAYER_STATE_CLAMP, Math.min(PLAYER_STATE_CLAMP, v));
-}
 function findWsByPlayerId(pid) {
   for (const c of wss.clients) {
     if (c.readyState === 1 && c.playerId === pid) return c;
@@ -2042,16 +2035,10 @@ wss.on('connection', (ws, req) => {
         case 'update': {
           const p = players.get(id);
           if (!p) break;
-          if (msg.x !== undefined) p.x = clampPlayerCoord(msg.x, p.x);
-          if (msg.z !== undefined) p.z = clampPlayerCoord(msg.z, p.z);
-          if (msg.rotation !== undefined) {
-            const r = Number(msg.rotation);
-            p.rotation = Number.isFinite(r) ? Math.max(-1e4, Math.min(1e4, r)) : p.rotation;
-          }
-          if (msg.speed !== undefined) {
-            const s = Number(msg.speed);
-            p.speed = Number.isFinite(s) ? Math.max(-120, Math.min(120, s)) : p.speed;
-          }
+          if (msg.x !== undefined) p.x = msg.x;
+          if (msg.z !== undefined) p.z = msg.z;
+          if (msg.rotation !== undefined) p.rotation = msg.rotation;
+          if (msg.speed !== undefined) p.speed = msg.speed;
           if (msg.health !== undefined) p.health = msg.health;
           if (msg.docked !== undefined) p.docked = !!msg.docked;
           if (msg.dockX !== undefined) p.dockX = msg.dockX;
@@ -2100,10 +2087,7 @@ wss.on('connection', (ws, req) => {
           }
           if (msg.boarding !== undefined) {
             if (msg.boarding === null) p.boarding = null;
-            else {
-              const sb = sanitizeBoardingFromClient(msg.boarding);
-              if (sb != null) p.boarding = sb;
-            }
+            else p.boarding = sanitizeBoardingFromClient(msg.boarding);
           }
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {
@@ -2612,12 +2596,27 @@ wss.on('connection', (ws, req) => {
         case 'boarding_spoils': {
           const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
           const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
+          const scuttle = !!msg.scuttle;
+          const mercy = !!msg.mercy;
+          const prisoners = Math.max(0, Math.min(20, Math.floor(Number(msg.prisoners) || 0)));
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
-          if (targetId === id) break;
+          if (!scuttle && !mercy && gold === 0) break;
+          const pFrom = players.get(id);
+          const fromCaptainName = pFrom
+            ? String((pFrom.name || pFrom.shipName || 'Captain')).slice(0, 28)
+            : (msg.fromCaptainName != null ? String(msg.fromCaptainName).slice(0, 28) : '');
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
             try {
-              tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, gold, scuttle: !!msg.scuttle }));
+              tws.send(JSON.stringify({
+                type: 'boarding_spoils',
+                from: id,
+                gold,
+                scuttle,
+                mercy,
+                prisoners,
+                fromCaptainName
+              }));
             } catch (e) {}
           }
           break;
