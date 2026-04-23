@@ -2328,6 +2328,25 @@ wss.on('connection', (ws, req) => {
           });
           break;
         }
+        case 'npc_hit_claim': {
+          if (msg.npcId === undefined || msg.npcId === null) break;
+          const a = msg.ammoType;
+          const ammoType = a === 'grape' || a === 'chain' || a === 'grape_pellet' ? a : 'ball';
+          const hx = msg.hx != null && Number.isFinite(Number(msg.hx)) ? Number(msg.hx) : null;
+          const hy = msg.hy != null && Number.isFinite(Number(msg.hy)) ? Number(msg.hy) : null;
+          const hz = msg.hz != null && Number.isFinite(Number(msg.hz)) ? Number(msg.hz) : null;
+          broadcastAll({
+            type: 'npc_hit_claim',
+            fromId: id,
+            npcId: msg.npcId,
+            ammoType,
+            isPellet: msg.isPellet === true || ammoType === 'grape_pellet',
+            hx,
+            hy,
+            hz
+          });
+          break;
+        }
         case 'delete_captain_career': {
           const stripPid = msg.stripLeaderboardPlayerId != null ? Math.floor(Number(msg.stripLeaderboardPlayerId)) : null;
           /** Session-only captains (no server account): drop their leaderboard row by socket player id. */

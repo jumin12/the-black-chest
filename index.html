@@ -3217,6 +3217,45 @@ function getCannonballKillerPlayerId(b) {
   return null;
 }
 
+/** NPC authority only: apply hull/rigging damage from a human captain’s round (local or relayed hit claim). */
+function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPellet, bx, by, bz) {
+  if (!npc || npc.sinking) return;
+  const h0 = npc.health != null && Number.isFinite(Number(npc.health)) ? Number(npc.health) : 0;
+  if (h0 <= 0) return;
+  let dh = 15;
+  if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
+  else if (at === 'grape') dh = 10;
+  else if (at === 'chain') dh = 8;
+  npc.health -= dh;
+  {
+    const specN = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
+    const hN = specN.hullH || 1.3;
+    const ny = npc.mesh?.position?.y ?? worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
+    playShipDamageSound(isPellet ? 0.52 : 0.88, npc.x, ny + hN * 0.42, npc.z);
+  }
+  npc.aggro = true;
+  npc.underFireTimer = 4.6;
+  let popMsg = `−${dh} hull`;
+  if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
+  else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
+  else if (at === 'ball') popMsg = `Round shot · −${dh}`;
+  showCombatPopupWorld(npc.x, npc.z, `${npc.name}: ${popMsg} (${Math.max(0, Math.round(npc.health))} HP)`, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '', life: 2.1 });
+  spawnDamageChunks(bx, by, bz);
+  if (ws?.readyState === 1) {
+    try { ws.send(JSON.stringify({ type: 'ship_hit_fx', x: bx, y: by, z: bz })); } catch (e) {}
+  }
+  spawnSeaDebrisFromHit(bx, bz, at === 'chain' ? 8 : at === 'grape' ? (isPellet ? 2 : 5) : 4);
+  if (at === 'chain') {
+    const rigBefore = npc.riggingHealth != null ? npc.riggingHealth : getNpcRiggingHealth(npc);
+    npc.riggingHealth = Math.max(0, rigBefore - (30 + Math.random() * 14));
+    if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
+  }
+  if (npc.health <= 0) {
+    const kid = killerPlayerId != null && Number.isFinite(Number(killerPlayerId)) ? Number(killerPlayerId) : null;
+    runNpcSinkOutcome(npc, kid);
+  }
+}
+
 function normalizeEscortRaidersForCargo(cargoSyncId) {
   if (cargoSyncId == null) return;
   G.npcs.forEach(a => {
@@ -15003,6 +15042,30 @@ async function connectToServer() {
       case 'npc_kill_award':
         applyLocalNpcKillLootFromNet(msg);
         break;
+      case 'npc_hit_claim': {
+        if (!isMultiplayerHost()) break;
+        const fromId = msg.fromId != null ? Number(msg.fromId) : null;
+        if (!Number.isFinite(fromId)) break;
+        if (fromId === G.myId) break;
+        const nid = netNpcSyncId(msg.npcId);
+        if (nid == null) break;
+        const npc = G.npcs.find(n => netNpcSyncId(n.syncId) === nid);
+        if (!npc || npc.sinking) break;
+        const h0 = npc.health != null && Number.isFinite(Number(npc.health)) ? Number(npc.health) : 0;
+        if (h0 <= 0) break;
+        const spid = netPlayerId(fromId);
+        const shooter = spid != null ? G.otherPlayers.get(spid) : null;
+        if (!shooter || shooter.x == null || shooter.z == null) break;
+        if (Math.hypot(shooter.x - npc.x, shooter.z - npc.z) > 260) break;
+        const aRaw = msg.ammoType;
+        const isPellet = !!msg.isPellet || aRaw === 'grape_pellet';
+        const at = isPellet ? 'grape' : (aRaw === 'chain' ? 'chain' : 'ball');
+        const hx = msg.hx != null && Number.isFinite(Number(msg.hx)) ? Number(msg.hx) : npc.x;
+        const hy = msg.hy != null && Number.isFinite(Number(msg.hy)) ? Number(msg.hy) : (worldSeaSurfaceY(npc.x, npc.z) + 1.2);
+        const hz = msg.hz != null && Number.isFinite(Number(msg.hz)) ? Number(msg.hz) : npc.z;
+        applyAuthorizedNpcDamageFromPlayerShot(npc, fromId, at, isPellet, hx, hy, hz);
+        break;
+      }
       case 'npc_ram_report': {
         if (!isMultiplayerHost()) break;
         const fromId = msg.fromId != null ? Number(msg.fromId) : null;
@@ -23862,8 +23925,9 @@ function update(dt) {
     }
 
     const mpHost = isMultiplayerHost();
+    /** Remote captains’ shots are simulated locally for VFX only; damage uses `npc_hit_claim` on the NPC host (avoids trajectory desync). */
     const hitNpcsAsHost = mpHost && (
-      b.owner === 'player' || b.owner === 'other_player' ||
+      b.owner === 'player' ||
       (b.owner === 'npc' && b.sourceNpcSyncId != null)
     );
     const predictLocalNpcHitFx = !mpHost && b.owner === 'player';
@@ -23883,19 +23947,6 @@ function update(dt) {
         const distHit = distSegmentToShipHullOBB(px, pz, b.x, b.z, npc.x, npc.z, nYaw, npc.type);
         if (distHit >= hitR * 1.1 || b.y < SEA_LEVEL - 4) return;
         if (hitNpcsAsHost) {
-          let dh = 15;
-          if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
-          else if (at === 'grape') dh = 10;
-          else if (at === 'chain') dh = 8;
-          npc.health -= dh;
-          {
-            const specN = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
-            const hN = specN.hullH || 1.3;
-            const ny = npc.mesh?.position?.y ?? worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
-            playShipDamageSound(isPellet ? 0.52 : 0.88, npc.x, ny + hN * 0.42, npc.z);
-          }
-          npc.aggro = true;
-          npc.underFireTimer = 4.6;
           if (b.owner === 'npc' && b.sourceNpcSyncId != null) {
             const shooter = G.npcs.find(n => n.syncId === b.sourceNpcSyncId);
             if (shooter && !shooter.sinking && (shooter.health == null || shooter.health > 0)) {
@@ -23906,26 +23957,24 @@ function update(dt) {
               }
             }
           }
-          let popMsg = `−${dh} hull`;
-          if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
-          else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
-          else if (at === 'ball') popMsg = `Round shot · −${dh}`;
-          showCombatPopupWorld(npc.x, npc.z, `${npc.name}: ${popMsg} (${Math.max(0, Math.round(npc.health))} HP)`, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '', life: 2.1 });
-          spawnDamageChunks(b.x, b.y, b.z);
-          if (ws?.readyState === 1) {
-            try { ws.send(JSON.stringify({ type: 'ship_hit_fx', x: b.x, y: b.y, z: b.z })); } catch (e) {}
-          }
-          spawnSeaDebrisFromHit(b.x, b.z, at === 'chain' ? 8 : at === 'grape' ? (isPellet ? 2 : 5) : 4);
-          if (at === 'chain') {
-            const rigBefore = npc.riggingHealth != null ? npc.riggingHealth : getNpcRiggingHealth(npc);
-            npc.riggingHealth = Math.max(0, rigBefore - (30 + Math.random() * 14));
-            if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
-          }
-          if (npc.health <= 0) {
-            runNpcSinkOutcome(npc, getCannonballKillerPlayerId(b));
-          }
+          const killerPid = b.owner === 'player' ? (G.myId != null ? G.myId : null) : null;
+          applyAuthorizedNpcDamageFromPlayerShot(npc, killerPid, at, isPellet, b.x, b.y, b.z);
         } else {
           spawnDamageChunks(b.x, b.y, b.z);
+          if (predictLocalNpcHitFx && ws?.readyState === 1) {
+            const ammoNet = isPellet ? 'grape_pellet' : at;
+            try {
+              ws.send(JSON.stringify({
+                type: 'npc_hit_claim',
+                npcId: npc.syncId,
+                ammoType: ammoNet,
+                isPellet: !!isPellet,
+                hx: b.x,
+                hy: b.y,
+                hz: b.z
+              }));
+            } catch (e) {}
+          }
         }
         b.life = 0;
       });
