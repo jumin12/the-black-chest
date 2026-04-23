@@ -15958,7 +15958,8 @@ async function connectToServer() {
         if (!Array.isArray(msg.players)) break;
         const myIdForState = netPlayerId(G.myId);
         if (myIdForState == null) break;
-        if (!msg.players.some(p => netPlayerId(p.id) === myIdForState)) break;
+        /* Never drop the whole state if our id is momentarily missing from the snapshot;
+           other captains would freeze / vanish on screen. Still merge everyone else. */
         const activeRemote = new Set();
         msg.players.forEach(p => {
           const pid = netPlayerId(p.id);
@@ -24393,43 +24394,22 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
 }
 
 /**
- * Dead-reckon using the server’s speed + heading (45Hz), then soft-correct to x/z/rotation.
- * Avoids the old local-wind “prediction” that fought authority and made other ships skip on the host.
+ * Other players: server `state` is the only source of truth (45Hz, matches server.js TICK_RATE).
+ * Prior dead-reckoning + soft pull fought authority and made ships look frozen or rubber-banded.
  */
-function advanceRemoteShipNetSmooth(sg, p, dt) {
-  let ns = sg.userData.netSmooth;
+function advanceRemoteShipNetSmooth(sg, p, _dt) {
+  const x = p.x != null && Number.isFinite(Number(p.x)) ? Number(p.x) : 0;
+  const z = p.z != null && Number.isFinite(Number(p.z)) ? Number(p.z) : 0;
   const authR = p.rotation != null && Number.isFinite(Number(p.rotation)) ? Number(p.rotation) : 0;
+  let ns = sg.userData.netSmooth;
   if (!ns || !Number.isFinite(ns.x) || !Number.isFinite(ns.z) || !Number.isFinite(ns.ry)) {
-    ns = { x: p.x, z: p.z, ry: authR };
-    sg.userData.netSmooth = ns;
-  }
-  if (p.docked) {
-    ns.x = p.x;
-    ns.z = p.z;
+    ns = { x, z, ry: authR };
+  } else {
+    ns.x = x;
+    ns.z = z;
     ns.ry = authR;
-    return ns;
   }
-  const err = Math.hypot(p.x - ns.x, p.z - ns.z);
-  if (err > 240) {
-    ns.x = p.x;
-    ns.z = p.z;
-    ns.ry = authR;
-    return ns;
-  }
-  const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
-  const th = authR;
-  if (Math.abs(v) > 0.006) {
-    ns.x += Math.sin(th) * v * dt;
-    ns.z += Math.cos(th) * v * dt;
-  }
-  const posK = 1 - Math.exp(-(err > 5.5 ? 19 : 15) * dt);
-  ns.x += (p.x - ns.x) * posK;
-  ns.z += (p.z - ns.z) * posK;
-  let dYaw = authR - ns.ry;
-  while (dYaw > Math.PI) dYaw -= Math.PI * 2;
-  while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-22 * dt);
-  ns.ry += dYaw * Math.min(1, rotK);
+  sg.userData.netSmooth = ns;
   return ns;
 }
 
