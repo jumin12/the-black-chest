@@ -12250,6 +12250,44 @@ function spawnBoardingPrizeHullDecoyFromNet(msg) {
   if (!G.prizeHullDecoySinks) G.prizeHullDecoySinks = [];
   G.prizeHullDecoySinks.push(sm);
 }
+function spawnBoardingAbandonedHullDecoyFromCurrentPlayer() {
+  if (G.mode !== 'playing' || G.spectate) return;
+  const cap = getCaptainDisplayCrew();
+  spawnBoardingPrizeHullDecoyFromNet({
+    x: G.player.x,
+    z: G.player.z,
+    rotation: G.player.rotation,
+    shipType: G.player.shipType,
+    shipParts: G.player.shipParts ? { ...G.player.shipParts } : {},
+    shipName: G.player.shipName,
+    flagAssetId: getEffectivePlayerFlagAssetId(),
+    name: (cap && cap.name) ? String(cap.name).trim().slice(0, 28) : (G.player.name || 'Captain'),
+    partyTag: G.party?.tag || '',
+    crewData: buildCrewSyncPayload(),
+    color: cap && cap.color ? cap.color : '#8a7060'
+  });
+}
+function applyPrizeShipFromCapturedNpc(npc) {
+  if (!npc) return;
+  const merchant = !!npc.isTradeShip;
+  const patrol = !!npc.isFactionPatrol && !merchant;
+  const st = npc.type && SHIP_TYPES[npc.type] ? npc.type : 'sloop';
+  const mercCannon = merchant ? (npc.tradeCannon || tradeShipCannonForType(st)) : patrol ? (npc.patrolCannon || tradeShipCannonForType(st)) : 'light';
+  const fp = npc.flagPosition || 'mast';
+  const partsRaw = merchant
+    ? { hull: 'basic', sail: npc.sailPick === 'silk' ? 'silk' : 'basic', cannon: mercCannon, figurehead: 'none', flag: fp }
+    : patrol
+      ? { hull: 'basic', sail: 'war', cannon: mercCannon, figurehead: 'none', flag: fp }
+      : { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: fp };
+  G.player.shipType = st;
+  G.player.shipParts = merchant ? partsRaw : normalizeShipPartsForRemoteView(partsRaw);
+  const rawName = npc.name && String(npc.name).trim();
+  if (rawName) G.player.shipName = rawName.slice(0, 28);
+  if (npc.flagAssetId != null) {
+    const a = sanitizeFlagPngId(Number(npc.flagAssetId));
+    if (a != null) G.player.flagAssetId = a;
+  }
+}
 function cloneCaptainShipPartsFromRow(row) {
   const b = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   const sp = row && row.shipParts;
@@ -12383,8 +12421,13 @@ function showBoardingSpoilsModal(won, b) {
     if ((pmax | 0) - ptk > 0) notify((pmax - ptk) + ' prisoners thrown over the rail.', 5000);
     if (b.npcSyncId != null) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
-      if (n && n.mesh) { runNpcSinkOutcome(n, G.myId); } else { abortActiveBoarding(''); }
+      if (n && n.mesh) {
+        spawnBoardingAbandonedHullDecoyFromCurrentPlayer();
+        applyPrizeShipFromCapturedNpc(n);
+        runNpcSinkOutcome(n, G.myId);
+      } else { abortActiveBoarding(''); }
     } else if (b.partnerPlayerId) {
+      spawnBoardingAbandonedHullDecoyFromCurrentPlayer();
       const pid = netPlayerId(b.partnerPlayerId);
       const row = pid != null ? G.otherPlayers.get(pid) : null;
       if (row) applyPrizeShipFromRemoteCaptainRow(row);
@@ -12435,8 +12478,10 @@ function showBoardingSpoilsModal(won, b) {
       }
     }
     if ((pmax | 0) - ptk > 0) notify((pmax - ptk) + ' survivors cast into the deep.', 4000);
-    if (b.npcSyncId != null) { const n = G.npcs.find(nn => nn.syncId === b.npcSyncId); if (n && n.mesh) runNpcSinkOutcome(n, G.myId); }
-    else if (b.partnerPlayerId) {
+    if (b.npcSyncId != null) {
+      const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
+      if (n) n._boardingHostLock = false;
+    } else if (b.partnerPlayerId) {
       try { ws && ws.send(JSON.stringify({ type: 'boarding_spoils', targetId: b.partnerPlayerId, gold: g, scuttle: false })); } catch (e) {}
     }
     rebuildPlayerShip(); updateCrewPanel();
@@ -16386,6 +16431,8 @@ async function connectToServer() {
           G.player.health = 0;
           notify(`Your hull is opened — ${take}g seized. You are going under!`, 7200);
         } else if (keepHull) {
+          spawnBoardingAbandonedHullDecoyFromCurrentPlayer();
+          notify('Your old command settles into the deep…', 5200);
           ruinCrewAfterPvPBoardingMercy();
           applyBoardingSpoilLoserDefaultHull();
           ensureCargoSlots();
@@ -16855,11 +16902,9 @@ async function connectToServer() {
       case 'boarding_prize_hull_sink': {
         try { spawnBoardingPrizeHullDecoyFromNet(msg); } catch (e) {}
         const pv = netPlayerId(msg.victimId);
-        if (pv != null && pv === G.myId) {
-          notify('Your old command settles into the deep…', 5200);
-        } else if (pv != null) {
+        if (pv != null && pv !== G.myId) {
           const cap = (msg.name && String(msg.name).trim()) ? String(msg.name).trim() : 'A captain';
-          notify(`${cap}'s seized hull is going under.`);
+          notify(`${cap}'s abandoned hull is going under.`);
         }
         break;
       }
