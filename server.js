@@ -2621,6 +2621,24 @@ wss.on('connection', (ws, req) => {
               tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, gold, scuttle }));
             } catch (e) {}
           }
+          /* Scuttle: broadcast sink immediately so the attacker sees the animation even if the victim's client is slow to send ship_sunk. */
+          if (scuttle) {
+            const vic = players.get(targetId);
+            const vx = vic && Number.isFinite(Number(vic.x)) ? Number(vic.x) : 0;
+            const vz = vic && Number.isFinite(Number(vic.z)) ? Number(vic.z) : 0;
+            let sinkName = vic?.name || 'A captain';
+            if (vic?.crewData && Array.isArray(vic.crewData) && vic.crewData[0]?.name) {
+              sinkName = String(vic.crewData[0].name).slice(0, 28);
+            }
+            broadcastAll({
+              type: 'ship_sunk',
+              victimId: targetId,
+              x: vx,
+              z: vz,
+              loot: [],
+              name: sinkName
+            });
+          }
           break;
         }
         case 'party_chart_markers': {
