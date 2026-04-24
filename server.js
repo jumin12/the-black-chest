@@ -26,8 +26,9 @@ function sanitizeBoardingFromClient(b) {
   const ph = b.ph === 'e' ? 'e' : b.ph === 'f' ? 'f' : 'h';
   const nx = Number(b.nx);
   const nz = Number(b.nz);
-  const nr = Number(b.nr);
-  if (!Number.isFinite(nx) || !Number.isFinite(nz) || !Number.isFinite(nr)) return null;
+  const nrRaw = Number(b.nr);
+  if (!Number.isFinite(nx) || !Number.isFinite(nz)) return null;
+  const nr = Number.isFinite(nrRaw) ? nrRaw : 0;
   const ex = Number(b.ex);
   const ez = Number(b.ez);
   const er = Number(b.er);
