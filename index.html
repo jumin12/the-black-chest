@@ -4934,6 +4934,7 @@ function migratePlayerCrewRecords() {
   ensureUniqueStationAssignments();
   ensurePlayerCrewTasks();
   dedupeCrewDisplayIdentities();
+  backfillPlaceholderPrisonerIdentities();
 }
 /** After load: recover from empty saves, invalid JSON shapes, or missing captain so the deck never loads bare. */
 function ensurePlayerCrewSanityAfterLoad() {
@@ -12753,6 +12754,73 @@ function getBoardingSpoilsFoeFighterRoster() {
   if (!Array.isArray(raw) || !raw.length) return [];
   return raw.filter(c => c && c.role !== 'prisoner');
 }
+/** Blank / legacy boarding labels (“Captive 1”, “Ransom prisoner 2”, …) — replace with generated pirate names. */
+function isPlaceholderCrewName(name) {
+  const s = String(name || '').trim().toLowerCase();
+  if (!s) return true;
+  if (s === 'prisoner' || s === 'straggler') return true;
+  if (/^captive\s*\d+$/.test(s)) return true;
+  if (/^prisoner\s*\d+$/.test(s)) return true;
+  if (/^ransom\s+prisoner/.test(s)) return true;
+  if (/^dazed\s+captive/.test(s)) return true;
+  if (/^surrendered\s+\d+$/.test(s)) return true;
+  return false;
+}
+/** Ensure enough named fighters for every prisoner slot (surrender pool can exceed sparse crewData from the network). */
+function ensureBoardingSpoilsFoeRosterPadded(minFighters) {
+  const need = Math.max(1, Math.min(24, minFighters | 0));
+  const raw = Array.isArray(G._boardingSpoilsFoeCrew) ? G._boardingSpoilsFoeCrew : [];
+  const fighters = [];
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (!c || typeof c !== 'object' || c.role === 'prisoner') continue;
+    const copy = normalizeCrewMemberRecord({ ...c });
+    if (isPlaceholderCrewName(copy.name)) {
+      const pack = ambientPirateCrewData(((i + 1) * 0x9e3779b1 + (G.time | 0)) >>> 0);
+      const pick = pack[i % 3];
+      copy.name = pick.name;
+      copy.color = copy.color || pick.color;
+      if (copy.hat == null || copy.hat === 'none') copy.hat = pick.hat;
+    }
+    fighters.push(copy);
+  }
+  let seed = ((netPlayerId(G.myId) || 1) * 2246822519 ^ (G.time | 0) ^ (need << 17)) >>> 0;
+  const padRoles = ['gunner', 'sailor', 'navigator'];
+  while (fighters.length < need) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    const genPack = ambientPirateCrewData(seed);
+    const pi = fighters.length % 3;
+    const tmpl = genPack[pi];
+    const role = padRoles[fighters.length % padRoles.length];
+    const extra = normalizeCrewMemberRecord({
+      name: tmpl.name,
+      role,
+      task: 'idle',
+      health: Math.max(18, 35 + (seed % 55)),
+      color: tmpl.color,
+      hat: tmpl.hat != null ? tmpl.hat : 'bandana',
+      outfit: tmpl.outfit || 'vest'
+    });
+    if (isPlaceholderCrewName(extra.name)) extra.name = genPack[(pi + 1) % 3].name;
+    fighters.push(extra);
+  }
+  G._boardingSpoilsFoeCrew = fighters;
+}
+function synthesizeBoardingSpoilsFighterFallback(i, salt) {
+  const seed = ((i + 1) * 2663 ^ (salt | 0) ^ ((G.time | 0) >>> 0)) >>> 0;
+  const pack = ambientPirateCrewData(seed);
+  const tmpl = pack[i % 3];
+  const roles = ['gunner', 'sailor', 'navigator'];
+  return normalizeCrewMemberRecord({
+    name: tmpl.name,
+    role: roles[i % roles.length],
+    task: 'idle',
+    health: Math.max(20, 45 + (seed % 45)),
+    color: tmpl.color,
+    hat: tmpl.hat != null ? tmpl.hat : 'bandana',
+    outfit: tmpl.outfit || 'vest'
+  });
+}
 /** Build a brig entry from the defeated ship’s real crewman (name, look, skills) — no generic “Prisoner 1”. */
 function captiveRecordFromBoardedFighter(src, healthMult) {
   const mult = healthMult != null && Number.isFinite(Number(healthMult)) ? Math.max(0.15, Math.min(1.2, Number(healthMult))) : 0.65;
@@ -12827,49 +12895,42 @@ function renderBoardingSpoilsPrisonersStrip(maxPool, takeN) {
   row.innerHTML = '';
   for (let i = 0; i < maxPool; i++) {
     const on = i < takeN;
-    const m = roster[i];
-    if (m) {
-      const hp = m.health != null && Number.isFinite(Number(m.health)) ? Math.max(0, Math.min(100, Number(m.health))) : 100;
-      const dead = hp <= 0;
-      const card = document.createElement('div');
-      card.className = 'boarding-spoils-pris-card boarding-spoils-crew-card' + (on ? ' in' : '') + (dead ? ' dead' : '');
-      card.dataset.prisonerI = String(i);
-      card.title = (m.name || 'Hand') + ' — tap to set prisoners taken';
-      const wrap = document.createElement('div');
-      wrap.className = 'boarding-spoils-crew-portrait-wrap';
-      const cvs = document.createElement('canvas');
-      cvs.className = 'boarding-spoils-crew-portrait';
-      cvs.width = 128;
-      cvs.height = 128;
-      cvs.dataset.spoilsCrewI = String(i);
-      wrap.appendChild(cvs);
-      const meta = document.createElement('div');
-      meta.className = 'boarding-spoils-crew-meta';
-      const nm = document.createElement('div');
-      nm.className = 'boarding-spoils-crew-name';
-      nm.textContent = m.name || 'Hand';
-      const rl = document.createElement('div');
-      rl.className = 'boarding-spoils-crew-role';
-      rl.textContent = String(m.role || 'sailor').replace(/_/g, ' ');
-      const hpw = document.createElement('div');
-      hpw.className = 'boarding-spoils-crew-hp';
-      hpw.title = 'Health';
-      const hpf = document.createElement('div');
-      hpf.style.width = hp + '%';
-      hpw.appendChild(hpf);
-      meta.appendChild(nm);
-      meta.appendChild(rl);
-      meta.appendChild(hpw);
-      card.appendChild(wrap);
-      card.appendChild(meta);
-      row.appendChild(card);
-    } else {
-      const fb = document.createElement('div');
-      fb.className = 'boarding-spoils-pris-card boarding-spoils-pris-card--fallback' + (on ? ' in' : '');
-      fb.dataset.prisonerI = String(i);
-      fb.innerHTML = `<div class="boarding-spoils-pris-ic" aria-hidden="true">&#9876;</div><div class="pm">Captive ${i + 1}</div>`;
-      row.appendChild(fb);
-    }
+    let m = roster[i];
+    if (!m) m = synthesizeBoardingSpoilsFighterFallback(i, maxPool);
+    const hp = m.health != null && Number.isFinite(Number(m.health)) ? Math.max(0, Math.min(100, Number(m.health))) : 100;
+    const dead = hp <= 0;
+    const card = document.createElement('div');
+    card.className = 'boarding-spoils-pris-card boarding-spoils-crew-card' + (on ? ' in' : '') + (dead ? ' dead' : '');
+    card.dataset.prisonerI = String(i);
+    card.title = (m.name || 'Hand') + ' — tap to set prisoners taken';
+    const wrap = document.createElement('div');
+    wrap.className = 'boarding-spoils-crew-portrait-wrap';
+    const cvs = document.createElement('canvas');
+    cvs.className = 'boarding-spoils-crew-portrait';
+    cvs.width = 128;
+    cvs.height = 128;
+    cvs.dataset.spoilsCrewI = String(i);
+    wrap.appendChild(cvs);
+    const meta = document.createElement('div');
+    meta.className = 'boarding-spoils-crew-meta';
+    const nm = document.createElement('div');
+    nm.className = 'boarding-spoils-crew-name';
+    nm.textContent = m.name || 'Hand';
+    const rl = document.createElement('div');
+    rl.className = 'boarding-spoils-crew-role';
+    rl.textContent = String(m.role || 'sailor').replace(/_/g, ' ');
+    const hpw = document.createElement('div');
+    hpw.className = 'boarding-spoils-crew-hp';
+    hpw.title = 'Health';
+    const hpf = document.createElement('div');
+    hpf.style.width = hp + '%';
+    hpw.appendChild(hpf);
+    meta.appendChild(nm);
+    meta.appendChild(rl);
+    meta.appendChild(hpw);
+    card.appendChild(wrap);
+    card.appendChild(meta);
+    row.appendChild(card);
   }
   queueBoardingSpoilsCrewPortraits();
 }
@@ -12977,6 +13038,10 @@ function showBoardingSpoilsModal(won, b) {
     G._boardingSpoilsFoeShipType = null;
   }
   const maxPStrip = won ? Math.min(12, b.surrenderPool | 0) : 0;
+  if (won && maxPStrip > 0) {
+    const padNeed = Math.max(maxPStrip, Math.min(12, Math.max(1, b.eTotStart | 0)), 3);
+    ensureBoardingSpoilsFoeRosterPadded(padNeed);
+  }
   renderBoardingSpoilsPrisonersStrip(maxPStrip, 0);
   renderBoardingSpoilsPvpHoldsRefresh();
   const btnK = document.getElementById('boarding-spoils-keep');
@@ -22221,6 +22286,7 @@ function crewPanelRenderCard(m, mi) {
 function updateCrewPanel() {
   const l = document.getElementById('crew-list');
   if (!l) return;
+  backfillPlaceholderPrisonerIdentities();
   l.innerHTML = '';
   const spec = SHIP_TYPES[G.player.shipType];
   const metaEl = document.getElementById('crew-log-meta');
@@ -28264,6 +28330,39 @@ function rollFreshPlayerCrewFromPools() {
     missedMeals: 0,
     skills: { ...skillsFor(c.role) }
   }));
+}
+/** Brig: old saves / boarding used generic prisoner labels — assign real names + skills. */
+function backfillPlaceholderPrisonerIdentities() {
+  if (!Array.isArray(G.player.crew)) return;
+  const normKey = (n) => String(n || '').trim().toLowerCase();
+  const used = new Set();
+  for (const c of G.player.crew) {
+    if (!c) continue;
+    const nk = normKey(c.name);
+    if (nk) used.add(nk);
+  }
+  let seed = (Date.now() ^ (Math.imul(G.player.crew.length + 3, 2654435761) >>> 0)) >>> 0;
+  for (const c of G.player.crew) {
+    if (!c || c.role !== 'prisoner') continue;
+    if (!isPlaceholderCrewName(c.name)) continue;
+    let guard = 0;
+    while (guard++ < 36) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const pack = ambientPirateCrewData(seed);
+      const pick = pack[guard % 3];
+      const nk = normKey(pick.name);
+      if (nk && !used.has(nk)) {
+        c.name = pick.name;
+        c.color = c.color || pick.color;
+        if (c.hat == null || c.hat === 'none') c.hat = pick.hat;
+        used.add(nk);
+        break;
+      }
+    }
+    if (!c.skills || typeof c.skills !== 'object') c.skills = randomRecruitSkills();
+    else for (const k of CREW_SKILL_KEYS) c.skills[k] = clampSkillLv(c.skills[k] != null ? c.skills[k] : 1);
+    normalizeCrewMemberRecord(c);
+  }
 }
 /** Fix duplicate or blank names after load/migrate so portraits and manifests stay distinct. */
 function dedupeCrewDisplayIdentities() {
