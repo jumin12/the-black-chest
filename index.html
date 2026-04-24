@@ -11815,20 +11815,37 @@ function packPvPNonAuthorityBoardingForNetwork() {
   if (b.phase === 'await_opponent') return null;
   const ph = b.phase === 'spoils' ? 'e' : b.phase === 'fight' ? 'f' : 'h';
   const t = Math.min(999, Math.max(0, b.tNet | 0));
-  const pa = Math.min(48, Math.max(0, b.pAtk | 0));
-  const ea = Math.min(48, Math.max(0, b.eAtk | 0));
-  const pH = Math.min(48, Math.max(0, b.pHeart | 0));
-  const eH = Math.min(48, Math.max(0, b.eHeart | 0));
-  const pTo = Math.min(96, Math.max(0, b.pTotal | 0));
-  const eTo = Math.min(96, Math.max(0, b.eTotal | 0));
+  /* Wire format matches the grappler's snapshot: pa/pTo = boarder, ea/eTo = defender. Local b is self vs enemy. */
+  const pa = Math.min(48, Math.max(0, b.eAtk | 0));
+  const ea = Math.min(48, Math.max(0, b.pAtk | 0));
+  const pH = Math.min(48, Math.max(0, b.eHeart | 0));
+  const eH = Math.min(48, Math.max(0, b.pHeart | 0));
+  const pTo = Math.min(96, Math.max(0, b.eTotal | 0));
+  const eTo = Math.min(96, Math.max(0, b.pTotal | 0));
+  let nx = Number(G.player.x), nz = Number(G.player.z), nr = Number(G.player.rotation);
+  let ex = nx, ez = nz, er = nr;
+  const opp = G.otherPlayers.get(netPlayerId(b.partnerPlayerId));
+  if (opp && Number.isFinite(opp.x) && Number.isFinite(opp.z)) {
+    ex = Number(opp.x); ez = Number(opp.z); er = Number(opp.rotation != null ? opp.rotation : 0);
+  }
+  if (b.lockEX != null && b.lockEZ != null && b.lockER != null) {
+    nx = Number(b.lockEX); nz = Number(b.lockEZ); nr = Number(b.lockER);
+  }
+  if (b.lockPX != null && b.lockPZ != null && b.lockPR != null) {
+    ex = Number(b.lockPX); ez = Number(b.lockPZ); er = Number(b.lockPR);
+  }
+  if (!Number.isFinite(nx)) nx = Number(G.player.x) || 0;
+  if (!Number.isFinite(nz)) nz = Number(G.player.z) || 0;
+  if (!Number.isFinite(nr)) nr = 0;
+  if (!Number.isFinite(ex)) ex = nx;
+  if (!Number.isFinite(ez)) ez = nz;
+  if (!Number.isFinite(er)) er = nr;
   const o = {
     sid, ph, t, hd: 2.45, pa, pH, ea, eH, pTo, eTo,
-    nx: G.player.x, nz: G.player.z, nr: G.player.rotation
+    nx, nz, nr,
+    ex, ez, er
   };
   if (b.phase === 'pull') o.pl = Math.max(0, Math.min(1, Number(b.pullT) || 0));
-  if (b.lockEX != null && b.lockER != null) {
-    o.ex = b.lockEX; o.ez = b.lockEZ; o.er = b.lockER;
-  }
   return o;
 }
 function packBoardingForNetwork() {
@@ -11857,15 +11874,37 @@ function packBoardingForNetwork() {
   const eH = Math.min(48, Math.max(0, b.eHeart | 0));
   const pTo = Math.min(96, Math.max(0, b.pTotal | 0));
   const eTo = Math.min(96, Math.max(0, b.eTotal | 0));
+  const pr = Number(G.player.rotation);
   const o = {
     sid, ph, t, hd: 2.45, pa, pH, ea, eH, pTo, eTo,
-    nx: G.player.x, nz: G.player.z, nr: G.player.rotation
+    nx: Number(G.player.x) || 0,
+    nz: Number(G.player.z) || 0,
+    nr: Number.isFinite(pr) ? pr : 0
   };
   if (b.phase === 'pull') o.pl = Math.max(0, Math.min(1, Number(b.pullT) || 0));
   if (b.lockEX != null && b.lockER != null) {
     o.ex = b.lockEX; o.ez = b.lockEZ; o.er = b.lockER;
   }
   return o;
+}
+/** Net payloads are authored from the grappler's POV: pa/pTo = boarder, ea/eTo = defender. Local `b` uses p* = self, e* = opponent. */
+function applyNetBoardingCrewStatsToLocal(b, bo, leaderId) {
+  const follower = G.myId != null && leaderId != null && Number(G.myId) !== Number(leaderId);
+  if (!follower) {
+    b.pAtk = bo.pa | 0;
+    b.eAtk = bo.ea | 0;
+    b.pHeart = bo.pH | 0;
+    b.eHeart = bo.eH | 0;
+    b.pTotal = bo.pTo | 0;
+    b.eTotal = bo.eTo | 0;
+    return;
+  }
+  b.pAtk = bo.ea | 0;
+  b.eAtk = bo.pa | 0;
+  b.pHeart = bo.eH | 0;
+  b.eHeart = bo.pH | 0;
+  b.pTotal = bo.eTo | 0;
+  b.eTotal = bo.pTo | 0;
 }
 function mergeBoardingFromLeaderPayload(bo, leaderId) {
   if (!bo || typeof bo !== 'object') return;
@@ -11874,12 +11913,7 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
   if (bo.ph === 'e') {
     if (b.phase === 'spoils') return;
     b.tNet = bo.t | 0;
-    b.pAtk = bo.pa | 0;
-    b.eAtk = bo.ea | 0;
-    b.pHeart = bo.pH | 0;
-    b.eHeart = bo.eH | 0;
-    b.pTotal = bo.pTo | 0;
-    b.eTotal = bo.eTo | 0;
+    applyNetBoardingCrewStatsToLocal(b, bo, leaderId);
     if (bo.pl != null && Number.isFinite(Number(bo.pl))) b.pullT = Math.max(0, Math.min(1, Number(bo.pl)));
     if (G.myId == null || leaderId == null) return;
     if (Number(G.myId) === Number(leaderId)) {
@@ -11893,12 +11927,7 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
     return;
   }
   b.tNet = bo.t | 0;
-  b.pAtk = bo.pa | 0;
-  b.eAtk = bo.ea | 0;
-  b.pHeart = bo.pH | 0;
-  b.eHeart = bo.eH | 0;
-  b.pTotal = bo.pTo | 0;
-  b.eTotal = bo.eTo | 0;
+  applyNetBoardingCrewStatsToLocal(b, bo, leaderId);
   b.phase = bo.ph === 'f' ? 'fight' : 'pull';
   if (bo.pl != null && Number.isFinite(Number(bo.pl))) b.pullT = Math.max(0, Math.min(1, Number(bo.pl)));
   if (b.phase === 'fight') b.pullT = Math.max(Number(b.pullT) || 0, 1);
@@ -11931,7 +11960,7 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
     npcSyncId: null,
     attackerId,
     tNet: bo.t | 0,
-    pAtk: bo.pa | 0, eAtk: bo.ea | 0, pHeart: bo.pH | 0, eHeart: bo.eH | 0, pTotal: bo.pTo | 0, eTotal: bo.eTo | 0,
+    pAtk: bo.ea | 0, eAtk: bo.pa | 0, pHeart: bo.eH | 0, eHeart: bo.pH | 0, pTotal: pTot, eTotal: eTot,
     pTotStart: pTot, eTotStart: eTot,
     lockPX: locks.lockPX, lockPZ: locks.lockPZ, lockPR: locks.lockPR,
     lockEX: locks.lockEX, lockEZ: locks.lockEZ, lockER: locks.lockER,
