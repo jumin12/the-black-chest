@@ -2615,6 +2615,28 @@ wss.on('connection', (ws, req) => {
           const scuttle = !!msg.scuttle;
           const keepHull = !!msg.keepHull && !scuttle;
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
+          if (keepHull) {
+            const vic = players.get(targetId);
+            if (vic) {
+              const cd = Array.isArray(vic.crewData) ? vic.crewData.slice(0, 24) : null;
+              broadcastAll({
+                type: 'boarding_prize_hull_sink',
+                victimId: targetId,
+                x: Number.isFinite(Number(vic.x)) ? Number(vic.x) : 0,
+                z: Number.isFinite(Number(vic.z)) ? Number(vic.z) : 0,
+                rotation: Number.isFinite(Number(vic.rotation)) ? Number(vic.rotation) : 0,
+                shipType: vic.shipType != null ? String(vic.shipType).slice(0, 24) : 'sloop',
+                shipParts: vic.shipParts && typeof vic.shipParts === 'object'
+                  ? { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...vic.shipParts }
+                  : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
+                shipName: vic.shipName != null ? String(vic.shipName).slice(0, 28) : '',
+                flagAssetId: vic.flagAssetId,
+                name: vic.name != null ? String(vic.name).slice(0, 28) : '',
+                partyTag: vic.partyTag != null ? String(vic.partyTag).slice(0, 24) : '',
+                crewData: cd
+              });
+            }
+          }
           /* Mercy with 0 gold must still notify the victim (client used to block and left them stuck). */
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
@@ -3332,28 +3354,34 @@ const wsHeartbeat = setInterval(() => {
   }
 }, WS_PING_INTERVAL_MS);
 
+let serverStateTickSeq = 0;
 setInterval(() => {
   try {
   if (players.size === 0) return;
-  const snapshot = Array.from(players.values()).map(p => ({
-    id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
-    name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
-    captainKey: p.captainKey != null ? String(p.captainKey) : null,
-    partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
-    flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
-    flagAssetId: (() => { const fa = sanitizeClientFlagAssetId(p.flagAssetId); return fa != null ? fa : 1; })(),
-    shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
-    crewData: p.crewData,
-    docked: !!p.docked,
-    dockX: p.dockX != null ? p.dockX : null,
-    dockZ: p.dockZ != null ? p.dockZ : null,
-    dockAngle: p.dockAngle != null ? p.dockAngle : null,
-    dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
-    riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
-    morale: p.morale != null ? p.morale : 100,
-    deckWalk: p.deckWalk || null,
-    boarding: p.boarding != null ? p.boarding : null
-  }));
+  serverStateTickSeq++;
+  const includeCrew = (serverStateTickSeq % 2 === 0);
+  const snapshot = Array.from(players.values()).map(p => {
+    const row = {
+      id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
+      name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
+      captainKey: p.captainKey != null ? String(p.captainKey) : null,
+      partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
+      flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
+      flagAssetId: (() => { const fa = sanitizeClientFlagAssetId(p.flagAssetId); return fa != null ? fa : 1; })(),
+      shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
+      docked: !!p.docked,
+      dockX: p.dockX != null ? p.dockX : null,
+      dockZ: p.dockZ != null ? p.dockZ : null,
+      dockAngle: p.dockAngle != null ? p.dockAngle : null,
+      dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
+      riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
+      morale: p.morale != null ? p.morale : 100,
+      deckWalk: p.deckWalk || null,
+      boarding: p.boarding != null ? p.boarding : null
+    };
+    if (includeCrew && Array.isArray(p.crewData)) row.crewData = p.crewData;
+    return row;
+  });
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   broadcast({ type: 'state', players: snapshot, worldT: tickWorldT, wildlifeWorldT: tickWorldT });
   } catch (e) {

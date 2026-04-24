@@ -3044,6 +3044,8 @@ const G = {
   myCaptainKey: null,
   /** Player ids (numbers) whose remote ship must stay in sinking animation until removed (sync across crew mesh rebuilds). */
   pendingRemoteShipSink: new Set(),
+  /** Detached meshes: seized hull sinks (PvP keep-ship) while the captain respawns in a cutter. */
+  prizeHullDecoySinks: [],
   chunks: new Map(),
   islands: [],
   cannonballs: [],
@@ -10040,13 +10042,8 @@ function otherPlayerShipCacheKey(p) {
   const nm = (p.shipName || p.name || '').trim();
   const fc = String(p.flagColor || p.color || '').trim();
   const cd = p.crewData;
-  const crewSeg = Array.isArray(cd) && cd.length
-    ? `C${cd.length}:${cd.map(c => {
-        const h = c.health != null ? Math.max(0, Math.min(100, Math.round(Number(c.health)))) : 100;
-        const hb = Math.floor(h / 15) * 15;
-        return `${c.name || ''}|${c.role || ''}|${c.color || ''}|${c.hat || ''}|${c.outfit || ''}|${c.task || ''}|${c.parrot ? 1 : 0}|h${hb}`;
-      }).join(',')}`
-    : '_';
+  /* Full crew hashes forced constant ship mesh rebuilds at 45Hz as health changed — catastrophic for FPS and WS throughput. */
+  const crewSeg = Array.isArray(cd) && cd.length ? `C${cd.length}` : '_';
   const ptag = String(p.partyTag || '').slice(0, 24);
   const fa = sanitizeFlagPngId(p.flagAssetId);
   const faSeg = fa != null ? String(fa) : '-';
@@ -12200,6 +12197,58 @@ function ruinCrewAfterPvPBoardingMercy() {
   }
   G.player.crew = next.length ? next : [{ name: 'Stricken captain', role: 'captain', health: 22, task: 'helm', color: '#8a7060' }];
   trimCrewAndPrisonersToShipLimits();
+}
+/** Detached sink mesh so everyone (including the loser) sees the seized hull go under before the cutter appears. */
+function spawnBoardingPrizeHullDecoyFromNet(msg) {
+  if (G.mode !== 'playing' || !msg || typeof msg !== 'object') return;
+  const x = Number(msg.x), z = Number(msg.z);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+  const ry = Number(msg.rotation);
+  const rYaw = Number.isFinite(ry) ? ry : 0;
+  const st = msg.shipType && SHIP_TYPES[msg.shipType] ? msg.shipType : 'sloop';
+  const visualParts = normalizeShipPartsForRemoteView(msg.shipParts);
+  const captainName = (msg.name && String(msg.name).trim()) ? String(msg.name).trim().slice(0, 28) : 'Captain';
+  const shipTitle = (msg.shipName && String(msg.shipName).trim()) ? String(msg.shipName).trim().slice(0, 28) : captainName;
+  const fa = msg.flagAssetId != null ? sanitizeFlagPngId(Number(msg.flagAssetId)) : null;
+  const sm = buildShipMesh(st, visualParts, DEFAULT_SAIL_TRIM_COLOR, shipTitle, { flagAssetId: fa != null ? fa : DEFAULT_PLAYER_FLAG_ASSET });
+  if (captainName && (shipTitle !== captainName || String(msg.partyTag || '').trim())) {
+    const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, '', String(msg.partyTag || '').slice(0, 24), fa != null ? fa : DEFAULT_PLAYER_FLAG_ASSET);
+    const spec = SHIP_TYPES[st];
+    capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
+    for (let ci = sm.children.length - 1; ci >= 0; ci--) {
+      const ch = sm.children[ci];
+      if (ch instanceof THREE.Sprite) sm.remove(ch);
+    }
+    sm.add(capLabel);
+  }
+  const pCrew = Array.isArray(msg.crewData) && msg.crewData.length ? msg.crewData.map((c, ci) => {
+    let task = c.task;
+    if (!task || task === 'idle') {
+      if (c.role === 'captain') task = 'helm';
+      else if (c.role === 'gunner') task = 'cannons';
+      else if (c.role === 'navigator') task = 'lookout';
+      else task = ['helm', 'cannons', 'sails', 'lookout'][ci] || 'idle';
+    }
+    const ch = c.health != null ? Math.max(0, Math.min(100, Number(c.health))) : 100;
+    return {
+      name: c.name || 'Pirate', role: c.role || 'sailor', color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
+      task, health: ch
+    };
+  }) : [
+    { name: captainName, role: 'captain', task: 'helm', color: msg.color || '#8a7060', health: 100 },
+    { name: 'Gunner', role: 'gunner', task: 'cannons', health: 100 },
+    { name: 'Sailor', role: 'sailor', task: 'sails', health: 100 }
+  ];
+  buildCrewMeshes(sm, pCrew, st);
+  const w0 = playerShipWaveAt(x, z, rYaw);
+  const w0d = dampShipWaveTilt(w0.wavePitch, w0.waveRoll);
+  sm.position.set(x, worldSeaSurfaceY(x, z) + SHIP_FREEBOARD, z);
+  sm.rotation.set(w0d.wavePitch, rYaw, w0d.waveRoll);
+  sm.userData.prizeDecoySink = true;
+  sm.userData.sinkY = sm.position.y;
+  scene.add(sm);
+  if (!G.prizeHullDecoySinks) G.prizeHullDecoySinks = [];
+  G.prizeHullDecoySinks.push(sm);
 }
 function cloneCaptainShipPartsFromRow(row) {
   const b = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
@@ -15977,11 +16026,18 @@ async function connectToServer() {
       ws.onclose = null;
       ws.close();
     } catch (err) {}
-    ws = null;
-    for (const opid of Array.from(G.otherPlayers.keys())) {
-      removeRemotePeer(opid);
+  ws = null;
+  if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
+    for (const sg of G.prizeHullDecoySinks) {
+      try { disposeObject3DSubtree(sg); } catch (e) {}
+      try { scene.remove(sg); } catch (e2) {}
     }
+    G.prizeHullDecoySinks.length = 0;
   }
+  for (const opid of Array.from(G.otherPlayers.keys())) {
+    removeRemotePeer(opid);
+  }
+}
   G.myId = null;
   G.multiplayerNpcAuthorityId = null;
   let socket;
@@ -16172,8 +16228,15 @@ async function connectToServer() {
           if (pid == null || pid === G.myId) return;
           activeRemote.add(pid);
           const ex = G.otherPlayers.get(pid);
-          if (ex) Object.assign(ex, p, { id: pid });
-          else G.otherPlayers.set(pid, { ...p, id: pid });
+          const prevCrew = ex && Array.isArray(ex.crewData) ? ex.crewData : null;
+          const patch = { ...p, id: pid };
+          if (!Array.isArray(patch.crewData)) delete patch.crewData;
+          if (ex) {
+            Object.assign(ex, patch);
+            if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
+          } else {
+            G.otherPlayers.set(pid, patch);
+          }
           const row = G.otherPlayers.get(pid);
           if (row) refreshOtherPlayerShipCacheKey(row);
         });
@@ -16789,6 +16852,17 @@ async function connectToServer() {
           }
         }
         break;
+      case 'boarding_prize_hull_sink': {
+        try { spawnBoardingPrizeHullDecoyFromNet(msg); } catch (e) {}
+        const pv = netPlayerId(msg.victimId);
+        if (pv != null && pv === G.myId) {
+          notify('Your old command settles into the deep…', 5200);
+        } else if (pv != null) {
+          const cap = (msg.name && String(msg.name).trim()) ? String(msg.name).trim() : 'A captain';
+          notify(`${cap}'s seized hull is going under.`);
+        }
+        break;
+      }
       case 'ship_sunk': {
         const vid = netPlayerId(msg.victimId != null ? msg.victimId : msg.id);
         if (vid == null) break;
@@ -16873,8 +16947,9 @@ async function connectToServer() {
     }, 3000);
   };
 }
-function sendUpdate() {
+function sendUpdate(includeCrew) {
   if (!ws || ws.readyState !== 1) return;
+  if (includeCrew === undefined) includeCrew = true;
   const payload = {
     type: 'update',
     x: G.player.x, z: G.player.z, rotation: G.player.rotation, speed: G.player.speed, health: G.player.health,
@@ -16890,7 +16965,6 @@ function sendUpdate() {
     shipParts: { ...G.player.shipParts },
     flagColor: DEFAULT_SAIL_TRIM_COLOR,
     flagAssetId: getEffectivePlayerFlagAssetId(),
-    crewData: buildCrewSyncPayload(),
     deckWalk: (G.captainWalk && G.captainWalk.active) ? {
       x: G.captainWalk.x,
       z: G.captainWalk.z,
@@ -16900,6 +16974,7 @@ function sendUpdate() {
     } : null,
     boarding: packBoardingForNetwork()
   };
+  if (includeCrew) payload.crewData = buildCrewSyncPayload();
   ws.send(JSON.stringify(payload));
 }
 
@@ -24687,7 +24762,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.x += Math.sin(th) * v * dt;
     ns.z += Math.cos(th) * v * dt;
   }
-  const posK = 1 - Math.exp(-(err > 5.5 ? 19 : 15) * dt);
+  const posK = 1 - Math.exp(-(err > 5.5 ? 21 : 16) * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
@@ -24704,10 +24779,38 @@ const NET_SYNC_HZ = 45;
 /** Host NPC state must use the same cadence for all clients (mobile + desktop) to avoid visible desync. */
 const NPC_NET_SYNC_HZ = NET_SYNC_HZ;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
+/** Throttle roster-heavy crew payloads on the periodic net tick (explicit sendUpdate() still sends full crew). */
+function shouldIncludeCrewOnPeriodicNetTick() {
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  if (G._lastPeriodicCrewNetAt == null) G._lastPeriodicCrewNetAt = 0;
+  if (now - G._lastPeriodicCrewNetAt >= 240) {
+    G._lastPeriodicCrewNetAt = now;
+    return true;
+  }
+  return false;
+}
 
 function update(dt) {
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
+  if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
+    for (let i = G.prizeHullDecoySinks.length - 1; i >= 0; i--) {
+      const sg = G.prizeHullDecoySinks[i];
+      if (!sg || !sg.userData) {
+        G.prizeHullDecoySinks.splice(i, 1);
+        continue;
+      }
+      sg.userData.sinkY = (sg.userData.sinkY != null ? sg.userData.sinkY : sg.position.y) - dt * 0.6;
+      sg.position.y = sg.userData.sinkY;
+      sg.rotation.z += dt * 0.12;
+      sg.rotation.x += dt * 0.04;
+      if (sg.userData.sinkY < SEA_LEVEL - 8) {
+        try { disposeObject3DSubtree(sg); } catch (e) {}
+        try { scene.remove(sg); } catch (e2) {}
+        G.prizeHullDecoySinks.splice(i, 1);
+      }
+    }
+  }
   tickBoardingEngagement(dt);
   try { applyHostForeignNpcBoardingFromPeers(); } catch (e) {}
   cullSplashesToBudget();
@@ -25817,7 +25920,7 @@ function update(dt) {
 
   sendTimer -= dt;
   if (sendTimer <= 0) {
-    sendUpdate();
+    sendUpdate(shouldIncludeCrewOnPeriodicNetTick());
     sendTimer = ws?.readyState === 1 ? (1 / NET_SYNC_HZ) : 0.05;
   }
 
