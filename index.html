@@ -12465,21 +12465,15 @@ function trySendBoardingHoldSnapshotToVictor(b) {
 }
 function applyBoardingSpoilsItemsFromVictor(items) {
   if (!Array.isArray(items) || !items.length) return;
+  if (!Array.isArray(G.player.inventory)) G.player.inventory = [];
   ensureCargoSlots();
+  /* Slots follow the ledger. Removing from slots only left inventory stale, so reconcile re-filled holds (dupe loot). Align once, subtract from ledger, then align again. */
+  try { reconcileSlotsWithInventory(); } catch (e) {}
   for (const it of items) {
     if (!it || !it.id) continue;
-    let left = Math.max(0, Math.min(999999, Math.floor(Number(it.count) || 0)));
+    const left = Math.max(0, Math.min(999999, Math.floor(Number(it.count) || 0)));
     if (left <= 0) continue;
-    const id = String(it.id);
-    for (let i = 0; i < G.player.cargoSlots.length && left > 0; i++) {
-      const s = G.player.cargoSlots[i];
-      if (!s || s.id !== id) continue;
-      const t = Math.min(s.count | 0, left);
-      s.count -= t;
-      left -= t;
-      if (s.count <= 0) G.player.cargoSlots[i] = null;
-    }
-    if (left > 0) subtractFromInventoryLedger(id, left);
+    subtractFromInventoryLedger(String(it.id), left);
   }
   try { reconcileSlotsWithInventory(); } catch (e) {}
 }
@@ -12835,7 +12829,8 @@ function showBoardingSpoilsModal(won, b) {
     if (!won) { if (m) m.style.display = 'none'; return; }
     const { g, ptk, pmax } = readLootPrison();
     const woodB = b.npcLoot && b.npcLoot.wood != null ? b.npcLoot.wood : 6;
-    const g2 = b.npcSyncId != null ? (g + Math.min(32, 10 + (woodB * 2))) : (g + Math.min(36, 12 + ((b.surrenderPool | 0) * 3)));
+    /* PvP: loot is only what you drag into your hold (+ prisoners). NPC keeps salvage bonus. */
+    const g2 = b.npcSyncId != null ? (g + Math.min(32, 10 + (woodB * 2))) : (partnerPvp ? 0 : (g + Math.min(36, 12 + ((b.surrenderPool | 0) * 3))));
     if (g2 > 0) tryAddQuestCargo('gold', g2);
     if (b.npcSyncId != null && woodB > 0) tryAddQuestCargo('wood', woodB);
     for (let i = 0; i < ptk; i++) {
