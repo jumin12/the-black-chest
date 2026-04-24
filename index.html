@@ -11608,6 +11608,8 @@ function syncFloatingNametagVisibility() {
 /* -------------------------------------------------------------------------- */
 const BOARDING_MAX_RANGE = BROADSIDE_RANGE / 3;
 const BOARDING_PULL_DUR = 4.35;
+/** Sim-authority deck fight cadence — slower ticks + one-sided hits so combat visibly trades blows. */
+const BOARDING_FIGHT_TICK_SEC = 1.12;
 function boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) {
   const d = Math.hypot(px - ex, pz - ez);
   const pr = shipHullRadius(pShipType || 'sloop');
@@ -11686,6 +11688,39 @@ function countCrewFighters(crewArray) {
     if (h > 0) n++;
   }
   return Math.max(1, n);
+}
+/** Remove non-prisoner crew to match boarding abstract losses (captain last). */
+function pickBoardingCasualtyCrewIndex(crew) {
+  if (!Array.isArray(crew) || !crew.length) return -1;
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = crew.length - 1; i >= 0; i--) {
+      const c = crew[i];
+      if (!c || c.role === 'prisoner') continue;
+      if (pass === 0 && c.role === 'captain') continue;
+      const h = c.health == null || !Number.isFinite(Number(c.health)) ? 1 : Number(c.health);
+      if (h <= 0) continue;
+      return i;
+    }
+  }
+  for (let i = crew.length - 1; i >= 0; i--) {
+    const c = crew[i];
+    if (c && c.role !== 'prisoner') return i;
+  }
+  return -1;
+}
+function applyBoardingCasualtyDeathsToLocalCrew(n) {
+  const k = Math.max(0, Math.min(24, n | 0));
+  if (!k || !Array.isArray(G.player.crew)) return;
+  let removed = 0;
+  for (let u = 0; u < k; u++) {
+    const idx = pickBoardingCasualtyCrewIndex(G.player.crew);
+    if (idx < 0) break;
+    G.player.crew.splice(idx, 1);
+    removed++;
+  }
+  if (!removed) return;
+  try { rebuildPlayerShip(); updateCrewPanel(); } catch (e) {}
+  if (ws?.readyState === 1) try { sendUpdate(); } catch (e) {}
 }
 function getNpcBoardingCrewCount(npc) {
   if (!npc) return 3;
@@ -11912,8 +11947,12 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
   if (!b) return;
   if (bo.ph === 'e') {
     if (b.phase === 'spoils') return;
+    const prevPTerm = (b.phase === 'fight' && b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null && leaderId != null && Number(G.myId) !== Number(leaderId)) ? (b.pAtk | 0) : -1;
     b.tNet = bo.t | 0;
     applyNetBoardingCrewStatsToLocal(b, bo, leaderId);
+    if (prevPTerm >= 0 && (b.pAtk | 0) < prevPTerm) {
+      applyBoardingCasualtyDeathsToLocalCrew(prevPTerm - (b.pAtk | 0));
+    }
     if (bo.pl != null && Number.isFinite(Number(bo.pl))) b.pullT = Math.max(0, Math.min(1, Number(bo.pl)));
     if (G.myId == null || leaderId == null) return;
     if (Number(G.myId) === Number(leaderId)) {
@@ -11926,9 +11965,14 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
     if (b.phase === 'fight' && b.partnerPlayerId != null && b.npcSyncId == null) endBoardingResolution();
     return;
   }
+  const wasFightMerge = b.phase === 'fight';
+  const prevPMerge = (wasFightMerge && b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null && leaderId != null && Number(G.myId) !== Number(leaderId)) ? (b.pAtk | 0) : -1;
   b.tNet = bo.t | 0;
   applyNetBoardingCrewStatsToLocal(b, bo, leaderId);
   b.phase = bo.ph === 'f' ? 'fight' : 'pull';
+  if (prevPMerge >= 0 && b.phase === 'fight' && (b.pAtk | 0) < prevPMerge) {
+    applyBoardingCasualtyDeathsToLocalCrew(prevPMerge - (b.pAtk | 0));
+  }
   if (bo.pl != null && Number.isFinite(Number(bo.pl))) b.pullT = Math.max(0, Math.min(1, Number(bo.pl)));
   if (b.phase === 'fight') b.pullT = Math.max(Number(b.pullT) || 0, 1);
   if (G.myId == null || leaderId == null) return;
@@ -12038,16 +12082,25 @@ function boardingCombatTick() {
   if (!b || b.phase !== 'fight') return;
   const s = 1 + (G.time | 0) % 997;
   const r = (n) => { let x = (Math.imul(n, 1664525) + 1013904223) >>> 0; return x / 4294967296; };
+  const prevP = b.pAtk | 0;
+  const prevE = b.eAtk | 0;
   G.crewDeckCombatT = 1.15;
-  if (r(s) < 0.5) {
-    if (b.pAtk > 0 && r(s + 1) < 0.45) b.pAtk = Math.max(0, b.pAtk - 1);
+  /* One main hit per tick + occasional mutual exchange — avoids both sides bleeding every 0.58s (instant end). */
+  const exchange = r(s) < 0.26;
+  if (exchange) {
+    if (b.pAtk > 0) b.pAtk = Math.max(0, b.pAtk - 1);
+    if (b.eAtk > 0) b.eAtk = Math.max(0, b.eAtk - 1);
+  } else if (r(s + 1) < 0.54) {
     if (b.eAtk > 0) b.eAtk = Math.max(0, b.eAtk - 1);
   } else {
-    if (b.eAtk > 0 && r(s + 2) < 0.45) b.eAtk = Math.max(0, b.eAtk - 1);
     if (b.pAtk > 0) b.pAtk = Math.max(0, b.pAtk - 1);
   }
   b.pHeart = b.pAtk; b.eHeart = b.eAtk;
-  if (r(s + 3) < 0.08) b.surrenderPool = (b.surrenderPool | 0) + 1;
+  if (r(s + 3) < 0.1) b.surrenderPool = (b.surrenderPool | 0) + 1;
+  if (b.npcSyncId == null && boardingIAmSimLeader(b)) {
+    const dSelf = prevP - (b.pAtk | 0);
+    if (dSelf > 0) applyBoardingCasualtyDeathsToLocalCrew(dSelf);
+  }
   try { spawnBoardingBodyMarker(playerShipGroup.children[0] || playerShipGroup, (r(s + 4) - 0.5) * 1.2, (r(s + 5) - 0.5) * 2.4); } catch (e) {}
   if (b.npcSyncId == null) {
     const og = otherShipGroups.get(b.partnerPlayerId);
@@ -12544,7 +12597,7 @@ function tickBoardingEngagement(dt) {
   } else if (b.phase === 'fight') {
     if (boardingIAmSimLeader(b)) {
       b.fightAcc = (b.fightAcc || 0) + dt;
-      if (b.fightAcc >= 0.58) { b.fightAcc = 0; boardingCombatTick(); }
+      if (b.fightAcc >= BOARDING_FIGHT_TICK_SEC) { b.fightAcc = 0; boardingCombatTick(); }
       b.tNet = Math.min(999, (b.tNet | 0) + 1);
     }
     if (b.lockPX != null) { G.player.x = b.lockPX; G.player.z = b.lockPZ; G.player.rotation = b.lockPR; }
@@ -16201,6 +16254,8 @@ async function connectToServer() {
         if (msg.scuttle) {
           G.lastAttacker = `${capName} — boarding`;
           G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
+          /* Server also broadcasts ship_sunk so the victor sees the hull go under without waiting on our frame. */
+          G._suppressNextShipSunkBroadcast = true;
           G.player.health = 0;
           notify(`Your hull is opened — ${take}g seized. You are going under!`, 7200);
         } else {
@@ -16662,8 +16717,8 @@ async function connectToServer() {
         }
         break;
       case 'ship_sunk': {
-        const vid = Number(msg.victimId != null ? msg.victimId : msg.id);
-        if (!Number.isFinite(vid)) break;
+        const vid = netPlayerId(msg.victimId != null ? msg.victimId : msg.id);
+        if (vid == null) break;
         if (vid !== G.myId) {
           G.pendingRemoteShipSink.add(vid);
           const sinkCap = (msg.name && String(msg.name).trim()) ? String(msg.name).trim() : 'A captain';
@@ -25470,6 +25525,10 @@ function update(dt) {
   }
 
   if (G.player.health <= 0 && !G.playerSinking) {
+    if (G.boarding) {
+      try { abortActiveBoarding(''); } catch (e) {}
+    }
+    try { if (G.boardingVictimAwaitingDecision) clearBoardingVictimAwaiting(''); } catch (e) {}
     playerBroadsidePending = null;
     playCaptainSinkDeathSound();
     bumpNotoriety({ deaths: 1 });
@@ -25498,8 +25557,14 @@ function update(dt) {
       const lx = G.player.x + (Math.random()-0.5)*10, lz = G.player.z + (Math.random()-0.5)*10;
       lootDrops.push({ type: t, x: lx, z: lz, count: c });
     }
-    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_sunk', x: G.player.x, z: G.player.z, loot: lootDrops }));
-    else {
+    let _skipSinkNet = false;
+    try {
+      _skipSinkNet = !!G._suppressNextShipSunkBroadcast;
+      G._suppressNextShipSunkBroadcast = false;
+    } catch (e) {}
+    if (ws?.readyState === 1) {
+      if (!_skipSinkNet) ws.send(JSON.stringify({ type: 'ship_sunk', x: G.player.x, z: G.player.z, loot: lootDrops }));
+    } else {
       lootDrops.forEach(l => addFloatingLootMesh(l.x, l.z, l.type, l.count));
     }
     document.getElementById('death-overlay').style.display = 'flex';
