@@ -2609,12 +2609,46 @@ wss.on('connection', (ws, req) => {
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
         }
+        case 'boarding_hold_snapshot': {
+          const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
+          if (!Number.isFinite(targetId) || !players.has(targetId) || targetId === id) break;
+          const tws = findWsByPlayerId(targetId);
+          if (!tws || tws.readyState !== 1) break;
+          const st = msg.shipType != null ? String(msg.shipType).slice(0, 24) : 'sloop';
+          const slots = Array.isArray(msg.cargoSlots) ? msg.cargoSlots.slice(0, 48) : [];
+          const inv = Array.isArray(msg.inventory) ? msg.inventory.slice(0, 64) : [];
+          try {
+            tws.send(JSON.stringify({
+              type: 'boarding_hold_snapshot',
+              fromPlayerId: id,
+              shipType: st,
+              cargoSlots: slots,
+              inventory: inv
+            }));
+          } catch (e) {}
+          break;
+        }
         case 'boarding_spoils': {
           const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
           const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
           const scuttle = msg.scuttle === true;
           const keepHull = msg.keepHull === true && !scuttle;
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
+          const spoilItems = (() => {
+            const raw = msg.items;
+            if (!Array.isArray(raw)) return [];
+            const out = [];
+            for (let i = 0; i < raw.length && out.length < 48; i++) {
+              const it = raw[i];
+              if (!it || typeof it !== 'object') continue;
+              const sid = String(it.id || '').trim().slice(0, 32);
+              if (!sid) continue;
+              const cnt = Math.max(0, Math.min(9999, Math.floor(Number(it.count) || 0)));
+              if (cnt <= 0) continue;
+              out.push({ id: sid, count: cnt });
+            }
+            return out;
+          })();
           /* Keep-ship: only the victor's *former* hull should sink (they sail the prize). Exclude victor so they don't double-spawn (client spawns locally). */
           if (keepHull) {
             const atk = players.get(id);
@@ -2642,7 +2676,9 @@ wss.on('connection', (ws, req) => {
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
             try {
-              tws.send(JSON.stringify({ type: 'boarding_spoils', victimId: targetId, from: id, gold, scuttle, keepHull }));
+              const spoilPayload = { type: 'boarding_spoils', victimId: targetId, from: id, gold, scuttle, keepHull };
+              if (spoilItems.length) spoilPayload.items = spoilItems;
+              tws.send(JSON.stringify(spoilPayload));
             } catch (e) {}
           }
           /* Scuttle: broadcast sink immediately so the attacker sees the animation even if the victim's client is slow to send ship_sunk. */
