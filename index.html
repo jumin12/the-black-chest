@@ -4776,6 +4776,29 @@ function getInvCount(id) {
 }
 function countSailorCrew() { return G.player.crew.filter(c => c.role !== 'prisoner').length; }
 function countPrisonerCrew() { return G.player.crew.filter(c => c.role === 'prisoner').length; }
+/** Living hands who can work the ship (excludes prisoners and dead roster entries). */
+function countLivingNonPrisonerCrew() {
+  if (!Array.isArray(G.player.crew)) return 0;
+  let n = 0;
+  for (const c of G.player.crew) {
+    if (!c || c.role === 'prisoner') continue;
+    const h = c.health != null && Number.isFinite(Number(c.health)) ? Number(c.health) : 100;
+    if (h > 0) n++;
+  }
+  return n;
+}
+/** Spoils UI can close with 0 living sailors after casualties; without this the next frame "no crew" rule hulls the victor. */
+function ensureBareHelmAfterBoardingWin() {
+  if (countLivingNonPrisonerCrew() > 0) return;
+  if (!Array.isArray(G.player.crew)) G.player.crew = [];
+  G.player.crew.push(normalizeCrewMemberRecord({
+    name: 'Stricken captain', role: 'captain', health: 24, task: 'helm', color: '#8a7060'
+  }));
+}
+function markBoardingVictorySpoilsGrace() {
+  const t = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  G._boardingWinSpoilsGraceUntil = t + 9000;
+}
 
 const CREW_STATION_ROLES = ['captain', 'gunner', 'navigator', 'sailor'];
 const CREW_SKILL_KEYS = ['gunning', 'sailing', 'navigation', 'commanding'];
@@ -12427,10 +12450,12 @@ function showBoardingSpoilsModal(won, b) {
       ensureCargoSlots();
       trimCrewAndPrisonersToShipLimits();
     }
+    ensureBareHelmAfterBoardingWin();
     rebuildPlayerShip(); updateCrewPanel();
     if (m) m.style.display = 'none';
     clearBoardingBodyMarkers();
     G.boarding = null;
+    markBoardingVictorySpoilsGrace();
     notify('Your former hull slips under — you make way in the prize ship.', 5600);
     try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
   };
@@ -12452,10 +12477,13 @@ function showBoardingSpoilsModal(won, b) {
     } else {
       if (b.partnerPlayerId) try { ws && ws.send(JSON.stringify({ type: 'boarding_spoils', targetId: b.partnerPlayerId, gold: g, scuttle: true })); } catch (e) {}
     }
+    ensureBareHelmAfterBoardingWin();
     rebuildPlayerShip(); updateCrewPanel();
     if (m) m.style.display = 'none';
     clearBoardingBodyMarkers();
-    G.boarding = null; notify('Hull broken for timber and specie — deck awash with smoke.', 5000);
+    G.boarding = null;
+    markBoardingVictorySpoilsGrace();
+    notify('Hull broken for timber and specie — deck awash with smoke.', 5000);
     try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   };
   const done = document.getElementById('boarding-spoils-done');
@@ -12488,10 +12516,12 @@ function showBoardingSpoilsModal(won, b) {
     } else if (b.partnerPlayerId) {
       try { ws && ws.send(JSON.stringify({ type: 'boarding_spoils', targetId: b.partnerPlayerId, gold: g, scuttle: false })); } catch (e) {}
     }
+    ensureBareHelmAfterBoardingWin();
     rebuildPlayerShip(); updateCrewPanel();
     if (m) m.style.display = 'none';
     clearBoardingBodyMarkers();
     G.boarding = null;
+    markBoardingVictorySpoilsGrace();
     if (b.partnerPlayerId) notify('You took what you could carry and cast off.', 4500);
     try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   };
@@ -24901,8 +24931,10 @@ function update(dt) {
   }
 
   if (!G.spectate && !G.docked && !G.playerSinking && G.player.health > 0 && !G.captainWalk?.active) {
-    /* During PvP boarding the deck fight uses abstract crew counts; zero roster here must not hull the ship before the victor resolves spoils. */
-    if (countSailorCrew() === 0 && !G.boarding && !G.boardingVictimAwaitingDecision) {
+    /* Use *living* sailors: casualties can leave dead entries or empty roster the moment spoils clears G.boarding. */
+    const nowAb = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const inSpoilsGrace = G._boardingWinSpoilsGraceUntil && nowAb < G._boardingWinSpoilsGraceUntil;
+    if (countLivingNonPrisonerCrew() === 0 && !G.boarding && !G.boardingVictimAwaitingDecision && !inSpoilsGrace) {
       G.lastAttacker = 'No crew — ship abandoned';
       G.lastAttackerId = null;
       G.player.health = 0;
