@@ -2618,7 +2618,7 @@ wss.on('connection', (ws, req) => {
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
             try {
-              tws.send(JSON.stringify({ type: 'boarding_spoils', from: id, gold, scuttle }));
+              tws.send(JSON.stringify({ type: 'boarding_spoils', victimId: targetId, from: id, gold, scuttle }));
             } catch (e) {}
           }
           /* Scuttle: broadcast sink immediately so the attacker sees the animation even if the victim's client is slow to send ship_sunk. */
