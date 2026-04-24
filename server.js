@@ -1738,6 +1738,38 @@ function broadcastAll(data) {
   });
 }
 
+function boardingPrizeHullNetPayload(playerId, p) {
+  if (!p) return null;
+  const cd = Array.isArray(p.crewData) ? p.crewData.slice(0, 24) : null;
+  return {
+    type: 'boarding_prize_hull_sink',
+    victimId: playerId,
+    x: Number.isFinite(Number(p.x)) ? Number(p.x) : 0,
+    z: Number.isFinite(Number(p.z)) ? Number(p.z) : 0,
+    rotation: Number.isFinite(Number(p.rotation)) ? Number(p.rotation) : 0,
+    shipType: p.shipType != null ? String(p.shipType).slice(0, 24) : 'sloop',
+    shipParts: p.shipParts && typeof p.shipParts === 'object'
+      ? { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...p.shipParts }
+      : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
+    shipName: p.shipName != null ? String(p.shipName).slice(0, 28) : '',
+    flagAssetId: p.flagAssetId,
+    name: p.name != null ? String(p.name).slice(0, 28) : '',
+    partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
+    crewData: cd
+  };
+}
+/** Loser should not receive their own decoy (still aboard that mesh locally); attacker excluded from their own abandoned-hull echo (spawned client-side). */
+function broadcastBoardingPrizeHullSinkExcluding(payload, excludePlayerId) {
+  if (!payload) return;
+  const msg = JSON.stringify(payload);
+  const ex = excludePlayerId != null ? Number(excludePlayerId) : NaN;
+  wss.clients.forEach(c => {
+    if (c.readyState !== 1) return;
+    if (Number.isFinite(ex) && Number(c.playerId) === ex) return;
+    try { c.send(msg); } catch (e) {}
+  });
+}
+
 /** Lowest connected player id simulates NPC traffic; broadcast on join/leave so clients migrate immediately if the prior host tab dies. */
 function broadcastNpcAuthority() {
   const ids = [];
@@ -2617,25 +2649,9 @@ wss.on('connection', (ws, req) => {
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
           if (keepHull) {
             const vic = players.get(targetId);
-            if (vic) {
-              const cd = Array.isArray(vic.crewData) ? vic.crewData.slice(0, 24) : null;
-              broadcastAll({
-                type: 'boarding_prize_hull_sink',
-                victimId: targetId,
-                x: Number.isFinite(Number(vic.x)) ? Number(vic.x) : 0,
-                z: Number.isFinite(Number(vic.z)) ? Number(vic.z) : 0,
-                rotation: Number.isFinite(Number(vic.rotation)) ? Number(vic.rotation) : 0,
-                shipType: vic.shipType != null ? String(vic.shipType).slice(0, 24) : 'sloop',
-                shipParts: vic.shipParts && typeof vic.shipParts === 'object'
-                  ? { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...vic.shipParts }
-                  : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
-                shipName: vic.shipName != null ? String(vic.shipName).slice(0, 28) : '',
-                flagAssetId: vic.flagAssetId,
-                name: vic.name != null ? String(vic.name).slice(0, 28) : '',
-                partyTag: vic.partyTag != null ? String(vic.partyTag).slice(0, 24) : '',
-                crewData: cd
-              });
-            }
+            const atk = players.get(id);
+            broadcastBoardingPrizeHullSinkExcluding(boardingPrizeHullNetPayload(targetId, vic), targetId);
+            broadcastBoardingPrizeHullSinkExcluding(boardingPrizeHullNetPayload(id, atk), id);
           }
           /* Mercy with 0 gold must still notify the victim (client used to block and left them stuck). */
           const tws = findWsByPlayerId(targetId);
