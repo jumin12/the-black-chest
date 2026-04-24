@@ -1940,7 +1940,7 @@ body.game-help-mobile-minimal #game-help-panel{
         <div style="font-size:11px;color:#a09080;margin-top:2px;">Taking <span id="boarding-spoils-pris-v">0</span> · rest thrown to the sea</div>
       </div>
       <div class="boarding-spoils-actions">
-        <button type="button" class="primary" id="boarding-spoils-keep" title="Seize the hull (NPC)">Keep ship</button>
+        <button type="button" class="primary" id="boarding-spoils-keep" title="Take the defeated vessel as your own">Keep ship</button>
         <button type="button" id="boarding-spoils-scut">Scuttle for cargo</button>
         <button type="button" id="boarding-spoils-done">Take loot &amp; go</button>
         <button type="button" id="boarding-spoils-continue" style="display:none;">Continue</button>
@@ -12201,6 +12201,38 @@ function ruinCrewAfterPvPBoardingMercy() {
   G.player.crew = next.length ? next : [{ name: 'Stricken captain', role: 'captain', health: 22, task: 'helm', color: '#8a7060' }];
   trimCrewAndPrisonersToShipLimits();
 }
+function cloneCaptainShipPartsFromRow(row) {
+  const b = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
+  const sp = row && row.shipParts;
+  if (!sp || typeof sp !== 'object') return { ...b };
+  return {
+    hull: typeof sp.hull === 'string' && sp.hull ? sp.hull : b.hull,
+    sail: typeof sp.sail === 'string' && sp.sail ? sp.sail : b.sail,
+    cannon: typeof sp.cannon === 'string' && sp.cannon ? sp.cannon : b.cannon,
+    figurehead: sp.figurehead != null && String(sp.figurehead) ? String(sp.figurehead) : b.figurehead,
+    flag: typeof sp.flag === 'string' && sp.flag ? sp.flag : b.flag
+  };
+}
+function applyPrizeShipFromRemoteCaptainRow(row) {
+  if (!row) return;
+  const st = row.shipType && SHIP_TYPES[row.shipType] ? row.shipType : 'sloop';
+  G.player.shipType = st;
+  G.player.shipParts = cloneCaptainShipPartsFromRow(row);
+  const nm = row.shipName != null ? String(row.shipName).trim().slice(0, 28) : '';
+  if (nm) G.player.shipName = nm;
+  if (row.flagAssetId != null) {
+    const a = sanitizeFlagPngId(Number(row.flagAssetId));
+    if (a != null) G.player.flagAssetId = a;
+  }
+}
+function applyBoardingSpoilLoserDefaultHull() {
+  G.player.shipType = 'cutter';
+  G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
+  const h0 = G.player.health != null ? G.player.health : 100;
+  G.player.health = Math.max(1, Math.min(h0, 100));
+  const r0 = G.player.riggingHealth != null ? G.player.riggingHealth : 100;
+  G.player.riggingHealth = Math.min(r0, 100);
+}
 function showBoardingSpoilsModal(won, b) {
   clearBoardingRopeLineMeshes();
   const m = document.getElementById('boarding-spoils-modal');
@@ -12263,7 +12295,8 @@ function showBoardingSpoilsModal(won, b) {
   if (prV) prV.textContent = '0';
   const btnK = document.getElementById('boarding-spoils-keep');
   const btnS = document.getElementById('boarding-spoils-scut');
-  if (btnK) btnK.style.display = b.npcSyncId != null && won ? 'inline-block' : 'none';
+  const canKeep = won && (b.npcSyncId != null || b.partnerPlayerId != null);
+  if (btnK) btnK.style.display = canKeep ? 'inline-block' : 'none';
   if (btnS) btnS.style.display = 'inline-block';
   if (m) m.style.display = 'flex';
   if (won && b.npcSyncId == null) {
@@ -12302,11 +12335,22 @@ function showBoardingSpoilsModal(won, b) {
     if (b.npcSyncId != null) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
       if (n && n.mesh) { runNpcSinkOutcome(n, G.myId); } else { abortActiveBoarding(''); }
+    } else if (b.partnerPlayerId) {
+      const pid = netPlayerId(b.partnerPlayerId);
+      const row = pid != null ? G.otherPlayers.get(pid) : null;
+      if (row) applyPrizeShipFromRemoteCaptainRow(row);
+      else notify('The other ship was gone from the chart — you keep your current hull.', 5200);
+      try {
+        ws && ws.send(JSON.stringify({ type: 'boarding_spoils', targetId: b.partnerPlayerId, gold: g, scuttle: false, keepHull: true }));
+      } catch (e) {}
+      ensureCargoSlots();
+      trimCrewAndPrisonersToShipLimits();
     }
     rebuildPlayerShip(); updateCrewPanel();
     if (m) m.style.display = 'none';
     clearBoardingBodyMarkers();
     G.boarding = null; notify('Prize crew turned the captured hull for home waters.', 5000);
+    try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
   };
   if (btnS) btnS.onclick = () => {
     if (!won) { if (m) m.style.display = 'none'; return; }
@@ -13242,12 +13286,17 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   }
 }
 
-/** Hull part id for collision sizing (matches typical buildShipMesh loadouts). */
+/** Hull part id for collision sizing (aligned with buildShipMesh: merchants/patrol basic, corsairs & bounty darkwood). */
 function npcCollisionHullPart(npc) {
   if (!npc) return undefined;
   if (npc.isTradeShip || npc.isEscortCargo) return 'basic';
   if (npc.isFactionPatrol) return 'basic';
+  if (npc.isStoryBounty) return 'darkwood';
   return 'darkwood';
+}
+function npcCollisionShipType(npc) {
+  const t = npc && npc.type;
+  return (t && SHIP_TYPES[t]) ? t : 'sloop';
 }
 
 /** Land + NPC hull overlap test at a candidate player position (OBB, harbor truce when both in exempt ring). */
@@ -13260,15 +13309,16 @@ function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
   for (let i = 0; i < G.npcs.length; i++) {
     const npc = G.npcs[i];
     if (npc.sinking || npc.health <= 0) continue;
-    if (playerInHarborRamExemptZone(tx, tz, st) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) continue;
-    const sep = obbShipsSeparation(tx, tz, yaw, st, npc.x, npc.z, npc.rotation, npc.type, margin, hp, npcCollisionHullPart(npc));
+    const nt = npcCollisionShipType(npc);
+    if (playerInHarborRamExemptZone(tx, tz, st) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) continue;
+    const sep = obbShipsSeparation(tx, tz, yaw, st, npc.x, npc.z, npc.rotation, nt, margin, hp, npcCollisionHullPart(npc));
     if (sep) return false;
   }
   return true;
 }
 
 function relaxPlayerNpcCircleOverlaps() {
-  if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0 || G.boarding) return;
+  if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
   const pad = 1.08;
   const pType = G.player.shipType || 'sloop';
   const ph = G.player.shipParts && G.player.shipParts.hull;
@@ -13279,8 +13329,9 @@ function relaxPlayerNpcCircleOverlaps() {
     let moved = false;
     for (const npc of G.npcs) {
       if (npc.sinking || npc.health <= 0) continue;
-      if (playerInHarborRamExemptZone(G.player.x, G.player.z, pType) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) continue;
-      let nr = shipHullRadius(npc.type);
+      const nt = npcCollisionShipType(npc);
+      if (playerInHarborRamExemptZone(G.player.x, G.player.z, pType) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) continue;
+      let nr = shipHullRadius(nt);
       const nh = npcCollisionHullPart(npc);
       if (nh === 'reinforced') nr *= 1.07;
       else if (nh === 'darkwood') nr *= 1.03;
@@ -13304,7 +13355,7 @@ function relaxPlayerNpcCircleOverlaps() {
 
 function pushPlayerOutOfShipOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
-  if (G.dockingAnim || G.boarding) return;
+  if (G.dockingAnim) return;
   const px = G.player.x, pz = G.player.z;
   const margin = 0.99;
   const pHull = G.player.shipParts && G.player.shipParts.hull;
@@ -13319,16 +13370,17 @@ function pushPlayerOutOfShipOverlaps() {
     let moved = false;
     G.npcs.forEach(npc => {
       if (npc.sinking || npc.health <= 0) return;
-      if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) return;
-      const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, npc.type, margin, pHull, npcCollisionHullPart(npc));
+      const nt = npcCollisionShipType(npc);
+      if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) return;
+      const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, nt, margin, pHull, npcCollisionHullPart(npc));
       if (!sep) return;
       {
         const sid = npc.syncId != null ? npc.syncId : `u${Math.round(npc.x)}_${Math.round(npc.z)}`;
         const rKey = G.myId != null ? `me${G.myId}|npc${sid}` : `me|npc${sid}`;
         if (canApplyRamPair(rKey, G.time)) {
           const nv = npcShipVelocityXZ(npc);
-          const stN = computeRamStrike(npc, pPos, npc.type, G.player.shipType, npc.rotation, nv.vx, nv.vz, pv.vx, pv.vz);
-          const stP = computeRamStrike(pPos, npc, G.player.shipType, npc.type, G.player.rotation, pv.vx, pv.vz, nv.vx, nv.vz);
+          const stN = computeRamStrike(npc, pPos, nt, G.player.shipType, npc.rotation, nv.vx, nv.vz, pv.vx, pv.vz);
+          const stP = computeRamStrike(pPos, npc, G.player.shipType, nt, G.player.rotation, pv.vx, pv.vz, nv.vx, nv.vz);
           const rgN = stN.dmg > 0 ? ramRiggingLossFromBowDot(stN.bowDot, stN.closing) : 0;
           if (applyNpcRam && stN.dmg > 0) {
             npc.health -= stN.dmg;
@@ -13423,8 +13475,9 @@ function separateHostNpcsFromLocalPlayer() {
   const margin = 0.99;
   G.npcs.forEach(npc => {
     if (npc.sinking || npc.health <= 0) return;
-    if (playerInHarborRamExemptZone(px, pz, pType) && playerInHarborRamExemptZone(npc.x, npc.z, npc.type)) return;
-    const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, npc.type, px, pz, G.player.rotation, G.player.shipType, margin, npcCollisionHullPart(npc), pHull);
+    const nt = npcCollisionShipType(npc);
+    if (playerInHarborRamExemptZone(px, pz, pType) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) return;
+    const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, nt, px, pz, G.player.rotation, G.player.shipType, margin, npcCollisionHullPart(npc), pHull);
     if (!sep) return;
     const push = sep.depth * 0.55;
     const ox = npc.x, oz = npc.z;
@@ -13475,7 +13528,7 @@ function relaxHostNpcNpcCircleOverlaps(list) {
         const a = list[i], b = list[j];
         const dx = b.x - a.x, dz = b.z - a.z;
         const d = Math.hypot(dx, dz);
-        const need = shipHullRadius(a.type) + shipHullRadius(b.type) + pad;
+        const need = shipHullRadius(npcCollisionShipType(a)) + shipHullRadius(npcCollisionShipType(b)) + pad;
         if (d >= need || d < 1e-5) continue;
         const nx = dx / d, nz = dz / d;
         const pen = (need - d) * 0.52;
@@ -13504,7 +13557,11 @@ function relaxHostNpcNpcOverlaps() {
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const a = list[i], b = list[j];
-        const sep = obbShipsSeparation(a.x, a.z, a.rotation, a.type, b.x, b.z, b.rotation, b.type, margin);
+        const sep = obbShipsSeparation(
+          a.x, a.z, a.rotation, npcCollisionShipType(a),
+          b.x, b.z, b.rotation, npcCollisionShipType(b),
+          margin, npcCollisionHullPart(a), npcCollisionHullPart(b)
+        );
         if (sep) {
           const ida = a.syncId != null ? a.syncId : `i${i}`, idb = b.syncId != null ? b.syncId : `j${j}`;
           const sa = String(ida), sb = String(idb);
@@ -13547,13 +13604,13 @@ function steerNpcAvoidCloseShips(npc, dt) {
   if (npc.escapeMode) return;
   if (npc.isTradeShip && npc.tradePhase === 'loading_home') return;
   let wx = 0, wz = 0, wsum = 0;
-  const myR = shipHullRadius(npc.type);
+  const myR = shipHullRadius(npcCollisionShipType(npc));
   for (let k = 0; k < G.npcs.length; k++) {
     const o = G.npcs[k];
     if (o === npc || o.sinking || (o.health != null && o.health <= 0)) continue;
     const dx = npc.x - o.x, dz = npc.z - o.z;
     const d = Math.hypot(dx, dz);
-    const need = myR + shipHullRadius(o.type) + 3.2;
+    const need = myR + shipHullRadius(npcCollisionShipType(o)) + 3.2;
     if (d > need * 1.35 || d < 0.04) continue;
     const inv = 1 / d;
     const nx = dx * inv, nz = dz * inv;
@@ -16257,6 +16314,7 @@ async function connectToServer() {
         const take = Math.min(g, have);
         if (take > 0) subtractFromInventoryLedger('gold', take);
         try { reconcileSlotsWithInventory(); } catch (e) {}
+        const keepHull = !!msg.keepHull && !msg.scuttle;
         if (msg.scuttle) {
           G.lastAttacker = `${capName} — boarding`;
           G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
@@ -16264,6 +16322,15 @@ async function connectToServer() {
           G._suppressNextShipSunkBroadcast = true;
           G.player.health = 0;
           notify(`Your hull is opened — ${take}g seized. You are going under!`, 7200);
+        } else if (keepHull) {
+          ruinCrewAfterPvPBoardingMercy();
+          applyBoardingSpoilLoserDefaultHull();
+          ensureCargoSlots();
+          trimCrewAndPrisonersToShipLimits();
+          rebuildPlayerShip();
+          updateCrewPanel();
+          notify(`They marched you off your old command — ${take}g seized. You're limping home in a bare cutter.`, 7200);
+          try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
         } else {
           ruinCrewAfterPvPBoardingMercy();
           rebuildPlayerShip();
@@ -25251,10 +25318,11 @@ function update(dt) {
         if (adx * adx + adz * adz > 78 * 78) return;
         const at = b.ammoType || 'ball';
         const isPellet = !!b.isPellet;
-        let hitR = cannonballStrikeHitRadius(npc.type, at, isPellet);
+        const ntHit = npcCollisionShipType(npc);
+        let hitR = cannonballStrikeHitRadius(ntHit, at, isPellet);
         if (at === 'ball' && !isPellet) hitR *= 1.15;
         const nYaw = npc.rotation != null ? npc.rotation : 0;
-        const distHit = distSegmentToShipHullOBB(px, pz, b.x, b.z, npc.x, npc.z, nYaw, npc.type);
+        const distHit = distSegmentToShipHullOBB(px, pz, b.x, b.z, npc.x, npc.z, nYaw, ntHit);
         if (distHit >= hitR * 1.1 || b.y < SEA_LEVEL - 4) return;
         if (hitNpcsAsHost) {
           if (b.owner === 'npc' && b.sourceNpcSyncId != null) {

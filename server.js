@@ -2613,12 +2613,13 @@ wss.on('connection', (ws, req) => {
           const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
           const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
           const scuttle = !!msg.scuttle;
+          const keepHull = !!msg.keepHull && !scuttle;
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
           /* Mercy with 0 gold must still notify the victim (client used to block and left them stuck). */
           const tws = findWsByPlayerId(targetId);
           if (tws && tws.readyState === 1) {
             try {
-              tws.send(JSON.stringify({ type: 'boarding_spoils', victimId: targetId, from: id, gold, scuttle }));
+              tws.send(JSON.stringify({ type: 'boarding_spoils', victimId: targetId, from: id, gold, scuttle, keepHull }));
             } catch (e) {}
           }
           /* Scuttle: broadcast sink immediately so the attacker sees the animation even if the victim's client is slow to send ship_sunk. */
