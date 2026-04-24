@@ -16224,10 +16224,16 @@ async function connectToServer() {
       case 'boarding_spoils': {
         const g = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
         const fromId = msg.from != null ? Number(msg.from) : null;
-        if (G.boardingVictimAwaitingDecision) {
+        /* Only the defeated captain may receive spoils outcomes; without this, a misrouted packet could scuttle the wrong hull. */
+        if (msg.victimId != null) {
+          const pv = netPlayerId(msg.victimId);
+          if (pv == null || pv !== G.myId) break;
+        } else {
+          if (!G.boardingVictimAwaitingDecision) break;
           const exp = G.boardingVictimAwaitingDecision.partnerId;
           if (fromId == null || !Number.isFinite(fromId) || netPlayerId(fromId) !== exp) break;
         }
+        if (fromId != null && Number.isFinite(fromId) && netPlayerId(fromId) === G.myId) break;
         if (G.boarding && G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null) {
           try { abortActiveBoarding(''); } catch (e) {}
         }
@@ -24668,7 +24674,8 @@ function update(dt) {
   }
 
   if (!G.spectate && !G.docked && !G.playerSinking && G.player.health > 0 && !G.captainWalk?.active) {
-    if (countSailorCrew() === 0) {
+    /* During PvP boarding the deck fight uses abstract crew counts; zero roster here must not hull the ship before the victor resolves spoils. */
+    if (countSailorCrew() === 0 && !G.boarding && !G.boardingVictimAwaitingDecision) {
       G.lastAttacker = 'No crew — ship abandoned';
       G.lastAttackerId = null;
       G.player.health = 0;
