@@ -2612,8 +2612,8 @@ wss.on('connection', (ws, req) => {
         case 'boarding_spoils': {
           const targetId = msg.targetId != null ? Math.floor(Number(msg.targetId)) : NaN;
           const gold = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
-          const scuttle = !!msg.scuttle;
-          const keepHull = !!msg.keepHull && !scuttle;
+          const scuttle = msg.scuttle === true;
+          const keepHull = msg.keepHull === true && !scuttle;
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
           /* Keep-ship: only the victor's *former* hull should sink (they sail the prize). Exclude victor so they don't double-spawn (client spawns locally). */
           if (keepHull) {
