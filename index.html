@@ -11622,6 +11622,13 @@ function canNpcBeBoarded(npc) {
   if (npc.isTradeShip && npc.tradePhase === 'loading_home') return false;
   return true;
 }
+function canPlayerShipBeBoarded(op, pid) {
+  if (!op || op.docked) return false;
+  if (op.health != null && op.health <= 0) return false;
+  const idn = pid != null ? netPlayerId(pid) : null;
+  if (idn != null && G.pendingRemoteShipSink.has(idn)) return false;
+  return true;
+}
 const boardingRopeLineMeshes = [];
 function clearBoardingRopeLineMeshes() {
   for (const ln of boardingRopeLineMeshes) {
@@ -11984,10 +11991,12 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
 function tryStartDefenderFromNetwork(attackerId, bo) {
   if (G.boarding || G.docked || G.playerSinking) return;
   if (G.myId == null) return;
+  if (G.player.health != null && G.player.health <= 0) return;
   const sidN = Math.floor(Number(bo.sid));
   if (!(sidN > 0) || netPlayerId(bo.sid) !== G.myId) return;
   const atk = G.otherPlayers.get(attackerId);
   if (!atk) return;
+  if (!canPlayerShipBeBoarded(atk, attackerId)) return;
   const aName = atk ? (atk.shipName || networkPlayerCaptainName(atk)) : 'Attacker';
   const myN = (G.player.shipName || '').trim() || 'Your ship';
   const locks = computeBoardingLocks(G.player.x, G.player.z, G.player.rotation, atk.x, atk.z, G.player.shipType, atk.shipType || 'sloop');
@@ -12021,7 +12030,7 @@ function startPlayerBoardingAttack(targetId) {
   const tid = netPlayerId(targetId);
   if (tid == null || tid === G.myId) return;
   const op = G.otherPlayers.get(tid);
-  if (!op || op.docked) return;
+  if (!op || !canPlayerShipBeBoarded(op, tid)) return;
   if (G.myId == null) return;
   const d = Math.hypot(G.player.x - op.x, G.player.z - op.z);
   if (!isBoardingRangeToTarget(G.player.x, G.player.z, op.x, op.z, G.player.shipType, op.shipType || 'sloop')) {
@@ -12447,6 +12456,7 @@ function showBoardingSpoilsModal(won, b) {
     if (m) m.style.display = 'none';
     clearBoardingBodyMarkers();
     G.boarding = null; notify('Hull broken for timber and specie — deck awash with smoke.', 5000);
+    try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   };
   const done = document.getElementById('boarding-spoils-done');
   if (done) done.onclick = () => {
@@ -12462,7 +12472,19 @@ function showBoardingSpoilsModal(won, b) {
     /* Loot and cast off: defeated keeps their hull (NPC resumes sailing; PvP victim unchanged). Only scuttle sinks. */
     if (b.npcSyncId != null) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
-      if (n) n._boardingHostLock = false;
+      if (n) {
+        n._boardingHostLock = false;
+        if (n.sinking && n.health != null && n.health > 0) {
+          n.sinking = false;
+          n.sinkTimer = 0;
+          if (n.mesh) {
+            const sy = worldSeaSurfaceY(n.x, n.z) + SHIP_FREEBOARD;
+            n.mesh.position.y = sy;
+            n.mesh.rotation.x = 0;
+            n.mesh.rotation.z = 0;
+          }
+        }
+      }
     } else if (b.partnerPlayerId) {
       try { ws && ws.send(JSON.stringify({ type: 'boarding_spoils', targetId: b.partnerPlayerId, gold: g, scuttle: false })); } catch (e) {}
     }
@@ -12471,6 +12493,7 @@ function showBoardingSpoilsModal(won, b) {
     clearBoardingBodyMarkers();
     G.boarding = null;
     if (b.partnerPlayerId) notify('You took what you could carry and cast off.', 4500);
+    try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   };
   if (lootR) lootR.oninput = () => { if (lootV) lootV.textContent = lootR.value; };
   if (prR) prR.oninput = () => { if (prV) prV.textContent = prR.value; };
@@ -12625,7 +12648,7 @@ function updateBoardingUiOverlay() {
   let best = null, bestGap = 1e9, bestId = null;
   if (G.otherPlayers && G.otherPlayers.size) {
     G.otherPlayers.forEach((op, pid) => {
-      if (op.docked) return;
+      if (!canPlayerShipBeBoarded(op, pid)) return;
       const g = boardingSurfaceGapMeters(G.player.x, G.player.z, op.x, op.z, pSt, op.shipType || 'sloop');
       if (g <= BOARDING_MAX_RANGE && g < bestGap) { bestGap = g; best = op; bestId = pid; }
     });
@@ -12749,6 +12772,7 @@ function tickBoardingEngagement(dt) {
 }
 function ingestRemoteBoardingState(players) {
   if (!Array.isArray(players) || G.myId == null) return;
+  const nowIngest = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   for (const row of players) {
     if (!row || row.boarding == null) continue;
     const pid = netPlayerId(row.id);
@@ -12758,6 +12782,7 @@ function ingestRemoteBoardingState(players) {
        Without this guard the loser (sid matches G.myId) spuriously re-enters boarding in pull phase and the game locks up. */
     if (bo.ph === 'e') continue;
     if (G.boardingVictimAwaitingDecision) continue;
+    if (G._boardingSpoilsCooldownUntil && nowIngest < G._boardingSpoilsCooldownUntil) continue;
     if (Math.floor(Number(bo.sid)) > 0 && netPlayerId(bo.sid) === G.myId && !G.boarding) {
       tryStartDefenderFromNetwork(pid, bo);
     }
@@ -16404,8 +16429,13 @@ async function connectToServer() {
         const take = Math.min(g, have);
         if (take > 0) subtractFromInventoryLedger('gold', take);
         try { reconcileSlotsWithInventory(); } catch (e) {}
-        const keepHull = !!msg.keepHull && !msg.scuttle;
-        if (msg.scuttle) {
+        const scuttleTrue = msg.scuttle === true;
+        const keepHull = msg.keepHull === true && !scuttleTrue;
+        {
+          const tNow = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          G._boardingSpoilsCooldownUntil = tNow + 4500;
+        }
+        if (scuttleTrue) {
           G.lastAttacker = `${capName} — boarding`;
           G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
           /* Server also broadcasts ship_sunk so the victor sees the hull go under without waiting on our frame. */
