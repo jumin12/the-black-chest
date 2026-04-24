@@ -12092,6 +12092,10 @@ function endBoardingResolution() {
   }
   b.phase = 'spoils';
   b.outcomeWon = youWin;
+  /* Losing authority must keep broadcasting ph:'e' until the victor merges — clearing boarding after one frame left peers stuck in fight. */
+  if (b.partnerPlayerId != null && b.npcSyncId == null && !youWin && boardingIAmSimLeader(b)) {
+    b.phase = 'await_opponent';
+  }
   if (!youWin) {
     if (b.npcSyncId != null) {
       G.player.anchored = false;
@@ -12175,7 +12179,10 @@ function showBoardingSpoilsModal(won, b) {
       contBtn.style.display = 'none';
       contBtn.onclick = null;
     }
-    if (G.boarding) G.boarding = null;
+    /* Authority loser stays in await_opponent so packBoardingForNetwork keeps re-sending _pvpTermSnap. */
+    if (!(G.boarding && G.boarding.phase === 'await_opponent')) {
+      if (G.boarding) G.boarding = null;
+    }
     clearBoardingBodyMarkers();
     const tw0 = document.getElementById('boarding-tw-wrap');
     if (tw0) { tw0.style.display = 'none'; tw0.removeAttribute('data-remote-only'); }
@@ -12494,19 +12501,17 @@ function updateBoardingUiOverlay() {
 function tickBoardingEngagement(dt) {
   if (!G.boarding) return;
   if (G.captainWalk && G.captainWalk.active) setCaptainWalkActive(false);
-  const b = G.boarding;
-  if (b.phase === 'spoils') return;
-  if (b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null) {
-    const auth = boardingPvPAuthorityId(b);
+  if (G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null && G.myId != null) {
+    const auth = boardingPvPAuthorityId(G.boarding);
     if (auth != null && Number(G.myId) !== Number(auth)) {
       const lRow = G.otherPlayers.get(auth);
       if (lRow && lRow.boarding) mergeBoardingFromLeaderPayload(lRow.boarding, auth);
     }
   }
-  if (b.partnerPlayerId != null && b.phase === 'fight' && !boardingIAmSimLeader(b)) {
-    if ((b.pAtk | 0) <= 0 || (b.eAtk | 0) <= 0) endBoardingResolution();
-  }
   if (!G.boarding) return;
+  const b = G.boarding;
+  if (b.phase === 'spoils' || b.phase === 'await_opponent') return;
+  /* Fight end runs only on the authority; followers resolve from ph:'e' merge (local atk<=0 caused desync / frozen peers). */
   if (b.phase === 'pull') {
     if (b.npcSyncId != null || boardingIAmSimLeader(b)) {
       b.pullT = (b.pullT || 0) + dt / BOARDING_PULL_DUR;
