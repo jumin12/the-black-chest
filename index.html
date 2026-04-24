@@ -1751,8 +1751,8 @@ body.game-help-mobile-minimal #game-help-panel{
 #boarding-tw-fill-a{height:100%;background:linear-gradient(90deg,#284a28,#4a8a4a);transition:width 0.15s linear;}
 #boarding-tw-fill-b{height:100%;background:linear-gradient(90deg,#6a3030,#a04040);transition:width 0.15s linear;}
 #boarding-tw-sub{display:flex;justify-content:space-between;font-size:10px;color:#9a9080;margin-top:5px;}
-#boarding-spoils-modal{display:none;position:fixed;inset:0;z-index:80;align-items:center;justify-content:center;padding:16px;background:rgba(4,3,2,0.72);}
-#boarding-spoils-panel{max-width:440px;width:100%;background:linear-gradient(165deg,rgba(28,20,14,0.98),rgba(14,10,8,0.99));border:1px solid rgba(200,150,80,0.45);border-radius:12px;padding:16px 18px 14px;color:#e8dcc8;font-family:Georgia,serif;box-shadow:0 12px 40px rgba(0,0,0,0.55);}
+#boarding-spoils-modal{display:none;position:fixed;inset:0;z-index:80;align-items:flex-start;justify-content:center;padding:12px 12px 20px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;background:rgba(4,3,2,0.72);}
+#boarding-spoils-panel{max-width:440px;width:100%;margin:8px auto 24px;background:linear-gradient(165deg,rgba(28,20,14,0.98),rgba(14,10,8,0.99));border:1px solid rgba(200,150,80,0.45);border-radius:12px;padding:16px 18px 14px;color:#e8dcc8;font-family:Georgia,serif;box-shadow:0 12px 40px rgba(0,0,0,0.55);max-height:min(88vh,720px);overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;touch-action:pan-y;}
 #boarding-spoils-panel h3{margin:0 0 10px;font-size:17px;color:#e0c890;}
 #boarding-spoils-panel p{margin:0 0 12px;font-size:12px;line-height:1.5;color:#b8a898;}
 .boarding-spoils-row{margin:10px 0;}
@@ -1760,7 +1760,12 @@ body.game-help-mobile-minimal #game-help-panel{
 .boarding-spoils-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
 .boarding-spoils-actions button{flex:1;min-width:120px;padding:8px 10px;border-radius:8px;border:1px solid rgba(180,120,60,0.4);background:rgba(50,35,20,0.75);color:#e8d8c0;font-size:12px;cursor:pointer;font-family:Georgia,serif;}
 .boarding-spoils-actions button.primary{background:linear-gradient(180deg,#6a4a20,#3a2208);border-color:#c9a24a;}
-#boarding-spoils-panel.boarding-spoils-panel--wide{max-width:min(920px,96vw);}
+#boarding-spoils-panel.boarding-spoils-panel--wide{max-width:min(920px,96vw);max-height:min(92vh,900px);}
+@media (max-width:900px){
+  body.game-playing.boarding-spoils-victory-open #touch-controls,
+  body.game-playing.boarding-spoils-victory-open #touch-broadsides-layer,
+  body.game-playing.boarding-spoils-victory-open .toolbar{display:none!important;visibility:hidden!important;pointer-events:none!important;}
+}
 .boarding-spoils-pvp-holds{display:none;margin:10px 0 12px;}
 .boarding-spoils-pvp-holds.is-on{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 @media(max-width:720px){
@@ -1986,14 +1991,13 @@ body.game-help-mobile-minimal #game-help-panel{
         <div style="font-size:11px;color:#a09080;margin-top:2px;">Selected: <span id="boarding-spoils-loot-v">0</span>g</div>
       </div>
       <div class="boarding-spoils-row" id="boarding-spoils-prisoners-block">
-        <label>Prisoners (surrendered) — scroll the roster; tap a card or use the slider</label>
+        <label>Prisoners (surrendered) — scroll the roster; tap a card to choose how many you take</label>
         <div class="boarding-spoils-prisoners-frame">
           <div class="boarding-spoils-prisoners-scroll">
             <div id="boarding-spoils-prisoners-row" class="boarding-spoils-prisoners-row"></div>
           </div>
         </div>
-        <input type="range" id="boarding-spoils-pris" min="0" max="0" value="0" style="width:100%;margin-top:6px;" />
-        <div style="font-size:11px;color:#a09080;margin-top:2px;">Taking <span id="boarding-spoils-pris-v">0</span> · rest thrown to the sea</div>
+        <div id="boarding-spoils-pris-hint" style="font-size:11px;color:#a09080;margin-top:8px;">Taking <span id="boarding-spoils-pris-v">0</span> · tap a card to choose · rest cast off</div>
       </div>
       <div class="boarding-spoils-actions">
         <button type="button" class="primary" id="boarding-spoils-keep" title="Take the defeated vessel as your own">Keep ship</button>
@@ -12545,6 +12549,20 @@ function computeBoardingPvpSpoilItemTransfers() {
   }
   return out;
 }
+/** Victor moved cargo *into* the defeated hold — victim keeps these stacks after resolution. */
+function computeBoardingPvpGiftItemToVictim() {
+  const init = G._boardingEnemyInitTotals;
+  const hold = G._boardingEnemyHold;
+  if (!init || !hold) return [];
+  const cur = boardingEnemyHoldTotalsMap(hold.cargoSlots, hold.inventory);
+  const out = [];
+  for (const [id, n1] of cur.entries()) {
+    const n0 = init.get(id) || 0;
+    const d = n1 - n0;
+    if (d > 0) out.push({ id, count: d });
+  }
+  return out;
+}
 /** Prize ship: victor already dragged part of the hold; add the rest of the defeated manifest into cargo. */
 function mergeRemainingPrizeTotalsIntoVictorHold() {
   const init = G._boardingEnemyInitTotals;
@@ -12566,6 +12584,8 @@ function clearBoardingSpoilsPvpHoldState() {
   G._boardingSpoilsFoeCrew = null;
   G._boardingSpoilsFoeShipType = null;
   G._boardingSpoilsRosterSalt = null;
+  G._boardingSpoilsPrisonerTake = 0;
+  try { document.body.classList.remove('boarding-spoils-victory-open'); } catch (e) {}
   const pan = document.getElementById('boarding-spoils-panel');
   if (pan) pan.classList.remove('boarding-spoils-panel--wide');
 }
@@ -12610,6 +12630,18 @@ function applyBoardingSpoilsItemsFromVictor(items) {
     const left = Math.max(0, Math.min(999999, Math.floor(Number(it.count) || 0)));
     if (left <= 0) continue;
     subtractFromInventoryLedger(String(it.id), left);
+  }
+  try { reconcileSlotsWithInventory(); } catch (e) {}
+}
+function applyBoardingSpoilsGiftsFromVictor(items) {
+  if (!Array.isArray(items) || !items.length) return;
+  ensureCargoSlots();
+  try { reconcileSlotsWithInventory(); } catch (e) {}
+  for (const it of items) {
+    if (!it || !it.id) continue;
+    const add = Math.max(0, Math.min(999999, Math.floor(Number(it.count) || 0)));
+    if (add <= 0) continue;
+    tryAddQuestCargo(String(it.id), add);
   }
   try { reconcileSlotsWithInventory(); } catch (e) {}
 }
@@ -12961,15 +12993,15 @@ function renderBoardingSpoilsPrisonersStrip(maxPool, takeN) {
 }
 function showBoardingSpoilsModal(won, b) {
   clearBoardingRopeLineMeshes();
+  try { document.body.classList.remove('boarding-spoils-victory-open'); } catch (e) {}
   const m = document.getElementById('boarding-spoils-modal');
   const h = document.getElementById('boarding-spoils-h');
   const txt = document.getElementById('boarding-spoils-text');
   const lootR = document.getElementById('boarding-spoils-loot');
-  const prR = document.getElementById('boarding-spoils-pris');
   const lootV = document.getElementById('boarding-spoils-loot-v');
   const prV = document.getElementById('boarding-spoils-pris-v');
   const rowLoot = lootR && lootR.closest('.boarding-spoils-row');
-  const rowPr = prR && prR.closest('.boarding-spoils-row');
+  const rowPr = document.getElementById('boarding-spoils-prisoners-block');
   const act = document.querySelector('.boarding-spoils-actions');
   const isPvpLoserWait = !won && b && b.partnerPlayerId != null && b.npcSyncId == null;
   if (isPvpLoserWait) {
@@ -13024,11 +13056,7 @@ function showBoardingSpoilsModal(won, b) {
   if (goldRow) goldRow.style.display = (won && partnerPvp) ? 'none' : '';
   if (goldLab) goldLab.textContent = (won && partnerPvp) ? '' : 'Loot to take (gold)';
   if (lootR) { lootR.max = String(Math.max(0, gMax)); lootR.value = String(Math.max(0, gMax * 0.5 | 0)); }
-  if (prR) {
-    const maxP = won ? Math.min(12, b.surrenderPool | 0) : 0;
-    prR.max = String(Math.max(0, maxP));
-    prR.value = '0';
-  }
+  G._boardingSpoilsPrisonerTake = 0;
   if (lootV) lootV.textContent = won ? (lootR ? lootR.value : '0') : '0';
   if (prV) prV.textContent = '0';
   if (won && partnerPvp) {
@@ -13078,6 +13106,9 @@ function showBoardingSpoilsModal(won, b) {
   if (btnK) btnK.style.display = canKeep ? 'inline-block' : 'none';
   if (btnS) btnS.style.display = 'inline-block';
   if (m) m.style.display = 'flex';
+  if (won) {
+    try { document.body.classList.add('boarding-spoils-victory-open'); } catch (e) {}
+  }
   if (won && b.npcSyncId == null) {
     try { ws && ws.send(JSON.stringify({ type: 'leaderboard_update', boardings: 1 })); } catch (e) {}
   } else if (won && b.npcSyncId != null) {
@@ -13096,8 +13127,8 @@ function showBoardingSpoilsModal(won, b) {
   if (!won) { clearBoardingBodyMarkers(); if (!G.boardingVictimAwaitingDecision) G.player.anchored = false; }
   function readLootPrison() {
     const g = (lootR && won) ? Math.max(0, Math.min(gMax, Number(lootR.value) | 0)) : 0;
-    const pmax = (prR && won) ? Math.max(0, Math.min(12, Number(prR.max) | 0)) : 0;
-    const ptk = (prR && won) ? Math.max(0, Math.min(pmax, Number(prR.value) | 0)) : 0;
+    const pmax = won ? Math.min(12, b.surrenderPool | 0) : 0;
+    const ptk = won ? Math.max(0, Math.min(pmax, G._boardingSpoilsPrisonerTake | 0)) : 0;
     return { g, ptk, pmax };
   }
   if (btnK) btnK.onclick = () => {
@@ -13132,6 +13163,8 @@ function showBoardingSpoilsModal(won, b) {
         if (partnerPvp) {
           const it = computeBoardingPvpSpoilItemTransfers();
           if (it.length) spoilPayload.items = it;
+          const gift = computeBoardingPvpGiftItemToVictim();
+          if (gift.length) spoilPayload.itemsGift = gift;
         }
         ws && ws.send(JSON.stringify(spoilPayload));
       } catch (e) {}
@@ -13169,6 +13202,8 @@ function showBoardingSpoilsModal(won, b) {
           if (partnerPvp) {
             const it = computeBoardingPvpSpoilItemTransfers();
             if (it.length) spoilPayload.items = it;
+            const gift = computeBoardingPvpGiftItemToVictim();
+            if (gift.length) spoilPayload.itemsGift = gift;
           }
           ws && ws.send(JSON.stringify(spoilPayload));
         } catch (e) {}
@@ -13214,6 +13249,8 @@ function showBoardingSpoilsModal(won, b) {
         if (partnerPvp) {
           const it = computeBoardingPvpSpoilItemTransfers();
           if (it.length) spoilPayload.items = it;
+          const gift = computeBoardingPvpGiftItemToVictim();
+          if (gift.length) spoilPayload.itemsGift = gift;
         }
         ws && ws.send(JSON.stringify(spoilPayload));
       } catch (e) {}
@@ -13229,22 +13266,16 @@ function showBoardingSpoilsModal(won, b) {
     try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   };
   if (lootR) lootR.oninput = () => { if (lootV) lootV.textContent = lootR.value; };
-  if (prR) prR.oninput = () => {
-    if (prV) prV.textContent = prR.value;
-    const maxPs = won ? Math.min(12, b.surrenderPool | 0) : 0;
-    const pv = Math.max(0, Math.min(maxPs, Number(prR.value) | 0));
-    renderBoardingSpoilsPrisonersStrip(maxPs, pv);
-  };
   const prRowEl = document.getElementById('boarding-spoils-prisoners-row');
   if (prRowEl) {
     prRowEl.onclick = e => {
       const card = e.target.closest('.boarding-spoils-pris-card');
-      if (!card || !prR || !won) return;
+      if (!card || !won) return;
       const i = Number(card.dataset.prisonerI);
       if (!Number.isFinite(i)) return;
       const maxPs = Math.min(12, b.surrenderPool | 0);
       const next = Math.min(maxPs, i + 1);
-      prR.value = String(next);
+      G._boardingSpoilsPrisonerTake = next;
       if (prV) prV.textContent = String(next);
       renderBoardingSpoilsPrisonersStrip(maxPs, next);
     };
@@ -16774,21 +16805,23 @@ function buildNpcFromNetSyncData(nd, nid) {
   return npc;
 }
 function clearBoardingVictimAwaiting(notifyMsg) {
-  if (!G.boardingVictimAwaitingDecision) return;
-  G._boardingHoldSnapSent = false;
-  G.boardingVictimAwaitingDecision = null;
+  if (G.boardingVictimAwaitingDecision) {
+    G._boardingHoldSnapSent = false;
+    G.boardingVictimAwaitingDecision = null;
+  }
   G.player.anchored = false;
   try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
   const sm = document.getElementById('boarding-spoils-modal');
   if (sm) sm.style.display = 'none';
+  try { document.body.classList.remove('boarding-spoils-victory-open'); } catch (e) {}
   const contW = document.getElementById('boarding-spoils-continue');
   if (contW) { contW.style.display = 'none'; contW.onclick = null; }
   const actW = document.querySelector('.boarding-spoils-actions');
   if (actW) actW.querySelectorAll('button').forEach(bt => { if (bt) bt.style.display = ''; });
   const lootR = document.getElementById('boarding-spoils-loot');
-  const prR = document.getElementById('boarding-spoils-pris');
   if (lootR) lootR.style.display = '';
-  if (prR) prR.style.display = '';
+  const prHint = document.getElementById('boarding-spoils-pris-hint');
+  if (prHint) prHint.style.display = '';
   const rows = document.querySelectorAll('.boarding-spoils-row');
   rows.forEach(el => { el.style.display = ''; });
   const act = document.querySelector('.boarding-spoils-actions');
@@ -17174,6 +17207,20 @@ async function connectToServer() {
         break;
       }
       case 'boarding_spoils': {
+        const myPidEarly = G.myId != null ? netPlayerId(G.myId) : null;
+        const vRawEarly = msg.victimId;
+        const vNEarly = vRawEarly != null ? netPlayerId(vRawEarly) : null;
+        let victimIsMeEarly = vNEarly != null && myPidEarly != null && vNEarly === myPidEarly;
+        if (!victimIsMeEarly && G.boardingVictimAwaitingDecision && msg.from != null && Number.isFinite(Number(msg.from))) {
+          victimIsMeEarly = netPlayerId(msg.from) === G.boardingVictimAwaitingDecision.partnerId;
+        }
+        if (victimIsMeEarly) {
+          try {
+            const smEarly = document.getElementById('boarding-spoils-modal');
+            if (smEarly) smEarly.style.display = 'none';
+            document.body.classList.remove('boarding-spoils-victory-open');
+          } catch (eEarly) {}
+        }
         const g = Math.max(0, Math.min(8000, Math.floor(Number(msg.gold) || 0)));
         const fromId = msg.from != null ? Number(msg.from) : null;
         /* Only the defeated captain may receive spoils outcomes; without this, a misrouted packet could scuttle the wrong hull. */
@@ -17198,22 +17245,26 @@ async function connectToServer() {
           const sm = document.getElementById('boarding-spoils-modal');
           if (sm) sm.style.display = 'none';
           const rowLoot = document.getElementById('boarding-spoils-loot')?.closest('.boarding-spoils-row');
-          const rowPr = document.getElementById('boarding-spoils-pris')?.closest('.boarding-spoils-row');
+          const rowPr = document.getElementById('boarding-spoils-prisoners-block');
           const act = document.querySelector('.boarding-spoils-actions');
           if (rowLoot) rowLoot.style.display = '';
           if (rowPr) rowPr.style.display = '';
           if (act) act.style.display = '';
         }
         clearBoardingVictimAwaiting('');
+        const scuttleTrue = msg.scuttle === true;
+        const keepHull = msg.keepHull === true && !scuttleTrue;
+        const giftItems = Array.isArray(msg.itemsGift) ? msg.itemsGift : [];
         if (Array.isArray(msg.items) && msg.items.length) {
           try { applyBoardingSpoilsItemsFromVictor(msg.items); } catch (e) {}
+        }
+        if (!keepHull && giftItems.length) {
+          try { applyBoardingSpoilsGiftsFromVictor(giftItems); } catch (eG) {}
         }
         const have = getInvCount('gold');
         const take = Math.min(g, have);
         if (take > 0) subtractFromInventoryLedger('gold', take);
         try { reconcileSlotsWithInventory(); } catch (e) {}
-        const scuttleTrue = msg.scuttle === true;
-        const keepHull = msg.keepHull === true && !scuttleTrue;
         {
           const tNow = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
           G._boardingSpoilsCooldownUntil = tNow + 4500;
@@ -17246,6 +17297,9 @@ async function connectToServer() {
           G.player.speed = 1;
           applyDefaultStartingLoadout({ preserveCaptainIdentity: true, prizeVictimRespawn: true });
           ensureCargoSlots();
+          if (giftItems.length) {
+            try { applyBoardingSpoilsGiftsFromVictor(giftItems); } catch (eGk) {}
+          }
           trimCrewAndPrisonersToShipLimits();
           updateCrewPanel();
           notify(`They took your command as prize — ${take}g seized from the ledger. You make way in a fresh boat, clear of the fight.`, 7200);
