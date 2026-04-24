@@ -1768,19 +1768,29 @@ body.game-help-mobile-minimal #game-help-panel{
   body.game-playing.boarding-spoils-victory-open #touch-controls,
   body.game-playing.boarding-spoils-victory-open #touch-broadsides-layer,
   body.game-playing.boarding-spoils-victory-open .toolbar{display:none!important;visibility:hidden!important;pointer-events:none!important;}
-  /* Victory spoils: one full-screen scroll (Captain's Log–style), not nested clipped panels. */
+  /* html/body use touch-action:none — re-enable vertical pan so the spoils overlay can scroll (Ship tab pattern). */
+  body.game-playing.boarding-spoils-victory-open{
+    touch-action:pan-y pinch-zoom!important;
+  }
+  /* Victory spoils: one full-screen scroll root; block + overflow scroll beats flex + inline display on iOS. */
   body.game-playing.boarding-spoils-victory-open #boarding-spoils-modal{
-    align-items:flex-start;
-    justify-content:flex-start;
-    display:flex;
-    flex-direction:column;
-    min-height:100%;
-    min-height:100dvh;
-    min-height:100svh;
+    display:block!important;
+    position:fixed!important;
+    inset:0!important;
+    width:100%!important;
+    height:100%!important;
+    height:-webkit-fill-available!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    max-height:none!important;
+    overflow-y:scroll!important;
+    overflow-x:hidden!important;
+    -webkit-overflow-scrolling:touch!important;
+    overscroll-behavior-y:contain;
+    touch-action:pan-y pinch-zoom!important;
+    pointer-events:auto!important;
+    z-index:85!important;
     padding:max(10px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(max(20px, env(safe-area-inset-bottom, 0px)), 12px) max(12px, env(safe-area-inset-left, 0px));
-    touch-action:pan-y pinch-zoom;
-    overscroll-behavior:contain;
-    -webkit-overflow-scrolling:touch;
     scrollbar-gutter:stable;
     scrollbar-width:thin;
     scrollbar-color:rgba(212,168,72,0.85) rgba(18,12,8,0.92);
@@ -1798,27 +1808,26 @@ body.game-help-mobile-minimal #game-help-panel{
   }
   body.game-playing.boarding-spoils-victory-open #boarding-spoils-panel,
   body.game-playing.boarding-spoils-victory-open #boarding-spoils-panel.boarding-spoils-panel--wide{
-    max-height:none;
-    overflow:visible;
+    max-height:none!important;
+    overflow:visible!important;
     margin-top:0;
     margin-left:auto;
     margin-right:auto;
     margin-bottom:max(8px, env(safe-area-inset-bottom, 0px));
-    flex-shrink:0;
     width:100%;
     max-width:min(920px, 96vw);
     box-sizing:border-box;
-    touch-action:pan-y pinch-zoom;
+    touch-action:pan-y pinch-zoom!important;
   }
   body.game-playing.boarding-spoils-victory-open .boarding-spoils-cargo-grid{
-    max-height:none;
-    overflow:visible;
-    touch-action:pan-y;
+    max-height:none!important;
+    overflow:visible!important;
+    touch-action:pan-y!important;
   }
   body.game-playing.boarding-spoils-victory-open .boarding-spoils-prisoners-scroll{
-    max-height:none;
-    overflow:visible;
-    touch-action:pan-y;
+    max-height:none!important;
+    overflow:visible!important;
+    touch-action:pan-y!important;
   }
 }
 .boarding-spoils-pvp-holds{display:none;margin:10px 0 12px;}
@@ -4904,13 +4913,11 @@ function countLivingNonPrisonerCrew() {
   }
   return n;
 }
-/** Spoils UI can close with 0 living sailors after casualties; without this the next frame "no crew" rule hulls the victor. */
+/** If boarding ends with no living hands (all lost or pressed), the ship is lost — do not spawn a ghost captain. */
 function ensureBareHelmAfterBoardingWin() {
   if (countLivingNonPrisonerCrew() > 0) return;
-  if (!Array.isArray(G.player.crew)) G.player.crew = [];
-  G.player.crew.push(normalizeCrewMemberRecord({
-    name: 'Stricken captain', role: 'captain', health: 24, task: 'helm', color: '#8a7060'
-  }));
+  G.lastAttacker = G.lastAttacker || 'No crew — cannot make way';
+  G.player.health = 0;
 }
 function markBoardingVictorySpoilsGrace() {
   const t = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -12390,14 +12397,8 @@ function layoutBoardingTwBarAboveWorld(mx, mz) {
 }
 function ruinCrewAfterPvPBoardingMercy() {
   if (!Array.isArray(G.player.crew)) G.player.crew = [];
-  /* Boarding casualties can splice the whole roster; empty crew + mercy path used to leave 0 hands and the "abandoned ship" rule hulls the loser on the next tick. */
-  if (!G.player.crew.length) {
-    G.player.crew.push(normalizeCrewMemberRecord({
-      name: 'Stricken captain', role: 'captain', health: 22, task: 'helm', color: '#8a7060'
-    }));
-    trimCrewAndPrisonersToShipLimits();
-    return;
-  }
+  /* Empty roster: boarding_spoils mercy branch sinks the player instead of spawning a placeholder captain. */
+  if (!G.player.crew.length) return;
   const capIdx = G.player.crew.findIndex(c => c && c.role === 'captain');
   const next = [];
   if (capIdx >= 0) {
@@ -12411,7 +12412,7 @@ function ruinCrewAfterPvPBoardingMercy() {
     c.health = Math.max(8, Math.min(100, Math.floor((c.health != null ? c.health : 100) * 0.28)));
     next.push(c);
   }
-  G.player.crew = next.length ? next : [{ name: 'Stricken captain', role: 'captain', health: 22, task: 'helm', color: '#8a7060' }];
+  G.player.crew = next.length ? next : [];
   trimCrewAndPrisonersToShipLimits();
 }
 /** Snapshot of this captain's hull for a sinking decoy (victor's old ship on keep-ship). */
@@ -13085,6 +13086,15 @@ function showBoardingSpoilsModal(won, b) {
   const act = document.querySelector('.boarding-spoils-actions');
   const isPvpLoserWait = !won && b && b.partnerPlayerId != null && b.npcSyncId == null;
   if (isPvpLoserWait) {
+    try { clearBoardingSpoilsPvpHoldState(); } catch (eClr) {}
+    G._boardingEnemyHold = null;
+    G._boardingEnemyInitTotals = null;
+    {
+      const pvpL = document.getElementById('boarding-spoils-pvp-holds');
+      if (pvpL) { pvpL.classList.remove('is-on'); pvpL.style.display = 'none'; }
+      const panL = document.getElementById('boarding-spoils-panel');
+      if (panL) panL.classList.remove('boarding-spoils-panel--wide');
+    }
     G._boardingSpoilsFoeCrew = null;
     G._boardingSpoilsFoeShipType = null;
     G._boardingSpoilsRosterSalt = null;
@@ -17274,6 +17284,7 @@ async function connectToServer() {
         renderDebugAdminClansPanel(msg.clans || []);
         break;
       case 'boarding_hold_snapshot': {
+        if (G.boardingVictimAwaitingDecision) break;
         const fromPid = netPlayerId(msg.fromPlayerId);
         const myPartner = G.boarding && G.boarding.partnerPlayerId != null ? netPlayerId(G.boarding.partnerPlayerId) : null;
         if (fromPid == null || myPartner == null || fromPid !== myPartner) break;
@@ -17394,11 +17405,27 @@ async function connectToServer() {
           notify(`They took your command as prize — ${take}g seized from the ledger. You make way in a fresh boat, clear of the fight.`, 7200);
           try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
         } else {
-          ruinCrewAfterPvPBoardingMercy();
-          rebuildPlayerShip();
-          updateCrewPanel();
-          notify(`They took ${take}g from the hold and cast off — you're left limping with a skeleton crew.`, 7200);
-          try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
+          if (countLivingNonPrisonerCrew() <= 0) {
+            G.lastAttacker = `${capName} — boarding`;
+            G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
+            G._suppressNextShipSunkBroadcast = true;
+            G.player.health = 0;
+            notify('Every hand was lost or pressed into their service — you cannot sail.', 7200);
+          } else {
+            ruinCrewAfterPvPBoardingMercy();
+            if (countLivingNonPrisonerCrew() <= 0) {
+              G.lastAttacker = `${capName} — boarding`;
+              G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
+              G._suppressNextShipSunkBroadcast = true;
+              G.player.health = 0;
+              notify('No living crew remains — your hull is left adrift.', 7200);
+            } else {
+              rebuildPlayerShip();
+              updateCrewPanel();
+              notify(`They took ${take}g from the hold and cast off — you're left limping with a skeleton crew.`, 7200);
+              try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
+            }
+          }
         }
         break;
       }
