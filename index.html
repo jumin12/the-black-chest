@@ -12753,6 +12753,51 @@ function getBoardingSpoilsFoeFighterRoster() {
   if (!Array.isArray(raw) || !raw.length) return [];
   return raw.filter(c => c && c.role !== 'prisoner');
 }
+/** Build a brig entry from the defeated ship’s real crewman (name, look, skills) — no generic “Prisoner 1”. */
+function captiveRecordFromBoardedFighter(src, healthMult) {
+  const mult = healthMult != null && Number.isFinite(Number(healthMult)) ? Math.max(0.15, Math.min(1.2, Number(healthMult))) : 0.65;
+  if (!src || typeof src !== 'object') {
+    return normalizeCrewMemberRecord({ name: 'Straggler', role: 'prisoner', health: Math.max(8, Math.floor(48 * mult)), task: 'idle' });
+  }
+  const r0 = String(src.role || 'sailor').toLowerCase();
+  const stationRole = (r0 === 'captain' || r0 === 'gunner' || r0 === 'navigator' || r0 === 'sailor') ? r0 : 'sailor';
+  const tmp = normalizeCrewMemberRecord({
+    name: src.name,
+    role: stationRole,
+    task: 'idle',
+    health: src.health,
+    color: src.color,
+    hat: src.hat,
+    outfit: src.outfit,
+    parrot: src.parrot,
+    skills: src.skills,
+    missedMeals: 0
+  });
+  const h0 = tmp.health != null && Number.isFinite(Number(tmp.health)) ? Number(tmp.health) : 72;
+  const health = Math.max(8, Math.min(100, Math.floor(h0 * mult)));
+  const pr = {
+    name: String(tmp.name || '').trim() || 'Prisoner',
+    role: 'prisoner',
+    task: 'idle',
+    health,
+    color: tmp.color,
+    hat: tmp.hat,
+    outfit: tmp.outfit,
+    parrot: tmp.parrot,
+    skills: tmp.skills ? { ...tmp.skills } : undefined,
+    missedMeals: 0
+  };
+  return normalizeCrewMemberRecord(pr);
+}
+function addBoardingSpoilsCaptivesToCrew(ptk, healthMult) {
+  const nTake = Math.max(0, Math.min(24, ptk | 0));
+  const roster = getBoardingSpoilsFoeFighterRoster();
+  const cap = SHIP_TYPES[G.player.shipType]?.maxPrisoners || 4;
+  for (let i = 0; i < nTake; i++) {
+    if (countPrisonerCrew() >= cap) break;
+    G.player.crew.push(captiveRecordFromBoardedFighter(roster[i], healthMult));
+  }
+}
 function queueBoardingSpoilsCrewPortraits() {
   const row = document.getElementById('boarding-spoils-prisoners-row');
   if (!row) return;
@@ -12967,12 +13012,6 @@ function showBoardingSpoilsModal(won, b) {
     try { if (typeof window.abortBoardingSpoilsCargoDrag === 'function') window.abortBoardingSpoilsCargoDrag(); } catch (e) {}
     const { g, ptk, pmax } = readLootPrison();
     if (g > 0) tryAddQuestCargo('gold', g);
-    for (let i = 0; i < ptk; i++) {
-      if (countPrisonerCrew() < (SHIP_TYPES[G.player.shipType]?.maxPrisoners || 4)) {
-        G.player.crew.push(normalizeCrewMemberRecord({ name: 'Surrendered ' + (i + 1), role: 'sailor', health: 70, task: 'idle', color: '#7a6a5a' }));
-        G.player.crew[G.player.crew.length - 1].role = 'prisoner';
-      }
-    }
     if ((pmax | 0) - ptk > 0) notify((pmax - ptk) + ' prisoners thrown over the rail.', 5000);
     if (b.npcSyncId != null) {
       try {
@@ -13006,6 +13045,7 @@ function showBoardingSpoilsModal(won, b) {
       ensureCargoSlots();
       trimCrewAndPrisonersToShipLimits();
     }
+    addBoardingSpoilsCaptivesToCrew(ptk, 0.72);
     ensureBareHelmAfterBoardingWin();
     rebuildPlayerShip(); updateCrewPanel();
     if (m) m.style.display = 'none';
@@ -13025,11 +13065,7 @@ function showBoardingSpoilsModal(won, b) {
     const g2 = b.npcSyncId != null ? (g + Math.min(32, 10 + (woodB * 2))) : (partnerPvp ? 0 : (g + Math.min(36, 12 + ((b.surrenderPool | 0) * 3))));
     if (g2 > 0) tryAddQuestCargo('gold', g2);
     if (b.npcSyncId != null && woodB > 0) tryAddQuestCargo('wood', woodB);
-    for (let i = 0; i < ptk; i++) {
-      if (countPrisonerCrew() < (SHIP_TYPES[G.player.shipType]?.maxPrisoners || 4)) {
-        G.player.crew.push(normalizeCrewMemberRecord({ name: 'Dazed captive ' + (i + 1), role: 'prisoner', health: 55, task: 'idle' }));
-      }
-    }
+    addBoardingSpoilsCaptivesToCrew(ptk, 0.55);
     if (b.npcSyncId != null) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
       if (n && n.mesh) runNpcSinkOutcome(n, G.myId);
@@ -13061,11 +13097,7 @@ function showBoardingSpoilsModal(won, b) {
     try { if (typeof window.abortBoardingSpoilsCargoDrag === 'function') window.abortBoardingSpoilsCargoDrag(); } catch (e) {}
     const { g, ptk, pmax } = readLootPrison();
     if (g > 0) tryAddQuestCargo('gold', g);
-    for (let i = 0; i < ptk; i++) {
-      if (countPrisonerCrew() < (SHIP_TYPES[G.player.shipType]?.maxPrisoners || 4)) {
-        G.player.crew.push(normalizeCrewMemberRecord({ name: 'Ransom prisoner ' + (i + 1), role: 'prisoner', health: 65, task: 'idle' }));
-      }
-    }
+    addBoardingSpoilsCaptivesToCrew(ptk, 0.65);
     if ((pmax | 0) - ptk > 0) notify((pmax - ptk) + ' survivors cast into the deep.', 4000);
     /* Loot and cast off: defeated keeps their hull (NPC resumes sailing; PvP victim unchanged). Only scuttle sinks. */
     if (b.npcSyncId != null) {
