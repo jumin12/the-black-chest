@@ -2657,6 +2657,9 @@ wss.on('connection', (ws, req) => {
               broadcast({
                 type: 'boarding_prize_hull_sink',
                 victorPlayerId: id,
+                namelessHull: true,
+                abandonedLingerSec: 10,
+                emptyCrew: true,
                 x: Number.isFinite(Number(atk.x)) ? Number(atk.x) : 0,
                 z: Number.isFinite(Number(atk.z)) ? Number(atk.z) : 0,
                 rotation: Number.isFinite(Number(atk.rotation)) ? Number(atk.rotation) : 0,
@@ -2670,6 +2673,24 @@ wss.on('connection', (ws, req) => {
                 partyTag: atk.partyTag != null ? String(atk.partyTag).slice(0, 24) : '',
                 crewData: cd
               }, id);
+            }
+            const vic = players.get(targetId);
+            if (vic) {
+              broadcastAll({
+                type: 'boarding_prize_hull_sink',
+                victorPlayerId: targetId,
+                namelessHull: true,
+                abandonedLingerSec: 10,
+                emptyCrew: true,
+                x: Number.isFinite(Number(vic.x)) ? Number(vic.x) : 0,
+                z: Number.isFinite(Number(vic.z)) ? Number(vic.z) : 0,
+                rotation: Number.isFinite(Number(vic.rotation)) ? Number(vic.rotation) : 0,
+                shipType: vic.shipType != null ? String(vic.shipType).slice(0, 24) : 'sloop',
+                shipParts: vic.shipParts && typeof vic.shipParts === 'object'
+                  ? { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...vic.shipParts }
+                  : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
+                flagAssetId: vic.flagAssetId
+              });
             }
           }
           /* Mercy with 0 gold must still notify the victim (client used to block and left them stuck). */

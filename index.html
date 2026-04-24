@@ -12221,6 +12221,11 @@ function endBoardingResolution() {
   }
   b.phase = 'spoils';
   b.outcomeWon = youWin;
+  /* PvP: always leave a non-zero prisoner strip when you win (roster sync can leave eTotStart at 0 while the defender clearly had hands). */
+  if (b.partnerPlayerId != null && b.npcSyncId == null && youWin) {
+    const ePool = Math.max(b.eTotStart | 0, b.eTotal | 0, b.eHeart | 0, 1);
+    b.surrenderPool = Math.max(b.surrenderPool | 0, Math.min(12, ePool));
+  }
   /* Losing authority must keep broadcasting ph:'e' until the victor merges — clearing boarding after one frame left peers stuck in fight. */
   if (b.partnerPlayerId != null && b.npcSyncId == null && !youWin && boardingIAmSimLeader(b)) {
     b.phase = 'await_opponent';
@@ -12311,11 +12316,12 @@ function spawnBoardingPrizeHullDecoyFromNet(msg) {
   const rYaw = Number.isFinite(ry) ? ry : 0;
   const st = msg.shipType && SHIP_TYPES[msg.shipType] ? msg.shipType : 'sloop';
   const visualParts = normalizeShipPartsForRemoteView(msg.shipParts);
-  const captainName = (msg.name && String(msg.name).trim()) ? String(msg.name).trim().slice(0, 28) : 'Captain';
-  const shipTitle = (msg.shipName && String(msg.shipName).trim()) ? String(msg.shipName).trim().slice(0, 28) : captainName;
+  const nameless = msg.namelessHull === true;
+  const captainName = nameless ? '' : ((msg.name && String(msg.name).trim()) ? String(msg.name).trim().slice(0, 28) : 'Captain');
+  const shipTitle = nameless ? '' : ((msg.shipName && String(msg.shipName).trim()) ? String(msg.shipName).trim().slice(0, 28) : captainName);
   const fa = msg.flagAssetId != null ? sanitizeFlagPngId(Number(msg.flagAssetId)) : null;
-  const sm = buildShipMesh(st, visualParts, DEFAULT_SAIL_TRIM_COLOR, shipTitle, { flagAssetId: fa != null ? fa : DEFAULT_PLAYER_FLAG_ASSET });
-  if (captainName && (shipTitle !== captainName || String(msg.partyTag || '').trim())) {
+  const sm = buildShipMesh(st, visualParts, DEFAULT_SAIL_TRIM_COLOR, shipTitle || ' ', { flagAssetId: fa != null ? fa : DEFAULT_PLAYER_FLAG_ASSET });
+  if (!nameless && captainName && (shipTitle !== captainName || String(msg.partyTag || '').trim())) {
     const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, '', String(msg.partyTag || '').slice(0, 24), fa != null ? fa : DEFAULT_PLAYER_FLAG_ASSET);
     const spec = SHIP_TYPES[st];
     capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
@@ -12324,25 +12330,41 @@ function spawnBoardingPrizeHullDecoyFromNet(msg) {
       if (ch instanceof THREE.Sprite) sm.remove(ch);
     }
     sm.add(capLabel);
-  }
-  const pCrew = Array.isArray(msg.crewData) && msg.crewData.length ? msg.crewData.map((c, ci) => {
-    let task = c.task;
-    if (!task || task === 'idle') {
-      if (c.role === 'captain') task = 'helm';
-      else if (c.role === 'gunner') task = 'cannons';
-      else if (c.role === 'navigator') task = 'lookout';
-      else task = ['helm', 'cannons', 'sails', 'lookout'][ci] || 'idle';
+  } else if (nameless) {
+    for (let ci = sm.children.length - 1; ci >= 0; ci--) {
+      const ch = sm.children[ci];
+      if (ch instanceof THREE.Sprite) {
+        try { sm.remove(ch); } catch (e) {}
+        try { ch.material && ch.material.map && ch.material.map.dispose(); } catch (e2) {}
+        try { ch.material && ch.material.dispose(); } catch (e3) {}
+      }
     }
-    const ch = c.health != null ? Math.max(0, Math.min(100, Number(c.health))) : 100;
-    return {
-      name: c.name || 'Pirate', role: c.role || 'sailor', color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
-      task, health: ch
-    };
-  }) : [
-    { name: captainName, role: 'captain', task: 'helm', color: msg.color || '#8a7060', health: 100 },
-    { name: 'Gunner', role: 'gunner', task: 'cannons', health: 100 },
-    { name: 'Sailor', role: 'sailor', task: 'sails', health: 100 }
-  ];
+  }
+  let pCrew;
+  if (msg.emptyCrew === true) {
+    pCrew = [];
+  } else if (Array.isArray(msg.crewData) && msg.crewData.length) {
+    pCrew = msg.crewData.map((c, ci) => {
+      let task = c.task;
+      if (!task || task === 'idle') {
+        if (c.role === 'captain') task = 'helm';
+        else if (c.role === 'gunner') task = 'cannons';
+        else if (c.role === 'navigator') task = 'lookout';
+        else task = ['helm', 'cannons', 'sails', 'lookout'][ci] || 'idle';
+      }
+      const ch = c.health != null ? Math.max(0, Math.min(100, Number(c.health))) : 100;
+      return {
+        name: c.name || 'Pirate', role: c.role || 'sailor', color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
+        task, health: ch
+      };
+    });
+  } else {
+    pCrew = [
+      { name: captainName || 'Captain', role: 'captain', task: 'helm', color: msg.color || '#8a7060', health: 100 },
+      { name: 'Gunner', role: 'gunner', task: 'cannons', health: 100 },
+      { name: 'Sailor', role: 'sailor', task: 'sails', health: 100 }
+    ];
+  }
   buildCrewMeshes(sm, pCrew, st);
   const w0 = playerShipWaveAt(x, z, rYaw);
   const w0d = dampShipWaveTilt(w0.wavePitch, w0.waveRoll);
@@ -12350,6 +12372,9 @@ function spawnBoardingPrizeHullDecoyFromNet(msg) {
   sm.rotation.set(w0d.wavePitch, rYaw, w0d.waveRoll);
   sm.userData.prizeDecoySink = true;
   sm.userData.sinkY = sm.position.y;
+  const linger = msg.abandonedLingerSec != null ? Math.max(0, Math.min(120, Number(msg.abandonedLingerSec) || 0)) : 0;
+  sm.userData.prizeDecoyLinger = linger;
+  sm.userData.prizeDecoyLingerAcc = 0;
   scene.add(sm);
   if (!G.prizeHullDecoySinks) G.prizeHullDecoySinks = [];
   G.prizeHullDecoySinks.push(sm);
@@ -12386,7 +12411,43 @@ function applyBoardingSpoilLoserDefaultHull() {
   const r0 = G.player.riggingHealth != null ? G.player.riggingHealth : 100;
   G.player.riggingHealth = Math.min(r0, 100);
 }
-/** PvP boarding: map of item id -> total count in enemy slots + ledger (for spoil transfer diff). */
+/** Ledger rows often duplicate berth stacks; split into berth + ledger-extra only (avoids doubled spoils UI / transfers). */
+function normalizeBoardingHoldForSpoilsUi(slotsIn, invIn) {
+  const slots = [];
+  const src = Array.isArray(slotsIn) ? slotsIn : [];
+  for (let i = 0; i < src.length; i++) {
+    const s = src[i];
+    if (!s || !s.id || s.count <= 0) { slots.push(null); continue; }
+    slots.push({ ...s, id: String(s.id), count: Math.max(0, s.count | 0) });
+  }
+  const slotSum = new Map();
+  for (const s of slots) {
+    if (!s) continue;
+    const id = String(s.id);
+    slotSum.set(id, (slotSum.get(id) || 0) + (s.count | 0));
+  }
+  const inv = [];
+  if (Array.isArray(invIn)) {
+    for (const r of invIn) {
+      if (!r || !r.id) continue;
+      const id = String(r.id);
+      const c = Math.max(0, Math.min(999999, Math.floor(Number(r.count) || 0)));
+      if (c <= 0) continue;
+      const inSlots = slotSum.get(id) || 0;
+      const extra = c - inSlots;
+      if (extra > 0) {
+        inv.push({
+          id: id.slice(0, 32),
+          name: String(r.name || '').slice(0, 48),
+          icon: String(r.icon || '').slice(0, 8),
+          count: extra
+        });
+      }
+    }
+  }
+  return { cargoSlots: slots, inventory: inv };
+}
+/** PvP boarding: totals after normalize — berth + ledger-extra only (no double-count). */
 function boardingEnemyHoldTotalsMap(slots, inv) {
   const m = new Map();
   for (const s of slots || []) {
@@ -12428,6 +12489,19 @@ function computeBoardingPvpSpoilItemTransfers() {
   }
   return out;
 }
+/** Prize ship: victor already dragged part of the hold; add the rest of the defeated manifest into cargo. */
+function mergeRemainingPrizeTotalsIntoVictorHold() {
+  const init = G._boardingEnemyInitTotals;
+  const hold = G._boardingEnemyHold;
+  if (!init || !init.size || !hold) return;
+  const cur = boardingEnemyHoldTotalsMap(hold.cargoSlots, hold.inventory);
+  for (const [id, n0] of init.entries()) {
+    const n1 = cur.get(id) || 0;
+    const gift = Math.max(0, n0 - n1);
+    if (gift > 0) tryAddQuestCargo(id, gift);
+  }
+  try { reconcileSlotsWithInventory(); } catch (e) {}
+}
 function clearBoardingSpoilsPvpHoldState() {
   G._boardingEnemyHold = null;
   G._boardingEnemyInitTotals = null;
@@ -12437,28 +12511,30 @@ function clearBoardingSpoilsPvpHoldState() {
 }
 function trySendBoardingHoldSnapshotToVictor(b) {
   if (!b || b.partnerPlayerId == null || b.npcSyncId != null || ws?.readyState !== 1) return;
+  try { reconcileSlotsWithInventory(); } catch (e) {}
   ensureCargoSlots();
   const st = G.player.shipType || 'sloop';
   const spec = SHIP_TYPES[st] || SHIP_TYPES.sloop;
   const maxB = Math.max(1, Math.min(48, spec.cargoSlots | 0));
-  const slots = [];
+  const rawSlots = [];
   for (let i = 0; i < maxB; i++) {
     const s = G.player.cargoSlots[i];
-    const sn = sanitizeBoardingSpoilNetSlot(s);
-    slots.push(sn || null);
+    rawSlots.push(s && s.id && s.count > 0 ? { id: s.id, name: s.name, icon: s.icon, count: s.count | 0 } : null);
   }
-  const inv = [];
+  const rawInv = [];
   for (const r of G.player.inventory || []) {
     if (!r || !r.id) continue;
     const c = Math.max(0, Math.min(999999, Math.floor(Number(r.count) || 0)));
     if (c <= 0) continue;
-    inv.push({
-      id: String(r.id).slice(0, 32),
-      name: String(r.name || '').slice(0, 48),
-      icon: String(r.icon || '').slice(0, 8),
-      count: c
-    });
+    rawInv.push({ id: r.id, name: r.name, icon: r.icon, count: c });
   }
+  const norm = normalizeBoardingHoldForSpoilsUi(rawSlots, rawInv);
+  const slots = [];
+  for (let i = 0; i < maxB; i++) {
+    const s = norm.cargoSlots[i];
+    slots.push(sanitizeBoardingSpoilNetSlot(s) || null);
+  }
+  const inv = norm.inventory.map(r => sanitizeBoardingSpoilNetSlot(r)).filter(Boolean);
   try {
     ws.send(JSON.stringify({ type: 'boarding_hold_snapshot', targetId: b.partnerPlayerId, shipType: st, cargoSlots: slots, inventory: inv }));
   } catch (e) {}
@@ -12797,8 +12873,15 @@ function showBoardingSpoilsModal(won, b) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
       if (n && n.mesh) { runNpcSinkOutcome(n, G.myId); } else { abortActiveBoarding(''); }
     } else if (b.partnerPlayerId) {
+      if (partnerPvp) try { mergeRemainingPrizeTotalsIntoVictorHold(); } catch (e) {}
       try {
-        spawnBoardingPrizeHullDecoyFromNet({ ...captureVictorRelinquishedHullPayload(), victorPlayerId: G.myId });
+        spawnBoardingPrizeHullDecoyFromNet({
+          ...captureVictorRelinquishedHullPayload(),
+          victorPlayerId: G.myId,
+          namelessHull: true,
+          abandonedLingerSec: 10,
+          emptyCrew: true
+        });
       } catch (e) {}
       const pid = netPlayerId(b.partnerPlayerId);
       const row = pid != null ? G.otherPlayers.get(pid) : null;
@@ -16835,20 +16918,23 @@ async function connectToServer() {
         const st = msg.shipType && SHIP_TYPES[msg.shipType] ? String(msg.shipType) : 'sloop';
         const spec = SHIP_TYPES[st] || SHIP_TYPES.sloop;
         const maxB = Math.max(1, Math.min(48, spec.cargoSlots | 0));
-        const rawSlots = Array.isArray(msg.cargoSlots) ? msg.cargoSlots : [];
-        const slots = [];
+        const rawSlotsMsg = Array.isArray(msg.cargoSlots) ? msg.cargoSlots : [];
+        const rawSlots = [];
         for (let i = 0; i < maxB; i++) {
-          slots.push(sanitizeBoardingSpoilNetSlot(rawSlots[i]) || null);
+          rawSlots.push(sanitizeBoardingSpoilNetSlot(rawSlotsMsg[i]) || null);
         }
-        const inv = [];
+        const invRaw = [];
         if (Array.isArray(msg.inventory)) {
           for (const r of msg.inventory) {
             const sn = sanitizeBoardingSpoilNetSlot(r);
-            if (sn) inv.push(sn);
+            if (sn) invRaw.push(sn);
           }
         }
-        G._boardingEnemyHold = { shipType: st, cargoSlots: slots, inventory: inv, fromPid };
-        G._boardingEnemyInitTotals = boardingEnemyHoldTotalsMap(slots, inv);
+        const norm = normalizeBoardingHoldForSpoilsUi(rawSlots, invRaw);
+        while (norm.cargoSlots.length < maxB) norm.cargoSlots.push(null);
+        const slots = norm.cargoSlots.slice(0, maxB);
+        G._boardingEnemyHold = { shipType: st, cargoSlots: slots, inventory: norm.inventory, fromPid };
+        G._boardingEnemyInitTotals = boardingEnemyHoldTotalsMap(slots, norm.inventory);
         try { renderBoardingSpoilsPvpHoldsRefresh(); } catch (e) {}
         break;
       }
@@ -16906,14 +16992,29 @@ async function connectToServer() {
           G.player.health = 0;
           notify(`Your hull is opened — ${take}g seized. You are going under!`, 7200);
         } else if (keepHull) {
-          ruinCrewAfterPvPBoardingMercy();
-          applyBoardingSpoilLoserDefaultHull();
+          try { reconcileSlotsWithInventory(); } catch (e) {}
+          const dx = G.player.x, dz = G.player.z;
+          let nx = dx, nz = dz;
+          for (let tries = 0; tries < 32; tries++) {
+            const ang = Math.random() * Math.PI * 2;
+            const dist = PLAYER_RESPAWN_TARGET_DIST + Math.random() * 72;
+            nx = dx + Math.sin(ang) * dist;
+            nz = dz + Math.cos(ang) * dist;
+            if (Math.hypot(nx - dx, nz - dz) >= PLAYER_RESPAWN_MIN_DIST) break;
+          }
+          G.player.x = nx;
+          G.player.z = nz;
+          G.player.anchored = false;
+          try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
+          ensurePlayerInOpenOcean();
+          nudgePlayerSpawnClearOfShips();
+          G.player.speed = 1;
+          applyDefaultStartingLoadout({ preserveCaptainIdentity: true, prizeVictimRespawn: true });
           ensureCargoSlots();
           trimCrewAndPrisonersToShipLimits();
-          rebuildPlayerShip();
           updateCrewPanel();
-          notify(`They marched you off your old command — ${take}g seized. You're limping home in a bare cutter.`, 7200);
-          try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
+          notify(`They took your command as prize — ${take}g seized from the ledger. You make way in a fresh boat, clear of the fight.`, 7200);
+          try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
         } else {
           ruinCrewAfterPvPBoardingMercy();
           rebuildPlayerShip();
@@ -17376,7 +17477,9 @@ async function connectToServer() {
       case 'boarding_prize_hull_sink': {
         try { spawnBoardingPrizeHullDecoyFromNet(msg); } catch (e) {}
         const vpid = netPlayerId(msg.victorPlayerId != null ? msg.victorPlayerId : msg.victimId);
-        if (vpid != null && vpid === G.myId) {
+        if (msg.namelessHull === true) {
+          if (vpid != null && vpid === G.myId) notify('Your old hull drifts empty, then slips under.', 4800);
+        } else if (vpid != null && vpid === G.myId) {
           notify('Your previous hull slips under — you sail the prize.', 5200);
         } else if ((msg.name && String(msg.name).trim())) {
           const cap = String(msg.name).trim();
@@ -25321,6 +25424,11 @@ function update(dt) {
         G.prizeHullDecoySinks.splice(i, 1);
         continue;
       }
+      const linger = sg.userData.prizeDecoyLinger | 0;
+      if (linger > 0) {
+        sg.userData.prizeDecoyLingerAcc = (sg.userData.prizeDecoyLingerAcc || 0) + dt;
+        if (sg.userData.prizeDecoyLingerAcc < linger) continue;
+      }
       sg.userData.sinkY = (sg.userData.sinkY != null ? sg.userData.sinkY : sg.position.y) - dt * 0.6;
       sg.position.y = sg.userData.sinkY;
       sg.rotation.z += dt * 0.12;
@@ -28048,6 +28156,7 @@ function dedupeCrewDisplayIdentities() {
 function applyDefaultStartingLoadout(opts) {
   opts = opts || {};
   const keep = !!opts.preserveCaptainIdentity;
+  const prizeVictimRespawn = !!opts.prizeVictimRespawn;
   let savedCap = null;
   let savedShipName = '';
   let savedShipType = null;
@@ -28058,9 +28167,11 @@ function applyDefaultStartingLoadout(opts) {
   if (keep) {
     const curCap = G.player.crew && G.player.crew.find(c => c && c.role === 'captain');
     savedCap = curCap ? { ...curCap } : (G.player.crew[0] ? { ...G.player.crew[0] } : null);
-    savedShipName = G.player.shipName || '';
-    savedShipType = G.player.shipType || null;
-    savedParts = G.player.shipParts ? { ...normalizeShipParts(G.player.shipParts) } : null;
+    if (!prizeVictimRespawn) {
+      savedShipName = G.player.shipName || '';
+      savedShipType = G.player.shipType || null;
+      savedParts = G.player.shipParts ? { ...normalizeShipParts(G.player.shipParts) } : null;
+    }
     savedFlagAsset = G.player.flagAssetId;
     savedFlagUnlocks = Array.isArray(G.player.flagUnlocks) ? G.player.flagUnlocks.slice() : null;
     ensureFlagAchievements();
@@ -28075,9 +28186,11 @@ function applyDefaultStartingLoadout(opts) {
     const capIdx = G.player.crew.findIndex(c => c && c.role === 'captain');
     const idx = capIdx >= 0 ? capIdx : 0;
     G.player.crew[idx] = { ...G.player.crew[idx], ...savedCap, role: 'captain', task: 'helm', health: 100, missedMeals: 0 };
-    if (savedShipName) G.player.shipName = savedShipName;
-    if (savedShipType) G.player.shipType = savedShipType;
-    if (savedParts) G.player.shipParts = savedParts;
+    if (!prizeVictimRespawn) {
+      if (savedShipName) G.player.shipName = savedShipName;
+      if (savedShipType) G.player.shipType = savedShipType;
+      if (savedParts) G.player.shipParts = savedParts;
+    }
     if (savedFlagAsset != null) {
       const fa = sanitizeFlagPngId(savedFlagAsset);
       G.player.flagAssetId = fa != null ? fa : null;
