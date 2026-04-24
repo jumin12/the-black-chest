@@ -2649,6 +2649,21 @@ wss.on('connection', (ws, req) => {
             }
             return out;
           })();
+          const spoilItemsGift = (() => {
+            const raw = msg.itemsGift;
+            if (!Array.isArray(raw)) return [];
+            const out = [];
+            for (let i = 0; i < raw.length && out.length < 48; i++) {
+              const it = raw[i];
+              if (!it || typeof it !== 'object') continue;
+              const sid = String(it.id || '').trim().slice(0, 32);
+              if (!sid) continue;
+              const cnt = Math.max(0, Math.min(9999, Math.floor(Number(it.count) || 0)));
+              if (cnt <= 0) continue;
+              out.push({ id: sid, count: cnt });
+            }
+            return out;
+          })();
           /* Keep-ship: only the victor's *former* hull should sink (they sail the prize). Exclude victor so they don't double-spawn (client spawns locally). */
           if (keepHull) {
             const atk = players.get(id);
@@ -2699,6 +2714,7 @@ wss.on('connection', (ws, req) => {
             try {
               const spoilPayload = { type: 'boarding_spoils', victimId: targetId, from: id, gold, scuttle, keepHull };
               if (spoilItems.length) spoilPayload.items = spoilItems;
+              if (spoilItemsGift.length) spoilPayload.itemsGift = spoilItemsGift;
               tws.send(JSON.stringify(spoilPayload));
             } catch (e) {}
           }
