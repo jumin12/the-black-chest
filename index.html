@@ -11913,8 +11913,6 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
 }
 function tryStartDefenderFromNetwork(attackerId, bo) {
   if (G.boarding || G.docked || G.playerSinking) return;
-  if (G.boardingVictimAwaitingDecision) return;
-  if (!bo || bo.ph === 'e') return;
   if (G.myId == null) return;
   const sidN = Math.floor(Number(bo.sid));
   if (!(sidN > 0) || netPlayerId(bo.sid) !== G.myId) return;
@@ -12136,20 +12134,15 @@ function showBoardingSpoilsModal(won, b) {
       try { sendUpdate(); } catch (e) {}
     }
     if (h) h.textContent = 'Defeat';
-    if (txt) txt.textContent = 'Waiting for the victor to choose mercy or scuttle. The game will continue automatically when their decision arrives — there is nothing to click here.';
+    if (txt) txt.textContent = 'Waiting for the other captain to decide your ship\'s fate…';
     if (rowLoot) rowLoot.style.display = 'none';
     if (rowPr) rowPr.style.display = 'none';
     const contBtn = document.getElementById('boarding-spoils-continue');
     if (act) {
       act.style.display = 'none';
-      act.querySelectorAll('button').forEach(bt => {
-        if (bt) bt.style.display = 'none';
-      });
+      act.querySelectorAll('button').forEach(bt => { if (bt) { bt.style.display = 'none'; bt.onclick = null; } });
     }
-    if (contBtn) {
-      contBtn.style.display = 'none';
-      contBtn.onclick = null;
-    }
+    if (contBtn) { contBtn.style.display = 'none'; contBtn.onclick = null; }
     if (G.boarding) G.boarding = null;
     clearBoardingBodyMarkers();
     const tw0 = document.getElementById('boarding-tw-wrap');
@@ -12550,7 +12543,6 @@ function ingestRemoteBoardingState(players) {
     const pid = netPlayerId(row.id);
     if (pid == null || pid === G.myId) continue;
     const bo = row.boarding;
-    if (bo.ph === 'e') continue;
     if (Math.floor(Number(bo.sid)) > 0 && netPlayerId(bo.sid) === G.myId && !G.boarding) {
       tryStartDefenderFromNetwork(pid, bo);
     }
@@ -13790,6 +13782,49 @@ const PLAYER_DEATH_SINK_SEC = 5.2;
 const PLAYER_RESPAWN_DELAY_SEC = 5;
 const PLAYER_RESPAWN_MIN_DIST = 92;
 const PLAYER_RESPAWN_TARGET_DIST = 175;
+/** Hull at 0: begin sink animation and respawn countdown (used from the main loop and from net messages such as boarding scuttle). */
+function tryBeginPlayerSinkDeathSequence() {
+  if (G.player.health > 0 || G.playerSinking) return;
+  playerBroadsidePending = null;
+  playCaptainSinkDeathSound();
+  bumpNotoriety({ deaths: 1 });
+  if (ws?.readyState === 1 && G.lastAttackerId != null) {
+    const goldItem = G.player.inventory.find(i => i.id === 'gold');
+    const goldN = goldItem ? goldItem.count : 0;
+    const lootEst = Math.min(250, Math.floor(goldN * 0.4) + 25);
+    ws.send(JSON.stringify({ type: 'pvp_kill_credit', killerId: G.lastAttackerId, kills: 1, loot: lootEst }));
+  }
+  G.deathSpawnX = G.player.x;
+  G.deathSpawnZ = G.player.z;
+  G.playerSinking = true; G.playerSinkTimer = 0;
+  G.playerSinkY = playerShipGroup.position.y;
+  G.dockingAnim = null;
+  G.undockingAnim = null;
+  setCaptainWalkActive(false);
+  G.anchorDropping = false;
+  G.player.speed = 0; G.player.anchored = true;
+  syncAnchorToolbarButton();
+  try { syncAnchorStatusHud(); } catch (e) {}
+  const crewSaveN = Math.min(G.player.crew.length, 4);
+  broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(G.player.x, G.player.z, crewSaveN, G.player.crew.slice(0, crewSaveN), true));
+  const lootDrops = [];
+  for (let li = 0; li < 2 + Math.floor(Math.random() * 2); li++) {
+    const t = ['wood', 'iron', 'gold', 'gunpowder', 'food', 'cannonballs'][Math.floor(Math.random() * 6)];
+    const c = t === 'gold' ? 10 + Math.floor(Math.random() * 12) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
+    const lx = G.player.x + (Math.random() - 0.5) * 10, lz = G.player.z + (Math.random() - 0.5) * 10;
+    lootDrops.push({ type: t, x: lx, z: lz, count: c });
+  }
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_sunk', x: G.player.x, z: G.player.z, loot: lootDrops }));
+  else {
+    lootDrops.forEach(l => addFloatingLootMesh(l.x, l.z, l.type, l.count));
+  }
+  const ov = document.getElementById('death-overlay');
+  const dk = document.getElementById('death-killer');
+  if (ov) ov.style.display = 'flex';
+  if (dk) dk.textContent = G.lastAttacker ? `Sunk by: ${G.lastAttacker}` : 'Lost at sea';
+  const spoilM = document.getElementById('boarding-spoils-modal');
+  if (spoilM) spoilM.style.display = 'none';
+}
 function getPlayerVelocityForLead() {
   const windDot = Math.cos(G.wind.angle - G.player.rotation);
   const effectiveSpeed = Math.abs(G.player.speed * computePlayerSpeedModifiers(windDot));
@@ -15801,7 +15836,7 @@ function clearBoardingVictimAwaiting(notifyMsg) {
 function removeRemotePeer(lid) {
   const lidN = netPlayerId(lid);
   if (lidN == null) return;
-  if (G.boardingVictimAwaitingDecision != null && Number(lidN) === Number(G.boardingVictimAwaitingDecision.partnerId)) {
+  if (G.boardingVictimAwaitingDecision != null && lidN === G.boardingVictimAwaitingDecision.partnerId) {
     clearBoardingVictimAwaiting('The victor fled — you slip your cable and get underway.');
   }
   if (G.boarding && G.boarding.partnerPlayerId != null && lidN === G.boarding.partnerPlayerId) {
@@ -16139,7 +16174,9 @@ async function connectToServer() {
         const fromId = msg.from != null ? Number(msg.from) : null;
         if (G.boardingVictimAwaitingDecision) {
           const exp = G.boardingVictimAwaitingDecision.partnerId;
-          if (fromId == null || !Number.isFinite(fromId) || Number(fromId) !== Number(exp)) break;
+          /* Only reject when both ids are known and disagree — never drop the whole message on a loose `from` check
+             (that left victims anchored under the spoils modal with no sink / respawn). */
+          if (exp != null && fromId != null && Number.isFinite(fromId) && Number(fromId) !== Number(exp)) break;
         }
         let capName = 'Enemy captain';
         if (fromId != null && Number.isFinite(fromId)) {
@@ -16166,13 +16203,11 @@ async function connectToServer() {
           G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
           G.player.health = 0;
           notify(`Your hull is opened — ${take}g seized. You are going under!`, 7200);
-          try { beginLocalPlayerSinkDeathFlow(); } catch (e) { console.error(e); }
+          tryBeginPlayerSinkDeathSequence();
         } else {
           ruinCrewAfterPvPBoardingMercy();
           rebuildPlayerShip();
           updateCrewPanel();
-          G.player.anchored = false;
-          try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
           notify(`They took ${take}g from the hold and cast off — you're left limping with a skeleton crew.`, 7200);
         }
         break;
@@ -24543,45 +24578,6 @@ const NET_SYNC_HZ = 45;
 const NPC_NET_SYNC_HZ = NET_SYNC_HZ;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 
-/** One-shot hull loss → sink animation + death overlay (also used when PvP boarding scuttles you from a WS message). */
-function beginLocalPlayerSinkDeathFlow() {
-  if (G.playerSinking || !(G.player.health <= 0)) return;
-  playerBroadsidePending = null;
-  playCaptainSinkDeathSound();
-  bumpNotoriety({ deaths: 1 });
-  if (ws?.readyState === 1 && G.lastAttackerId != null) {
-    const goldItem = G.player.inventory.find(i => i.id === 'gold');
-    const goldN = goldItem ? goldItem.count : 0;
-    const lootEst = Math.min(250, Math.floor(goldN * 0.4) + 25);
-    ws.send(JSON.stringify({ type: 'pvp_kill_credit', killerId: G.lastAttackerId, kills: 1, loot: lootEst }));
-  }
-  G.deathSpawnX = G.player.x;
-  G.deathSpawnZ = G.player.z;
-  G.playerSinking = true; G.playerSinkTimer = 0;
-  G.playerSinkY = playerShipGroup.position.y;
-  G.dockingAnim = null;
-  G.undockingAnim = null;
-  setCaptainWalkActive(false);
-  G.anchorDropping = false;
-  G.player.speed = 0; G.player.anchored = true;
-  syncAnchorToolbarButton();
-  const crewSaveN = Math.min(G.player.crew.length, 4);
-  broadcastOrSpawnSeaSwimmers(buildSeaSwimmerPayloads(G.player.x, G.player.z, crewSaveN, G.player.crew.slice(0, crewSaveN), true));
-  const lootDrops = [];
-  for (let li = 0; li < 2 + Math.floor(Math.random() * 2); li++) {
-    const t = ['wood', 'iron', 'gold', 'gunpowder', 'food', 'cannonballs'][Math.floor(Math.random() * 6)];
-    const c = t === 'gold' ? 10 + Math.floor(Math.random() * 12) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
-    const lx = G.player.x + (Math.random() - 0.5) * 10, lz = G.player.z + (Math.random() - 0.5) * 10;
-    lootDrops.push({ type: t, x: lx, z: lz, count: c });
-  }
-  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'ship_sunk', x: G.player.x, z: G.player.z, loot: lootDrops }));
-  else {
-    lootDrops.forEach(l => addFloatingLootMesh(l.x, l.z, l.type, l.count));
-  }
-  document.getElementById('death-overlay').style.display = 'flex';
-  document.getElementById('death-killer').textContent = G.lastAttacker ? `Sunk by: ${G.lastAttacker}` : 'Lost at sea';
-}
-
 function update(dt) {
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
@@ -25474,9 +25470,7 @@ function update(dt) {
     }
   }
 
-  if (G.player.health <= 0 && !G.playerSinking) {
-    beginLocalPlayerSinkDeathFlow();
-  }
+  tryBeginPlayerSinkDeathSequence();
   if (G.playerSinking) {
     G.playerSinkTimer += dt;
     const sinkDone = G.playerSinkTimer >= PLAYER_DEATH_SINK_SEC;
