@@ -2664,39 +2664,6 @@ wss.on('connection', (ws, req) => {
             }
             return out;
           })();
-          const spoilCrewGift = (() => {
-            const raw = msg.crewGift;
-            if (!Array.isArray(raw)) return [];
-            const allow = new Set(['sailor', 'gunner', 'navigator']);
-            const out = [];
-            for (let i = 0; i < raw.length && out.length < 8; i++) {
-              const c = raw[i];
-              if (!c || typeof c !== 'object') continue;
-              const r0 = String(c.role || 'sailor').toLowerCase();
-              if (!allow.has(r0)) continue;
-              const o = {
-                name: String(c.name || 'Hand').trim().slice(0, 28) || 'Hand',
-                role: r0,
-                task: 'idle',
-                health: Math.max(8, Math.min(100, Math.floor(Number(c.health) || 72)))
-              };
-              if (c.color != null) o.color = String(c.color).trim().slice(0, 12);
-              if (c.hat != null) o.hat = String(c.hat).trim().slice(0, 48);
-              if (c.outfit != null) o.outfit = String(c.outfit).trim().slice(0, 48);
-              if (c.parrot === true) o.parrot = true;
-              if (c.skills && typeof c.skills === 'object') {
-                const sk = {};
-                for (const k of ['sails', 'guns', 'repair', 'boarding', 'morale']) {
-                  if (c.skills[k] == null) continue;
-                  const v = Math.max(0, Math.min(100, Math.floor(Number(c.skills[k]) || 0)));
-                  sk[k] = v;
-                }
-                if (Object.keys(sk).length) o.skills = sk;
-              }
-              out.push(o);
-            }
-            return out;
-          })();
           /* Keep-ship: only the victor's *former* hull should sink (they sail the prize). Exclude victor so they don't double-spawn (client spawns locally). */
           if (keepHull) {
             const atk = players.get(id);
@@ -2748,7 +2715,6 @@ wss.on('connection', (ws, req) => {
               const spoilPayload = { type: 'boarding_spoils', victimId: targetId, from: id, gold, scuttle, keepHull };
               if (spoilItems.length) spoilPayload.items = spoilItems;
               if (spoilItemsGift.length) spoilPayload.itemsGift = spoilItemsGift;
-              if (spoilCrewGift.length) spoilPayload.crewGift = spoilCrewGift;
               tws.send(JSON.stringify(spoilPayload));
             } catch (e) {}
           }
