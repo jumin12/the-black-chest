@@ -44,6 +44,8 @@ canvas{display:block;touch-action:none;width:100%;height:100%;-webkit-touch-call
 input,textarea{-webkit-user-select:text;user-select:text;}
 #ui-layer{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:14;display:none;}
 #ui-layer>*{pointer-events:auto;}
+/* Boarding spoils modal lives inside #ui-layer; raise above body-level touch-zoom (z-index 16) so the overlay scrolls and receives taps. */
+body.game-playing.boarding-spoils-modal-open #ui-layer{z-index:100!important;}
 #hud-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:95vw;}
 .hud-box{
   background:linear-gradient(180deg,rgba(55,38,24,0.92),rgba(32,22,14,0.94)),
@@ -1360,6 +1362,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .touch-btn:active{background:rgba(60,40,15,0.9);border-color:#d4a848;}
 .touch-btn.held{background:rgba(80,50,10,0.9);border-color:#ffcc44;}
 #touch-zoom{display:none;position:fixed;top:90px;right:6px;flex-direction:column;gap:6px;pointer-events:auto;z-index:16;align-items:center;}
+body.game-playing.boarding-spoils-victory-open #touch-zoom{display:none!important;visibility:hidden!important;pointer-events:none!important;opacity:0!important;}
 #touch-zoom .touch-btn{width:36px;height:36px;font-size:16px;}
 #deck-spyglass-btn{
   position:fixed;
@@ -1763,14 +1766,14 @@ body.game-help-mobile-minimal #game-help-panel{
 .boarding-spoils-actions button{flex:1;min-width:120px;padding:8px 10px;border-radius:8px;border:1px solid rgba(180,120,60,0.4);background:rgba(50,35,20,0.75);color:#e8d8c0;font-size:12px;cursor:pointer;font-family:Georgia,serif;}
 .boarding-spoils-actions button.primary{background:linear-gradient(180deg,#6a4a20,#3a2208);border-color:#c9a24a;}
 #boarding-spoils-panel.boarding-spoils-panel--wide{max-width:min(920px,96vw);max-height:min(92vh,900px);}
-@media (max-width:900px){
+@media (max-width:1024px){
   body.game-playing.boarding-spoils-modal-open #touch-controls,
   body.game-playing.boarding-spoils-modal-open #touch-broadsides-layer,
   body.game-playing.boarding-spoils-modal-open .toolbar,
   body.game-playing.boarding-spoils-victory-open #touch-controls,
   body.game-playing.boarding-spoils-victory-open #touch-broadsides-layer,
   body.game-playing.boarding-spoils-victory-open .toolbar{display:none!important;visibility:hidden!important;pointer-events:none!important;}
-  /* html/body use touch-action:none — re-enable vertical pan so the spoils overlay can scroll (Ship tab pattern). */
+  /* html/body use touch-action:none — re-enable vertical pan so the spoils overlay can scroll (captain's log ship tab pattern). */
   body.game-playing.boarding-spoils-victory-open{
     touch-action:pan-y pinch-zoom!important;
   }
@@ -1783,7 +1786,7 @@ body.game-help-mobile-minimal #game-help-panel{
     position:fixed!important;
     inset:0!important;
     width:100%!important;
-    height:100%!important;
+    min-height:0!important;
     height:-webkit-fill-available!important;
     max-height:100vh!important;
     max-height:100dvh!important;
@@ -1794,21 +1797,25 @@ body.game-help-mobile-minimal #game-help-panel{
     z-index:85!important;
     padding:0!important;
     box-sizing:border-box!important;
+    -webkit-overflow-scrolling:touch!important;
   }
   body.game-playing.boarding-spoils-victory-open #boarding-spoils-modal-scroll.boarding-spoils-modal-scroll{
     display:block!important;
-    flex:1 1 0!important;
+    flex:1 1 0%!important;
     min-height:0!important;
     width:100%!important;
-    overflow-y:auto!important;
+    max-width:100%!important;
+    overflow-y:scroll!important;
     overflow-x:hidden!important;
     -webkit-overflow-scrolling:touch!important;
     overscroll-behavior-y:contain;
-    touch-action:pan-y pinch-zoom!important;
+    touch-action:pan-y!important;
     padding:max(10px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(max(20px, env(safe-area-inset-bottom, 0px)), 12px) max(12px, env(safe-area-inset-left, 0px));
     scrollbar-gutter:stable;
     scrollbar-width:thin;
     scrollbar-color:rgba(212,168,72,0.85) rgba(18,12,8,0.92);
+    -webkit-transform:translateZ(0);
+    transform:translateZ(0);
   }
   body.game-playing.boarding-spoils-victory-open #boarding-spoils-modal-scroll::-webkit-scrollbar{width:10px;}
   body.game-playing.boarding-spoils-victory-open #boarding-spoils-modal-scroll::-webkit-scrollbar-thumb{
@@ -2077,7 +2084,7 @@ body.game-help-mobile-minimal #game-help-panel{
             <div id="boarding-spoils-prisoners-row" class="boarding-spoils-prisoners-row"></div>
           </div>
         </div>
-        <div id="boarding-spoils-pris-hint" style="font-size:11px;color:#a09080;margin-top:8px;">Taking <span id="boarding-spoils-pris-v">0</span> · tap cards to add or remove · rest cast off</div>
+        <div id="boarding-spoils-pris-hint" style="font-size:11px;color:#a09080;margin-top:8px;line-height:1.45;">Taking <span id="boarding-spoils-pris-v">0</span> · <span id="boarding-spoils-pris-berth-wrap"><span id="boarding-spoils-pris-berth">0</span> brig berth(s) free</span> · tap cards to toggle · rest cast off</div>
       </div>
       <div class="boarding-spoils-actions">
         <button type="button" class="primary" id="boarding-spoils-keep" title="Take the defeated vessel as your own">Keep ship</button>
@@ -4919,6 +4926,22 @@ function getInvCount(id) {
 }
 function countSailorCrew() { return (Array.isArray(G.player.crew) ? G.player.crew : []).filter(c => c && c.role !== 'prisoner').length; }
 function countPrisonerCrew() { return (Array.isArray(G.player.crew) ? G.player.crew : []).filter(c => c && c.role === 'prisoner').length; }
+/** Free brig berths for boarding spoils prisoner picks (press-ganged roster is capped by this). */
+function getBoardingSpoilsPrisonerBerthVacancy() {
+  const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
+  const cap = Math.max(0, Math.floor(Number(spec.maxPrisoners)) || 0);
+  return Math.max(0, cap - countPrisonerCrew());
+}
+/** PvP only: counts forwarded to the victim so a full surrender roster can leave them with no hands. */
+function boardingSpoilsPvPPrisonerNetFields(b) {
+  const maxStrip = Math.min(12, b.surrenderPool | 0);
+  if (b == null || b.npcSyncId != null || b.partnerPlayerId == null || maxStrip <= 0) return null;
+  const pick = G._boardingSpoilsPrisonerPick;
+  const psz = pick && pick instanceof Set ? pick.size : 0;
+  const freeB = getBoardingSpoilsPrisonerBerthVacancy();
+  const taken = Math.max(0, Math.min(psz, freeB, maxStrip));
+  return { prisonersTaken: taken, surrenderPoolTotal: maxStrip };
+}
 /** Living hands who can work the ship (excludes prisoners and dead roster entries). */
 function countLivingNonPrisonerCrew() {
   if (!Array.isArray(G.player.crew)) return 0;
@@ -12003,6 +12026,13 @@ function hideBoardingSpoilsModal() {
     document.body.classList.remove('boarding-spoils-modal-open');
     document.body.classList.remove('boarding-spoils-victory-open');
   } catch (e) {}
+  try {
+    const tz = document.getElementById('touch-zoom');
+    if (tz) tz.style.removeProperty('display');
+  } catch (e2) {}
+  try {
+    if (isMobile && G.mode === 'playing') restoreMobileGameControls();
+  } catch (e3) {}
 }
 function abortActiveBoarding(msg) {
   if (!G.boarding) return;
@@ -12910,6 +12940,10 @@ function renderBoardingSpoilsPvpHoldsRefresh() {
   const specS = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
   const nS = specS.cargoSlots || 8;
   boardingSpoilsRenderCargoGridEl(sg, G.player.cargoSlots, nS, 'self');
+  try {
+    const b = ctx.b;
+    if (b) refreshBoardingSpoilsPrisonerCapHint(b, true);
+  } catch (eR) {}
 }
 function boardingSpoilsFoeRosterSeed() {
   let h = (G.myId | 0) * 2654435761;
@@ -13092,6 +13126,18 @@ function renderBoardingSpoilsPrisonersStrip(maxPool, pickOrTakeN) {
   }
   queueBoardingSpoilsCrewPortraits();
 }
+function refreshBoardingSpoilsPrisonerCapHint(b, won) {
+  const prV = document.getElementById('boarding-spoils-pris-v');
+  const br = document.getElementById('boarding-spoils-pris-berth');
+  const rowPr = document.getElementById('boarding-spoils-prisoners-block');
+  if (!won || !b || !rowPr || rowPr.style.display === 'none') return;
+  const maxStrip = Math.min(12, b.surrenderPool | 0);
+  const freeB = getBoardingSpoilsPrisonerBerthVacancy();
+  const pick = G._boardingSpoilsPrisonerPick;
+  const n = pick && pick instanceof Set ? pick.size : 0;
+  if (prV) prV.textContent = String(n);
+  if (br) br.textContent = String(freeB);
+}
 function showBoardingSpoilsModal(won, b) {
   clearBoardingRopeLineMeshes();
   try { document.body.classList.remove('boarding-spoils-victory-open'); } catch (e) {}
@@ -13214,6 +13260,7 @@ function showBoardingSpoilsModal(won, b) {
   }
   const maxPStrip = won ? Math.min(12, b.surrenderPool | 0) : 0;
   renderBoardingSpoilsPrisonersStrip(maxPStrip, G._boardingSpoilsPrisonerPick);
+  refreshBoardingSpoilsPrisonerCapHint(b, won);
   renderBoardingSpoilsPvpHoldsRefresh();
   const btnK = document.getElementById('boarding-spoils-keep');
   const btnS = document.getElementById('boarding-spoils-scut');
@@ -13248,7 +13295,8 @@ function showBoardingSpoilsModal(won, b) {
     const pmax = won ? Math.min(12, b.surrenderPool | 0) : 0;
     const pick = G._boardingSpoilsPrisonerPick;
     const psz = pick && pick instanceof Set ? pick.size : 0;
-    const ptk = won ? Math.max(0, Math.min(pmax, psz)) : 0;
+    const freeBerths = won ? getBoardingSpoilsPrisonerBerthVacancy() : 0;
+    const ptk = won ? Math.max(0, Math.min(pmax, psz, freeBerths)) : 0;
     G._boardingSpoilsPrisonerTake = ptk;
     return { g, ptk, pmax };
   }
@@ -13256,9 +13304,8 @@ function showBoardingSpoilsModal(won, b) {
     if (!won) { hideBoardingSpoilsModal(); return; }
     try { if (typeof window.abortBoardingSpoilsCargoDrag === 'function') window.abortBoardingSpoilsCargoDrag(); } catch (e) {}
     const { g, ptk, pmax } = readLootPrison();
-    const pszK = G._boardingSpoilsPrisonerPick && G._boardingSpoilsPrisonerPick instanceof Set ? G._boardingSpoilsPrisonerPick.size : 0;
     if (g > 0) tryAddQuestCargo('gold', g);
-    if ((pmax | 0) - pszK > 0) notify((pmax - pszK) + ' prisoners thrown over the rail.', 5000);
+    if ((pmax | 0) - ptk > 0) notify((pmax - ptk) + ' prisoners thrown over the rail.', 5000);
     if (b.npcSyncId != null) {
       try {
         spawnBoardingPrizeHullDecoyFromNet({ ...captureVictorRelinquishedHullPayload(), victorPlayerId: G.myId });
@@ -13287,6 +13334,10 @@ function showBoardingSpoilsModal(won, b) {
           if (it.length) spoilPayload.items = it;
           const gift = computeBoardingPvpGiftItemToVictim();
           if (gift.length) spoilPayload.itemsGift = gift;
+        }
+        {
+          const pp = boardingSpoilsPvPPrisonerNetFields(b);
+          if (pp) { spoilPayload.prisonersTaken = pp.prisonersTaken; spoilPayload.surrenderPoolTotal = pp.surrenderPoolTotal; }
         }
         ws && ws.send(JSON.stringify(spoilPayload));
       } catch (e) {}
@@ -13327,6 +13378,10 @@ function showBoardingSpoilsModal(won, b) {
             const gift = computeBoardingPvpGiftItemToVictim();
             if (gift.length) spoilPayload.itemsGift = gift;
           }
+          {
+            const pp = boardingSpoilsPvPPrisonerNetFields(b);
+            if (pp) { spoilPayload.prisonersTaken = pp.prisonersTaken; spoilPayload.surrenderPoolTotal = pp.surrenderPoolTotal; }
+          }
           ws && ws.send(JSON.stringify(spoilPayload));
         } catch (e) {}
       }
@@ -13346,10 +13401,9 @@ function showBoardingSpoilsModal(won, b) {
     if (!won) { hideBoardingSpoilsModal(); return; }
     try { if (typeof window.abortBoardingSpoilsCargoDrag === 'function') window.abortBoardingSpoilsCargoDrag(); } catch (e) {}
     const { g, ptk, pmax } = readLootPrison();
-    const pszD = G._boardingSpoilsPrisonerPick && G._boardingSpoilsPrisonerPick instanceof Set ? G._boardingSpoilsPrisonerPick.size : 0;
     if (g > 0) tryAddQuestCargo('gold', g);
     addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, Math.min(12, b.surrenderPool | 0), 0.65);
-    if ((pmax | 0) - pszD > 0) notify((pmax - pszD) + ' survivors cast into the deep.', 4000);
+    if ((pmax | 0) - ptk > 0) notify((pmax - ptk) + ' survivors cast into the deep.', 4000);
     /* Loot and cast off: defeated keeps their hull (NPC resumes sailing; PvP victim unchanged). Only scuttle sinks. */
     if (b.npcSyncId != null) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
@@ -13375,6 +13429,10 @@ function showBoardingSpoilsModal(won, b) {
           const gift = computeBoardingPvpGiftItemToVictim();
           if (gift.length) spoilPayload.itemsGift = gift;
         }
+        {
+          const pp = boardingSpoilsPvPPrisonerNetFields(b);
+          if (pp) { spoilPayload.prisonersTaken = pp.prisonersTaken; spoilPayload.surrenderPoolTotal = pp.surrenderPoolTotal; }
+        }
         ws && ws.send(JSON.stringify(spoilPayload));
       } catch (e) {}
     }
@@ -13397,13 +13455,16 @@ function showBoardingSpoilsModal(won, b) {
       const i = Number(card.dataset.prisonerI);
       if (!Number.isFinite(i)) return;
       const maxPs = Math.min(12, b.surrenderPool | 0);
+      const freeBerths = getBoardingSpoilsPrisonerBerthVacancy();
+      const maxSelectable = Math.min(maxPs, freeBerths);
       if (!G._boardingSpoilsPrisonerPick || !(G._boardingSpoilsPrisonerPick instanceof Set)) G._boardingSpoilsPrisonerPick = new Set();
       const pick = G._boardingSpoilsPrisonerPick;
       if (pick.has(i)) pick.delete(i);
-      else if (pick.size < maxPs) pick.add(i);
-      const nSel = pick.size;
-      G._boardingSpoilsPrisonerTake = nSel;
-      if (prV) prV.textContent = String(nSel);
+      else if (pick.size < maxSelectable) pick.add(i);
+      else if (freeBerths <= 0) notify('Your brig is full — make space or deselect prisoners before taking more hands.', 4200);
+      else notify('You only have brig space for ' + maxSelectable + ' of these hands — deselect one to choose another.', 4200);
+      G._boardingSpoilsPrisonerTake = pick.size;
+      refreshBoardingSpoilsPrisonerCapHint(b, won);
       renderBoardingSpoilsPrisonersStrip(maxPs, pick);
     };
   }
@@ -17375,6 +17436,9 @@ async function connectToServer() {
         clearBoardingVictimAwaiting('');
         const scuttleTrue = msg.scuttle === true;
         const keepHull = msg.keepHull === true && !scuttleTrue;
+        const prisonersTakenNet = Math.max(0, Math.min(24, Math.floor(Number(msg.prisonersTaken) || 0)));
+        const surrenderPoolTotalNet = Math.max(0, Math.min(24, Math.floor(Number(msg.surrenderPoolTotal) || 0)));
+        const pressedFullSurrenderRoster = !scuttleTrue && !keepHull && surrenderPoolTotalNet > 0 && prisonersTakenNet >= surrenderPoolTotalNet;
         const giftItems = Array.isArray(msg.itemsGift) ? msg.itemsGift : [];
         if (Array.isArray(msg.items) && msg.items.length) {
           try { applyBoardingSpoilsItemsFromVictor(msg.items); } catch (e) {}
@@ -17426,12 +17490,23 @@ async function connectToServer() {
           notify(`They took your command as prize — ${take}g seized from the ledger. You make way in a fresh boat, clear of the fight.`, 7200);
           try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
         } else {
+          if (pressedFullSurrenderRoster) {
+            if (!Array.isArray(G.player.crew)) G.player.crew = [];
+            G.player.crew = [];
+            try { trimCrewAndPrisonersToShipLimits(); } catch (eTr) {}
+          }
           if (countLivingNonPrisonerCrew() <= 0) {
             G.lastAttacker = `${capName} — boarding`;
             G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
             G._suppressNextShipSunkBroadcast = true;
+            if (pressedFullSurrenderRoster) {
+              try { rebuildPlayerShip(); } catch (eRb) {}
+              try { updateCrewPanel(); } catch (eCu) {}
+            }
             G.player.health = 0;
-            notify('Every hand was lost or pressed into their service — you cannot sail.', 7200);
+            notify(pressedFullSurrenderRoster
+              ? 'Every surrendered hand was pressed into their brig — none remain to work your ship.'
+              : 'Every hand was lost or pressed into their service — you cannot sail.', 7200);
           } else {
             ruinCrewAfterPvPBoardingMercy();
             if (countLivingNonPrisonerCrew() <= 0) {
@@ -20235,6 +20310,9 @@ function syncTouchZoomLayer() {
 }
 function restoreMobileGameControls() {
   if (!isMobile || G.mode !== 'playing') return;
+  try {
+    if (document.body.classList.contains('boarding-spoils-modal-open')) return;
+  } catch (e) {}
   const tc = document.getElementById('touch-controls');
   if (tc) {
     tc.style.display = 'block';
