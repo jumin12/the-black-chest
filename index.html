@@ -12138,7 +12138,7 @@ function packBoardingForNetwork() {
     nr: Number.isFinite(pr) ? pr : 0
   };
   if (b.phase === 'pull') o.pl = Math.max(0, Math.min(1, Number(b.pullT) || 0));
-  if (b.lockEX != null && b.lockER != null) {
+  if (b.lockEX != null && b.lockEZ != null && b.lockER != null) {
     o.ex = b.lockEX; o.ez = b.lockEZ; o.er = b.lockER;
   }
   return o;
@@ -12167,8 +12167,9 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
   const b = G.boarding;
   if (!b) return;
   if (bo.ph === 'e') {
-    if (b.phase === 'spoils') return;
-    const prevPTerm = (b.phase === 'fight' && b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null && leaderId != null && Number(G.myId) !== Number(leaderId)) ? (b.pAtk | 0) : -1;
+    if (b.phase === 'spoils' || b.phase === 'await_opponent') return;
+    const followerPvp = b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null && leaderId != null && Number(G.myId) !== Number(leaderId);
+    const prevPTerm = (followerPvp && (b.phase === 'fight' || b.phase === 'pull')) ? (b.pAtk | 0) : -1;
     b.tNet = bo.t | 0;
     applyNetBoardingCrewStatsToLocal(b, bo, leaderId);
     if (prevPTerm >= 0 && (b.pAtk | 0) < prevPTerm) {
@@ -12183,6 +12184,8 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
       if (bo.ex != null) { b.lockPX = bo.ex; b.lockPZ = bo.ez; b.lockPR = bo.er; }
       if (bo.nx != null) { b.lockEX = bo.nx; b.lockEZ = bo.nz; b.lockER = bo.nr; }
     }
+    /* Fight can end before the defender leaves pull (lost 'f' frames or very fast resolution). */
+    if (b.phase === 'pull' && b.partnerPlayerId != null && b.npcSyncId == null) b.phase = 'fight';
     if (b.phase === 'fight' && b.partnerPlayerId != null && b.npcSyncId == null) endBoardingResolution();
     return;
   }
@@ -12367,16 +12370,17 @@ function endBoardingResolution() {
     }
     b._pvpTermSnap = term;
   }
-  b.phase = 'spoils';
   b.outcomeWon = youWin;
+  /* PvP loser: both captains use await_opponent so local state matches and the defeat modal does not drop G.boarding early for the follower only. */
+  if (b.partnerPlayerId != null && b.npcSyncId == null && !youWin) {
+    b.phase = 'await_opponent';
+  } else {
+    b.phase = 'spoils';
+  }
   /* PvP: always leave a non-zero prisoner strip when you win (roster sync can leave eTotStart at 0 while the defender clearly had hands). */
   if (b.partnerPlayerId != null && b.npcSyncId == null && youWin) {
     const ePool = Math.max(b.eTotStart | 0, b.eTotal | 0, b.eHeart | 0, 1);
     b.surrenderPool = Math.max(b.surrenderPool | 0, Math.min(12, ePool));
-  }
-  /* Losing authority must keep broadcasting ph:'e' until the victor merges — clearing boarding after one frame left peers stuck in fight. */
-  if (b.partnerPlayerId != null && b.npcSyncId == null && !youWin && boardingIAmSimLeader(b)) {
-    b.phase = 'await_opponent';
   }
   if (!youWin) {
     if (b.npcSyncId != null) {
@@ -13133,7 +13137,7 @@ function showBoardingSpoilsModal(won, b) {
       contBtn.style.display = 'none';
       contBtn.onclick = null;
     }
-    /* Authority loser stays in await_opponent so packBoardingForNetwork keeps re-sending _pvpTermSnap. */
+    /* Loser stays in await_opponent; packBoardingForNetwork keeps re-sending _pvpTermSnap on authority only. */
     if (!(G.boarding && G.boarding.phase === 'await_opponent')) {
       if (G.boarding) G.boarding = null;
     }
