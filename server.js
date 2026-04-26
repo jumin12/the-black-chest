@@ -7,11 +7,8 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 /** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
 const SERVER_WORLD_T0_MS = Date.now();
-/**
- * World state broadcast rate (Hz). Keep index.html NET_SYNC_HZ in sync.
- * 60 Hz + full crew snapshots melted clients (JSON + main-thread WS handler); 20 Hz is the stable default.
- */
-const TICK_RATE = 20;
+/** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
+const TICK_RATE = 45;
 /** Match client `WORLD_EDGE_CLAMP` (7 * 270 + 135) — reject runaway coordinates from glitched clients. */
 const PLAYER_WORLD_EDGE_CLAMP = 7 * 270 + 135;
 function clampPlayerWorldX(x) {
@@ -453,7 +450,7 @@ function savePartyStore() {
   }
 }
 
-/** Defer full disk flush to the next idle turn so high-rate `state` + WS I/O are not blocked in the timer callback. */
+/** Defer full disk flush to the next idle turn so 45Hz `state` + WS I/O are not blocked in the timer callback. */
 let idlePersistCoalesced = false;
 function scheduleIdlePersistedStateFlush() {
   if (idlePersistCoalesced) return;
@@ -3464,40 +3461,29 @@ setInterval(() => {
   try {
   if (players.size === 0) return;
   serverStateTickSeq++;
-  const t = serverStateTickSeq;
-  /** Crew arrays are large — never attach them at full TICK_RATE for every boarding player. */
-  function shouldAttachCrewRow(p) {
-    if (!Array.isArray(p.crewData) || p.crewData.length === 0) return false;
-    if (p.boarding != null) return t % 2 === 0;
-    return t % 5 === 0;
-  }
-  const snapshot = [];
-  for (const p of players.values()) {
-    try {
-      const row = {
-        id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
-        name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
-        captainKey: p.captainKey != null ? String(p.captainKey) : null,
-        partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
-        flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
-        flagAssetId: (() => { const fa = sanitizeClientFlagAssetId(p.flagAssetId); return fa != null ? fa : 1; })(),
-        shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
-        docked: !!p.docked,
-        dockX: p.dockX != null ? p.dockX : null,
-        dockZ: p.dockZ != null ? p.dockZ : null,
-        dockAngle: p.dockAngle != null ? p.dockAngle : null,
-        dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
-        riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
-        morale: p.morale != null ? p.morale : 100,
-        deckWalk: p.deckWalk || null,
-        boarding: p.boarding != null ? p.boarding : null
-      };
-      if (shouldAttachCrewRow(p)) row.crewData = p.crewData;
-      snapshot.push(row);
-    } catch (eRow) {
-      console.error('[playground] state tick skip bad player row:', p && p.id, eRow && eRow.message ? eRow.message : eRow);
-    }
-  }
+  const includeCrew = (serverStateTickSeq % 2 === 0);
+  const snapshot = Array.from(players.values()).map(p => {
+    const row = {
+      id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
+      name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
+      captainKey: p.captainKey != null ? String(p.captainKey) : null,
+      partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
+      flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
+      flagAssetId: (() => { const fa = sanitizeClientFlagAssetId(p.flagAssetId); return fa != null ? fa : 1; })(),
+      shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
+      docked: !!p.docked,
+      dockX: p.dockX != null ? p.dockX : null,
+      dockZ: p.dockZ != null ? p.dockZ : null,
+      dockAngle: p.dockAngle != null ? p.dockAngle : null,
+      dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
+      riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
+      morale: p.morale != null ? p.morale : 100,
+      deckWalk: p.deckWalk || null,
+      boarding: p.boarding != null ? p.boarding : null
+    };
+    if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
+    return row;
+  });
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   broadcast({ type: 'state', players: snapshot, worldT: tickWorldT, wildlifeWorldT: tickWorldT });
   } catch (e) {
