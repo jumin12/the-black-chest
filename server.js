@@ -7,7 +7,7 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 /** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
 const SERVER_WORLD_T0_MS = Date.now();
-/** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
+/** World state broadcast rate (Hz); keep client `NET_SYNC_HZ` in index.html in sync (~1/TICK_RATE). */
 const TICK_RATE = 45;
 /** Match client `WORLD_EDGE_CLAMP` (7 * 270 + 135) — reject runaway coordinates from glitched clients. */
 const PLAYER_WORLD_EDGE_CLAMP = 7 * 270 + 135;
@@ -1730,18 +1730,40 @@ const wss = new WebSocketServer({
 });
 
 function broadcast(data, excludeId) {
-  const msg = JSON.stringify(data);
+  let msg;
+  try {
+    msg = JSON.stringify(data);
+  } catch (e) {
+    console.error('[playground] broadcast JSON error:', e && e.message ? e.message : e);
+    return;
+  }
   wss.clients.forEach(client => {
     if (client.readyState === 1 && client.playerId !== excludeId) {
-      client.send(msg);
+      try {
+        client.send(msg);
+      } catch (e) {
+        try { client.terminate(); } catch (e2) {}
+      }
     }
   });
 }
 
 function broadcastAll(data) {
-  const msg = JSON.stringify(data);
+  let msg;
+  try {
+    msg = JSON.stringify(data);
+  } catch (e) {
+    console.error('[playground] broadcastAll JSON error:', e && e.message ? e.message : e);
+    return;
+  }
   wss.clients.forEach(client => {
-    if (client.readyState === 1) client.send(msg);
+    if (client.readyState === 1) {
+      try {
+        client.send(msg);
+      } catch (e) {
+        try { client.terminate(); } catch (e2) {}
+      }
+    }
   });
 }
 
