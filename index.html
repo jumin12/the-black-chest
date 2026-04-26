@@ -4944,6 +4944,25 @@ function ensureBareHelmAfterBoardingWin() {
   G.lastAttacker = G.lastAttacker || 'No crew — cannot make way';
   G.player.health = 0;
 }
+/** Victor chose loot & cast off (not scuttle, not prize hull): victim must stay playable — one wounded hand at the wheel if the roster was emptied. */
+function ensureMinimalHelmAfterPvPCastOff() {
+  if (countLivingNonPrisonerCrew() > 0) return;
+  if (!Array.isArray(G.player.crew)) G.player.crew = [];
+  const cap = getCaptainDisplayCrew();
+  const nm = (cap && cap.name) ? String(cap.name).trim().slice(0, 24) : 'Captain';
+  G.player.crew.push({
+    name: nm || 'Captain',
+    role: 'captain',
+    task: 'helm',
+    color: (cap && cap.color) ? cap.color : '#8a7060',
+    hat: cap?.hat,
+    outfit: cap?.outfit,
+    parrot: cap?.parrot,
+    health: 24,
+    skills: cap?.skills ? { ...defaultCrewSkills(), ...cap.skills } : defaultCrewSkills()
+  });
+  trimCrewAndPrisonersToShipLimits();
+}
 function markBoardingVictorySpoilsGrace() {
   const t = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   G._boardingWinSpoilsGraceUntil = t + 9000;
@@ -12447,34 +12466,6 @@ function ruinCrewAfterPvPBoardingMercy() {
   G.player.crew = next.length ? next : [];
   trimCrewAndPrisonersToShipLimits();
 }
-/** After PvP "take loot and cast off", ensure the victim can still sail (captain pressed / empty roster). */
-function seedSkeletonCrewAfterPvPCastOff(preRuinCaptain) {
-  if (!Array.isArray(G.player.crew)) G.player.crew = [];
-  const pr = G.player.crew.filter(c => c && c.role === 'prisoner');
-  const base = getDefaultStartingCrew().slice(0, 2).map(c => ({
-    ...c,
-    skills: c.skills ? { ...c.skills } : inferCrewSkillsFromLegacyRole(c),
-    health: c.role === 'captain' ? 44 : 32,
-    missedMeals: 0
-  }));
-  if (preRuinCaptain && String(preRuinCaptain.name || '').trim()) {
-    const cap = base.find(c => c.role === 'captain');
-    if (cap) {
-      Object.assign(cap, {
-        name: preRuinCaptain.name,
-        color: preRuinCaptain.color || cap.color,
-        hat: preRuinCaptain.hat != null ? preRuinCaptain.hat : cap.hat,
-        outfit: preRuinCaptain.outfit || cap.outfit,
-        parrot: !!preRuinCaptain.parrot,
-        skills: preRuinCaptain.skills && typeof preRuinCaptain.skills === 'object'
-          ? { ...defaultCrewSkills(), ...preRuinCaptain.skills }
-          : cap.skills
-      });
-    }
-  }
-  G.player.crew = [...base, ...pr];
-  trimCrewAndPrisonersToShipLimits();
-}
 /** Snapshot of this captain's hull for a sinking decoy (victor's old ship on keep-ship). */
 function captureVictorRelinquishedHullPayload() {
   const cap = getCaptainDisplayCrew();
@@ -17257,7 +17248,7 @@ async function connectToServer() {
         const activeRemote = new Set();
         msg.players.forEach(p => {
           const pid = netPlayerId(p.id);
-          if (pid == null || pid === myIdForState) return;
+          if (pid == null || pid === G.myId) return;
           activeRemote.add(pid);
           const ex = G.otherPlayers.get(pid);
           const prevCrew = ex && Array.isArray(ex.crewData) ? ex.crewData : null;
@@ -17270,10 +17261,7 @@ async function connectToServer() {
             G.otherPlayers.set(pid, patch);
           }
           const row = G.otherPlayers.get(pid);
-          if (row) {
-            refreshOtherPlayerShipCacheKey(row);
-            recordOtherPlayerNetMotionSample(row, patch);
-          }
+          if (row) refreshOtherPlayerShipCacheKey(row);
         });
         for (const pid of Array.from(G.otherPlayers.keys())) {
           if (!activeRemote.has(pid)) removeRemotePeer(pid);
@@ -17498,17 +17486,9 @@ async function connectToServer() {
           notify(`They took your command as prize — ${take}g seized from the ledger. You make way in a fresh boat, clear of the fight.`, 7200);
           try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
         } else {
-          /* Take loot & cast off: victim keeps their hull — never sink them for an empty deck (crew may all be pressed). */
-          const preRuinCap = (() => {
-            const c = G.player.crew && G.player.crew.find(x => x && x.role === 'captain');
-            return c ? {
-              name: c.name, color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot, skills: c.skills
-            } : null;
-          })();
+          /* Loot & cast off: only scuttle sinks the hull; this path is always a limping retreat. */
           ruinCrewAfterPvPBoardingMercy();
-          if (countLivingNonPrisonerCrew() <= 0) {
-            seedSkeletonCrewAfterPvPCastOff(preRuinCap);
-          }
+          if (countLivingNonPrisonerCrew() <= 0) ensureMinimalHelmAfterPvPCastOff();
           rebuildPlayerShip();
           updateCrewPanel();
           notify(`They took ${take}g from the hold and cast off — you're left limping with a skeleton crew.`, 7200);
@@ -25851,35 +25831,9 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
   spawnShipWakePiece(x, z, rotation, speed, 1, 'stern');
 }
 
-/** Derive horizontal velocity from consecutive server snapshots (latency-tolerant extrapolation between 45Hz ticks). */
-function recordOtherPlayerNetMotionSample(row, snap) {
-  if (!row || !snap || typeof snap !== 'object') return;
-  const sx = Number(snap.x), sz = Number(snap.z);
-  if (!Number.isFinite(sx) || !Number.isFinite(sz)) return;
-  const nowSt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  if (row._netLastSx != null && row._netLastSz != null && row._netLastRecvT != null) {
-    const dx = sx - row._netLastSx;
-    const dz = sz - row._netLastSz;
-    const dist = Math.hypot(dx, dz);
-    const dtm = Math.max(0.018, (nowSt - row._netLastRecvT) / 1000);
-    if (dist < 260 && dtm < 1.25) {
-      row._netVelX = dx / dtm;
-      row._netVelZ = dz / dtm;
-    } else {
-      row._netVelX = 0;
-      row._netVelZ = 0;
-    }
-  } else {
-    row._netVelX = 0;
-    row._netVelZ = 0;
-  }
-  row._netLastSx = sx;
-  row._netLastSz = sz;
-  row._netLastRecvT = nowSt;
-}
 /**
- * Dead-reckon using server speed + measured segment velocity, then ease toward authority x/z/rotation.
- * Measured velocity reduces “freeze then hop” when server kinematics lag one client’s simulation.
+ * Dead-reckon using the server’s speed + heading (45Hz), then soft-correct to x/z/rotation.
+ * Avoids the old local-wind “prediction” that fought authority and made other ships skip on the host.
  */
 function advanceRemoteShipNetSmooth(sg, p, dt) {
   let ns = sg.userData.netSmooth;
@@ -25895,40 +25849,27 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     return ns;
   }
   const err = Math.hypot(p.x - ns.x, p.z - ns.z);
-  if (err > 340) {
+  if (err > 240) {
     ns.x = p.x;
     ns.z = p.z;
     ns.ry = authR;
-    p._netVelX = 0;
-    p._netVelZ = 0;
     return ns;
   }
-  const vSrv = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
+  const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
   const th = authR;
-  let vxPred = Math.sin(th) * vSrv;
-  let vzPred = Math.cos(th) * vSrv;
-  const mvx = p._netVelX, mvz = p._netVelZ;
-  if (mvx != null && mvz != null && Number.isFinite(mvx) && Number.isFinite(mvz)) {
-    const spMeas = Math.hypot(mvx, mvz);
-    if (spMeas > 0.035) {
-      const w = Math.min(0.78, 0.42 + Math.min(1, err / 55) * 0.22);
-      vxPred = vxPred * (1 - w) + mvx * w;
-      vzPred = vzPred * (1 - w) + mvz * w;
-    }
+  /* Light prediction + gentler authority snap — harsh correction caused visible rubberband at 45Hz state. */
+  if (Math.abs(v) > 0.006) {
+    const pred = 0.4;
+    ns.x += Math.sin(th) * v * dt * pred;
+    ns.z += Math.cos(th) * v * dt * pred;
   }
-  const pred = 0.58;
-  if (Math.hypot(vxPred, vzPred) > 0.018) {
-    ns.x += vxPred * dt * pred;
-    ns.z += vzPred * dt * pred;
-  }
-  const err2 = Math.hypot(p.x - ns.x, p.z - ns.z);
-  const posK = 1 - Math.exp(-(err2 > 26 ? 4.2 : 2.85) * dt);
+  const posK = 1 - Math.exp(-(err > 14 ? 8.2 : 5.4) * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-(Math.abs(dYaw) > 0.45 ? 11 : 7.2) * dt);
+  const rotK = 1 - Math.exp(-14 * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
