@@ -1767,20 +1767,11 @@ body.game-help-mobile-minimal #game-help-panel{
   body.game-playing.boarding-spoils-modal-open #touch-controls,
   body.game-playing.boarding-spoils-modal-open #touch-broadsides-layer,
   body.game-playing.boarding-spoils-modal-open .toolbar,
-  body.game-playing.boarding-spoils-modal-open #touch-zoom,
-  body.game-playing.boarding-spoils-modal-open #stats-ammo-stack,
-  body.game-playing.boarding-spoils-modal-open #pc-combat-hud-bar,
-  body.game-playing.boarding-spoils-modal-open #combat-shot-wrap,
-  body.game-playing.boarding-spoils-modal-open #compass-stack,
-  body.game-playing.boarding-spoils-modal-open #minimap,
-  body.game-playing.boarding-spoils-modal-open #anchor-status,
-  body.game-playing.boarding-spoils-modal-open #chat-box,
-  body.game-playing.boarding-spoils-modal-open #dock-prompt,
-  body.game-playing.boarding-spoils-modal-open #board-prompt-btn,
-  body.game-playing.boarding-spoils-modal-open #deck-spyglass-btn,
   body.game-playing.boarding-spoils-victory-open #touch-controls,
   body.game-playing.boarding-spoils-victory-open #touch-broadsides-layer,
   body.game-playing.boarding-spoils-victory-open .toolbar{display:none!important;visibility:hidden!important;pointer-events:none!important;}
+  /* Minimap +/− sit outside #ui-layer — hide during boarding victory on touch layouts. */
+  body.game-playing.boarding-spoils-victory-open #touch-zoom{display:none!important;visibility:hidden!important;pointer-events:none!important;}
   /* html/body use touch-action:none — re-enable vertical pan so the spoils overlay can scroll (Ship tab pattern). */
   body.game-playing.boarding-spoils-victory-open{
     touch-action:pan-y pinch-zoom!important;
@@ -2973,12 +2964,6 @@ const PROC_SEABED_Y = -4;
 const PROC_EDGE_WARP_AMP1 = 0.10;
 const PROC_EDGE_WARP_AMP2 = 0.038;
 const PROC_COAST_WOBBLE = 0.045;
-/** Normalized-distance width for submerged sand shelf outside the land mask (visual beach into shallow water). */
-const PROC_BEACH_OUTER = 0.092;
-/** Width (in warpedDist) for inner shallow ring where ht is below land threshold but inside the island silhouette. */
-const PROC_BEACH_INNER_W = 0.088;
-/** How far seabed verts rise toward the surface in the beach band (still underwater at SEA_LEVEL). */
-const PROC_BEACH_SHELF_LIFT = 3.25;
 const SEA_LEVEL = 0;
 /**
  * Vertex color for island terrain quads where heightmap is “sea” — must approximate the same hue as the main ocean
@@ -3278,7 +3263,7 @@ const G = {
   /** Navigator spectate: `null` or `{ kind:'npc'|'player'|'dock', syncId?, playerId?, dockX?, dockZ?, facing? }` */
   spectate: null,
   /** Lifetime notoriety (persisted in save; synced to server when online). */
-  playerStats: { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 },
+  playerStats: { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 },
   /** First-person deck walk: positions are in ship-local space (see captain walk helpers). */
   captainWalk: {
     active: false,
@@ -3399,9 +3384,7 @@ function syncQuestToggleButton() {
 
 function ensurePlayerStats() {
   if (!G.playerStats || typeof G.playerStats !== 'object') {
-    G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 };
-  } else if (G.playerStats.boardings == null || !Number.isFinite(Number(G.playerStats.boardings))) {
-    G.playerStats.boardings = 0;
+    G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   }
 }
 /** Lifetime notoriety: persist to save and send deltas to the server when online. */
@@ -9022,20 +9005,8 @@ function generateIsland(cx, cz) {
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
     const isLand = ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
-    let beachBlend = 0;
     if (!isLand) {
-      if (warpedDist >= PROC_LAND_WARP_MAX && warpedDist < PROC_LAND_WARP_MAX + PROC_BEACH_OUTER) {
-        beachBlend = Math.max(beachBlend, 1 - (warpedDist - PROC_LAND_WARP_MAX) / PROC_BEACH_OUTER);
-      }
-      if (warpedDist < PROC_LAND_WARP_MAX && ht <= PROC_LAND_HT_MIN && ht > 0.018) {
-        beachBlend = Math.max(beachBlend,
-          Math.min(1, ht / (PROC_LAND_HT_MIN * 0.94)) * Math.min(1, (PROC_LAND_WARP_MAX - warpedDist) / PROC_BEACH_INNER_W));
-      }
-      if (beachBlend > 0) {
-        positions.setY(i, PROC_SEABED_Y + beachBlend * PROC_BEACH_SHELF_LIFT);
-      } else {
-        positions.setY(i, PROC_SEABED_Y);
-      }
+      positions.setY(i, PROC_SEABED_Y);
     } else {
       ht = Math.max(PROC_LAND_HT_MIN, ht);
       positions.setY(i, ht);
@@ -9046,17 +9017,7 @@ function generateIsland(cx, cz) {
     const slope = warpedDist > 0.008 ? Math.max(0, ht) / (warpedDist * islandRadius + 0.01) : 0;
     let r, g, b;
     if (!isLand) {
-      if (beachBlend > 0.035) {
-        const sandR = 0.86, sandG = 0.76, sandB = 0.53;
-        const wv = rgbIslandTerrainOpenSea(worldX + px, worldZ + pz, (ax, az) => islandNoise.noise2D(ax, az));
-        const bb = Math.min(1, beachBlend);
-        const sn = islandNoise.noise2D(px * 0.31, pz * 0.29) * 0.045;
-        r = wv[0] * (1 - bb) + sandR * bb + sn;
-        g = wv[1] * (1 - bb) + sandG * bb + sn * 0.88;
-        b = wv[2] * (1 - bb) + sandB * bb + sn * 0.55;
-      } else {
-        [r, g, b] = rgbIslandTerrainOpenSea(worldX + px, worldZ + pz, (ax, az) => islandNoise.noise2D(ax, az));
-      }
+      [r, g, b] = rgbIslandTerrainOpenSea(worldX + px, worldZ + pz, (ax, az) => islandNoise.noise2D(ax, az));
     } else if (nh < 0.5) {
       const t = nh / 0.5;
       const dryness = islandNoise.noise2D(px * 0.1, pz * 0.1) * 0.5 + 0.5;
@@ -9064,11 +9025,9 @@ function generateIsland(cx, cz) {
       const grassR = 0.32 - t * 0.10 + dryness * 0.06;
       const grassG = 0.60 - t * 0.08 - dryness * 0.04;
       const grassB = 0.30 - t * 0.05;
-      const coastBias = Math.max(0, Math.min(1, (warpedDist - (PROC_LAND_WARP_MAX - 0.14)) / 0.14));
-      const tGrass = t * (1 - coastBias * 0.62);
-      r = sandR * (1 - tGrass) + grassR * tGrass;
-      g = sandG * (1 - tGrass) + grassG * tGrass;
-      b = sandB * (1 - tGrass) + grassB * tGrass;
+      r = sandR * (1 - t) + grassR * t;
+      g = sandG * (1 - t) + grassG * t;
+      b = sandB * (1 - t) + grassB * t;
     } else if (nh < 0.75) {
       const t = (nh - 0.5) / 0.25;
       r = 0.22 + t * 0.25; g = 0.52 - t * 0.15; b = 0.25 + t * 0.15;
@@ -13309,15 +13268,11 @@ function showBoardingSpoilsModal(won, b) {
   if (h) h.textContent = won ? 'VICTORY' : 'Defeat';
   if (txt) txt.textContent = won ? 'The enemy deck is strewn with spent powder and the fallen. Divide spoils below.' : 'You were beaten back to your own ship.';
   const partnerPvp = !!(won && b && b.partnerPlayerId != null && b.npcSyncId == null);
-  let pvpFoeGoldCap = 0;
-  if (won && partnerPvp && G._boardingEnemyInitTotals && G._boardingEnemyInitTotals.size) {
-    pvpFoeGoldCap = Math.min(8000, Math.max(0, Math.floor(Number(G._boardingEnemyInitTotals.get('gold')) || 0)));
-  }
-  const gMax = won ? (b.npcLoot ? b.npcLoot.gold : (partnerPvp ? pvpFoeGoldCap : (b.partnerPlayerId != null ? 520 : 30))) : 0;
+  const gMax = won ? (b.npcLoot ? b.npcLoot.gold : (partnerPvp ? 0 : (b.partnerPlayerId != null ? 520 : 30))) : 0;
   const goldRow = document.getElementById('boarding-spoils-gold-row');
   const goldLab = document.getElementById('boarding-spoils-gold-label');
-  if (goldRow) goldRow.style.display = (won && partnerPvp && gMax <= 0) ? 'none' : '';
-  if (goldLab) goldLab.textContent = (won && partnerPvp && gMax <= 0) ? '' : 'Loot to take (gold)';
+  if (goldRow) goldRow.style.display = (won && partnerPvp) ? 'none' : '';
+  if (goldLab) goldLab.textContent = (won && partnerPvp) ? '' : 'Loot to take (gold)';
   if (lootR) { lootR.max = String(Math.max(0, gMax)); lootR.value = String(Math.max(0, gMax * 0.5 | 0)); }
   G._boardingSpoilsPrisonerTake = 0;
   G._boardingSpoilsPrisonerPick = new Set();
@@ -13467,7 +13422,7 @@ function showBoardingSpoilsModal(won, b) {
     const maxPfS = Math.min(12, b.surrenderPool | 0);
     const woodB = b.npcLoot && b.npcLoot.wood != null ? b.npcLoot.wood : 6;
     /* PvP: loot is only what you drag into your hold (+ prisoners). NPC keeps salvage bonus. */
-    const g2 = b.npcSyncId != null ? (g + Math.min(32, 10 + (woodB * 2))) : (partnerPvp ? g : (g + Math.min(36, 12 + ((b.surrenderPool | 0) * 3))));
+    const g2 = b.npcSyncId != null ? (g + Math.min(32, 10 + (woodB * 2))) : (partnerPvp ? 0 : (g + Math.min(36, 12 + ((b.surrenderPool | 0) * 3))));
     if (g2 > 0) tryAddQuestCargo('gold', g2);
     if (b.npcSyncId != null && woodB > 0) tryAddQuestCargo('wood', woodB);
     addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfS, 0.55);
@@ -13476,7 +13431,6 @@ function showBoardingSpoilsModal(won, b) {
       if (n && n.mesh) runNpcSinkOutcome(n, G.myId);
     } else {
       if (b.partnerPlayerId) {
-        if (partnerPvp) try { mergeRemainingPrizeTotalsIntoVictorHold(); } catch (eM) {}
         try {
           const spoilPayload = { type: 'boarding_spoils', targetId: b.partnerPlayerId, gold: g, scuttle: true };
           if (partnerPvp) {
@@ -16812,7 +16766,7 @@ function navigatorWipeLocalVoyageFromBroadcast() {
     localStorage.removeItem(CLAN_LOCAL_SNAPSHOT_KEY);
     localStorage.setItem('pirates_lb_cache', '[]');
   } catch (e) {}
-  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 };
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   leaderboardData = [];
   navigatorRegisteredCaptainsList = [];
   updatePiratesPanel();
@@ -17619,12 +17573,6 @@ async function connectToServer() {
           if (Array.isArray(msg.captivesTaken) && msg.captivesTaken.length) {
             try { removeTakenPvPCaptivesFromDefeatedRoster(msg.captivesTaken, stripN); } catch (eRm) {}
           }
-          /* Deck combat can leave 0 HP on non-prisoner rows; revive those before treating the ship as uncrewed. */
-          const hasNonPrisonerRow = Array.isArray(G.player.crew) && G.player.crew.some(c => c && c.role !== 'prisoner');
-          if (countLivingNonPrisonerCrew() <= 0 && hasNonPrisonerRow) {
-            try { ensureMinimalHelmAfterPvPCastOff(); } catch (eHelm) {}
-          }
-          /* No able hands (and no non-prisoner bodies to revive): empty hold, prisoners-only, or all taken — founder. */
           if (countLivingNonPrisonerCrew() <= 0) {
             G.lastAttacker = `${capName} — boarding`;
             G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
@@ -17633,12 +17581,8 @@ async function connectToServer() {
             G._suppressNextShipSunkBroadcast = true;
             if (!Array.isArray(G.player.crew)) G.player.crew = [];
             G.player.health = 0;
-            notify('No living crew left — the hulk is left for the sea.', 7200);
+            notify('They pressed your last hand — the deck is bare and the sea takes you.', 7200);
           } else {
-            G._abandonedShipDriftEnd = null;
-            G.player.anchored = false;
-            G.player.speed = 1;
-            try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (eA) {}
             rebuildPlayerShip();
             updateCrewPanel();
             notify(`They took ${take}g from the hold and cast off.`, 7200);
@@ -19101,7 +19045,6 @@ function renderDebugLeaderboardPanel() {
           <div class="debug-roster-kv"><span>AI sunk</span><span>${lbRowSinksAi(e)}</span></div>
           <div class="debug-roster-kv"><span>Captains sunk</span><span>${lbRowSinksPl(e)}</span></div>
           <div class="debug-roster-kv"><span>Ransoms</span><span>${lbRowRansoms(e)}</span></div>
-          <div class="debug-roster-kv"><span>Boarding wins</span><span>${lbRowBoardings(e)}</span></div>
           <div class="debug-roster-kv"><span>Deaths</span><span>${lbRowDeaths(e)}</span></div>
           ${ck ? `<div class="debug-roster-meta" style="margin-top:6px;">Key: <code style="font-size:9px;">${esc(ck)}</code></div>` : ''}
           ${pid != null ? `<div class="debug-roster-meta">Conn. id: ${pid}</div>` : ''}
@@ -22828,7 +22771,6 @@ function lbRowSinksAi(e) {
 function lbRowSinksPl(e) { return Math.max(0, Math.floor(Number(e && e.sinksPlayer) || 0)); }
 function lbRowRansoms(e) { return Math.max(0, Math.floor(Number(e && e.ransoms) || 0)); }
 function lbRowDeaths(e) { return Math.max(0, Math.floor(Number(e && e.deaths) || 0)); }
-function lbRowBoardings(e) { return Math.max(0, Math.floor(Number(e && e.boardings) || 0)); }
 /** Copy `captainKey` onto rows that only have `playerId` when another row ties them (stops double listings). */
 function backfillLbCaptainKeysFromPlayerIds(entries) {
   if (!Array.isArray(entries)) return entries;
@@ -22940,7 +22882,6 @@ function mergeLeaderboardByMaxStats(prev, next) {
     merged.sinksPlayer = Math.max(lbRowSinksPl(cur), lbRowSinksPl(e));
     merged.ransoms = Math.max(lbRowRansoms(cur), lbRowRansoms(e));
     merged.deaths = Math.max(lbRowDeaths(cur), lbRowDeaths(e));
-    merged.boardings = Math.max(lbRowBoardings(cur), lbRowBoardings(e));
     const en = String(e.name || '').trim();
     const cn = String(cur.name || '').trim();
     if (en && (!cn || cn === 'Pirate' || cn === 'Unknown')) merged.name = e.name;
@@ -22955,8 +22896,8 @@ function mergeLeaderboardByMaxStats(prev, next) {
   return Array.from(m.values());
 }
 function sortLbEntries(a, b) {
-  const ta = lbRowSinksAi(a) + lbRowSinksPl(a) + lbRowRansoms(a) * 0.25 + lbRowBoardings(a) * 1.35;
-  const tb = lbRowSinksAi(b) + lbRowSinksPl(b) + lbRowRansoms(b) * 0.25 + lbRowBoardings(b) * 1.35;
+  const ta = lbRowSinksAi(a) + lbRowSinksPl(a) + lbRowRansoms(a) * 0.25;
+  const tb = lbRowSinksAi(b) + lbRowSinksPl(b) + lbRowRansoms(b) * 0.25;
   if (tb !== ta) return tb - ta;
   const ga = lbRowGold(a), gb = lbRowGold(b);
   if (gb !== ga) return gb - ga;
@@ -22998,14 +22939,13 @@ function syncLocalLegendFromEntries(entries) {
   }
   if (!me) return;
   ensurePlayerStats();
-  const g = lbRowGold(me), sai = lbRowSinksAi(me), spl = lbRowSinksPl(me), r = lbRowRansoms(me), d = lbRowDeaths(me), bo = lbRowBoardings(me);
+  const g = lbRowGold(me), sai = lbRowSinksAi(me), spl = lbRowSinksPl(me), r = lbRowRansoms(me), d = lbRowDeaths(me);
   let changed = false;
   if (g > G.playerStats.goldEarned) { G.playerStats.goldEarned = g; changed = true; }
   if (sai > G.playerStats.sinksAi) { G.playerStats.sinksAi = sai; changed = true; }
   if (spl > G.playerStats.sinksPlayer) { G.playerStats.sinksPlayer = spl; changed = true; }
   if (r > G.playerStats.ransoms) { G.playerStats.ransoms = r; changed = true; }
   if (d > G.playerStats.deaths) { G.playerStats.deaths = d; changed = true; }
-  if (bo > (G.playerStats.boardings | 0)) { G.playerStats.boardings = bo; changed = true; }
   if (changed) saveProgress();
 }
 
@@ -23018,7 +22958,6 @@ function defaultAllTimeStats() {
     sinksPlayer: 0,
     ransoms: 0,
     deaths: 0,
-    boardings: 0,
     captainsRetired: 0
   };
 }
@@ -23033,7 +22972,6 @@ function loadAllTimeStats() {
       sinksPlayer: Math.max(0, Math.floor(Number(o.sinksPlayer) || 0)),
       ransoms: Math.max(0, Math.floor(Number(o.ransoms) || 0)),
       deaths: Math.max(0, Math.floor(Number(o.deaths) || 0)),
-      boardings: Math.max(0, Math.floor(Number(o.boardings) || 0)),
       captainsRetired: Math.max(0, Math.floor(Number(o.captainsRetired) || 0))
     };
   } catch (e) {
@@ -23051,7 +22989,6 @@ function addPlayerStatsInto(target, src) {
   target.sinksPlayer += Math.max(0, Math.floor(Number(src.sinksPlayer) || 0));
   target.ransoms += Math.max(0, Math.floor(Number(src.ransoms) || 0));
   target.deaths += Math.max(0, Math.floor(Number(src.deaths) || 0));
-  target.boardings += Math.max(0, Math.floor(Number(src.boardings) || 0));
 }
 /** Fold the current save's career stats into the cross-profile bucket (call before wiping the save on New Game). */
 function retireCurrentCaptainIntoAllTime() {
@@ -23078,7 +23015,6 @@ function getCombinedAllTimeStatsForDisplay() {
     sinksPlayer: at.sinksPlayer + G.playerStats.sinksPlayer,
     ransoms: at.ransoms + G.playerStats.ransoms,
     deaths: at.deaths + G.playerStats.deaths,
-    boardings: at.boardings + (G.playerStats.boardings | 0),
     captainsTotal: at.captainsRetired + (hasActiveSaveInStorage() ? 1 : 0)
   };
 }
@@ -23090,7 +23026,7 @@ function clearLocalCareerDataFromServerReset() {
     localStorage.removeItem('pirates_lb_cache');
   } catch (e) {}
   ensurePlayerStats();
-  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 };
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   try {
     saveProgress();
   } catch (e2) {}
@@ -23134,7 +23070,6 @@ function updatePiratesPanel() {
     <span style="color:#c8b8e8;">Captains commanded</span> ${tot.captainsTotal} &nbsp;·&nbsp; <span style="color:#d4a848;">Gold earned</span> ${tot.goldEarned}<br>
     <span style="color:#cc8888;">AI sunk</span> ${tot.sinksAi}
     &nbsp;·&nbsp; <span style="color:#88a8cc;">Rival captains sunk</span> ${tot.sinksPlayer}
-    &nbsp;·&nbsp; <span style="color:#c8a888;">Boarding wins</span> ${tot.boardings | 0}
     &nbsp;·&nbsp; <span style="color:#a8c8a8;">Ransoms</span> ${tot.ransoms} &nbsp;·&nbsp; <span style="color:#9888a8;">Lost at sea</span> ${tot.deaths}</div>`;
   let head = '<div style="color:#d4a848;font-size:12px;margin-bottom:8px;text-align:center;letter-spacing:1px;">TOP PIRATES</div>';
   head += youBlk;
@@ -23157,7 +23092,7 @@ function updatePiratesPanel() {
         <div style="color:#ffd700;font-weight:bold;font-size:15px;min-width:32px;text-align:center;">1st</div>
         <div style="flex:1;min-width:0;">
           <div style="color:#f8ecd0;font-size:15px;font-weight:600;">${escapeDebugHtml(lbEntryDisplayName(top1))}</div>${shipLine}${partyLine}
-          <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:5px;">${lbRowGold(top1)}g · AI ${lbRowSinksAi(top1)} · captains ${lbRowSinksPl(top1)} · boardings ${lbRowBoardings(top1)} · ransoms ${lbRowRansoms(top1)} · deaths ${lbRowDeaths(top1)}</div>
+          <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:5px;">${lbRowGold(top1)}g · AI ${lbRowSinksAi(top1)} · captains ${lbRowSinksPl(top1)} · ransoms ${lbRowRansoms(top1)} · deaths ${lbRowDeaths(top1)}</div>
         </div>
       </div>`;
   }
@@ -23188,7 +23123,7 @@ function updatePiratesPanel() {
     const partyLine = pTag ? `<div style="color:#9acd32;font-size:10px;margin-top:3px;">Party «${escapeDebugHtml(pTag)}»</div>` : '';
     d.innerHTML = `<div style="color:${medalColor};font-weight:bold;font-size:13px;min-width:32px;text-align:center;">${medal}</div>
       <div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${escapeDebugHtml(lbEntryDisplayName(e))}</div>${shipLine}${partyLine}
- <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:4px;">${lbRowGold(e)}g · AI ${lbRowSinksAi(e)} · captains ${lbRowSinksPl(e)} · boardings ${lbRowBoardings(e)} · ransoms ${lbRowRansoms(e)} · deaths ${lbRowDeaths(e)}</div></div>`;
+ <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:4px;">${lbRowGold(e)}g · AI ${lbRowSinksAi(e)} · captains ${lbRowSinksPl(e)} · ransoms ${lbRowRansoms(e)} · deaths ${lbRowDeaths(e)}</div></div>`;
     pageWrap.appendChild(d);
   });
   l.appendChild(pageWrap);
@@ -26114,13 +26049,10 @@ function update(dt) {
   if (!G.spectate && !G.docked && !G.playerSinking && G.player.health > 0 && !G.captainWalk?.active) {
     /* Use *living* sailors: casualties can leave dead entries or empty roster the moment spoils clears G.boarding. */
     const nowAb = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    const inSpoilsGrace = (G._boardingWinSpoilsGraceUntil && nowAb < G._boardingWinSpoilsGraceUntil)
-      || (G._boardingSpoilsCooldownUntil && nowAb < G._boardingSpoilsCooldownUntil);
-    let boardingSpoilsHudOpen = false;
-    try { boardingSpoilsHudOpen = document.body.classList.contains('boarding-spoils-modal-open'); } catch (eHud) {}
+    const inSpoilsGrace = G._boardingWinSpoilsGraceUntil && nowAb < G._boardingWinSpoilsGraceUntil;
     if (countLivingNonPrisonerCrew() > 0) {
       G._abandonedShipDriftEnd = null;
-    } else if (!G.boarding && !G.boardingVictimAwaitingDecision && !inSpoilsGrace && !boardingSpoilsHudOpen) {
+    } else if (!G.boarding && !G.boardingVictimAwaitingDecision && !inSpoilsGrace) {
       if (G._abandonedShipDriftEnd != null) {
         if (nowAb >= G._abandonedShipDriftEnd) {
           G._abandonedShipDriftEnd = null;
@@ -29091,7 +29023,6 @@ function loadProgress() {
       G.playerStats.sinksPlayer = Math.max(0, Math.floor(Number(ps.sinksPlayer) || 0));
       G.playerStats.ransoms = Math.max(0, Math.floor(Number(ps.ransoms) || 0));
       G.playerStats.deaths = Math.max(0, Math.floor(Number(ps.deaths) || 0));
-      G.playerStats.boardings = Math.max(0, Math.floor(Number(ps.boardings) || 0));
     }
     ensurePlayerStats();
     retroactiveMarqueProgressFromPolitics();
@@ -29425,7 +29356,7 @@ function executeStartNewVoyageAfterConfirm() {
   G.politics = null;
   ensurePolitics();
   G.townStockpiles = {};
-  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 };
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
   G.player.health = 100; G.player.riggingHealth = 100; G.player.morale = 100;
   G.player.shipName = 'The Black Wave'; G.player.shipType = 'cutter';
