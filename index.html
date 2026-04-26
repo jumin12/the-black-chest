@@ -13468,7 +13468,12 @@ function showBoardingSpoilsModal(won, b) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
       if (n) {
         n._boardingHostLock = false;
-        if (n.sinking && n.health != null && n.health > 0) {
+        /* Mercy cast-off: always leave the NPC seaworthy (hull 0 or sinking mid-animation was still "going under"). */
+        if (n.sinking || n.health == null || n.health <= 0) {
+          if (n.health == null || n.health <= 0) {
+            const specM = SHIP_TYPES[n.type] || SHIP_TYPES.sloop;
+            n.health = Math.max(12, Math.round(18 + (specM.hullH || 1.3) * 6));
+          }
           n.sinking = false;
           n.sinkTimer = 0;
           if (n.mesh) {
@@ -17573,7 +17578,16 @@ async function connectToServer() {
           if (Array.isArray(msg.captivesTaken) && msg.captivesTaken.length) {
             try { removeTakenPvPCaptivesFromDefeatedRoster(msg.captivesTaken, stripN); } catch (eRm) {}
           }
+          /* Take loot & go must leave you alive: boarding losses + captives can leave 0 free hands; restore helm like post-win bare helm. */
           if (countLivingNonPrisonerCrew() <= 0) {
+            try { ensureMinimalHelmAfterPvPCastOff(); } catch (eHelm) {}
+          }
+          if (countLivingNonPrisonerCrew() > 0) {
+            rebuildPlayerShip();
+            updateCrewPanel();
+            notify(`They took ${take}g from the hold and cast off.`, 7200);
+            try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
+          } else {
             G.lastAttacker = `${capName} — boarding`;
             G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
             const lootCast = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
@@ -17582,11 +17596,6 @@ async function connectToServer() {
             if (!Array.isArray(G.player.crew)) G.player.crew = [];
             G.player.health = 0;
             notify('They pressed your last hand — the deck is bare and the sea takes you.', 7200);
-          } else {
-            rebuildPlayerShip();
-            updateCrewPanel();
-            notify(`They took ${take}g from the hold and cast off.`, 7200);
-            try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
           }
         }
         break;
