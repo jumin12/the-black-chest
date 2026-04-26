@@ -2079,7 +2079,7 @@ body.game-help-mobile-minimal #game-help-panel{
             <div id="boarding-spoils-prisoners-row" class="boarding-spoils-prisoners-row"></div>
           </div>
         </div>
-        <div id="boarding-spoils-pris-hint" style="font-size:11px;color:#a09080;margin-top:8px;">Taking <span id="boarding-spoils-pris-v">0</span> · <span id="boarding-spoils-pris-cap-wrap"><span id="boarding-spoils-pris-cap">0</span> brig berths free</span> · tap cards to add or remove · pressing <em>every</em> hand costs you your crew</div>
+        <div id="boarding-spoils-pris-hint" style="font-size:11px;color:#a09080;margin-top:8px;">Taking <span id="boarding-spoils-pris-v">0</span> · <span id="boarding-spoils-pris-cap-wrap"><span id="boarding-spoils-pris-cap">0</span> brig berths free</span> · tap cards to add or remove · rest are cast off</div>
       </div>
       <div class="boarding-spoils-actions">
         <button type="button" class="primary" id="boarding-spoils-keep" title="Take the defeated vessel as your own">Keep ship</button>
@@ -4926,19 +4926,6 @@ function getBoardingSpoilsPrisonerBerthRoom() {
   const spec = SHIP_TYPES[G.player.shipType] || SHIP_TYPES.sloop;
   const cap = spec.maxPrisoners != null ? spec.maxPrisoners : 4;
   return Math.max(0, cap - countPrisonerCrew());
-}
-function boardingSpoilsVictorTakingFullSurrenderPool(pick, maxPoolStrip) {
-  const mp = Math.max(0, maxPoolStrip | 0);
-  if (mp <= 0 || !pick || !(pick instanceof Set)) return false;
-  return pick.size >= mp;
-}
-/** Press-ganging every surrendered hand: loyal crew quits; hull left empty (no nametag). */
-function applyBoardingVictorFullPressGangPenalty() {
-  G.player.crew = [];
-  G.player.shipName = '';
-  G.lastAttacker = G.lastAttacker || 'No crew — every captive was pressed';
-  G.player.health = 0;
-  notify('You pressed every surrendered hand into the brig; your own crew abandons you. The decks are bare.', 7800);
 }
 /** Living hands who can work the ship (excludes prisoners and dead roster entries). */
 function countLivingNonPrisonerCrew() {
@@ -13288,7 +13275,6 @@ function showBoardingSpoilsModal(won, b) {
     const { g, ptk, pmax } = readLootPrison();
     const pszK = G._boardingSpoilsPrisonerPick && G._boardingSpoilsPrisonerPick instanceof Set ? G._boardingSpoilsPrisonerPick.size : 0;
     const maxPfK = Math.min(12, b.surrenderPool | 0);
-    const fullPressK = boardingSpoilsVictorTakingFullSurrenderPool(G._boardingSpoilsPrisonerPick, maxPfK);
     if (g > 0) tryAddQuestCargo('gold', g);
     if ((pmax | 0) - pszK > 0) notify((pmax - pszK) + ' prisoners thrown over the rail.', 5000);
     if (b.npcSyncId != null) {
@@ -13325,11 +13311,7 @@ function showBoardingSpoilsModal(won, b) {
       ensureCargoSlots();
       trimCrewAndPrisonersToShipLimits();
     }
-    if (!fullPressK) {
-      addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfK, 0.72);
-    } else {
-      applyBoardingVictorFullPressGangPenalty();
-    }
+    addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfK, 0.72);
     ensureBareHelmAfterBoardingWin();
     rebuildPlayerShip(); updateCrewPanel();
     hideBoardingSpoilsModal();
@@ -13337,7 +13319,7 @@ function showBoardingSpoilsModal(won, b) {
     G.boarding = null;
     markBoardingVictorySpoilsGrace();
     clearBoardingSpoilsPvpHoldState();
-    if (!fullPressK) notify('Your former hull slips under — you make way in the prize ship.', 5600);
+    notify('Your former hull slips under — you make way in the prize ship.', 5600);
     try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
   };
   if (btnS) btnS.onclick = () => {
@@ -13345,17 +13327,12 @@ function showBoardingSpoilsModal(won, b) {
     try { if (typeof window.abortBoardingSpoilsCargoDrag === 'function') window.abortBoardingSpoilsCargoDrag(); } catch (e) {}
     const { g, ptk, pmax } = readLootPrison();
     const maxPfS = Math.min(12, b.surrenderPool | 0);
-    const fullPressS = boardingSpoilsVictorTakingFullSurrenderPool(G._boardingSpoilsPrisonerPick, maxPfS);
     const woodB = b.npcLoot && b.npcLoot.wood != null ? b.npcLoot.wood : 6;
     /* PvP: loot is only what you drag into your hold (+ prisoners). NPC keeps salvage bonus. */
     const g2 = b.npcSyncId != null ? (g + Math.min(32, 10 + (woodB * 2))) : (partnerPvp ? 0 : (g + Math.min(36, 12 + ((b.surrenderPool | 0) * 3))));
     if (g2 > 0) tryAddQuestCargo('gold', g2);
     if (b.npcSyncId != null && woodB > 0) tryAddQuestCargo('wood', woodB);
-    if (!fullPressS) {
-      addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfS, 0.55);
-    } else {
-      applyBoardingVictorFullPressGangPenalty();
-    }
+    addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfS, 0.55);
     if (b.npcSyncId != null) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
       if (n && n.mesh) runNpcSinkOutcome(n, G.myId);
@@ -13380,7 +13357,7 @@ function showBoardingSpoilsModal(won, b) {
     G.boarding = null;
     markBoardingVictorySpoilsGrace();
     clearBoardingSpoilsPvpHoldState();
-    if (!fullPressS) notify('Hull broken for timber and specie — deck awash with smoke.', 5000);
+    notify('Hull broken for timber and specie — deck awash with smoke.', 5000);
     try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   };
   const done = document.getElementById('boarding-spoils-done');
@@ -13390,13 +13367,8 @@ function showBoardingSpoilsModal(won, b) {
     const { g, ptk, pmax } = readLootPrison();
     const pszD = G._boardingSpoilsPrisonerPick && G._boardingSpoilsPrisonerPick instanceof Set ? G._boardingSpoilsPrisonerPick.size : 0;
     const maxPfD = Math.min(12, b.surrenderPool | 0);
-    const fullPressD = boardingSpoilsVictorTakingFullSurrenderPool(G._boardingSpoilsPrisonerPick, maxPfD);
     if (g > 0) tryAddQuestCargo('gold', g);
-    if (!fullPressD) {
-      addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfD, 0.65);
-    } else {
-      applyBoardingVictorFullPressGangPenalty();
-    }
+    addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfD, 0.65);
     if ((pmax | 0) - pszD > 0) notify((pmax - pszD) + ' survivors cast into the deep.', 4000);
     /* Loot and cast off: defeated keeps their hull (NPC resumes sailing; PvP victim unchanged). Only scuttle sinks. */
     if (b.npcSyncId != null) {
@@ -13433,7 +13405,7 @@ function showBoardingSpoilsModal(won, b) {
     G.boarding = null;
     markBoardingVictorySpoilsGrace();
     clearBoardingSpoilsPvpHoldState();
-    if (!fullPressD && b.partnerPlayerId) notify('You took what you could carry and cast off.', 4500);
+    if (b.partnerPlayerId) notify('You took what you could carry and cast off.', 4500);
     try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   };
   if (lootR) lootR.oninput = () => { if (lootV) lootV.textContent = lootR.value; };
@@ -17407,7 +17379,7 @@ async function connectToServer() {
         const vNEarly = vRawEarly != null ? netPlayerId(vRawEarly) : null;
         let victimIsMeEarly = vNEarly != null && myPidEarly != null && vNEarly === myPidEarly;
         if (!victimIsMeEarly && G.boardingVictimAwaitingDecision && msg.from != null && Number.isFinite(Number(msg.from))) {
-          victimIsMeEarly = netPlayerId(msg.from) === G.boardingVictimAwaitingDecision.partnerId;
+          victimIsMeEarly = netPlayerId(msg.from) === netPlayerId(G.boardingVictimAwaitingDecision.partnerId);
         }
         if (victimIsMeEarly) {
           try { hideBoardingSpoilsModal(); } catch (eEarly) {}
@@ -17417,13 +17389,13 @@ async function connectToServer() {
         /* Only the defeated captain may receive spoils outcomes; without this, a misrouted packet could scuttle the wrong hull. */
         if (msg.victimId != null) {
           const pv = netPlayerId(msg.victimId);
-          if (pv == null || pv !== G.myId) break;
+          if (pv == null || myPidEarly == null || pv !== myPidEarly) break;
         } else {
           if (!G.boardingVictimAwaitingDecision) break;
-          const exp = G.boardingVictimAwaitingDecision.partnerId;
+          const exp = netPlayerId(G.boardingVictimAwaitingDecision.partnerId);
           if (fromId == null || !Number.isFinite(fromId) || netPlayerId(fromId) !== exp) break;
         }
-        if (fromId != null && Number.isFinite(fromId) && netPlayerId(fromId) === G.myId) break;
+        if (fromId != null && Number.isFinite(fromId) && netPlayerId(fromId) === myPidEarly) break;
         if (G.boarding && G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null) {
           try { abortActiveBoarding(''); } catch (e) {}
         }
@@ -17971,10 +17943,12 @@ async function connectToServer() {
         break;
       case 'boarding_prize_hull_sink': {
         try { spawnBoardingPrizeHullDecoyFromNet(msg); } catch (e) {}
+        if (msg.suppressCaptainNotify === true) break;
+        const myHullN = G.myId != null ? netPlayerId(G.myId) : null;
         const vpid = netPlayerId(msg.victorPlayerId != null ? msg.victorPlayerId : msg.victimId);
         if (msg.namelessHull === true) {
-          if (vpid != null && vpid === G.myId) notify('Your old hull drifts empty, then slips under.', 4800);
-        } else if (vpid != null && vpid === G.myId) {
+          if (vpid != null && myHullN != null && vpid === myHullN) notify('Your old hull drifts empty, then slips under.', 4800);
+        } else if (vpid != null && myHullN != null && vpid === myHullN) {
           notify('Your previous hull slips under — you sail the prize.', 5200);
         } else if ((msg.name && String(msg.name).trim())) {
           const cap = String(msg.name).trim();
@@ -17985,7 +17959,8 @@ async function connectToServer() {
       case 'ship_sunk': {
         const vid = netPlayerId(msg.victimId != null ? msg.victimId : msg.id);
         if (vid == null) break;
-        if (vid !== G.myId) {
+        const mySinkN = G.myId != null ? netPlayerId(G.myId) : null;
+        if (mySinkN == null || vid !== mySinkN) {
           G.pendingRemoteShipSink.add(vid);
           const sinkCap = (msg.name && String(msg.name).trim()) ? String(msg.name).trim() : 'A captain';
           notify(`${sinkCap}'s ship is sinking!`);
@@ -25877,17 +25852,19 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
   const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
   const th = authR;
+  /* Light prediction + gentler authority snap — harsh correction caused visible rubberband at 45Hz state. */
   if (Math.abs(v) > 0.006) {
-    ns.x += Math.sin(th) * v * dt;
-    ns.z += Math.cos(th) * v * dt;
+    const pred = 0.4;
+    ns.x += Math.sin(th) * v * dt * pred;
+    ns.z += Math.cos(th) * v * dt * pred;
   }
-  const posK = 1 - Math.exp(-(err > 5.5 ? 21 : 16) * dt);
+  const posK = 1 - Math.exp(-(err > 14 ? 8.2 : 5.4) * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-22 * dt);
+  const rotK = 1 - Math.exp(-14 * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
