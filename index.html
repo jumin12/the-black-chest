@@ -6833,6 +6833,7 @@ function applyCustomMapPayload(data, statusEl) {
     ? cloneTownStockpileTable(G.townStockpiles)
     : null;
   G.customMap = cm;
+  invalidateNearestPortDockCache();
   if (cm.wind && typeof cm.wind === 'object') {
     if (cm.wind.angle != null) G.wind.angle = Number(cm.wind.angle);
     if (cm.wind.speed != null) G.wind.speed = Number(cm.wind.speed);
@@ -7281,6 +7282,11 @@ function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, ce
 
 /** Nearest trading port by procedural data (matches chart), not only loaded chunks — keeps story hint and markers aligned with the map. */
 const NEAREST_PORT_SEARCH_HALF = 9000;
+/** ~10k `getProceduralIslandMeta` calls per search; HUD + minimap used to invoke this every frame — cache by quantized position + seed. */
+let _nearestPortDockCache = { wxq: NaN, wzq: NaN, seed: NaN, result: null };
+function invalidateNearestPortDockCache() {
+  _nearestPortDockCache.wxq = NaN;
+}
 function findNearestPortDock(wx, wz) {
   if (G.customMap && G.customMap.towns && G.customMap.towns.length) {
     let best = null, bestD2 = 1e18;
@@ -7292,6 +7298,12 @@ function findNearestPortDock(wx, wz) {
     }
     if (best) return best;
   }
+  const seedU = G.worldSeed >>> 0;
+  const q = 72;
+  const wxq = Math.round(wx / q);
+  const wzq = Math.round(wz / q);
+  const c = _nearestPortDockCache;
+  if (c.result != null && c.wxq === wxq && c.wzq === wzq && c.seed === seedU) return c.result;
   let best = null, bestD2 = 1e18;
   forEachProceduralIslandInWorldBounds(
     wx - NEAREST_PORT_SEARCH_HALF, wx + NEAREST_PORT_SEARCH_HALF,
@@ -7303,6 +7315,10 @@ function findNearestPortDock(wx, wz) {
       if (d2 < bestD2) { bestD2 = d2; best = meta; }
     }, wx, wz
   );
+  c.result = best;
+  c.wxq = wxq;
+  c.wzq = wzq;
+  c.seed = seedU;
   return best;
 }
 
@@ -16920,6 +16936,7 @@ function destroyAmbientWildlife() {
 function applySharedWorldFromServerSeed(s, opts) {
   opts = opts || {};
   const seed = Number(s) >>> 0;
+  invalidateNearestPortDockCache();
   G.customMap = null;
   G.worldSeed = seed;
   G.seed = seed;
