@@ -12024,9 +12024,11 @@ function hideBoardingSpoilsModal() {
     document.body.classList.remove('boarding-spoils-modal-open');
     document.body.classList.remove('boarding-spoils-victory-open');
   } catch (e) {}
+  G._boardingAuthMissAcc = 0;
 }
 function abortActiveBoarding(msg) {
   if (!G.boarding) return;
+  G._boardingAuthMissAcc = 0;
   try { clearBoardingSpoilsPvpHoldState(); } catch (e) {}
   try { delete G.boarding._pvpTermSnap; delete G.boarding._pvpTerminalForNet; } catch (e) {}
   clearBoardingRopeLineMeshes();
@@ -12036,6 +12038,7 @@ function abortActiveBoarding(msg) {
     if (n) n._boardingHostLock = false;
   }
   G.boarding = null;
+  try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   const tw = document.getElementById('boarding-tw-wrap');
   if (tw) {
     tw.style.display = 'none';
@@ -13658,9 +13661,23 @@ function tickBoardingEngagement(dt) {
   if (G.captainWalk && G.captainWalk.active) setCaptainWalkActive(false);
   if (G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null && G.myId != null) {
     const auth = boardingPvPAuthorityId(G.boarding);
+    const bEarly = G.boarding;
     if (auth != null && Number(G.myId) !== Number(auth)) {
-      const lRow = G.otherPlayers.get(auth);
-      if (lRow && lRow.boarding) mergeBoardingFromLeaderPayload(lRow.boarding, auth);
+      if (bEarly.phase === 'pull' || bEarly.phase === 'fight') {
+        const lRow = G.otherPlayers.get(auth);
+        if (!lRow || !lRow.boarding) {
+          G._boardingAuthMissAcc = (G._boardingAuthMissAcc || 0) + dt;
+          if (G._boardingAuthMissAcc > 3.5) {
+            G._boardingAuthMissAcc = 0;
+            abortActiveBoarding('Boarding line parted — lost sync with the other ship.');
+          }
+        } else {
+          G._boardingAuthMissAcc = 0;
+          mergeBoardingFromLeaderPayload(lRow.boarding, auth);
+        }
+      } else {
+        G._boardingAuthMissAcc = 0;
+      }
     }
   }
   if (!G.boarding) return;
@@ -25883,6 +25900,8 @@ const NPC_NET_SYNC_HZ = NET_SYNC_HZ;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 /** Throttle roster-heavy crew payloads on the periodic net tick (explicit sendUpdate() still sends full crew). */
 function shouldIncludeCrewOnPeriodicNetTick() {
+  /* During grapple / deck fight, crew casualties must reach the server every tick (not ~4 Hz) or peers desync. */
+  if (G.boarding && G.boarding.phase !== 'spoils' && G.boarding.phase !== 'await_opponent') return true;
   const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   if (G._lastPeriodicCrewNetAt == null) G._lastPeriodicCrewNetAt = 0;
   if (now - G._lastPeriodicCrewNetAt >= 240) {
@@ -27052,7 +27071,9 @@ function update(dt) {
   sendTimer -= dt;
   if (sendTimer <= 0) {
     sendUpdate(shouldIncludeCrewOnPeriodicNetTick());
-    sendTimer = ws?.readyState === 1 ? (1 / NET_SYNC_HZ) : 0.05;
+    const pvpGrapple = !!(G.boarding && G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null
+      && (G.boarding.phase === 'pull' || G.boarding.phase === 'fight'));
+    sendTimer = ws?.readyState === 1 ? (pvpGrapple ? (1 / 60) : (1 / NET_SYNC_HZ)) : 0.05;
   }
 
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
