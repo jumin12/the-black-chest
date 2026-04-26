@@ -12802,21 +12802,44 @@ function spoilsPointerMergeSlot(arrA, i, arrB, j) {
     arrB[j] = A;
   }
 }
+/** If the defeated hold ever aliases the victor's cargo (would corrupt both), break the link with fresh arrays. */
+function ensureBoardingPvpHoldDecoupledFromPlayerHold() {
+  const E = G._boardingEnemyHold;
+  if (!E) return;
+  if (E.cargoSlots === G.player.cargoSlots) {
+    E.cargoSlots = (E.cargoSlots || []).map(s => (s && s.id && s.count > 0
+      ? { id: String(s.id), name: s.name, icon: s.icon, count: s.count | 0 }
+      : null));
+  }
+  if (Array.isArray(E.inventory)) {
+    E.inventory = E.inventory.map(r => (r && r.id && r.count > 0
+      ? { id: String(r.id), name: r.name, icon: r.icon, count: r.count | 0 }
+      : r));
+  }
+}
+/** After editing spoils slots: match main hold flow (see applyBoardingSpoilsItemsFromVictor) so ledger/slots never corrupt unrelated state. */
+function syncBoardingPvpVictorInventoryAfterSlotEdit() {
+  try { syncInventoryFromCargoSlots(); } catch (e) {}
+  try { normalizeInventoryMergeStacks(); } catch (e) {}
+  try { reconcileSlotsWithInventory(); } catch (e) {}
+}
 function boardingSpoilsApplyFoeSlotToSelf(fi, sj) {
   const E = G._boardingEnemyHold;
   if (!E) return;
+  ensureBoardingPvpHoldDecoupledFromPlayerHold();
   if (!E.cargoSlots[fi] || E.cargoSlots[fi].count <= 0) return;
   ensureCargoSlots();
   spoilsPointerMergeSlot(E.cargoSlots, fi, G.player.cargoSlots, sj);
-  syncInventoryFromCargoSlots();
+  syncBoardingPvpVictorInventoryAfterSlotEdit();
   renderBoardingSpoilsPvpHoldsRefresh();
 }
 function boardingSpoilsApplySelfSlotToFoe(si, fj) {
   const E = G._boardingEnemyHold;
   if (!E) return;
+  ensureBoardingPvpHoldDecoupledFromPlayerHold();
   ensureCargoSlots();
   spoilsPointerMergeSlot(G.player.cargoSlots, si, E.cargoSlots, fj);
-  syncInventoryFromCargoSlots();
+  syncBoardingPvpVictorInventoryAfterSlotEdit();
   renderBoardingSpoilsPvpHoldsRefresh();
 }
 function boardingSpoilsCompactEnemyLedger() {
@@ -12827,6 +12850,7 @@ function boardingSpoilsCompactEnemyLedger() {
 function boardingSpoilsApplyLedgerToSelfSlot(li, sj) {
   const E = G._boardingEnemyHold;
   if (!E || li < 0 || li >= E.inventory.length) return;
+  ensureBoardingPvpHoldDecoupledFromPlayerHold();
   const row = E.inventory[li];
   if (!row || row.count <= 0) return;
   ensureCargoSlots();
@@ -12847,12 +12871,13 @@ function boardingSpoilsApplyLedgerToSelfSlot(li, sj) {
     else E.inventory[li] = null;
   }
   boardingSpoilsCompactEnemyLedger();
-  syncInventoryFromCargoSlots();
+  syncBoardingPvpVictorInventoryAfterSlotEdit();
   renderBoardingSpoilsPvpHoldsRefresh();
 }
 function boardingSpoilsApplySelfSlotToLedger(si, li) {
   const E = G._boardingEnemyHold;
   if (!E || li < 0 || li >= E.inventory.length) return;
+  ensureBoardingPvpHoldDecoupledFromPlayerHold();
   const st = G.player.cargoSlots[si];
   if (!st || st.count <= 0) return;
   const row = E.inventory[li];
@@ -12872,7 +12897,7 @@ function boardingSpoilsApplySelfSlotToLedger(si, li) {
     else G.player.cargoSlots[si] = null;
   }
   boardingSpoilsCompactEnemyLedger();
-  syncInventoryFromCargoSlots();
+  syncBoardingPvpVictorInventoryAfterSlotEdit();
   renderBoardingSpoilsPvpHoldsRefresh();
 }
 function boardingSpoilsResolveDropTarget(clientX, clientY) {
@@ -17470,9 +17495,14 @@ async function connectToServer() {
         }
         const norm = normalizeBoardingHoldForSpoilsUi(rawSlots, invRaw);
         while (norm.cargoSlots.length < maxB) norm.cargoSlots.push(null);
-        const slots = norm.cargoSlots.slice(0, maxB);
-        G._boardingEnemyHold = { shipType: st, cargoSlots: slots, inventory: norm.inventory, fromPid };
-        G._boardingEnemyInitTotals = boardingEnemyHoldTotalsMap(slots, norm.inventory);
+        const slots = norm.cargoSlots.slice(0, maxB).map(s => (s && s.id && s.count > 0
+          ? { id: String(s.id), name: s.name, icon: s.icon, count: s.count | 0 }
+          : null));
+        const invCloned = norm.inventory.map(r => (r && r.id && r.count > 0
+          ? { id: String(r.id), name: r.name, icon: r.icon, count: r.count | 0 }
+          : r));
+        G._boardingEnemyHold = { shipType: st, cargoSlots: slots, inventory: invCloned, fromPid };
+        G._boardingEnemyInitTotals = boardingEnemyHoldTotalsMap(slots, invCloned);
         try { renderBoardingSpoilsPvpHoldsRefresh(); } catch (e) {}
         break;
       }
@@ -29610,7 +29640,7 @@ function moveUiDragGhost(clientX, clientY) {
       else if (ss === 'self' && to.kind === 'slot' && to.side === 'self' && si !== to.idx) {
         ensureCargoSlots();
         spoilsPointerMergeSlot(G.player.cargoSlots, si, G.player.cargoSlots, to.idx);
-        syncInventoryFromCargoSlots();
+        syncBoardingPvpVictorInventoryAfterSlotEdit();
         renderBoardingSpoilsPvpHoldsRefresh();
       } else if (ss === 'self' && to.kind === 'ledger') boardingSpoilsApplySelfSlotToLedger(si, to.idx);
     }
