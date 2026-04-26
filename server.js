@@ -3383,6 +3383,15 @@ wss.on('connection', (ws, req) => {
           ws.send(JSON.stringify({ type: 'admin_error', error: 'Unknown admin action.' }));
           break;
         }
+        case 'client_ping': {
+          const t0 = msg.t != null && Number.isFinite(Number(msg.t)) ? Number(msg.t) : null;
+          try {
+            ws.send(JSON.stringify(t0 != null
+              ? { type: 'client_pong', t: t0 }
+              : { type: 'client_pong', t: Date.now() }));
+          } catch (e) {}
+          break;
+        }
         case 'get_leaderboard': {
           reconcileLeaderboardRows();
           ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));

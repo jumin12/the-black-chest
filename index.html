@@ -375,6 +375,13 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .clan-role-pill{font-size:9px;padding:2px 7px;border-radius:999px;background:rgba(70,54,36,0.65);color:#d4b878;border:1px solid rgba(120,90,50,0.35);}
 .chat-log-pane{display:none;height:108px;overflow-y:auto;font-size:12px;margin-bottom:8px;padding:6px;border-radius:8px;background:rgba(8,6,5,0.35);border:1px solid rgba(80,60,40,0.25);}
 .chat-log-pane--world{display:block;}
+#chat-log-players.chat-log-pane{height:auto;min-height:120px;max-height:min(40vh,300px);margin-bottom:8px;}
+.chat-players-head{font-size:10px;color:#7a6a58;margin:0 0 8px;line-height:1.45;}
+.chat-players-table{width:100%;font-size:11px;border-collapse:collapse;}
+.chat-players-table th{text-align:left;color:#a09078;font-size:9px;font-weight:600;padding:4px 2px 6px;border-bottom:1px solid rgba(100,80,50,0.35);}
+.chat-players-table td{padding:5px 2px;border-bottom:1px solid rgba(50,40,32,0.25);color:#e0d6c2;vertical-align:top;}
+.chat-players-table td.p-right{text-align:right;font-variant-numeric:tabular-nums;}
+.chat-players-table tr.self-row td{background:rgba(50,40,25,0.35);}
 .chat-log-pane div{margin-bottom:4px;line-height:1.35;}
 #chat-input{width:100%;background:rgba(40,30,20,0.65);border:1px solid rgba(120,90,40,0.4);border-radius:8px;padding:10px;color:#e0d6c2;font-size:14px;outline:none;min-height:44px;}
 #start-screen{position:fixed;top:0;left:0;width:100%;height:100%;background:radial-gradient(ellipse 85% 65% at 50% 20%,rgba(201,162,74,0.07),transparent 55%),transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;padding:max(16px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom));overflow-y:auto;-webkit-overflow-scrolling:touch;}
@@ -2638,6 +2645,7 @@ body.game-help-mobile-minimal #game-help-panel{
     </div>
     <div id="chat-channel-row" class="chat-channel-row">
       <button type="button" id="chat-tab-global" class="chat-tab chat-tab--on">World</button>
+      <button type="button" id="chat-tab-players" class="chat-tab">Players</button>
       <button type="button" id="chat-tab-party" class="chat-tab">Clan</button>
       <button type="button" id="chat-tab-directory" class="chat-tab">Find clan</button>
     </div>
@@ -2648,6 +2656,7 @@ body.game-help-mobile-minimal #game-help-panel{
     </div>
     <div id="chat-party-panel" class="chat-clan-panel" style="display:none;"></div>
     <div id="chat-log-world" class="chat-log-pane chat-log-pane--world" aria-label="World chat log"></div>
+    <div id="chat-log-players" class="chat-log-pane" aria-label="Online captains" style="display:none;"></div>
     <div id="chat-log-clan" class="chat-log-pane" aria-label="Clan chat log"></div>
     <input id="chat-input" placeholder="Type message, press Enter…" />
   </div>
@@ -3254,6 +3263,8 @@ const G = {
   /** Server chat header: captains online / registered accounts (from `server_pop` / `init.serverPop`). */
   serverPopOnline: null,
   serverPopRegistered: null,
+  /** Last measured RTT to game server (ms), from `client_pong` after `client_ping`. */
+  clientServerRttMs: null,
   townFlagMeshes: [],
   /** Per-port `{ cx,cz }` key → `{ goodId: count }` — trade stockpiles & debug display */
   townStockpiles: null,
@@ -17307,6 +17318,13 @@ async function connectToServer() {
       case 'server_pop':
         applyServerPop(msg);
         break;
+      case 'client_pong': {
+        if (msg.t != null && Number.isFinite(Number(msg.t))) {
+          G.clientServerRttMs = Math.max(0, performance.now() - Number(msg.t));
+        }
+        if (G.chatChannel === 'players') renderActivePlayersRoster();
+        break;
+      }
       case 'player_join': {
         if (G.myId == null) break;
         const pl = msg.player;
@@ -17317,6 +17335,7 @@ async function connectToServer() {
         G.otherPlayers.set(pid, row);
         refreshOtherPlayerShipCacheKey(G.otherPlayers.get(pid));
         recalcMultiplayerNpcAuthorityFromPeers();
+        if (G.chatChannel === 'players') renderActivePlayersRoster();
         break;
       }
       case 'player_identity': {
@@ -17347,6 +17366,7 @@ async function connectToServer() {
             try { warmUpGameView(); } catch (e) {}
           });
         }
+        if (G.chatChannel === 'players') renderActivePlayersRoster();
         break;
       }
       case 'npc_authority': {
@@ -17780,6 +17800,7 @@ async function connectToServer() {
         piratesLeaderboardPage = 0;
         updatePiratesPanel();
         renderDebugLeaderboardPanel();
+        if (G.chatChannel === 'players') renderActivePlayersRoster();
         break;
       }
       case 'admin_players':
@@ -20723,24 +20744,109 @@ function applyServerPop(sp) {
   if (el) el.textContent = `${Math.max(0, Math.floor(on))}/${Math.max(0, Math.floor(reg))}`;
 }
 
+let _playersTabPingTimer = null;
+function stopPlayersTabServices() {
+  if (_playersTabPingTimer) {
+    clearInterval(_playersTabPingTimer);
+    _playersTabPingTimer = null;
+  }
+}
+function notoriousRankForCaptainRow(ckRaw, playerId) {
+  try {
+    const board = dedupeLeaderboardForDisplay(leaderboardData).sort(sortLbEntries);
+    const ckN = ckRaw && String(ckRaw).trim() ? captainNameStorageKey(String(ckRaw)) : '';
+    for (let i = 0; i < board.length; i++) {
+      const e = board[i];
+      if (ckN && e.captainKey && captainNameStorageKey(String(e.captainKey)) === ckN) return i + 1;
+    }
+    for (let j = 0; j < board.length; j++) {
+      const e2 = board[j];
+      if (playerId != null && e2.playerId != null && Number(e2.playerId) === Number(playerId)) return j + 1;
+    }
+  } catch (e) {}
+  return null;
+}
+function renderActivePlayersRoster() {
+  const log = document.getElementById('chat-log-players');
+  if (!log) return;
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const myId = G.myId != null ? Number(G.myId) : null;
+  const myCap = getCaptainDisplayCrew();
+  const myName = (myCap && myCap.name) ? String(myCap.name).trim() : 'You';
+  const myCk = G.myCaptainKey || (myCap ? captainNameStorageKey(myCap.name) : '');
+  const myRank = notoriousRankForCaptainRow(myCk || null, myId);
+  const myMs = G.clientServerRttMs != null && Number.isFinite(G.clientServerRttMs) ? Math.round(G.clientServerRttMs) : null;
+  const rLabel = r => (r == null ? '—' : `#${r}`);
+  const rows = [{
+    self: true,
+    name: myName,
+    ship: (G.player && G.player.shipName) ? String(G.player.shipName).trim() : '',
+    rank: myRank,
+    ping: myMs != null ? `${myMs} ms` : '…',
+    pingTitle: 'Your round-trip time to the game server'
+  }];
+  G.otherPlayers.forEach((p, pid) => {
+    if (p == null) return;
+    const name = networkPlayerCaptainName(p) || 'Captain';
+    const ship = (p.shipName && String(p.shipName).trim()) ? String(p.shipName).trim() : '';
+    const ck = p.captainKey ? String(p.captainKey) : '';
+    const rk = notoriousRankForCaptainRow(ck || null, pid);
+    rows.push({
+      self: false,
+      name,
+      ship,
+      rank: rk,
+      ping: '—',
+      pingTitle: 'Per-captain ping is not reported to clients; your own RTT is measured on this device.'
+    });
+  });
+  rows.sort((a, b) => {
+    if (a.self) return -1;
+    if (b.self) return 1;
+    return a.name.localeCompare(b.name);
+  });
+  const pingHead = myMs != null ? ` · your server RTT ${myMs} ms` : '';
+  log.innerHTML = `<div class="chat-players-head">On this server now. Notoriety rank uses the same board as the Captain&rsquo;s Log (Pirates)${pingHead}.</div>
+  <table class="chat-players-table" role="grid" aria-label="Online captains">
+    <thead><tr><th>Captain</th><th class="p-right">Notoriety</th><th class="p-right">Ping</th></tr></thead>
+    <tbody>${rows.map(row => `<tr class="${row.self ? 'self-row' : ''}"><td><div style="font-weight:600;">${row.self ? 'You &middot; ' : ''}${esc(row.name)}</div>${row.ship ? `<div style="font-size:9px;color:#8a7a68;margin-top:2px;">${esc(row.ship)}</div>` : ''}</td><td class="p-right">${rLabel(row.rank)}</td><td class="p-right" title="${esc(row.pingTitle)}">${esc(row.ping)}</td></tr>`).join('')}</tbody>
+  </table>`;
+}
+function startPlayersTabServices() {
+  stopPlayersTabServices();
+  if (G.chatChannel !== 'players') return;
+  const tick = () => {
+    if (G.chatChannel !== 'players') { stopPlayersTabServices(); return; }
+    if (ws && ws.readyState === 1) {
+      try { ws.send(JSON.stringify({ type: 'client_ping', t: performance.now() })); } catch (e) {}
+    }
+    renderActivePlayersRoster();
+  };
+  tick();
+  _playersTabPingTimer = setInterval(tick, 2500);
+}
+
 function setChatChannel(ch) {
-  G.chatChannel = ch === 'party' ? 'party' : ch === 'directory' ? 'directory' : 'global';
+  stopPlayersTabServices();
+  G.chatChannel = ch === 'party' ? 'party' : ch === 'directory' ? 'directory' : ch === 'players' ? 'players' : 'global';
   const gBtn = document.getElementById('chat-tab-global');
+  const plBtn = document.getElementById('chat-tab-players');
   const pBtn = document.getElementById('chat-tab-party');
   const dBtn = document.getElementById('chat-tab-directory');
   const panel = document.getElementById('chat-party-panel');
   const dirPanel = document.getElementById('chat-directory-panel');
   const inp = document.getElementById('chat-input');
   const hint = document.getElementById('chat-channel-hint');
-  if (gBtn && pBtn && dBtn) {
+  if (gBtn && plBtn && pBtn && dBtn) {
     gBtn.classList.toggle('chat-tab--on', G.chatChannel === 'global');
+    plBtn.classList.toggle('chat-tab--on', G.chatChannel === 'players');
     pBtn.classList.toggle('chat-tab--on', G.chatChannel === 'party');
     dBtn.classList.toggle('chat-tab--on', G.chatChannel === 'directory');
   }
   if (panel) panel.style.display = G.chatChannel === 'party' ? 'block' : 'none';
   if (dirPanel) dirPanel.style.display = G.chatChannel === 'directory' ? 'flex' : 'none';
   if (inp) {
-    if (G.chatChannel === 'directory') {
+    if (G.chatChannel === 'directory' || G.chatChannel === 'players') {
       inp.style.display = 'none';
     } else {
       inp.style.display = '';
@@ -20752,6 +20858,8 @@ function setChatChannel(ch) {
   if (hint) {
     if (G.chatChannel === 'directory') {
       hint.textContent = 'Search clans on this server and apply — captains or officers approve under Clan.';
+    } else if (G.chatChannel === 'players') {
+      hint.textContent = 'Active captains on this world session. Notoriety rank matches the Pirates board. Ping shows your own round-trip to the server.';
     } else {
       hint.textContent = G.chatChannel === 'party'
         ? 'Clan chat is private — only captains in your clan (online or listed in the roster) see these messages.'
@@ -20759,16 +20867,24 @@ function setChatChannel(ch) {
     }
   }
   const logW = document.getElementById('chat-log-world');
+  const logP = document.getElementById('chat-log-players');
   const logC = document.getElementById('chat-log-clan');
-  if (logW && logC) {
+  if (logW && logC && logP) {
     if (G.chatChannel === 'party') {
       logW.style.display = 'none';
+      logP.style.display = 'none';
       logC.style.display = 'block';
     } else if (G.chatChannel === 'directory') {
       logW.style.display = 'none';
+      logP.style.display = 'none';
       logC.style.display = 'none';
+    } else if (G.chatChannel === 'players') {
+      logW.style.display = 'none';
+      logC.style.display = 'none';
+      logP.style.display = 'block';
     } else {
       logC.style.display = 'none';
+      logP.style.display = 'none';
       logW.style.display = 'block';
     }
   }
@@ -20779,6 +20895,7 @@ function setChatChannel(ch) {
     requestClanPublicList();
     renderClanDirectoryPanel();
   }
+  if (G.chatChannel === 'players') startPlayersTabServices();
 }
 function requestClanPublicList() {
   if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'party_list_public' }));
@@ -23570,7 +23687,9 @@ document.getElementById('btn-chat').onclick = () => {
     const badge = document.getElementById('chat-badge');
     if (badge) badge.style.display = 'none';
     setChatChannel(G.chatChannel || 'global');
-    setTimeout(() => document.getElementById('chat-input')?.focus(), 50);
+    setTimeout(() => {
+      if (G.chatChannel !== 'players' && G.chatChannel !== 'directory') document.getElementById('chat-input')?.focus();
+    }, 50);
     return;
   }
   const chatBox = document.getElementById('chat-box');
@@ -23583,10 +23702,16 @@ document.getElementById('btn-chat').onclick = () => {
     const badge = document.getElementById('chat-badge');
     if (badge) badge.style.display = 'none';
     setChatChannel(G.chatChannel || 'global');
-    setTimeout(() => document.getElementById('chat-input').focus(), 50);
+    setTimeout(() => {
+      if (G.chatChannel !== 'players' && G.chatChannel !== 'directory') {
+        const ci = document.getElementById('chat-input');
+        if (ci) ci.focus();
+      }
+    }, 50);
   }
 };
 document.getElementById('chat-tab-global')?.addEventListener('click', () => setChatChannel('global'));
+document.getElementById('chat-tab-players')?.addEventListener('click', () => setChatChannel('players'));
 document.getElementById('chat-tab-party')?.addEventListener('click', () => setChatChannel('party'));
 document.getElementById('chat-tab-directory')?.addEventListener('click', () => setChatChannel('directory'));
 document.getElementById('clan-dir-search')?.addEventListener('input', () => {
@@ -29733,6 +29858,26 @@ function isCrewSeaDrop(clientX, clientY) {
     return false;
   }
 }
+function autoscrollCrewDragToPointer(clientX, clientY) {
+  if (!isMobile) return;
+  const scrollHost = document.querySelector('#log-crew .crew-roster-scroll-outer');
+  if (!scrollHost) return;
+  const r = scrollHost.getBoundingClientRect();
+  const M = 72;
+  const maxStep = 44;
+  const relY = clientY - r.top;
+  if (relY < M) {
+    const t = 1 - Math.max(0, relY) / M;
+    scrollHost.scrollTop = Math.max(0, scrollHost.scrollTop - (8 + t * maxStep));
+  } else if (relY > r.height - M) {
+    const t = 1 - (r.height - relY) / M;
+    const maxS = Math.max(0, scrollHost.scrollHeight - scrollHost.clientHeight);
+    if (scrollHost.scrollTop < maxS) {
+      scrollHost.scrollTop = Math.min(maxS, scrollHost.scrollTop + (8 + t * maxStep));
+    }
+  }
+  try { syncCrewRosterScrollbarThumb(); } catch (e) {}
+}
 (function bindCrewCardPointerDrag() {
   const root = document.getElementById('crew-list');
   if (!root) return;
@@ -29774,6 +29919,7 @@ function isCrewSeaDrop(clientX, clientY) {
     } else if (crewPtr.dragging) {
       if (e.cancelable) e.preventDefault();
       moveUiDragGhost(crewPtr.x, crewPtr.y);
+      autoscrollCrewDragToPointer(crewPtr.x, crewPtr.y);
     }
   }
   function endCrewDrag(e) {
