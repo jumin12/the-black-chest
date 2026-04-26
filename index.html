@@ -4962,12 +4962,35 @@ function ensureBareHelmAfterBoardingWin() {
   G.lastAttacker = G.lastAttacker || 'No crew — cannot make way';
   G.player.health = 0;
 }
-/** No free crew to work the ship: add one wounded captain (victim cast-off, or victor with only captives in the brig). */
+/**
+ * No free crew to work the ship: revive the captain row, promote a hand, or only then add a named placeholder.
+ * Avoids a second “generic” captain when the roster still holds a dead captain or non-prisoner identity.
+ */
 function ensureMinimalHelmAfterPvPCastOff() {
   if (countLivingNonPrisonerCrew() > 0) return;
   if (!Array.isArray(G.player.crew)) G.player.crew = [];
-  const cap = getCaptainDisplayCrew();
-  const nm = (cap && cap.name) ? String(cap.name).trim().slice(0, 24) : 'Captain';
+  const capRow = G.player.crew.find(c => c && c.role === 'captain');
+  if (capRow) {
+    const h = capRow.health != null && Number.isFinite(Number(capRow.health)) ? Number(capRow.health) : 0;
+    if (h <= 0) {
+      capRow.health = Math.max(22, Math.min(100, Math.floor(28 + (capRow.skills && capRow.skills.commanding ? clampSkillLv(capRow.skills.commanding) * 3 : 6))));
+      capRow.task = capRow.task || 'helm';
+      trimCrewAndPrisonersToShipLimits();
+      return;
+    }
+  }
+  const standby = G.player.crew.find(c => c && c.role !== 'prisoner' && c.role !== 'captain');
+  if (standby) {
+    const h = standby.health != null && Number.isFinite(Number(standby.health)) ? Number(standby.health) : 0;
+    if (h <= 0) standby.health = 22;
+    standby.role = 'captain';
+    standby.task = 'helm';
+    trimCrewAndPrisonersToShipLimits();
+    return;
+  }
+  let cap = getCaptainDisplayCrew();
+  if (cap && cap.role === 'prisoner') cap = null;
+  const nm = (cap && cap.name) ? String(cap.name).trim().slice(0, 24) : '';
   G.player.crew.push({
     name: nm || 'Captain',
     role: 'captain',
@@ -12464,26 +12487,6 @@ function layoutBoardingTwBarAboveWorld(mx, mz) {
   w.style.transform = 'translate(-50%, -110%)';
   w.style.opacity = (v.z < 1 && v.x > -0.2 && v.x < 1.2) ? '1' : '0.88';
 }
-function ruinCrewAfterPvPBoardingMercy() {
-  if (!Array.isArray(G.player.crew)) G.player.crew = [];
-  /* Empty roster: boarding_spoils mercy branch sinks the player instead of spawning a placeholder captain. */
-  if (!G.player.crew.length) return;
-  const capIdx = G.player.crew.findIndex(c => c && c.role === 'captain');
-  const next = [];
-  if (capIdx >= 0) {
-    const cap = G.player.crew[capIdx];
-    cap.health = Math.max(12, Math.min(100, Math.floor((cap.health != null ? cap.health : 100) * 0.42)));
-    next.push(cap);
-  }
-  const pool = G.player.crew.filter(c => c && c.role !== 'captain' && c.role !== 'prisoner');
-  for (let k = 0; k < pool.length && next.length < 3; k++) {
-    const c = pool[k];
-    c.health = Math.max(8, Math.min(100, Math.floor((c.health != null ? c.health : 100) * 0.28)));
-    next.push(c);
-  }
-  G.player.crew = next.length ? next : [];
-  trimCrewAndPrisonersToShipLimits();
-}
 /** Snapshot of this captain's hull for a sinking decoy (victor's old ship on keep-ship). */
 function captureVictorRelinquishedHullPayload() {
   const cap = getCaptainDisplayCrew();
@@ -13069,6 +13072,23 @@ function addBoardingSpoilsCaptivesFromPrisonerPick(pick, maxPool, healthMult) {
     G.player.crew.push(captiveRecordFromBoardedFighter(roster[idx], healthMult));
   }
 }
+/**
+ * Spoils prisoner indices are the i-th non-prisoner on the defeated roster (same ordering as getBoardingSpoilsFoeFighterRosterResolved on the victor).
+ * Remove highest indices first so slot positions remain valid.
+ */
+function removeTakenPvPCaptivesFromDefeatedRoster(takenArr, maxPool) {
+  if (!Array.isArray(G.player.crew) || !takenArr || takenArr.length === 0) return;
+  const pool = Math.max(1, Math.min(24, maxPool | 0));
+  const sorted = [...new Set(takenArr.map(n => Math.floor(Number(n))).filter(n => Number.isFinite(n) && n >= 0 && n < pool))].sort((a, b) => b - a);
+  for (const idx of sorted) {
+    const fighters = G.player.crew.filter(c => c && c.role !== 'prisoner');
+    const tgt = fighters[idx];
+    if (!tgt) continue;
+    const j = G.player.crew.indexOf(tgt);
+    if (j >= 0) G.player.crew.splice(j, 1);
+  }
+  trimCrewAndPrisonersToShipLimits();
+}
 function queueBoardingSpoilsCrewPortraits() {
   const row = document.getElementById('boarding-spoils-prisoners-row');
   if (!row) return;
@@ -13431,6 +13451,11 @@ function showBoardingSpoilsModal(won, b) {
           if (it.length) spoilPayload.items = it;
           const gift = computeBoardingPvpGiftItemToVictim();
           if (gift.length) spoilPayload.itemsGift = gift;
+          const pick = G._boardingSpoilsPrisonerPick;
+          if (pick && pick instanceof Set && pick.size > 0) {
+            spoilPayload.captivesTaken = [...pick].filter(i => Number.isFinite(i)).sort((a, b) => a - b);
+            spoilPayload.spoilsSurrenderPool = Math.min(12, b.surrenderPool | 0);
+          }
         }
         ws && ws.send(JSON.stringify(spoilPayload));
       } catch (e) {}
@@ -17504,12 +17529,17 @@ async function connectToServer() {
           notify(`They took your command as prize — ${take}g seized from the ledger. You make way in a fresh boat, clear of the fight.`, 7200);
           try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
         } else {
-          /* Loot & cast off: only scuttle sinks the hull; this path is always a limping retreat. */
-          ruinCrewAfterPvPBoardingMercy();
+          /* Loot & cast off: keep roster & names intact; only remove hands the victor took as captives. */
+          const stripN = msg.spoilsSurrenderPool != null && Number.isFinite(Number(msg.spoilsSurrenderPool))
+            ? Math.max(1, Math.min(24, Math.floor(Number(msg.spoilsSurrenderPool))))
+            : 12;
+          if (Array.isArray(msg.captivesTaken) && msg.captivesTaken.length) {
+            try { removeTakenPvPCaptivesFromDefeatedRoster(msg.captivesTaken, stripN); } catch (eRm) {}
+          }
           if (countLivingNonPrisonerCrew() <= 0) ensureMinimalHelmAfterPvPCastOff();
           rebuildPlayerShip();
           updateCrewPanel();
-          notify(`They took ${take}g from the hold and cast off — you're left limping with a skeleton crew.`, 7200);
+          notify(`They took ${take}g from the hold and cast off.`, 7200);
           try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
         }
         break;
