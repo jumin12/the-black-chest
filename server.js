@@ -62,6 +62,9 @@ function sanitizeBoardingFromClient(b) {
   if (b.pl != null && Number.isFinite(Number(b.pl))) {
     o.pl = Math.max(0, Math.min(1, Number(b.pl)));
   }
+  const atIn = b.at != null && Number.isFinite(Number(b.at)) ? Number(b.at)
+    : (b.attackerId != null && Number.isFinite(Number(b.attackerId)) ? Number(b.attackerId) : null);
+  if (atIn != null) o.at = Math.max(0, Math.min(0x7fffffff, Math.floor(atIn)));
   return o;
 }
 /**
