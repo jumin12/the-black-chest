@@ -11926,7 +11926,7 @@ function boardingSimLeaderId(partnerId) {
 /** PvP: only the boarder (attacker) simulates and broadcasts — not min(playerIds), or nobody syncs when defender has a lower id. */
 function boardingPvPAuthorityId(b) {
   if (!b || b.npcSyncId != null || b.partnerPlayerId == null) return null;
-  const a = b.attackerId != null ? netPlayerId(b.attackerId) : null;
+  const a = b.at != null ? netPlayerId(b.at) : (b.attackerId != null ? netPlayerId(b.attackerId) : null);
   return a != null ? a : boardingSimLeaderId(b.partnerPlayerId);
 }
 function boardingIAmSimLeader(b) {
@@ -12173,6 +12173,7 @@ function packPvPNonAuthorityBoardingForNetwork() {
     ex, ez, er
   };
   if (b.phase === 'pull') o.pl = Math.max(0, Math.min(1, Number(b.pullT) || 0));
+  if (b.attackerId != null) o.at = Math.max(0, Math.floor(Number(b.attackerId)));
   return o;
 }
 function packBoardingForNetwork() {
@@ -12182,7 +12183,8 @@ function packBoardingForNetwork() {
     /* `_pvpTermSnap` is re-sent every update until boarding clears — avoids server broadcasting
        boarding=null before peers merge final pa/ea (stuck fight / broken end state). */
     if (b._pvpTermSnap) {
-      return Object.assign({}, b._pvpTermSnap, { sid: Math.floor(Number(b.partnerPlayerId) || 0) });
+      const aSnap = b.attackerId != null ? { at: Math.max(0, Math.floor(Number(b.attackerId))) } : {};
+      return Object.assign({}, b._pvpTermSnap, { sid: Math.floor(Number(b.partnerPlayerId) || 0) }, aSnap);
     }
     if (!boardingIAmSimLeader(b)) {
       return packPvPNonAuthorityBoardingForNetwork();
@@ -12212,6 +12214,7 @@ function packBoardingForNetwork() {
   if (b.lockEX != null && b.lockEZ != null && b.lockER != null) {
     o.ex = b.lockEX; o.ez = b.lockEZ; o.er = b.lockER;
   }
+  if (b.attackerId != null) o.at = Math.max(0, Math.floor(Number(b.attackerId)));
   return o;
 }
 /** Net payloads are authored from the grappler's POV: pa/pTo = boarder, ea/eTo = defender. Local `b` uses p* = self, e* = opponent. */
@@ -12237,6 +12240,10 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
   if (!bo || typeof bo !== 'object') return;
   const b = G.boarding;
   if (!b) return;
+  if (bo.at != null && Number.isFinite(Number(bo.at))) {
+    const aid = netPlayerId(bo.at);
+    if (aid != null) b.attackerId = aid;
+  }
   if (bo.ph === 'e') {
     if (b.phase === 'spoils' || b.phase === 'await_opponent') return;
     const followerPvp = b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null && leaderId != null && Number(G.myId) !== Number(leaderId);
@@ -12440,6 +12447,7 @@ function endBoardingResolution() {
       term.ez = b.lockEZ;
       term.er = b.lockER;
     }
+    if (b.attackerId != null) term.at = Math.max(0, Math.floor(Number(b.attackerId)));
     b._pvpTermSnap = term;
   }
   b.outcomeWon = youWin;
@@ -27199,7 +27207,9 @@ function update(dt) {
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
   if (isMultiplayerHost() && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
-    G.npcSyncTimer = 1 / NPC_NET_SYNC_HZ;
+    /* PvE boarding: locked hulls must not step at 12Hz while the rest of the sim uses 45Hz or grapple visuals desync. */
+    const npcHz = (G.boarding && G.boarding.npcSyncId != null) ? NET_SYNC_HZ : NPC_NET_SYNC_HZ;
+    G.npcSyncTimer = 1 / npcHz;
     const npcData = G.npcs.filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       if (n.sinking) return true;
