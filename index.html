@@ -13090,6 +13090,41 @@ function removeTakenPvPCaptivesFromDefeatedRoster(takenArr, maxPool) {
   }
   trimCrewAndPrisonersToShipLimits();
 }
+/** Scatter remaining ledger cargo as floating loot (cannon-sink style) for boarding scuttle / uncrewed cast-off. */
+function buildHoldLootDropsForShipwreck(cx, cz, maxPieces) {
+  const out = [];
+  const cap = Math.max(4, Math.min(96, maxPieces | 0 || 72));
+  const px = Number(cx), pz = Number(cz);
+  const bx = Number.isFinite(px) ? px : (G.player.x || 0);
+  const bz = Number.isFinite(pz) ? pz : (G.player.z || 0);
+  try { reconcileSlotsWithInventory(); } catch (e) {}
+  const inv = Array.isArray(G.player.inventory) ? G.player.inventory : [];
+  for (const row of inv) {
+    if (!row || !row.id) continue;
+    let c = Math.max(0, Math.floor(Number(row.count) || 0));
+    if (c <= 0) continue;
+    const tid = String(row.id).trim();
+    if (!tid) continue;
+    while (c > 0 && out.length < cap) {
+      const mx = tid === 'gold' ? 60 : ITEM_MAX_STACK;
+      const chunk = Math.min(c, mx);
+      const ang = Math.random() * Math.PI * 2;
+      const rad = 2.5 + Math.random() * 11;
+      out.push({ type: tid, x: bx + Math.sin(ang) * rad, z: bz + Math.cos(ang) * rad, count: chunk });
+      c -= chunk;
+    }
+  }
+  return out;
+}
+function sendLocalShipwreckLootToNet(lootDrops) {
+  if (ws?.readyState !== 1) return;
+  try {
+    const loot = Array.isArray(lootDrops) ? lootDrops : [];
+    const cap = getCaptainDisplayCrew();
+    const nm = (cap && cap.name) ? String(cap.name).trim().slice(0, 28) : ((G.player.shipName && String(G.player.shipName).trim()) || 'Captain');
+    ws.send(JSON.stringify({ type: 'ship_sunk', x: G.player.x, z: G.player.z, loot, name: nm }));
+  } catch (e) {}
+}
 function queueBoardingSpoilsCrewPortraits() {
   const row = document.getElementById('boarding-spoils-prisoners-row');
   if (!row) return;
@@ -17497,7 +17532,8 @@ async function connectToServer() {
         if (scuttleTrue) {
           G.lastAttacker = `${capName} — boarding`;
           G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
-          /* Server also broadcasts ship_sunk so the victor sees the hull go under without waiting on our frame. */
+          const lootScuttle = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
+          sendLocalShipwreckLootToNet(lootScuttle);
           G._suppressNextShipSunkBroadcast = true;
           if (!Array.isArray(G.player.crew)) G.player.crew = [];
           G.player.health = 0;
@@ -17537,11 +17573,21 @@ async function connectToServer() {
           if (Array.isArray(msg.captivesTaken) && msg.captivesTaken.length) {
             try { removeTakenPvPCaptivesFromDefeatedRoster(msg.captivesTaken, stripN); } catch (eRm) {}
           }
-          if (countLivingNonPrisonerCrew() <= 0) ensureMinimalHelmAfterPvPCastOff();
-          rebuildPlayerShip();
-          updateCrewPanel();
-          notify(`They took ${take}g from the hold and cast off.`, 7200);
-          try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
+          if (countLivingNonPrisonerCrew() <= 0) {
+            G.lastAttacker = `${capName} — boarding`;
+            G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
+            const lootCast = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
+            sendLocalShipwreckLootToNet(lootCast);
+            G._suppressNextShipSunkBroadcast = true;
+            if (!Array.isArray(G.player.crew)) G.player.crew = [];
+            G.player.health = 0;
+            notify('They pressed your last hand — the deck is bare and the sea takes you.', 7200);
+          } else {
+            rebuildPlayerShip();
+            updateCrewPanel();
+            notify(`They took ${take}g from the hold and cast off.`, 7200);
+            try { if (ws?.readyState === 1) sendUpdate(); } catch (e) {}
+          }
         }
         break;
       }
