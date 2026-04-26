@@ -3456,12 +3456,9 @@ const wsHeartbeat = setInterval(() => {
   }
 }, WS_PING_INTERVAL_MS);
 
-let serverStateTickSeq = 0;
 setInterval(() => {
   try {
   if (players.size === 0) return;
-  serverStateTickSeq++;
-  const includeCrew = (serverStateTickSeq % 2 === 0);
   const snapshot = Array.from(players.values()).map(p => {
     const row = {
       id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
@@ -3481,7 +3478,7 @@ setInterval(() => {
       deckWalk: p.deckWalk || null,
       boarding: p.boarding != null ? p.boarding : null
     };
-    if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
+    if (Array.isArray(p.crewData)) row.crewData = p.crewData;
     return row;
   });
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
