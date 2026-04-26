@@ -2714,9 +2714,10 @@ wss.on('connection', (ws, req) => {
             }
             const vic = players.get(targetId);
             if (vic) {
+              /* Victim's abandoned hull: decoy for everyone; no captain toast (victim already got boarding_spoils; victorPlayerId was wrongly the victim and confused clients). */
               broadcastAll({
                 type: 'boarding_prize_hull_sink',
-                victorPlayerId: targetId,
+                suppressCaptainNotify: true,
                 namelessHull: true,
                 abandonedLingerSec: 10,
                 emptyCrew: true,
