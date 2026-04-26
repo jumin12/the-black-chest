@@ -686,7 +686,7 @@ const mutedPlayerIds = new Set();
 
 function normalizeLbEntry(e) {
   if (!e || typeof e !== 'object') {
-    return { name: 'Unknown', gold: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardingWins: 0, playerId: null, captainKey: null, shipName: '', partyTag: '' };
+    return { name: 'Unknown', gold: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0, playerId: null, captainKey: null, shipName: '', partyTag: '' };
   }
   const name = String(e.name || 'Pirate').slice(0, 28);
   const shipName = e.shipName != null ? String(e.shipName).slice(0, 28) : '';
@@ -700,8 +700,7 @@ function normalizeLbEntry(e) {
   const sinksPlayer = Math.max(0, Math.floor(Number(e.sinksPlayer) || 0));
   const ransoms = Math.max(0, Math.floor(Number(e.ransoms) || 0));
   const deaths = Math.max(0, Math.floor(Number(e.deaths) || 0));
-  /** Intentionally ignore legacy `boardings` in saved JSON so pre-update tallies do not carry over. */
-  const boardingWins = Math.max(0, Math.floor(Number(e.boardingWins) || 0));
+  const boardings = Math.max(0, Math.floor(Number(e.boardings) || 0));
   const rawPid = e.playerId != null && e.playerId !== '' ? Number(e.playerId) : null;
   const playerId = Number.isFinite(rawPid) ? rawPid : null;
   let captainKey = null;
@@ -709,7 +708,7 @@ function normalizeLbEntry(e) {
     const ck = normalizeCaptainKey(String(e.captainKey));
     if (ck) captainKey = ck;
   }
-  return { name, gold, sinksAi, sinksPlayer, ransoms, deaths, boardingWins, playerId, captainKey, shipName, partyTag };
+  return { name, gold, sinksAi, sinksPlayer, ransoms, deaths, boardings, playerId, captainKey, shipName, partyTag };
 }
 
 /**
@@ -754,7 +753,7 @@ function mergeLeaderboardByIdentity() {
       o.sinksPlayer = Math.max(o.sinksPlayer, e.sinksPlayer);
       o.ransoms = Math.max(o.ransoms, e.ransoms);
       o.deaths = Math.max(o.deaths, e.deaths);
-      o.boardingWins = Math.max(o.boardingWins || 0, e.boardingWins || 0);
+      o.boardings = Math.max(o.boardings || 0, e.boardings || 0);
       if (e.name && e.name !== 'Pirate' && e.name !== 'Unknown') o.name = e.name;
       if (e.shipName && String(e.shipName).trim()) o.shipName = String(e.shipName).slice(0, 28);
       if (e.partyTag != null && String(e.partyTag).trim()) o.partyTag = String(e.partyTag).slice(0, 24);
@@ -905,8 +904,8 @@ function sortLeaderboardHistory() {
   leaderboardHistory.sort((a, b) => {
     const na = normalizeLbEntry(a);
     const nb = normalizeLbEntry(b);
-    const ta = na.sinksAi + na.sinksPlayer + na.ransoms * 0.25 + (na.boardingWins || 0) * 1.35;
-    const tb = nb.sinksAi + nb.sinksPlayer + nb.ransoms * 0.25 + (nb.boardingWins || 0) * 1.35;
+    const ta = na.sinksAi + na.sinksPlayer + na.ransoms * 0.25 + (na.boardings || 0) * 1.35;
+    const tb = nb.sinksAi + nb.sinksPlayer + nb.ransoms * 0.25 + (nb.boardings || 0) * 1.35;
     if (tb !== ta) return tb - ta;
     if (nb.gold !== na.gold) return nb.gold - na.gold;
     return String(na.name).localeCompare(String(nb.name));
@@ -2598,8 +2597,8 @@ wss.on('connection', (ws, req) => {
           const dPl = Math.max(0, Math.floor(Number(msg.sinksPlayer) || 0));
           const dr = Math.max(0, Math.floor(Number(msg.ransoms) || 0));
           const dd = Math.max(0, Math.floor(Number(msg.deaths) || 0));
-          const dBw = Math.max(0, Math.floor(Number(msg.boardingWins != null ? msg.boardingWins : msg.boardings) || 0));
-          if (dg === 0 && dAi === 0 && dPl === 0 && dr === 0 && dd === 0 && dBw === 0) break;
+          const dBo = Math.max(0, Math.floor(Number(msg.boardings) || 0));
+          if (dg === 0 && dAi === 0 && dPl === 0 && dr === 0 && dd === 0 && dBo === 0) break;
           p.kills = (p.kills || 0) + dAi + dPl;
           p.loot = (p.loot || 0) + dg;
           const capName = (p.name || p.shipName || 'Pirate').slice(0, 28);
@@ -2610,7 +2609,7 @@ wss.on('connection', (ws, req) => {
           row.sinksPlayer += dPl;
           row.ransoms += dr;
           row.deaths += dd;
-          row.boardingWins = (row.boardingWins || 0) + dBw;
+          row.boardings = (row.boardings || 0) + dBo;
           leaderboardHistory[idx] = row;
           reconcileLeaderboardRows();
           saveLeaderboard();
