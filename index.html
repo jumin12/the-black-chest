@@ -17580,7 +17580,12 @@ async function connectToServer() {
           if (Array.isArray(msg.captivesTaken) && msg.captivesTaken.length) {
             try { removeTakenPvPCaptivesFromDefeatedRoster(msg.captivesTaken, stripN); } catch (eRm) {}
           }
-          if (countLivingNonPrisonerCrew() <= 0) {
+          /* Deck combat can zero HP on roster rows; still count as crew aboard until explicitly uncrewed. */
+          const hasNonPrisonerRoster = Array.isArray(G.player.crew) && G.player.crew.some(c => c && c.role !== 'prisoner');
+          if (countLivingNonPrisonerCrew() <= 0 && (countLivingRosterAnyRole() > 0 || hasNonPrisonerRoster)) {
+            try { ensureMinimalHelmAfterPvPCastOff(); } catch (eHelm) {}
+          }
+          if (countLivingNonPrisonerCrew() <= 0 && countLivingRosterAnyRole() <= 0) {
             G.lastAttacker = `${capName} — boarding`;
             G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
             const lootCast = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
@@ -17590,6 +17595,7 @@ async function connectToServer() {
             G.player.health = 0;
             notify('They pressed your last hand — the deck is bare and the sea takes you.', 7200);
           } else {
+            G._abandonedShipDriftEnd = null;
             G.player.anchored = false;
             G.player.speed = 1;
             try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (eA) {}
@@ -26068,7 +26074,8 @@ function update(dt) {
   if (!G.spectate && !G.docked && !G.playerSinking && G.player.health > 0 && !G.captainWalk?.active) {
     /* Use *living* sailors: casualties can leave dead entries or empty roster the moment spoils clears G.boarding. */
     const nowAb = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    const inSpoilsGrace = G._boardingWinSpoilsGraceUntil && nowAb < G._boardingWinSpoilsGraceUntil;
+    const inSpoilsGrace = (G._boardingWinSpoilsGraceUntil && nowAb < G._boardingWinSpoilsGraceUntil)
+      || (G._boardingSpoilsCooldownUntil && nowAb < G._boardingSpoilsCooldownUntil);
     if (countLivingNonPrisonerCrew() > 0) {
       G._abandonedShipDriftEnd = null;
     } else if (!G.boarding && !G.boardingVictimAwaitingDecision && !inSpoilsGrace) {
