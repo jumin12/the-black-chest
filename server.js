@@ -7,8 +7,11 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 /** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
 const SERVER_WORLD_T0_MS = Date.now();
-/** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
-const TICK_RATE = 60;
+/**
+ * World state broadcast rate (Hz). Keep index.html NET_SYNC_HZ in sync.
+ * 60 Hz + full crew snapshots melted clients (JSON + main-thread WS handler); 20 Hz is the stable default.
+ */
+const TICK_RATE = 20;
 /** Match client `WORLD_EDGE_CLAMP` (7 * 270 + 135) — reject runaway coordinates from glitched clients. */
 const PLAYER_WORLD_EDGE_CLAMP = 7 * 270 + 135;
 function clampPlayerWorldX(x) {
@@ -3461,7 +3464,13 @@ setInterval(() => {
   try {
   if (players.size === 0) return;
   serverStateTickSeq++;
-  const includeCrew = (serverStateTickSeq % 2 === 0);
+  const t = serverStateTickSeq;
+  /** Crew arrays are large — never attach them at full TICK_RATE for every boarding player. */
+  function shouldAttachCrewRow(p) {
+    if (!Array.isArray(p.crewData) || p.crewData.length === 0) return false;
+    if (p.boarding != null) return t % 2 === 0;
+    return t % 5 === 0;
+  }
   const snapshot = [];
   for (const p of players.values()) {
     try {
@@ -3483,7 +3492,7 @@ setInterval(() => {
         deckWalk: p.deckWalk || null,
         boarding: p.boarding != null ? p.boarding : null
       };
-      if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
+      if (shouldAttachCrewRow(p)) row.crewData = p.crewData;
       snapshot.push(row);
     } catch (eRow) {
       console.error('[playground] state tick skip bad player row:', p && p.id, eRow && eRow.message ? eRow.message : eRow);
