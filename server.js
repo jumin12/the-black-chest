@@ -9,6 +9,13 @@ const PORT = process.env.PORT || 3000;
 const SERVER_WORLD_T0_MS = Date.now();
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
 const TICK_RATE = 45;
+/** Match client `WORLD_EDGE_CLAMP` (7 * 270 + 135) — reject runaway coordinates from glitched clients. */
+const PLAYER_WORLD_EDGE_CLAMP = 7 * 270 + 135;
+function clampPlayerWorldX(x) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return null;
+  return Math.max(-PLAYER_WORLD_EDGE_CLAMP, Math.min(PLAYER_WORLD_EDGE_CLAMP, v));
+}
 /** Matches client `RESERVED_PLAYER_FLAG_IDS` — national / reserved hull-flag PNGs. */
 const RESERVED_PLAYER_FLAG_ASSET_IDS = new Set([10, 13, 15, 16, 19, 21]);
 function sanitizeClientFlagAssetId(v) {
@@ -2039,11 +2046,26 @@ wss.on('connection', (ws, req) => {
         case 'update': {
           const p = players.get(id);
           if (!p) break;
-          if (msg.x !== undefined) p.x = msg.x;
-          if (msg.z !== undefined) p.z = msg.z;
-          if (msg.rotation !== undefined) p.rotation = msg.rotation;
-          if (msg.speed !== undefined) p.speed = msg.speed;
-          if (msg.health !== undefined) p.health = msg.health;
+          if (msg.x !== undefined) {
+            const cx = clampPlayerWorldX(msg.x);
+            if (cx != null) p.x = cx;
+          }
+          if (msg.z !== undefined) {
+            const cz = clampPlayerWorldX(msg.z);
+            if (cz != null) p.z = cz;
+          }
+          if (msg.rotation !== undefined) {
+            const r = Number(msg.rotation);
+            if (Number.isFinite(r)) p.rotation = Math.max(-1e4, Math.min(1e4, r));
+          }
+          if (msg.speed !== undefined) {
+            const sp = Number(msg.speed);
+            if (Number.isFinite(sp)) p.speed = Math.max(-120, Math.min(120, sp));
+          }
+          if (msg.health !== undefined) {
+            const h = Number(msg.health);
+            if (Number.isFinite(h)) p.health = Math.max(-20, Math.min(9999, h));
+          }
           if (msg.docked !== undefined) p.docked = !!msg.docked;
           if (msg.dockX !== undefined) p.dockX = msg.dockX;
           if (msg.dockZ !== undefined) p.dockZ = msg.dockZ;
@@ -2634,6 +2656,7 @@ wss.on('connection', (ws, req) => {
           const scuttle = msg.scuttle === true;
           const keepHull = msg.keepHull === true && !scuttle;
           if (!Number.isFinite(targetId) || !players.has(targetId)) break;
+          if (targetId === id) break;
           const spoilItems = (() => {
             const raw = msg.items;
             if (!Array.isArray(raw)) return [];
@@ -3386,6 +3409,12 @@ wss.on('connection', (ws, req) => {
     const left = players.get(id);
     const leftCk = left && left.captainKey ? normalizeCaptainKey(String(left.captainKey))
       : (ws.captainAccountKey ? normalizeCaptainKey(String(ws.captainAccountKey)) : null);
+    /* Drop boarding engagements that referenced this captain so peers do not follow stale grapple state. */
+    for (const pl of players.values()) {
+      if (!pl.boarding) continue;
+      const sid = Math.floor(Number(pl.boarding.sid));
+      if (Number.isFinite(sid) && sid === id) pl.boarding = null;
+    }
     playerStories.delete(id);
     players.delete(id);
     broadcast({ type: 'player_leave', id });
@@ -3453,7 +3482,7 @@ setInterval(() => {
       deckWalk: p.deckWalk || null,
       boarding: p.boarding != null ? p.boarding : null
     };
-    if (includeCrew && Array.isArray(p.crewData)) row.crewData = p.crewData;
+    if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
     return row;
   });
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
