@@ -3263,7 +3263,7 @@ const G = {
   /** Navigator spectate: `null` or `{ kind:'npc'|'player'|'dock', syncId?, playerId?, dockX?, dockZ?, facing? }` */
   spectate: null,
   /** Lifetime notoriety (persisted in save; synced to server when online). */
-  playerStats: { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 },
+  playerStats: { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 },
   /** First-person deck walk: positions are in ship-local space (see captain walk helpers). */
   captainWalk: {
     active: false,
@@ -3384,7 +3384,9 @@ function syncQuestToggleButton() {
 
 function ensurePlayerStats() {
   if (!G.playerStats || typeof G.playerStats !== 'object') {
-    G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+    G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 };
+  } else if (G.playerStats.boardings == null || !Number.isFinite(G.playerStats.boardings)) {
+    G.playerStats.boardings = 0;
   }
 }
 /** Lifetime notoriety: persist to save and send deltas to the server when online. */
@@ -3396,20 +3398,22 @@ function bumpNotoriety(d) {
   const sinksPlayer = Math.max(0, Math.floor(Number(d.sinksPlayer) || 0));
   const ransoms = Math.max(0, Math.floor(Number(d.ransoms) || 0));
   const deaths = Math.max(0, Math.floor(Number(d.deaths) || 0));
-  if (!gold && !sinksAi && !sinksPlayer && !ransoms && !deaths) return;
+  const boardings = Math.max(0, Math.floor(Number(d.boardings) || 0));
+  if (!gold && !sinksAi && !sinksPlayer && !ransoms && !deaths && !boardings) return;
   const prevSinkTotal = (G.playerStats.sinksAi | 0) + (G.playerStats.sinksPlayer | 0);
   if (gold) G.playerStats.goldEarned += gold;
   if (sinksAi) G.playerStats.sinksAi += sinksAi;
   if (sinksPlayer) G.playerStats.sinksPlayer += sinksPlayer;
   if (ransoms) G.playerStats.ransoms += ransoms;
   if (deaths) G.playerStats.deaths += deaths;
+  if (boardings) G.playerStats.boardings = (G.playerStats.boardings | 0) + boardings;
   if (sinksAi || sinksPlayer) {
     const newSinkTotal = (G.playerStats.sinksAi | 0) + (G.playerStats.sinksPlayer | 0);
     updateShipKillAchievements(prevSinkTotal, newSinkTotal);
   }
   saveProgressDebounced();
   if (ws?.readyState === 1) {
-    const payload = { type: 'leaderboard_update', gold, sinksAi, sinksPlayer, ransoms, deaths };
+    const payload = { type: 'leaderboard_update', gold, sinksAi, sinksPlayer, ransoms, deaths, boardings };
     if (G.myId != null) payload.playerId = G.myId;
     ws.send(JSON.stringify(payload));
   }
@@ -13370,11 +13374,7 @@ function showBoardingSpoilsModal(won, b) {
   if (won) {
     try { document.body.classList.add('boarding-spoils-victory-open'); } catch (e) {}
   }
-  if (won && b.npcSyncId == null) {
-    try { ws && ws.send(JSON.stringify({ type: 'leaderboard_update', boardings: 1 })); } catch (e) {}
-  } else if (won && b.npcSyncId != null) {
-    try { ws && ws.send(JSON.stringify({ type: 'leaderboard_update', boardings: 1 })); } catch (e) {}
-  }
+  if (won) bumpNotoriety({ boardings: 1 });
   if (!won) {
     if (G.boarding) G.boarding = null;
   }
@@ -16804,7 +16804,7 @@ function navigatorWipeLocalVoyageFromBroadcast() {
     localStorage.removeItem(CLAN_LOCAL_SNAPSHOT_KEY);
     localStorage.setItem('pirates_lb_cache', '[]');
   } catch (e) {}
-  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 };
   leaderboardData = [];
   navigatorRegisteredCaptainsList = [];
   updatePiratesPanel();
@@ -19091,6 +19091,7 @@ function renderDebugLeaderboardPanel() {
           <div class="debug-roster-kv"><span>Gold</span><span>${lbRowGold(e)}</span></div>
           <div class="debug-roster-kv"><span>AI sunk</span><span>${lbRowSinksAi(e)}</span></div>
           <div class="debug-roster-kv"><span>Captains sunk</span><span>${lbRowSinksPl(e)}</span></div>
+          <div class="debug-roster-kv"><span>Boarding wins</span><span>${lbRowBoardings(e)}</span></div>
           <div class="debug-roster-kv"><span>Ransoms</span><span>${lbRowRansoms(e)}</span></div>
           <div class="debug-roster-kv"><span>Deaths</span><span>${lbRowDeaths(e)}</span></div>
           ${ck ? `<div class="debug-roster-meta" style="margin-top:6px;">Key: <code style="font-size:9px;">${esc(ck)}</code></div>` : ''}
@@ -22818,6 +22819,7 @@ function lbRowSinksAi(e) {
 function lbRowSinksPl(e) { return Math.max(0, Math.floor(Number(e && e.sinksPlayer) || 0)); }
 function lbRowRansoms(e) { return Math.max(0, Math.floor(Number(e && e.ransoms) || 0)); }
 function lbRowDeaths(e) { return Math.max(0, Math.floor(Number(e && e.deaths) || 0)); }
+function lbRowBoardings(e) { return Math.max(0, Math.floor(Number(e && e.boardings) || 0)); }
 /** Copy `captainKey` onto rows that only have `playerId` when another row ties them (stops double listings). */
 function backfillLbCaptainKeysFromPlayerIds(entries) {
   if (!Array.isArray(entries)) return entries;
@@ -22929,6 +22931,7 @@ function mergeLeaderboardByMaxStats(prev, next) {
     merged.sinksPlayer = Math.max(lbRowSinksPl(cur), lbRowSinksPl(e));
     merged.ransoms = Math.max(lbRowRansoms(cur), lbRowRansoms(e));
     merged.deaths = Math.max(lbRowDeaths(cur), lbRowDeaths(e));
+    merged.boardings = Math.max(lbRowBoardings(cur), lbRowBoardings(e));
     const en = String(e.name || '').trim();
     const cn = String(cur.name || '').trim();
     if (en && (!cn || cn === 'Pirate' || cn === 'Unknown')) merged.name = e.name;
@@ -22943,8 +22946,8 @@ function mergeLeaderboardByMaxStats(prev, next) {
   return Array.from(m.values());
 }
 function sortLbEntries(a, b) {
-  const ta = lbRowSinksAi(a) + lbRowSinksPl(a) + lbRowRansoms(a) * 0.25;
-  const tb = lbRowSinksAi(b) + lbRowSinksPl(b) + lbRowRansoms(b) * 0.25;
+  const ta = lbRowSinksAi(a) + lbRowSinksPl(a) + lbRowRansoms(a) * 0.25 + lbRowBoardings(a) * 1.35;
+  const tb = lbRowSinksAi(b) + lbRowSinksPl(b) + lbRowRansoms(b) * 0.25 + lbRowBoardings(b) * 1.35;
   if (tb !== ta) return tb - ta;
   const ga = lbRowGold(a), gb = lbRowGold(b);
   if (gb !== ga) return gb - ga;
@@ -22986,13 +22989,14 @@ function syncLocalLegendFromEntries(entries) {
   }
   if (!me) return;
   ensurePlayerStats();
-  const g = lbRowGold(me), sai = lbRowSinksAi(me), spl = lbRowSinksPl(me), r = lbRowRansoms(me), d = lbRowDeaths(me);
+  const g = lbRowGold(me), sai = lbRowSinksAi(me), spl = lbRowSinksPl(me), r = lbRowRansoms(me), d = lbRowDeaths(me), bo = lbRowBoardings(me);
   let changed = false;
   if (g > G.playerStats.goldEarned) { G.playerStats.goldEarned = g; changed = true; }
   if (sai > G.playerStats.sinksAi) { G.playerStats.sinksAi = sai; changed = true; }
   if (spl > G.playerStats.sinksPlayer) { G.playerStats.sinksPlayer = spl; changed = true; }
   if (r > G.playerStats.ransoms) { G.playerStats.ransoms = r; changed = true; }
   if (d > G.playerStats.deaths) { G.playerStats.deaths = d; changed = true; }
+  if (bo > (G.playerStats.boardings | 0)) { G.playerStats.boardings = bo; changed = true; }
   if (changed) saveProgress();
 }
 
@@ -23005,6 +23009,7 @@ function defaultAllTimeStats() {
     sinksPlayer: 0,
     ransoms: 0,
     deaths: 0,
+    boardings: 0,
     captainsRetired: 0
   };
 }
@@ -23019,6 +23024,7 @@ function loadAllTimeStats() {
       sinksPlayer: Math.max(0, Math.floor(Number(o.sinksPlayer) || 0)),
       ransoms: Math.max(0, Math.floor(Number(o.ransoms) || 0)),
       deaths: Math.max(0, Math.floor(Number(o.deaths) || 0)),
+      boardings: Math.max(0, Math.floor(Number(o.boardings) || 0)),
       captainsRetired: Math.max(0, Math.floor(Number(o.captainsRetired) || 0))
     };
   } catch (e) {
@@ -23036,6 +23042,7 @@ function addPlayerStatsInto(target, src) {
   target.sinksPlayer += Math.max(0, Math.floor(Number(src.sinksPlayer) || 0));
   target.ransoms += Math.max(0, Math.floor(Number(src.ransoms) || 0));
   target.deaths += Math.max(0, Math.floor(Number(src.deaths) || 0));
+  target.boardings += Math.max(0, Math.floor(Number(src.boardings) || 0));
 }
 /** Fold the current save's career stats into the cross-profile bucket (call before wiping the save on New Game). */
 function retireCurrentCaptainIntoAllTime() {
@@ -23062,6 +23069,7 @@ function getCombinedAllTimeStatsForDisplay() {
     sinksPlayer: at.sinksPlayer + G.playerStats.sinksPlayer,
     ransoms: at.ransoms + G.playerStats.ransoms,
     deaths: at.deaths + G.playerStats.deaths,
+    boardings: (at.boardings | 0) + (G.playerStats.boardings | 0),
     captainsTotal: at.captainsRetired + (hasActiveSaveInStorage() ? 1 : 0)
   };
 }
@@ -23073,7 +23081,7 @@ function clearLocalCareerDataFromServerReset() {
     localStorage.removeItem('pirates_lb_cache');
   } catch (e) {}
   ensurePlayerStats();
-  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 };
   try {
     saveProgress();
   } catch (e2) {}
@@ -23117,6 +23125,7 @@ function updatePiratesPanel() {
     <span style="color:#c8b8e8;">Captains commanded</span> ${tot.captainsTotal} &nbsp;·&nbsp; <span style="color:#d4a848;">Gold earned</span> ${tot.goldEarned}<br>
     <span style="color:#cc8888;">AI sunk</span> ${tot.sinksAi}
     &nbsp;·&nbsp; <span style="color:#88a8cc;">Rival captains sunk</span> ${tot.sinksPlayer}
+    &nbsp;·&nbsp; <span style="color:#c4a86a;">Boarding wins</span> ${tot.boardings}
     &nbsp;·&nbsp; <span style="color:#a8c8a8;">Ransoms</span> ${tot.ransoms} &nbsp;·&nbsp; <span style="color:#9888a8;">Lost at sea</span> ${tot.deaths}</div>`;
   let head = '<div style="color:#d4a848;font-size:12px;margin-bottom:8px;text-align:center;letter-spacing:1px;">TOP PIRATES</div>';
   head += youBlk;
@@ -23139,7 +23148,7 @@ function updatePiratesPanel() {
         <div style="color:#ffd700;font-weight:bold;font-size:15px;min-width:32px;text-align:center;">1st</div>
         <div style="flex:1;min-width:0;">
           <div style="color:#f8ecd0;font-size:15px;font-weight:600;">${escapeDebugHtml(lbEntryDisplayName(top1))}</div>${shipLine}${partyLine}
-          <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:5px;">${lbRowGold(top1)}g · AI ${lbRowSinksAi(top1)} · captains ${lbRowSinksPl(top1)} · ransoms ${lbRowRansoms(top1)} · deaths ${lbRowDeaths(top1)}</div>
+          <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:5px;">${lbRowGold(top1)}g · AI ${lbRowSinksAi(top1)} · captains ${lbRowSinksPl(top1)} · boardings ${lbRowBoardings(top1)} · ransoms ${lbRowRansoms(top1)} · deaths ${lbRowDeaths(top1)}</div>
         </div>
       </div>`;
   }
@@ -23170,7 +23179,7 @@ function updatePiratesPanel() {
     const partyLine = pTag ? `<div style="color:#9acd32;font-size:10px;margin-top:3px;">Party «${escapeDebugHtml(pTag)}»</div>` : '';
     d.innerHTML = `<div style="color:${medalColor};font-weight:bold;font-size:13px;min-width:32px;text-align:center;">${medal}</div>
       <div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${escapeDebugHtml(lbEntryDisplayName(e))}</div>${shipLine}${partyLine}
- <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:4px;">${lbRowGold(e)}g · AI ${lbRowSinksAi(e)} · captains ${lbRowSinksPl(e)} · ransoms ${lbRowRansoms(e)} · deaths ${lbRowDeaths(e)}</div></div>`;
+ <div style="color:#8a7a68;font-size:9px;line-height:1.45;margin-top:4px;">${lbRowGold(e)}g · AI ${lbRowSinksAi(e)} · captains ${lbRowSinksPl(e)} · boardings ${lbRowBoardings(e)} · ransoms ${lbRowRansoms(e)} · deaths ${lbRowDeaths(e)}</div></div>`;
     pageWrap.appendChild(d);
   });
   l.appendChild(pageWrap);
@@ -29076,6 +29085,7 @@ function loadProgress() {
       G.playerStats.sinksPlayer = Math.max(0, Math.floor(Number(ps.sinksPlayer) || 0));
       G.playerStats.ransoms = Math.max(0, Math.floor(Number(ps.ransoms) || 0));
       G.playerStats.deaths = Math.max(0, Math.floor(Number(ps.deaths) || 0));
+      G.playerStats.boardings = Math.max(0, Math.floor(Number(ps.boardings) || 0));
     }
     ensurePlayerStats();
     retroactiveMarqueProgressFromPolitics();
@@ -29409,7 +29419,7 @@ function executeStartNewVoyageAfterConfirm() {
   G.politics = null;
   ensurePolitics();
   G.townStockpiles = {};
-  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0 };
+  G.playerStats = { goldEarned: 0, sinksAi: 0, sinksPlayer: 0, ransoms: 0, deaths: 0, boardings: 0 };
   G.player.x = 0; G.player.z = 0; G.player.rotation = 0; G.player.speed = 0;
   G.player.health = 100; G.player.riggingHealth = 100; G.player.morale = 100;
   G.player.shipName = 'The Black Wave'; G.player.shipType = 'cutter';
