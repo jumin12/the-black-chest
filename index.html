@@ -6833,8 +6833,6 @@ function applyCustomMapPayload(data, statusEl) {
     ? cloneTownStockpileTable(G.townStockpiles)
     : null;
   G.customMap = cm;
-  invalidateNearestPortDockCache();
-  invalidateTradingPortsCache();
   if (cm.wind && typeof cm.wind === 'object') {
     if (cm.wind.angle != null) G.wind.angle = Number(cm.wind.angle);
     if (cm.wind.speed != null) G.wind.speed = Number(cm.wind.speed);
@@ -7283,11 +7281,6 @@ function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, ce
 
 /** Nearest trading port by procedural data (matches chart), not only loaded chunks — keeps story hint and markers aligned with the map. */
 const NEAREST_PORT_SEARCH_HALF = 9000;
-/** ~10k `getProceduralIslandMeta` calls per search; HUD + minimap used to invoke this every frame — cache by quantized position + seed. */
-let _nearestPortDockCache = { wxq: NaN, wzq: NaN, seed: NaN, result: null };
-function invalidateNearestPortDockCache() {
-  _nearestPortDockCache.wxq = NaN;
-}
 function findNearestPortDock(wx, wz) {
   if (G.customMap && G.customMap.towns && G.customMap.towns.length) {
     let best = null, bestD2 = 1e18;
@@ -7299,12 +7292,6 @@ function findNearestPortDock(wx, wz) {
     }
     if (best) return best;
   }
-  const seedU = G.worldSeed >>> 0;
-  const q = 72;
-  const wxq = Math.round(wx / q);
-  const wzq = Math.round(wz / q);
-  const c = _nearestPortDockCache;
-  if (c.result != null && c.wxq === wxq && c.wzq === wzq && c.seed === seedU) return c.result;
   let best = null, bestD2 = 1e18;
   forEachProceduralIslandInWorldBounds(
     wx - NEAREST_PORT_SEARCH_HALF, wx + NEAREST_PORT_SEARCH_HALF,
@@ -7316,10 +7303,6 @@ function findNearestPortDock(wx, wz) {
       if (d2 < bestD2) { bestD2 = d2; best = meta; }
     }, wx, wz
   );
-  c.result = best;
-  c.wxq = wxq;
-  c.wzq = wzq;
-  c.seed = seedU;
   return best;
 }
 
@@ -8101,25 +8084,15 @@ function collectPortsInArea(wx, wz, half) {
   return out;
 }
 /** Every charted port in the world (for one merchant per town). */
-let _allTradingPortsCacheKey = '';
-let _allTradingPortsCacheList = null;
-function invalidateTradingPortsCache() {
-  _allTradingPortsCacheKey = '';
-  _allTradingPortsCacheList = null;
-}
 function collectAllTradingPorts() {
   if (G.customMap && G.customMap.towns && G.customMap.towns.length) {
     return G.customMap.towns.filter(t => t.hasTown && t.dockX != null);
   }
-  const key = String(G.worldSeed >>> 0);
-  if (_allTradingPortsCacheList && _allTradingPortsCacheKey === key) return _allTradingPortsCacheList;
   const out = [];
   const lim = WORLD_EDGE_CLAMP;
   forEachProceduralIslandInWorldBounds(-lim, lim, -lim, lim, m => {
     if (m.hasTown && m.dockX != null) out.push(m);
   }, 0, 0);
-  _allTradingPortsCacheKey = key;
-  _allTradingPortsCacheList = out;
   return out;
 }
 /** First harbor with a governor board for this crown — used for marque chart hints. */
@@ -14203,12 +14176,7 @@ function pickUniqueNPCShipNames(count, rng) {
   return order.slice(0, n).map(i => NPC_SHIP_NAMES[i]);
 }
 function isMultiplayerHost() {
-  if (!ws) {
-    G.multiplayerNpcAuthorityId = null;
-    return true;
-  }
-  /* CONNECTING / CLOSING: keep driving NPCs locally until the socket is OPEN and `npc_sync` / `init` assign roles. */
-  if (ws.readyState !== 1) {
+  if (!ws || ws.readyState !== 1) {
     G.multiplayerNpcAuthorityId = null;
     return true;
   }
@@ -16952,8 +16920,6 @@ function destroyAmbientWildlife() {
 function applySharedWorldFromServerSeed(s, opts) {
   opts = opts || {};
   const seed = Number(s) >>> 0;
-  invalidateNearestPortDockCache();
-  invalidateTradingPortsCache();
   G.customMap = null;
   G.worldSeed = seed;
   G.seed = seed;
@@ -17653,12 +17619,12 @@ async function connectToServer() {
           if (Array.isArray(msg.captivesTaken) && msg.captivesTaken.length) {
             try { removeTakenPvPCaptivesFromDefeatedRoster(msg.captivesTaken, stripN); } catch (eRm) {}
           }
-          /* Deck combat often leaves 0 HP on roster rows; reconcile helm before treating the ship as uncrewed. */
-          const hasNonPrisonerRoster = Array.isArray(G.player.crew) && G.player.crew.some(c => c && c.role !== 'prisoner');
-          if (countLivingNonPrisonerCrew() <= 0 && (countLivingRosterAnyRole() > 0 || hasNonPrisonerRoster)) {
+          /* Deck combat can leave 0 HP on non-prisoner rows; revive those before treating the ship as uncrewed. */
+          const hasNonPrisonerRow = Array.isArray(G.player.crew) && G.player.crew.some(c => c && c.role !== 'prisoner');
+          if (countLivingNonPrisonerCrew() <= 0 && hasNonPrisonerRow) {
             try { ensureMinimalHelmAfterPvPCastOff(); } catch (eHelm) {}
           }
-          /* Only founder if there is truly no one left who can work the ship (empty roster / all taken). */
+          /* No able hands (and no non-prisoner bodies to revive): empty hold, prisoners-only, or all taken — founder. */
           if (countLivingNonPrisonerCrew() <= 0) {
             G.lastAttacker = `${capName} — boarding`;
             G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
@@ -29376,11 +29342,6 @@ document.getElementById('start-btn').onclick = () => {
     }
     resetMenuBoardingState();
     document.getElementById('create-screen').style.display = 'none';
-    if (!loadProgress()) {
-      notify('Could not load voyage data from this device.');
-      refreshMainMenuSavePanel();
-      return;
-    }
     G.mode = 'playing';
     G.player.speed = Math.max(G.player.speed, 1);
     G.fallbackWorldSeed = CANONICAL_DEFAULT_WORLD_SEED >>> 0;
@@ -29392,41 +29353,32 @@ document.getElementById('start-btn').onclick = () => {
     G.townFlagMeshes = [];
     destroyAmbientWildlife();
     noise = new SimplexNoise(G.worldSeed);
-    clampPlayerIntoWorldBounds();
     ensurePlayerInOpenOcean();
-    const runContinueWorldHeavy = () => {
-      updateChunks();
-      spawnNPCs();
-      { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z); }
-      rebuildPlayerShip();
-      trimCrewAndPrisonersToShipLimits();
-      normalizeInventoryMergeStacks();
-      ensureCargoSlots();
-      reconcileSlotsWithInventory();
-      initTownStockpiles();
-      scatterWindStreaksNearPlayer();
-      seedDecorativeWildlifeNearPlayer();
-      nudgePlayerSpawnClearOfShips();
-      try { saveProgressDebounced(); } catch (e) {}
-      document.getElementById('start-screen').style.display = 'none';
-      revealGameHudAfterFirstStableFrame(() => {
-        document.getElementById('ui-layer').style.display = 'block';
-        if (isMobile) {
-          document.getElementById('touch-controls').style.display = 'block';
-          const tz1 = document.getElementById('touch-zoom');
-          if (tz1) { tz1.style.display = 'flex'; syncTouchZoomLayer(); }
-          applyMobileControlScheme(G.mobileControlScheme);
-        }
-        startServerSeedPrefetch();
-        connectToServer();
-        schedulePlayWorldNetFallback();
-        renderer.domElement.focus(); document.body.focus();
-        applyWebAudioSfxMasterGain();
-        syncMusicAndTravelVolume();
-        notify('Progress restored');
-      });
-    };
-    requestAnimationFrame(() => requestAnimationFrame(runContinueWorldHeavy));
+    updateChunks();
+    spawnNPCs();
+    { const _w = playerShipWaveAt(G.player.x, G.player.z, G.player.rotation); playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z); }
+    rebuildPlayerShip();
+    normalizeInventoryMergeStacks();
+    ensureCargoSlots();
+    reconcileSlotsWithInventory();
+    saveProgress();
+    document.getElementById('start-screen').style.display = 'none';
+    revealGameHudAfterFirstStableFrame(() => {
+      document.getElementById('ui-layer').style.display = 'block';
+      if (isMobile) {
+        document.getElementById('touch-controls').style.display = 'block';
+        const tz1 = document.getElementById('touch-zoom');
+        if (tz1) { tz1.style.display = 'flex'; syncTouchZoomLayer(); }
+        applyMobileControlScheme(G.mobileControlScheme);
+      }
+      startServerSeedPrefetch();
+      connectToServer();
+      schedulePlayWorldNetFallback();
+      renderer.domElement.focus(); document.body.focus();
+      applyWebAudioSfxMasterGain();
+      syncMusicAndTravelVolume();
+      notify('Progress restored');
+    });
   } else {
     document.getElementById('start-screen').style.display = 'none';
     document.getElementById('create-screen').style.display = 'block';
