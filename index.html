@@ -4953,11 +4953,27 @@ function countLivingNonPrisonerCrew() {
   }
   return n;
 }
-/** If boarding ends with no living hands (all lost or pressed), the ship is lost — do not spawn a ghost captain. */
-function ensureBareHelmAfterBoardingWin() {
+/**
+ * After a boarding *victory*, the abstract fight may still show hands while local crew sync removed every station
+ * (PvP merge edge). Never sink the victor here — restore a minimal helm so "Take loot & go" cannot scuttle both sides.
+ */
+function ensureVictorHasHelmAfterBoardingSpoils() {
   if (countLivingNonPrisonerCrew() > 0) return;
-  G.lastAttacker = G.lastAttacker || 'No crew — cannot make way';
-  G.player.health = 0;
+  if (!Array.isArray(G.player.crew)) G.player.crew = [];
+  for (const c of G.player.crew) {
+    if (!c || c.role === 'prisoner') continue;
+    const h0 = c.health != null && Number.isFinite(Number(c.health)) ? Number(c.health) : 0;
+    if (h0 <= 0) c.health = 36;
+  }
+  if (countLivingNonPrisonerCrew() > 0) return;
+  const capName = (typeof G.player.name === 'string' && G.player.name.trim()) ? G.player.name.trim().slice(0, 28) : '';
+  G.player.crew.push(normalizeCrewMemberRecord({
+    name: capName || 'Captain',
+    role: 'captain',
+    task: 'helm',
+    health: 52,
+    color: '#8a7060'
+  }));
 }
 function markBoardingVictorySpoilsGrace() {
   const t = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -13345,7 +13361,7 @@ function showBoardingSpoilsModal(won, b) {
       trimCrewAndPrisonersToShipLimits();
     }
     addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, Math.min(12, b.surrenderPool | 0), 0.72);
-    ensureBareHelmAfterBoardingWin();
+    ensureVictorHasHelmAfterBoardingSpoils();
     rebuildPlayerShip(); updateCrewPanel();
     hideBoardingSpoilsModal();
     clearBoardingBodyMarkers();
@@ -13386,7 +13402,7 @@ function showBoardingSpoilsModal(won, b) {
         } catch (e) {}
       }
     }
-    ensureBareHelmAfterBoardingWin();
+    ensureVictorHasHelmAfterBoardingSpoils();
     rebuildPlayerShip(); updateCrewPanel();
     hideBoardingSpoilsModal();
     clearBoardingBodyMarkers();
@@ -13436,7 +13452,7 @@ function showBoardingSpoilsModal(won, b) {
         ws && ws.send(JSON.stringify(spoilPayload));
       } catch (e) {}
     }
-    ensureBareHelmAfterBoardingWin();
+    ensureVictorHasHelmAfterBoardingSpoils();
     rebuildPlayerShip(); updateCrewPanel();
     hideBoardingSpoilsModal();
     clearBoardingBodyMarkers();
@@ -17438,7 +17454,7 @@ async function connectToServer() {
         const keepHull = msg.keepHull === true && !scuttleTrue;
         const prisonersTakenNet = Math.max(0, Math.min(24, Math.floor(Number(msg.prisonersTaken) || 0)));
         const surrenderPoolTotalNet = Math.max(0, Math.min(24, Math.floor(Number(msg.surrenderPoolTotal) || 0)));
-        const pressedFullSurrenderRoster = !scuttleTrue && !keepHull && surrenderPoolTotalNet > 0 && prisonersTakenNet >= surrenderPoolTotalNet;
+        const pressedFullSurrenderRoster = !scuttleTrue && !keepHull && surrenderPoolTotalNet > 0 && prisonersTakenNet > 0 && prisonersTakenNet >= surrenderPoolTotalNet;
         const giftItems = Array.isArray(msg.itemsGift) ? msg.itemsGift : [];
         if (Array.isArray(msg.items) && msg.items.length) {
           try { applyBoardingSpoilsItemsFromVictor(msg.items); } catch (e) {}
