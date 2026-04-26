@@ -554,6 +554,9 @@
   const PROC_EDGE_WARP_AMP1 = 0.10;
   const PROC_EDGE_WARP_AMP2 = 0.038;
   const PROC_COAST_WOBBLE = 0.045;
+  const PROC_BEACH_OUTER = 0.092;
+  const PROC_BEACH_INNER_W = 0.088;
+  const PROC_BEACH_SHELF_LIFT = 3.25;
   /** Same deterministic port names as index.html `getProceduralIslandMeta`. */
   const TOWN_NAME_LEXICON_ED = (() => {
     const p = ['Port','Cape','New','Fort','East','West','North','South','Great','Little','Lost','Fair','Grim','High','Low',"Sailor's","Pirate's","Crow's",'Keel','Black','Red','White','Gold','Silver','Grey','Storm','Salt','Brine','Tide','Wave','Moon','Drift','Wreck','Anchor',"Smuggler's",'Barnacle',"King's","Queen's",'Rum','Dead','Lone','Free','Noble','Wild','Drowned','Hidden','Morrow','Sable','Ashen','Velvet','Iron','Coral','Pearl','Cursed','Blessed','Jolly','Misty','Crimson','Azure','Bitter','Sweet','Broken','Hollow','Proud','Humble','Fallow','Green','Blue','Northern','Southern','Eastern','Western'];
@@ -1682,8 +1685,20 @@
     const falloff = Math.max(0, 1 - warpedDist * warpedDist);
     let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
     const isLand = ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
+    let beachBlend = 0;
     if (!isLand) {
-      positions.setY(i, PROC_SEABED_Y);
+      if (warpedDist >= PROC_LAND_WARP_MAX && warpedDist < PROC_LAND_WARP_MAX + PROC_BEACH_OUTER) {
+        beachBlend = Math.max(beachBlend, 1 - (warpedDist - PROC_LAND_WARP_MAX) / PROC_BEACH_OUTER);
+      }
+      if (warpedDist < PROC_LAND_WARP_MAX && ht <= PROC_LAND_HT_MIN && ht > 0.018) {
+        beachBlend = Math.max(beachBlend,
+          Math.min(1, ht / (PROC_LAND_HT_MIN * 0.94)) * Math.min(1, (PROC_LAND_WARP_MAX - warpedDist) / PROC_BEACH_INNER_W));
+      }
+      if (beachBlend > 0) {
+        positions.setY(i, PROC_SEABED_Y + beachBlend * PROC_BEACH_SHELF_LIFT);
+      } else {
+        positions.setY(i, PROC_SEABED_Y);
+      }
     } else {
       ht = Math.max(PROC_LAND_HT_MIN, ht);
       positions.setY(i, ht);
@@ -1692,30 +1707,42 @@
     const slope = dist > 0.01 ? Math.max(0, ht) / (dist * islandRadius) : 0;
     let r, gcol, b;
     if (!isLand) {
-      r = 0.04; gcol = 0.10; b = 0.18;
-    } else if (nh < 0.5) {
-        const t = nh / 0.5;
-        const dryness = islandNoise.noise2D(px * 0.1, pz * 0.1) * 0.5 + 0.5;
+      const deepR = 0.04, deepG = 0.10, deepB = 0.18;
+      if (beachBlend > 0.035) {
         const sandR = 0.86, sandG = 0.76, sandB = 0.53;
-        const grassR = 0.32 - t * 0.10 + dryness * 0.06;
-        const grassG = 0.60 - t * 0.08 - dryness * 0.04;
-        const grassB = 0.30 - t * 0.05;
-        r = sandR * (1 - t) + grassR * t;
-        gcol = sandG * (1 - t) + grassG * t;
-        b = sandB * (1 - t) + grassB * t;
-      } else if (nh < 0.75) {
-        const t = (nh - 0.5) / 0.25;
-        r = 0.22 + t * 0.25; gcol = 0.52 - t * 0.15; b = 0.25 + t * 0.15;
-      } else if (nh < 0.88) {
-        r = 0.55; gcol = 0.53; b = 0.48;
-        if (slope > 0.5) { r += 0.1; gcol += 0.08; b += 0.08; }
+        const bb = Math.min(1, beachBlend);
+        const sn = islandNoise.noise2D(px * 0.31, pz * 0.29) * 0.045;
+        r = deepR * (1 - bb) + sandR * bb + sn;
+        gcol = deepG * (1 - bb) + sandG * bb + sn * 0.88;
+        b = deepB * (1 - bb) + sandB * bb + sn * 0.55;
       } else {
-        const tm = Math.min(1, (nh - 0.88) / 0.12);
-        r = 0.48 + tm * 0.14; gcol = 0.46 + tm * 0.13; b = 0.5 + tm * 0.12;
-        if (slope > 0.55) { r += 0.06; gcol += 0.06; b += 0.06; }
+        r = deepR; gcol = deepG; b = deepB;
       }
-      r = Math.max(0, Math.min(1, r)); gcol = Math.max(0, Math.min(1, gcol)); b = Math.max(0, Math.min(1, b));
-      colors[i * 3] = r; colors[i * 3 + 1] = gcol; colors[i * 3 + 2] = b;
+    } else if (nh < 0.5) {
+      const t = nh / 0.5;
+      const dryness = islandNoise.noise2D(px * 0.1, pz * 0.1) * 0.5 + 0.5;
+      const sandR = 0.86, sandG = 0.76, sandB = 0.53;
+      const grassR = 0.32 - t * 0.10 + dryness * 0.06;
+      const grassG = 0.60 - t * 0.08 - dryness * 0.04;
+      const grassB = 0.30 - t * 0.05;
+      const coastBias = Math.max(0, Math.min(1, (warpedDist - (PROC_LAND_WARP_MAX - 0.14)) / 0.14));
+      const tGrass = t * (1 - coastBias * 0.62);
+      r = sandR * (1 - tGrass) + grassR * tGrass;
+      gcol = sandG * (1 - tGrass) + grassG * tGrass;
+      b = sandB * (1 - tGrass) + grassB * tGrass;
+    } else if (nh < 0.75) {
+      const t = (nh - 0.5) / 0.25;
+      r = 0.22 + t * 0.25; gcol = 0.52 - t * 0.15; b = 0.25 + t * 0.15;
+    } else if (nh < 0.88) {
+      r = 0.55; gcol = 0.53; b = 0.48;
+      if (slope > 0.5) { r += 0.1; gcol += 0.08; b += 0.08; }
+    } else {
+      const tm = Math.min(1, (nh - 0.88) / 0.12);
+      r = 0.48 + tm * 0.14; gcol = 0.46 + tm * 0.13; b = 0.5 + tm * 0.12;
+      if (slope > 0.55) { r += 0.06; gcol += 0.06; b += 0.06; }
+    }
+    r = Math.max(0, Math.min(1, r)); gcol = Math.max(0, Math.min(1, gcol)); b = Math.max(0, Math.min(1, b));
+    colors[i * 3] = r; colors[i * 3 + 1] = gcol; colors[i * 3 + 2] = b;
     }
     positions.needsUpdate = true;
     terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
