@@ -2715,12 +2715,6 @@ wss.on('connection', (ws, req) => {
               const spoilPayload = { type: 'boarding_spoils', victimId: targetId, from: id, gold, scuttle, keepHull };
               if (spoilItems.length) spoilPayload.items = spoilItems;
               if (spoilItemsGift.length) spoilPayload.itemsGift = spoilItemsGift;
-              if (msg.prisonersTaken != null && Number.isFinite(Number(msg.prisonersTaken))) {
-                spoilPayload.prisonersTaken = Math.max(0, Math.min(24, Math.floor(Number(msg.prisonersTaken))));
-              }
-              if (msg.surrenderPoolTotal != null && Number.isFinite(Number(msg.surrenderPoolTotal))) {
-                spoilPayload.surrenderPoolTotal = Math.max(0, Math.min(24, Math.floor(Number(msg.surrenderPoolTotal))));
-              }
               tws.send(JSON.stringify(spoilPayload));
             } catch (e) {}
           }
