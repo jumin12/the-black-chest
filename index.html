@@ -17619,18 +17619,41 @@ async function connectToServer() {
           if (Array.isArray(msg.captivesTaken) && msg.captivesTaken.length) {
             try { removeTakenPvPCaptivesFromDefeatedRoster(msg.captivesTaken, stripN); } catch (eRm) {}
           }
-          /* Cast off is mercy: never founder here; put a hand at the helm if casualties left none fit to sail. */
-          if (countLivingNonPrisonerCrew() <= 0) {
-            try { ensureMinimalHelmAfterPvPCastOff(); } catch (eHelm) {}
+          /* Empty roster after captives = uncrewed hulk. Otherwise revive 0-HP hands so deck combat doesn't read as "no crew". */
+          if (!Array.isArray(G.player.crew) || G.player.crew.length === 0) {
+            G.lastAttacker = `${capName} — boarding`;
+            G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
+            const lootCast = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
+            sendLocalShipwreckLootToNet(lootCast);
+            G._suppressNextShipSunkBroadcast = true;
+            G.player.crew = [];
+            G.player.health = 0;
+            notify('No living crew left — the hulk is left for the sea.', 7200);
+          } else {
+            const hasNonPrisonerRoster = G.player.crew.some(c => c && c.role !== 'prisoner');
+            if (countLivingNonPrisonerCrew() <= 0 && (countLivingRosterAnyRole() > 0 || hasNonPrisonerRoster)) {
+              try { ensureMinimalHelmAfterPvPCastOff(); } catch (eHelm) {}
+            }
+            if (countLivingNonPrisonerCrew() <= 0) {
+              G.lastAttacker = `${capName} — boarding`;
+              G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
+              const lootCast = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
+              sendLocalShipwreckLootToNet(lootCast);
+              G._suppressNextShipSunkBroadcast = true;
+              G.player.crew = [];
+              G.player.health = 0;
+              notify('No living crew left — the hulk is left for the sea.', 7200);
+            } else {
+              G._abandonedShipDriftEnd = null;
+              G.player.anchored = false;
+              G.player.speed = 1;
+              try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (eA) {}
+              rebuildPlayerShip();
+              updateCrewPanel();
+              notify(`They took ${take}g from the hold and cast off.`, 7200);
+              try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
+            }
           }
-          G._abandonedShipDriftEnd = null;
-          G.player.anchored = false;
-          G.player.speed = 1;
-          try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (eA) {}
-          rebuildPlayerShip();
-          updateCrewPanel();
-          notify(`They took ${take}g from the hold and cast off.`, 7200);
-          try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
         }
         break;
       }
@@ -25979,7 +26002,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
 }
 
 /**
- * Dead-reckon using the server’s speed + heading (45Hz), then soft-correct to x/z/rotation.
+ * Dead-reckon using the server’s speed + heading (60Hz), then soft-correct to x/z/rotation.
  * Avoids the old local-wind “prediction” that fought authority and made other ships skip on the host.
  */
 function advanceRemoteShipNetSmooth(sg, p, dt) {
@@ -26004,34 +26027,35 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
   const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
   const th = authR;
-  /* Light prediction + gentler authority snap — harsh correction caused visible rubberband at 45Hz state. */
+  /* Light prediction + authority snap — tuned for ~60Hz state broadcasts. */
   if (Math.abs(v) > 0.006) {
-    const pred = 0.4;
+    const pred = 0.52;
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
-  const posK = 1 - Math.exp(-(err > 14 ? 10.5 : 7.2) * dt);
+  const posK = 1 - Math.exp(-(err > 14 ? 9.6 : 6.4) * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-18 * dt);
+  const rotK = 1 - Math.exp(-14 * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
 
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE for smooth remote motion. */
-const NET_SYNC_HZ = 45;
+const NET_SYNC_HZ = 60;
 /** Host NPC state must use the same cadence for all clients (mobile + desktop) to avoid visible desync. */
 const NPC_NET_SYNC_HZ = NET_SYNC_HZ;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 /** Throttle roster-heavy crew payloads on the periodic net tick (explicit sendUpdate() still sends full crew). */
 function shouldIncludeCrewOnPeriodicNetTick() {
-  /* Any active boarding (incl. await_opponent): crew must publish every outbound tick or PvP spoils/desync. */
-  if (G.boarding) return true;
-  if (G.boardingVictimAwaitingDecision) return true;
+  /* PvP boarding: always send crew so server/state never goes stale during pull, fight, spoils, or await_opponent. */
+  if (G.boarding && G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null) return true;
+  /* During NPC grapple / deck fight, crew casualties must reach the server every tick (not ~4 Hz) or peers desync. */
+  if (G.boarding && G.boarding.phase !== 'spoils' && G.boarding.phase !== 'await_opponent') return true;
   const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   if (G._lastPeriodicCrewNetAt == null) G._lastPeriodicCrewNetAt = 0;
   if (now - G._lastPeriodicCrewNetAt >= 240) {
@@ -27205,8 +27229,8 @@ function update(dt) {
   if (sendTimer <= 0) {
     sendUpdate(shouldIncludeCrewOnPeriodicNetTick());
     const pvpGrapple = !!(G.boarding && G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null
-      && (G.boarding.phase === 'pull' || G.boarding.phase === 'fight' || G.boarding.phase === 'await_opponent'));
-    sendTimer = ws?.readyState === 1 ? (pvpGrapple ? (1 / 60) : (1 / NET_SYNC_HZ)) : 0.05;
+      && (G.boarding.phase === 'pull' || G.boarding.phase === 'fight'));
+    sendTimer = ws?.readyState === 1 ? (pvpGrapple ? (1 / 72) : (1 / NET_SYNC_HZ)) : 0.05;
   }
 
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
