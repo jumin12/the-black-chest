@@ -1983,7 +1983,8 @@ wss.on('connection', (ws, req) => {
     deckWalk: null,
     boarding: null,
     partyTag: '',
-    clientIp
+    clientIp,
+    rtt: null
   };
 
   players.set(id, playerData);
@@ -3392,6 +3393,13 @@ wss.on('connection', (ws, req) => {
           } catch (e) {}
           break;
         }
+        case 'rtt_update': {
+          const raw = msg.ms != null ? Number(msg.ms) : NaN;
+          if (!Number.isFinite(raw) || raw < 0 || raw > 120000) break;
+          const pl = players.get(id);
+          if (pl) pl.rtt = Math.min(120000, Math.round(raw));
+          break;
+        }
         case 'get_leaderboard': {
           reconcileLeaderboardRows();
           ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
@@ -3491,7 +3499,8 @@ setInterval(() => {
       riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
       morale: p.morale != null ? p.morale : 100,
       deckWalk: p.deckWalk || null,
-      boarding: p.boarding != null ? p.boarding : null
+      boarding: p.boarding != null ? p.boarding : null,
+      rtt: p.rtt != null && Number.isFinite(p.rtt) ? Math.min(120000, Math.round(p.rtt)) : null
     };
     if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
     return row;

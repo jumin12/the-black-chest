@@ -3268,6 +3268,8 @@ const G = {
   serverPopRegistered: null,
   /** Last measured RTT to game server (ms), from `client_pong` after `client_ping`. */
   clientServerRttMs: null,
+  /** Throttle `rtt_update` WebSocket messages to the server. */
+  _lastRttReportAt: 0,
   townFlagMeshes: [],
   /** Per-port `{ cx,cz }` key → `{ goodId: count }` — trade stockpiles & debug display */
   townStockpiles: null,
@@ -13723,7 +13725,7 @@ function tickRemoteBoardingSpectatorUi() {
 function updateBoardingUiOverlay() {
   const btn = document.getElementById('board-prompt-btn');
   if (!btn) return;
-  if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.boarding || !isFloatingNametagVisibleNow()) {
+  if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.boarding || !isFloatingNametagVisibleNow() || isBoardingPromptObscuredByMenus()) {
     btn.style.display = 'none';
     return;
   }
@@ -17194,6 +17196,7 @@ async function connectToServer() {
 }
   G.myId = null;
   G.multiplayerNpcAuthorityId = null;
+  try { stopMultiplayerRttLoop(); } catch (e) {}
   let socket;
   try { socket = new WebSocket(url); } catch (e) { return; }
   ws = socket;
@@ -17317,6 +17320,7 @@ async function connectToServer() {
             playWorldNetTimeoutId = null;
           }
         }
+        try { if (G.mode === 'playing' && G.myId != null) startMultiplayerRttLoop(); } catch (e) {}
         break;
       case 'server_pop':
         applyServerPop(msg);
@@ -17324,6 +17328,13 @@ async function connectToServer() {
       case 'client_pong': {
         if (msg.t != null && Number.isFinite(Number(msg.t))) {
           G.clientServerRttMs = Math.max(0, performance.now() - Number(msg.t));
+        }
+        if (G.myId != null && G.clientServerRttMs != null && ws?.readyState === 1) {
+          const tNow = performance.now();
+          if (!G._lastRttReportAt || tNow - G._lastRttReportAt > 2000) {
+            G._lastRttReportAt = tNow;
+            try { ws.send(JSON.stringify({ type: 'rtt_update', ms: Math.round(G.clientServerRttMs) })); } catch (e) {}
+          }
         }
         if (G.chatChannel === 'players') renderActivePlayersRoster();
         break;
@@ -17408,6 +17419,7 @@ async function connectToServer() {
         }
         recalcMultiplayerNpcAuthorityFromPeers();
         try { ingestRemoteBoardingState(msg.players); } catch (e) {}
+        if (G.chatChannel === 'players') renderActivePlayersRoster();
         break;
       }
       case 'ship_update': {
@@ -20748,6 +20760,27 @@ function applyServerPop(sp) {
 }
 
 let _playersTabPingTimer = null;
+/** Server RTT: send `client_ping` on an interval in multiplayer (not only on Chat → Captains). */
+let _mpRttTimer = null;
+function stopMultiplayerRttLoop() {
+  if (_mpRttTimer) {
+    clearInterval(_mpRttTimer);
+    _mpRttTimer = null;
+  }
+}
+function startMultiplayerRttLoop() {
+  stopMultiplayerRttLoop();
+  if (G.mode !== 'playing' || G.myId == null) return;
+  const tick = () => {
+    if (G.mode !== 'playing' || G.myId == null || !ws || ws.readyState !== 1) {
+      stopMultiplayerRttLoop();
+      return;
+    }
+    try { ws.send(JSON.stringify({ type: 'client_ping', t: performance.now() })); } catch (e) {}
+  };
+  tick();
+  _mpRttTimer = setInterval(tick, 2500);
+}
 function stopPlayersTabServices() {
   if (_playersTabPingTimer) {
     clearInterval(_playersTabPingTimer);
@@ -20794,13 +20827,16 @@ function renderActivePlayersRoster() {
     const ship = (p.shipName && String(p.shipName).trim()) ? String(p.shipName).trim() : '';
     const ck = p.captainKey ? String(p.captainKey) : '';
     const rk = notoriousRankForCaptainRow(ck || null, pid);
+    const rttO = p.rtt != null && Number.isFinite(Number(p.rtt)) ? Math.round(Number(p.rtt)) : null;
     rows.push({
       self: false,
       name,
       ship,
       rank: rk,
-      ping: '—',
-      pingTitle: 'Per-captain ping is not reported to clients; your own RTT is measured on this device.'
+      ping: rttO != null ? `${rttO} ms` : '…',
+      pingTitle: rttO != null
+        ? 'Reported server round-trip time (measured on that captain’s machine and shared by the server).'
+        : 'Waiting for a ping sample from that captain (they must be online and connected).'
     });
   });
   rows.sort((a, b) => {
@@ -20820,9 +20856,6 @@ function startPlayersTabServices() {
   if (G.chatChannel !== 'players') return;
   const tick = () => {
     if (G.chatChannel !== 'players') { stopPlayersTabServices(); return; }
-    if (ws && ws.readyState === 1) {
-      try { ws.send(JSON.stringify({ type: 'client_ping', t: performance.now() })); } catch (e) {}
-    }
     renderActivePlayersRoster();
   };
   tick();
@@ -20862,7 +20895,7 @@ function setChatChannel(ch) {
     if (G.chatChannel === 'directory') {
       hint.textContent = 'Search clans on this server and apply — captains or officers approve under Clan.';
     } else if (G.chatChannel === 'players') {
-      hint.textContent = 'Active captains on this world session. Notoriety rank matches the Pirates board. Ping shows your own round-trip to the server.';
+      hint.textContent = 'Active captains on this world session. Notoriety rank matches the Pirates board. Ping is each captain’s round-trip to this server (reported to everyone).';
     } else {
       hint.textContent = G.chatChannel === 'party'
         ? 'Clan chat is private — only captains in your clan (online or listed in the roster) see these messages.'
@@ -27521,6 +27554,31 @@ function isCaptainHudObscured() {
   if (shown('debug-password-root')) return true;
   if (shown('debug-modal-root')) return true;
   if (shown('create-screen')) return true;
+  return false;
+}
+
+/** Hides the Board on-ship button when a menu overlay is open (captain’s log, full chart, settings, etc.). Unlike `isCaptainHudObscured`, the dock prompt does not block boarding. */
+function isBoardingPromptObscuredByMenus() {
+  const shown = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return false;
+    const st = window.getComputedStyle(el);
+    return st.display !== 'none' && st.visibility !== 'hidden' && parseFloat(st.opacity || '1') > 0.02;
+  };
+  if (typeof fullmapOpen !== 'undefined' && fullmapOpen) return true;
+  if (shown('port-panel')) return true;
+  if (shown('log-panel')) return true;
+  if (shown('chat-box') && !(shouldDockChatPanel() && G.mode === 'playing')) return true;
+  if (shown('settings-modal')) return true;
+  if (shown('credits-modal')) return true;
+  if (shown('game-help-modal')) return true;
+  if (shown('tutorial-overlay')) return true;
+  if (shown('mobile-layout-picker')) return true;
+  if (shown('death-overlay')) return true;
+  if (shown('debug-password-root')) return true;
+  if (shown('debug-modal-root')) return true;
+  if (shown('create-screen')) return true;
+  if (shown('boarding-spoils-modal')) return true;
   return false;
 }
 
