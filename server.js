@@ -164,7 +164,7 @@ function sanitizeBannerFromClient(raw) {
   if (field && !BANNER_CUSTOM_FIELD_ALLOW.has(field)) field = '';
   const emblems = [];
   const arr = Array.isArray(o.emblems) ? o.emblems : [];
-  for (let i = 0; i < arr.length && emblems.length < 6; i++) {
+  for (let i = 0; i < arr.length && emblems.length < 20; i++) {
     const e = arr[i];
     if (!e || typeof e !== 'object') continue;
     const id = Math.floor(Number(e.id));
@@ -2159,6 +2159,50 @@ function findWsByCaptainKey(ck) {
   return pid != null ? findWsByPlayerId(pid) : null;
 }
 
+/**
+ * When `npc-authoritative.cjs` removes a hull (cannon hit or boarding scuttle), mirror `npc_kill_credit`
+ * leaderboard + `npc_kill_award` so clients grant hold gold / stats without a browser "host".
+ */
+function applyServerAuthoritativeNpcKillAward(award) {
+  if (!award || typeof award !== 'object') return;
+  const storyOwnerId = award.storyOwnerId != null ? Math.floor(Number(award.storyOwnerId)) : null;
+  const so = award.storyOutcome != null ? String(award.storyOutcome) : 'none';
+  if (Number.isFinite(storyOwnerId) && players.has(storyOwnerId) && (so === 'complete' || so === 'reroll')) {
+    sendToPlayerId(storyOwnerId, { type: 'story_bounty_outcome', outcome: so === 'complete' ? 'complete' : 'reroll' });
+  }
+  const killerId = award.killerId != null ? Math.floor(Number(award.killerId)) : NaN;
+  const dg = Math.max(0, Math.floor(Number(award.gold) || 0));
+  const dAi = Math.max(0, Math.floor(Number(award.sinksAi) || 0));
+  const huntNpcName = award.huntNpcName != null ? String(award.huntNpcName).trim().slice(0, 48) : '';
+  if (!Number.isFinite(killerId) || !players.has(killerId)) return;
+  if (dg === 0 && dAi === 0 && !huntNpcName) return;
+  const kp = players.get(killerId);
+  if (dg > 0 || dAi > 0) {
+    kp.kills = (kp.kills || 0) + dAi;
+    kp.loot = (kp.loot || 0) + dg;
+    const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
+    const killerWs = findWsByPlayerId(killerId);
+    const killerCk = killerWs && killerWs.captainAccountKey ? killerWs.captainAccountKey : (kp.captainKey || null);
+    const idx = getLeaderboardRowIndex(killerId, capName, killerCk, kp.shipName);
+    const row = normalizeLbEntry(leaderboardHistory[idx]);
+    row.gold += dg;
+    row.sinksAi += dAi;
+    leaderboardHistory[idx] = row;
+    reconcileLeaderboardRows();
+    saveLeaderboard();
+    broadcast({ type: 'leaderboard', entries: leaderboardHistory });
+  }
+  broadcastAll({
+    type: 'npc_kill_award',
+    killerId,
+    gold: dg,
+    sinksAi: dAi,
+    storyBounty: false,
+    huntNpcName,
+    victimName: award.victimName != null ? String(award.victimName).slice(0, 48) : 'ship'
+  });
+}
+
 function clearCaptainSocketSlot(ws) {
   if (!ws) return;
   for (const [ck, cws] of captainSocketByKey) {
@@ -2846,12 +2890,31 @@ wss.on('connection', (ws, req) => {
           const hx = msg.hx != null && Number.isFinite(Number(msg.hx)) ? Number(msg.hx) : null;
           const hy = msg.hy != null && Number.isFinite(Number(msg.hy)) ? Number(msg.hy) : null;
           const hz = msg.hz != null && Number.isFinite(Number(msg.hz)) ? Number(msg.hz) : null;
+          const isPellet = msg.isPellet === true || ammoType === 'grape_pellet';
+          try {
+            ensureNpcWorld();
+            if (npcWorld && typeof npcWorld.applyPlayerCannonHitClaim === 'function') {
+              const hit = npcWorld.applyPlayerCannonHitClaim(id, msg.npcId, ammoType, isPellet, players);
+              if (hit && hit.popup && hit.popup.text) {
+                broadcastAll({
+                  type: 'npc_damage_popup',
+                  wx: hit.popup.wx,
+                  wz: hit.popup.wz,
+                  wy: hit.popup.wy != null && Number.isFinite(Number(hit.popup.wy)) ? Number(hit.popup.wy) : null,
+                  text: String(hit.popup.text).slice(0, 220),
+                  cssClass: hit.popup.cssClass != null ? String(hit.popup.cssClass).slice(0, 24) : '',
+                  life: hit.popup.life != null && Number.isFinite(Number(hit.popup.life)) ? Math.max(0.5, Math.min(8, Number(hit.popup.life))) : 2.1
+                });
+              }
+              if (hit && hit.award) applyServerAuthoritativeNpcKillAward(hit.award);
+            }
+          } catch (eNh) {}
           broadcastAll({
             type: 'npc_hit_claim',
             fromId: id,
             npcId: msg.npcId,
             ammoType,
-            isPellet: msg.isPellet === true || ammoType === 'grape_pellet',
+            isPellet,
             hx,
             hy,
             hz
@@ -2863,6 +2926,13 @@ wss.on('connection', (ws, req) => {
           const fromId = msg.fromId != null ? Math.floor(Number(msg.fromId)) : NaN;
           if (!Number.isFinite(npcSyncId) || !Number.isFinite(fromId)) break;
           if (fromId !== id) break;
+          try {
+            ensureNpcWorld();
+            if (npcWorld && typeof npcWorld.applyBoardingScuttle === 'function') {
+              const sink = npcWorld.applyBoardingScuttle(fromId, npcSyncId, players);
+              if (sink && sink.award) applyServerAuthoritativeNpcKillAward(sink.award);
+            }
+          } catch (eBs) {}
           broadcastAll({ type: 'npc_boarding_sink', npcSyncId, fromId });
           break;
         }
@@ -3244,41 +3314,14 @@ wss.on('connection', (ws, req) => {
             if (hostId === null || pid < hostId) hostId = pid;
           }
           if (hostId === null || id !== hostId) break;
-          const storyOwnerId = msg.storyOwnerId != null ? Math.floor(Number(msg.storyOwnerId)) : null;
-          const so = msg.storyOutcome != null ? String(msg.storyOutcome) : 'none';
-          if (Number.isFinite(storyOwnerId) && players.has(storyOwnerId) && (so === 'complete' || so === 'reroll')) {
-            sendToPlayerId(storyOwnerId, { type: 'story_bounty_outcome', outcome: so === 'complete' ? 'complete' : 'reroll' });
-          }
-          const killerId = msg.killerId != null ? Math.floor(Number(msg.killerId)) : NaN;
-          const dg = Math.max(0, Math.floor(Number(msg.gold) || 0));
-          const dAi = Math.max(0, Math.floor(Number(msg.sinksAi) || 0));
-          const huntNpcName = msg.huntNpcName != null ? String(msg.huntNpcName).trim().slice(0, 48) : '';
-          if (!Number.isFinite(killerId) || !players.has(killerId)) break;
-          if (dg === 0 && dAi === 0 && !huntNpcName) break;
-          const kp = players.get(killerId);
-          if (dg > 0 || dAi > 0) {
-            kp.kills = (kp.kills || 0) + dAi;
-            kp.loot = (kp.loot || 0) + dg;
-            const capName = (kp.name || kp.shipName || 'Pirate').slice(0, 28);
-            const killerWs = findWsByPlayerId(killerId);
-            const killerCk = killerWs && killerWs.captainAccountKey ? killerWs.captainAccountKey : (kp.captainKey || null);
-            const idx = getLeaderboardRowIndex(killerId, capName, killerCk, kp.shipName);
-            const row = normalizeLbEntry(leaderboardHistory[idx]);
-            row.gold += dg;
-            row.sinksAi += dAi;
-            leaderboardHistory[idx] = row;
-            reconcileLeaderboardRows();
-            saveLeaderboard();
-            broadcast({ type: 'leaderboard', entries: leaderboardHistory });
-          }
-          broadcastAll({
-            type: 'npc_kill_award',
-            killerId,
-            gold: dg,
-            sinksAi: dAi,
-            storyBounty: false,
-            huntNpcName: huntNpcName,
-            victimName: msg.victimName != null ? String(msg.victimName).slice(0, 48) : 'ship'
+          applyServerAuthoritativeNpcKillAward({
+            killerId: msg.killerId,
+            gold: msg.gold,
+            sinksAi: msg.sinksAi,
+            huntNpcName: msg.huntNpcName,
+            victimName: msg.victimName,
+            storyOwnerId: msg.storyOwnerId,
+            storyOutcome: msg.storyOutcome
           });
           break;
         }

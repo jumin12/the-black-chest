@@ -223,8 +223,8 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   margin:-12px 1px -12px -4px;position:relative;z-index:1;pointer-events:none;
 }
 #hud-sail-box #hud-sailcon{
-  width:42px;height:42px;object-fit:contain;object-position:center;display:block;flex-shrink:0;
-  margin:-11px 1px -11px -3px;position:relative;z-index:1;pointer-events:none;
+  width:38px;height:38px;object-fit:contain;object-position:center;display:block;flex-shrink:0;
+  margin:-10px 1px -10px -3px;position:relative;z-index:1;pointer-events:none;
 }
 #combat-shot-count{
   font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;min-width:1.35em;text-align:center;
@@ -3501,7 +3501,9 @@ function ensureNpcHullHealthInitialized(npc) {
 }
 
 /** NPC authority only: apply hull/rigging damage from a human captain’s round (local or relayed hit claim). */
-function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPellet, bx, by, bz) {
+function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPellet, bx, by, bz, opts) {
+  opts = opts || {};
+  const fxOnly = !!opts.fxOnly;
   if (!npc || npc.sinking) return;
   const h0 = ensureNpcHullHealthInitialized(npc);
   if (h0 <= 0) return;
@@ -3509,40 +3511,46 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
   if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
   else if (at === 'grape') dh = 10;
   else if (at === 'chain') dh = 8;
-  npc.health -= dh;
+  if (!fxOnly) {
+    npc.health -= dh;
+  }
   {
     const specN = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
     const hN = specN.hullH || 1.3;
     const ny = npc.mesh?.position?.y ?? worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
     playShipDamageSound(isPellet ? 0.52 : 0.88, npc.x, ny + hN * 0.42, npc.z);
   }
-  npc.aggro = true;
-  npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
-  npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
+  if (!fxOnly) {
+    npc.aggro = true;
+    npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
+    npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
+  }
   let popMsg = `−${dh} hull`;
   if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
   else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
   else if (at === 'ball') popMsg = `Round shot · −${dh}`;
-  const hullAfter = Math.max(0, Math.round(npc.health));
+  const hullAfter = fxOnly ? Math.max(0, Math.round(h0)) : Math.max(0, Math.round(npc.health));
   const popName = npc.name;
   const popWx = npc.x, popWz = npc.z;
   const popWy = worldSeaSurfaceY(npc.x, npc.z) + 3.6;
-  showCombatPopupWorld(popWx, popWz, `${popName}: ${popMsg} (${hullAfter} HP)`, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '', life: 2.1, wy: popWy });
+  if (!fxOnly) {
+    showCombatPopupWorld(popWx, popWz, `${popName}: ${popMsg} (${hullAfter} HP)`, { cssClass: at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '', life: 2.1, wy: popWy });
+  }
   spawnDamageChunks(bx, by, bz);
   if (ws?.readyState === 1) {
     try { ws.send(JSON.stringify({ type: 'ship_hit_fx', x: bx, y: by, z: bz })); } catch (e) {}
   }
   spawnSeaDebrisFromHit(bx, bz, at === 'chain' ? 8 : at === 'grape' ? (isPellet ? 2 : 5) : 4);
-  if (at === 'chain') {
+  if (!fxOnly && at === 'chain') {
     const rigBefore = npc.riggingHealth != null ? npc.riggingHealth : getNpcRiggingHealth(npc);
     npc.riggingHealth = Math.max(0, rigBefore - (30 + Math.random() * 14));
     if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
   }
-  if (npc.health <= 0) {
+  if (!fxOnly && npc.health <= 0) {
     const kid = killerPlayerId != null && Number.isFinite(Number(killerPlayerId)) ? Number(killerPlayerId) : null;
     runNpcSinkOutcome(npc, kid);
   }
-  if (isMultiplayerHost() && ws?.readyState === 1) {
+  if (!fxOnly && isMultiplayerHost() && ws?.readyState === 1) {
     try {
       ws.send(JSON.stringify({
         type: 'npc_damage_popup',
@@ -8040,7 +8048,7 @@ function sanitizeBannerDesignClient(raw) {
   if (field && !BANNER_CUSTOM_FIELD_ALLOW_CLIENT.has(field)) field = '';
   const emblems = [];
   const arr = Array.isArray(o.emblems) ? o.emblems : [];
-  for (let i = 0; i < arr.length && emblems.length < 6; i++) {
+  for (let i = 0; i < arr.length && emblems.length < 20; i++) {
     const e = arr[i];
     if (!e || typeof e !== 'object') continue;
     const id = Math.floor(Number(e.id));
@@ -12219,7 +12227,7 @@ function syncFloatingNametagVisibility() {
 const BOARDING_MAX_RANGE = BROADSIDE_RANGE / 3;
 const BOARDING_PULL_DUR = 4.35;
 /** Sim-authority deck fight cadence — slower ticks + one-sided hits so combat visibly trades blows. */
-const BOARDING_FIGHT_TICK_SEC = 1.12;
+const BOARDING_FIGHT_TICK_SEC = 1.34;
 function boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) {
   const d = Math.hypot(px - ex, pz - ez);
   const pr = shipHullRadius(pShipType || 'sloop');
@@ -12355,6 +12363,19 @@ function applyBoardingCasualtyDeathsToNpcCrew(npc, n) {
     removed++;
   }
   if (!removed) return;
+  try { rebuildNPCShipMesh(npc); } catch (e) {}
+}
+/** After "Take loot & go", restore a minimal fighter crew if boarding casualties left the AI deck empty. */
+function ensureNpcLivingCrewAfterMercyRelease(npc) {
+  if (!npc || npc.sinking) return;
+  const cd = Array.isArray(npc.crewData) ? npc.crewData : null;
+  if (countCrewFighters(cd) >= 2) return;
+  let s = (Math.imul((npc.syncId | 0) >>> 0, 20077) + 1013904223) >>> 0;
+  const rnd = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  npc.crewData = npc.isTradeShip ? merchantCrewFromRng(rnd, npc.type) : ambientPirateCrewData(s ^ 0x9e3779b9, npc.type);
   try { rebuildNPCShipMesh(npc); } catch (e) {}
 }
 function getNpcBoardingCrewCount(npc) {
@@ -12823,7 +12844,7 @@ function boardingCombatTick() {
   const pN = b.pAtk | 0;
   const eN = b.eAtk | 0;
   /* Mutual brawl beats pure coin-flip when crew counts differ; command skill shifts who lands the telling blows. */
-  const exchange = r(s) < 0.22;
+  const exchange = r(s) < 0.42;
   const pCmd = boardingPlayerCommandPips();
   const eCmd = boardingEnemyCommandPips(b);
   let eGun = 1;
@@ -12834,7 +12855,7 @@ function boardingCombatTick() {
   const pStr = Math.max(0.06, pN) * (0.52 + pCmd * 0.1);
   const eStr = Math.max(0.06, eN) * (0.52 + eCmd * 0.1) * (0.82 + eGun * 0.072);
   let pHitBias = pStr / (pStr + eStr);
-  pHitBias = Math.max(0.1, Math.min(0.9, pHitBias));
+  pHitBias = Math.max(0.22, Math.min(0.78, pHitBias));
   if (exchange) {
     if (b.pAtk > 0) b.pAtk = Math.max(0, b.pAtk - 1);
     if (b.eAtk > 0) b.eAtk = Math.max(0, b.eAtk - 1);
@@ -14228,6 +14249,7 @@ function showBoardingSpoilsModal(won, b) {
             n.mesh.rotation.z = 0;
           }
         }
+        ensureNpcLivingCrewAfterMercyRelease(n);
       }
     } else if (b.partnerPlayerId) {
       try {
@@ -15863,7 +15885,7 @@ function rebuildNPCShipMesh(npc) {
   const patrol = !!npc.isFactionPatrol && !merchant;
   const mercCannon = npcArmedCannonTier(npc);
   let npcCrew;
-  if (Array.isArray(npc.crewData)) {
+  if (Array.isArray(npc.crewData) && npc.crewData.length > 0) {
     npcCrew = npc.crewData;
   } else if (merchant) {
     npcCrew = [
@@ -18613,8 +18635,8 @@ async function connectToServer() {
         const hy = msg.hy != null && Number.isFinite(Number(msg.hy)) ? Number(msg.hy) : (worldSeaSurfaceY(npc.x, npc.z) + 1.2);
         const hz = msg.hz != null && Number.isFinite(Number(msg.hz)) ? Number(msg.hz) : npc.z;
         if (G.npcSimFromServer) {
-          /* No in-browser NPC “host”: every client applies each relayed claim once (same as one cannon hit). */
-          applyAuthorizedNpcDamageFromPlayerShot(npc, fromId, at, isPellet, hx, hy, hz);
+          /* Node authoritative sim: hull/rig come from `npc_sync`; relayed claim is impact FX only. */
+          applyAuthorizedNpcDamageFromPlayerShot(npc, fromId, at, isPellet, hx, hy, hz, { fxOnly: true });
           break;
         }
         if (!isMultiplayerHost()) break;
@@ -18651,10 +18673,16 @@ async function connectToServer() {
         break;
       }
       case 'npc_boarding_sink': {
-        if (!isMultiplayerHost()) break;
         const fromId = msg.fromId != null ? Math.floor(Number(msg.fromId)) : NaN;
         const npcSyncId = msg.npcSyncId != null ? Math.floor(Number(msg.npcSyncId)) : NaN;
         if (!Number.isFinite(fromId) || !Number.isFinite(npcSyncId)) break;
+        if (G.npcSimFromServer) {
+          if (fromId === G.myId) break;
+          const npc = G.npcs.find(n => n.syncId === npcSyncId);
+          if (npc && !npc.sinking) applyNpcBoardingScuttleSinkVisualLocal(npc);
+          break;
+        }
+        if (!isMultiplayerHost()) break;
         if (fromId === G.myId) break;
         const npc = G.npcs.find(n => n.syncId === npcSyncId);
         if (!npc || npc.sinking) break;
@@ -20845,6 +20873,20 @@ function preloadBannerEmblemPngsOnMainThread() {
     }
   } catch (e) {}
 }
+/** Decode cargo / trade item PNGs so boarding spoils and port lists paint on first open. */
+function preloadTradeAndCargoItemPngsOnMainThread() {
+  try {
+    const seen = new Set();
+    for (const k of Object.keys(ITEM_PNG)) {
+      const href = resolveGameAssetUrl(ITEM_PNG[k]);
+      if (seen.has(href)) continue;
+      seen.add(href);
+      const im = new Image();
+      im.src = href;
+      void (im.decode && im.decode().catch(() => {}));
+    }
+  } catch (e) {}
+}
 
 /** Warm HTTP cache for PNGs via dedicated worker; also decode toolbar strips on main thread. */
 function kickOffGameAssetPreload() {
@@ -20854,6 +20896,7 @@ function kickOffGameAssetPreload() {
   preloadToolbarIconStripsOnMainThread();
   preloadPlayerFlagChoicePngsOnMainThread();
   preloadBannerEmblemPngsOnMainThread();
+  preloadTradeAndCargoItemPngsOnMainThread();
   const wHref = resolveGameAssetUrl('image-preload-worker.js');
   try {
     _gameImagePreloadWorker = new Worker(wHref);
@@ -30034,7 +30077,7 @@ function bindBannerEditorModalOnce() {
   document.getElementById('banner-editor-rot-num')?.addEventListener('input', onRotNum);
   document.getElementById('banner-editor-add-emblem')?.addEventListener('click', () => {
     const d = _bannerEditorCtx.draft;
-    if (!d || d.emblems.length >= 6) return;
+    if (!d || d.emblems.length >= 20) return;
     const id = _bannerEditorCtx.selEmblemId || 1;
     d.emblems.push({ layerId: nextBannerEditorLayerId(d), id, x: 0.5, y: 0.5, s: 0.4, r: 0, mir: 0 });
     _bannerEditorCtx.selEmblemIx = d.emblems.length - 1;

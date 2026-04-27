@@ -768,6 +768,125 @@ function buildSyncRows(npcs, portController, ws) {
     });
 }
 
+/** Authoritative hull/rig damage from a player cannon hit (matches client `applyAuthorizedNpcDamageFromPlayerShot` tiers). */
+function applyPlayerCannonHitAuthoritative(npcs, fromPlayerId, npcSyncId, ammoType, isPellet, players) {
+  const pid = Math.floor(Number(fromPlayerId));
+  const sid = Math.floor(Number(npcSyncId));
+  const out = { ok: false, popup: null, award: null };
+  if (!Number.isFinite(pid) || !Number.isFinite(sid) || !(players instanceof Map)) return out;
+  const pl = players.get(pid);
+  if (!pl || pl.docked) return out;
+  const px = Number(pl.x);
+  const pz = Number(pl.z);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return out;
+  const idx = npcs.findIndex(n => n.syncId === sid);
+  if (idx < 0) return out;
+  const npc = npcs[idx];
+  if (!npc || npc.sinking) return out;
+  const h0 = npc.health != null && Number.isFinite(Number(npc.health)) ? Number(npc.health) : 72;
+  if (h0 <= 0) return out;
+  const d = Math.hypot(px - npc.x, pz - npc.z);
+  if (d > 260) return out;
+  const at = ammoType === 'chain' ? 'chain' : ammoType === 'grape' || ammoType === 'grape_pellet' ? 'grape' : 'ball';
+  let dh = 15;
+  if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
+  else if (at === 'grape') dh = 10;
+  else if (at === 'chain') dh = 8;
+  npc.health = h0 - dh;
+  npc.aggro = true;
+  npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
+  const hullAfter = Math.max(0, Math.round(npc.health));
+  const popName = npc.name || 'ship';
+  let popMsg = `−${dh} hull`;
+  if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
+  else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
+  else if (at === 'ball') popMsg = `Round shot · −${dh}`;
+  const cssClass = at === 'chain' ? 'chain' : at === 'grape' ? 'grape' : '';
+  out.popup = {
+    wx: npc.x,
+    wz: npc.z,
+    wy: null,
+    text: `${popName}: ${popMsg} (${hullAfter} HP)`,
+    cssClass,
+    life: 2.1
+  };
+  if (at === 'chain') {
+    const rigBefore = getNpcRiggingHealth(npc);
+    npc.riggingHealth = Math.max(0, rigBefore - (30 + Math.random() * 14));
+  }
+  if (npc.health <= 0) {
+    const victimName = popName;
+    const missionOwner = npc.missionOwnerPlayerId != null ? Math.floor(Number(npc.missionOwnerPlayerId)) : null;
+    const storyMission = !!(npc.isStoryBounty && missionOwner != null && Number.isFinite(missionOwner));
+    let storyOutcome = 'none';
+    if (storyMission) {
+      const op = players.get(missionOwner);
+      const ox = op && Number(op.x);
+      const oz = op && Number(op.z);
+      const ownerNear = Number.isFinite(ox) && Number.isFinite(oz) && Math.hypot(npc.x - ox, npc.z - oz) <= 118;
+      storyOutcome = ownerNear ? 'complete' : 'reroll';
+    }
+    const goldLoot = storyMission ? 0 : 30;
+    const sinksAi = !storyMission && pid != null ? 1 : 0;
+    out.award = {
+      killerId: pid,
+      gold: goldLoot,
+      sinksAi,
+      huntNpcName: '',
+      victimName,
+      storyOwnerId: storyMission ? missionOwner : null,
+      storyOutcome
+    };
+    npcs.splice(idx, 1);
+  }
+  out.ok = true;
+  return out;
+}
+
+/** Remove an NPC after a boarding scuttle / prize sink (validated vs. player position). */
+function applyBoardingScuttleAuthoritative(npcs, fromPlayerId, npcSyncId, players) {
+  const pid = Math.floor(Number(fromPlayerId));
+  const sid = Math.floor(Number(npcSyncId));
+  const out = { ok: false, award: null };
+  if (!Number.isFinite(pid) || !Number.isFinite(sid) || !(players instanceof Map)) return out;
+  const pl = players.get(pid);
+  if (!pl || pl.docked) return out;
+  const px = Number(pl.x);
+  const pz = Number(pl.z);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return out;
+  const idx = npcs.findIndex(n => n.syncId === sid);
+  if (idx < 0) return out;
+  const npc = npcs[idx];
+  if (!npc || npc.sinking) return out;
+  const d = Math.hypot(px - npc.x, pz - npc.z);
+  if (d > 260) return out;
+  const victimName = npc.name || 'ship';
+  const missionOwner = npc.missionOwnerPlayerId != null ? Math.floor(Number(npc.missionOwnerPlayerId)) : null;
+  const storyMission = !!(npc.isStoryBounty && missionOwner != null && Number.isFinite(missionOwner));
+  let storyOutcome = 'none';
+  if (storyMission) {
+    const op = players.get(missionOwner);
+    const ox = op && Number(op.x);
+    const oz = op && Number(op.z);
+    const ownerNear = Number.isFinite(ox) && Number.isFinite(oz) && Math.hypot(npc.x - ox, npc.z - oz) <= 118;
+    storyOutcome = ownerNear ? 'complete' : 'reroll';
+  }
+  const goldLoot = storyMission ? 0 : 30;
+  const sinksAi = !storyMission ? 1 : 0;
+  out.award = {
+    killerId: pid,
+    gold: goldLoot,
+    sinksAi,
+    huntNpcName: '',
+    victimName,
+    storyOwnerId: storyMission ? missionOwner : null,
+    storyOutcome
+  };
+  npcs.splice(idx, 1);
+  out.ok = true;
+  return out;
+}
+
 function createServerNpcWorld(opts) {
   const windAt = opts.windAt;
   const baseEdgeClamp = opts.edgeClamp != null ? opts.edgeClamp : 2025;
@@ -1411,6 +1530,14 @@ function createServerNpcWorld(opts) {
     return npcs;
   }
 
+  function applyPlayerCannonHitClaim(fromPlayerId, npcSyncId, ammoType, isPellet, players) {
+    return applyPlayerCannonHitAuthoritative(npcs, fromPlayerId, npcSyncId, ammoType, !!isPellet, players);
+  }
+
+  function applyBoardingScuttle(fromPlayerId, npcSyncId, players) {
+    return applyBoardingScuttleAuthoritative(npcs, fromPlayerId, npcSyncId, players);
+  }
+
   return {
     setBroadcastAll,
     setWorldSeed,
@@ -1419,7 +1546,9 @@ function createServerNpcWorld(opts) {
     step,
     buildSyncRows: () => buildSyncRows(npcs, politics.portController, ws),
     getWindSample,
-    getNpcs
+    getNpcs,
+    applyPlayerCannonHitClaim,
+    applyBoardingScuttle
   };
 }
 
