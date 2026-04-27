@@ -5043,7 +5043,7 @@ function ensureMinimalHelmAfterPvPCastOff() {
 }
 function markBoardingVictorySpoilsGrace() {
   const t = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  G._boardingWinSpoilsGraceUntil = t + 9000;
+  G._boardingWinSpoilsGraceUntil = t + 12000;
   /* Same window as victim boarding_spoils ingest guard — stops stray grapple replays from locking the client after the modal closes. */
   G._boardingSpoilsCooldownUntil = t + 4500;
 }
@@ -13786,6 +13786,31 @@ function buildHoldLootDropsForShipwreck(cx, cz, maxPieces) {
   }
   return out;
 }
+/** Abandoning hull (prize take): scatter entire berth + ledger as world loot, then empty the hold. */
+function spillLocalPlayerEntireHoldToSeaAt(wx, wz) {
+  const drops = buildHoldLootDropsForShipwreck(wx, wz, 96);
+  for (const d of drops) {
+    if (d && d.type && (d.count | 0) > 0) spawnWorldLootAt(d.x, d.z, d.type, d.count | 0, 0.9);
+  }
+  const inv = Array.isArray(G.player.inventory) ? [...G.player.inventory] : [];
+  for (const row of inv) {
+    if (!row || !row.id) continue;
+    const c = Math.max(0, Math.floor(Number(row.count) || 0));
+    if (c > 0) subtractFromInventoryLedger(String(row.id), c);
+  }
+  ensureCargoSlots();
+  for (let i = 0; i < G.player.cargoSlots.length; i++) G.player.cargoSlots[i] = null;
+  try { reconcileSlotsWithInventory(); } catch (e) {}
+}
+/** After taking a prize hull, guarantee hull integrity even if the remote row was stale or damage ticked at handoff. */
+function clampPrizeVictorHullIntegrity() {
+  const mh = G.player.maxHealth != null && Number.isFinite(Number(G.player.maxHealth)) ? Math.max(1, Number(G.player.maxHealth)) : 100;
+  const floorP = Math.max(1, Math.round(mh * 0.35));
+  const h = G.player.health != null && Number.isFinite(Number(G.player.health)) ? Number(G.player.health) : 0;
+  G.player.health = Math.min(mh, Math.max(floorP, h));
+  const r0 = G.player.riggingHealth != null && Number.isFinite(Number(G.player.riggingHealth)) ? Number(G.player.riggingHealth) : 100;
+  G.player.riggingHealth = Math.max(40, Math.min(100, r0));
+}
 function sendLocalShipwreckLootToNet(lootDrops) {
   if (ws?.readyState !== 1) return;
   try {
@@ -14199,10 +14224,11 @@ function showBoardingSpoilsModal(won, b) {
     const { g, ptk, pmax } = readLootPrison();
     const pszK = G._boardingSpoilsPrisonerPick && G._boardingSpoilsPrisonerPick instanceof Set ? G._boardingSpoilsPrisonerPick.size : 0;
     const maxPfK = Math.min(12, b.surrenderPool | 0);
-    if (g > 0) tryAddQuestCargo('gold', g);
     if ((pmax | 0) - pszK > 0) notify((pmax - pszK) + ' prisoners thrown over the rail.', 5000);
     if (b.npcSyncId != null) {
+      try { spillLocalPlayerEntireHoldToSeaAt(G.player.x, G.player.z); } catch (eSp) {}
       try { mergeRemainingPrizeTotalsIntoVictorHold(); } catch (e) {}
+      if (g > 0) tryAddQuestCargo('gold', g);
       try {
         spawnBoardingPrizeHullDecoyFromNet({ ...captureVictorRelinquishedHullPayload(), victorPlayerId: G.myId });
       } catch (e) {}
@@ -14212,7 +14238,10 @@ function showBoardingSpoilsModal(won, b) {
         applyPrizeShipFromRemoteCaptainRow(prizeRow);
         runNpcSinkOutcome(n, G.myId);
       } else { abortActiveBoarding(''); }
+      clampPrizeVictorHullIntegrity();
     } else if (b.partnerPlayerId) {
+      try { spillLocalPlayerEntireHoldToSeaAt(G.player.x, G.player.z); } catch (eSp) {}
+      if (g > 0) tryAddQuestCargo('gold', g);
       if (partnerPvp) try { mergeRemainingPrizeTotalsIntoVictorHold(); } catch (e) {}
       try {
         spawnBoardingPrizeHullDecoyFromNet({
@@ -14227,6 +14256,7 @@ function showBoardingSpoilsModal(won, b) {
       const row = pid != null ? G.otherPlayers.get(pid) : null;
       if (row) applyPrizeShipFromRemoteCaptainRow(row);
       else notify('The other ship was gone from the chart — you keep your current hull.', 5200);
+      clampPrizeVictorHullIntegrity();
       try {
         const spoilPayload = { type: 'boarding_spoils', targetId: b.partnerPlayerId, gold: g, scuttle: false, keepHull: true };
         if (partnerPvp) {
@@ -19400,8 +19430,17 @@ function applyNetStateMessage(msg) {
       const px0 = Number(ex.x), pz0 = Number(ex.z);
       const px1 = Number(patch.x), pz1 = Number(patch.z);
       if (Number.isFinite(px0) && Number.isFinite(pz0) && Number.isFinite(px1) && Number.isFinite(pz1) && dtSnap > 1e-4) {
-        ex._netVelTargetX = (px1 - px0) / dtSnap;
-        ex._netVelTargetZ = (pz1 - pz0) / dtSnap;
+        let vtx = (px1 - px0) / dtSnap;
+        let vtz = (pz1 - pz0) / dtSnap;
+        const vcap0 = 38;
+        const vm0 = Math.hypot(vtx, vtz);
+        if (vm0 > vcap0) {
+          const s0 = vcap0 / vm0;
+          vtx *= s0;
+          vtz *= s0;
+        }
+        ex._netVelTargetX = vtx;
+        ex._netVelTargetZ = vtz;
       }
       Object.assign(ex, patch);
       if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
@@ -27619,6 +27658,16 @@ function dampShipWaveTilt(pitch, roll) {
   r = Math.max(-SHIP_WAVE_TILT_MAX, Math.min(SHIP_WAVE_TILT_MAX, r));
   return { wavePitch: p, waveRoll: r };
 }
+/** Other captains: gentler pitch/roll so tiny net XZ error does not read as twitchy “skips” on every sync. */
+const REMOTE_SHIP_WAVE_TILT_DAMP = 0.27;
+const REMOTE_SHIP_WAVE_TILT_MAX = 0.062;
+function dampShipWaveTiltRemote(pitch, roll) {
+  let p = pitch * REMOTE_SHIP_WAVE_TILT_DAMP;
+  let r = roll * REMOTE_SHIP_WAVE_TILT_DAMP;
+  p = Math.max(-REMOTE_SHIP_WAVE_TILT_MAX, Math.min(REMOTE_SHIP_WAVE_TILT_MAX, p));
+  r = Math.max(-REMOTE_SHIP_WAVE_TILT_MAX, Math.min(REMOTE_SHIP_WAVE_TILT_MAX, r));
+  return { wavePitch: p, waveRoll: r };
+}
 
 const WAKE_TRAIL_MAX = isMobile ? 28 : 72;
 let _wakeFoamRadialTex = null;
@@ -27735,7 +27784,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
 function smoothRemotePlayerNetVelocity(p, dt) {
   const tx = p._netVelTargetX, tz = p._netVelTargetZ;
   if (Number.isFinite(tx) && Number.isFinite(tz)) {
-    const a = 1 - Math.exp(-26 * dt);
+    const a = 1 - Math.exp(-14 * dt);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -27780,13 +27829,13 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
-  const posK = 1 - Math.exp(-(err > 120 ? 5.2 : err > 55 ? 3.35 : err > 22 ? 2.05 : err > 8 ? 1.05 : 0.55) * dt);
+  const posK = 1 - Math.exp(-(err > 120 ? 4.55 : err > 55 ? 2.85 : err > 22 ? 1.72 : err > 8 ? 0.88 : 0.45) * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-9.5 * dt);
+  const rotK = 1 - Math.exp(-8.2 * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
@@ -28386,7 +28435,7 @@ function update(dt) {
       sm.userData.netSmooth = carriedNetSmooth || { x: p.x, z: p.z, ry: p.rotation || 0 };
       const ns0 = sm.userData.netSmooth;
       const w0 = playerShipWaveAt(ns0.x, ns0.z, ns0.ry);
-      const w0d = dampShipWaveTilt(w0.wavePitch, w0.waveRoll);
+      const w0d = dampShipWaveTiltRemote(w0.wavePitch, w0.waveRoll);
       sm.userData.visYaw = ns0.ry;
       sm.userData.visWavePitch = w0d.wavePitch;
       sm.userData.visWaveRoll = w0d.waveRoll;
@@ -28418,16 +28467,16 @@ function update(dt) {
     } else {
       const ns = advanceRemoteShipNetSmooth(sg, p, dt);
       const w = playerShipWaveAt(ns.x, ns.z, ns.ry);
-      const wd = dampShipWaveTilt(w.wavePitch, w.waveRoll);
+      const wd = dampShipWaveTiltRemote(w.wavePitch, w.waveRoll);
       const sy = worldSeaSurfaceY(ns.x, ns.z) + SHIP_FREEBOARD;
       sg.position.set(ns.x, sy, ns.z);
       if (sg.userData.visYaw == null) sg.userData.visYaw = ns.ry;
       let dVisYaw = ns.ry - sg.userData.visYaw;
       while (dVisYaw > Math.PI) dVisYaw -= Math.PI * 2;
       while (dVisYaw < -Math.PI) dVisYaw += Math.PI * 2;
-      const yawVisK = 1 - Math.exp(-14 * dt);
+      const yawVisK = 1 - Math.exp(-9.5 * dt);
       sg.userData.visYaw += dVisYaw * Math.min(1, yawVisK);
-      const tiltK = 1 - Math.exp(-7 * dt);
+      const tiltK = 1 - Math.exp(-4.2 * dt);
       if (sg.userData.visWavePitch == null) sg.userData.visWavePitch = wd.wavePitch;
       if (sg.userData.visWaveRoll == null) sg.userData.visWaveRoll = wd.waveRoll;
       sg.userData.visWavePitch += (wd.wavePitch - sg.userData.visWavePitch) * tiltK;
@@ -28806,6 +28855,15 @@ function update(dt) {
       disposeSwimmerPredators(u);
       scene.remove(sw);
       G.swimmers.splice(i, 1);
+    }
+  }
+
+  {
+    const nowGr = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    if (!G.playerSinking && G._boardingWinSpoilsGraceUntil != null && nowGr < G._boardingWinSpoilsGraceUntil
+      && G.player.health != null && Number(G.player.health) <= 0) {
+      const mh = G.player.maxHealth != null && Number.isFinite(Number(G.player.maxHealth)) ? Math.max(1, Number(G.player.maxHealth)) : 100;
+      G.player.health = Math.max(1, Math.round(mh * 0.4));
     }
   }
 
