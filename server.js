@@ -3,8 +3,20 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
+const { createGameSimulation, createAntiCheatGate } = require('./simulation-layer.js');
 
 const PORT = process.env.PORT || 3000;
+/** Realm identity for server browsers and the in-game HUD (env-tunable). */
+function getRealmConfig() {
+  return {
+    id: String(process.env.REALM_ID || 'main').slice(0, 48),
+    name: String(process.env.REALM_NAME || 'The High Seas').slice(0, 64),
+    motd: process.env.REALM_MOTD ? String(process.env.REALM_MOTD).slice(0, 500) : '',
+    version: String(process.env.GAME_VERSION || '1').slice(0, 24)
+  };
+}
+/** 0 = unlimited. When exceeded, new WebSockets get `server_full` and are closed. */
+const MAX_CONCURRENT_CAPTAINS = Math.max(0, Math.floor(Number(process.env.MAX_CONCURRENT_CAPTAINS) || 0));
 /** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
 const SERVER_WORLD_T0_MS = Date.now();
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
@@ -15,6 +27,76 @@ function clampPlayerWorldX(x) {
   const v = Number(x);
   if (!Number.isFinite(v)) return null;
   return Math.max(-PLAYER_WORLD_EDGE_CLAMP, Math.min(PLAYER_WORLD_EDGE_CLAMP, v));
+}
+
+/** Per-client interest radius (world units). Massively cuts bandwidth vs full-world snapshots at high player counts. */
+const STATE_AOI_RADIUS = Math.max(800, Math.min(20000, Number(process.env.STATE_AOI_RADIUS) || 5200));
+const STATE_AOI_RADIUS_SQ = STATE_AOI_RADIUS * STATE_AOI_RADIUS;
+
+/** Authoritative wind + motion integration (see simulation-layer.js). */
+let gameSim = null;
+let antiCheat = null;
+function ensureSimulationLayer() {
+  if (!gameSim) {
+    gameSim = createGameSimulation({
+      worldSeed: WORLD_SEED >>> 0,
+      edgeClamp: PLAYER_WORLD_EDGE_CLAMP,
+      tickRate: TICK_RATE
+    });
+    antiCheat = createAntiCheatGate();
+  }
+}
+
+function playerBoardingPartnerId(p) {
+  if (!p || !p.boarding || typeof p.boarding !== 'object') return null;
+  const sid = Math.floor(Number(p.boarding.sid));
+  return Number.isFinite(sid) && sid > 0 ? sid : null;
+}
+
+function playerIncludedInSnapshot(viewer, target, aoiSq) {
+  if (!viewer || !target) return false;
+  if (target.id === viewer.id) return true;
+  const vb = playerBoardingPartnerId(viewer);
+  const tb = playerBoardingPartnerId(target);
+  if (vb === target.id || tb === viewer.id) return true;
+  const dx = target.x - viewer.x;
+  const dz = target.z - viewer.z;
+  return dx * dx + dz * dz <= aoiSq;
+}
+
+function buildStateRow(p, includeCrew) {
+  const row = {
+    id: p.id,
+    x: p.x,
+    z: p.z,
+    rotation: p.rotation,
+    speed: p.speed,
+    health: p.health,
+    name: p.name,
+    color: p.color,
+    shipType: p.shipType,
+    shipName: p.shipName,
+    captainKey: p.captainKey != null ? String(p.captainKey) : null,
+    partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
+    flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
+    flagAssetId: (() => {
+      const fa = sanitizeClientFlagAssetId(p.flagAssetId);
+      return fa != null ? fa : 1;
+    })(),
+    shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
+    docked: !!p.docked,
+    dockX: p.dockX != null ? p.dockX : null,
+    dockZ: p.dockZ != null ? p.dockZ : null,
+    dockAngle: p.dockAngle != null ? p.dockAngle : null,
+    dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
+    riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
+    morale: p.morale != null ? p.morale : 100,
+    deckWalk: p.deckWalk || null,
+    boarding: p.boarding != null ? p.boarding : null,
+    rtt: p.rtt != null && Number.isFinite(p.rtt) ? Math.min(120000, Math.round(p.rtt)) : null
+  };
+  if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
+  return row;
 }
 /** Matches client `RESERVED_PLAYER_FLAG_IDS` — national / reserved hull-flag PNGs. */
 const RESERVED_PLAYER_FLAG_ASSET_IDS = new Set([10, 13, 15, 16, 19, 21]);
@@ -463,6 +545,7 @@ function scheduleIdlePersistedStateFlush() {
     try {
       savePartyStore();
       flushCaptainAccountsIfDirty();
+      saveWorldPresenceIfDirty();
       const now = Date.now();
       if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
         if (now - lastWorldMapDiskWriteMs >= WORLD_MAP_AUTOSAVE_MS) {
@@ -1068,6 +1151,7 @@ function loadPersistedState() {
 }
 
 loadPersistedState();
+ensureSimulationLayer();
 augmentPartyStoreFromRichestOnDisk();
 
 function validateWorldMapPayload(map) {
@@ -1225,6 +1309,7 @@ function flushAllPersistedStateSync() {
   try {
     savePartyStore();
     flushCaptainAccountsIfDirty();
+    saveWorldPresenceIfDirty();
     saveBans();
     if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
       persistWorldMapToDisk();
@@ -1254,6 +1339,7 @@ function flushNavigatorMutationToDisk() {
   try {
     savePartyStore();
     flushCaptainAccountsIfDirty();
+    saveWorldPresenceIfDirty();
     saveBans();
     if (WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) && (WORLD_MAP_REVISION >>> 0) > 0) {
       persistWorldMapToDisk();
@@ -1372,6 +1458,113 @@ function remapCaptainAccountKeyInParties(oldKey, newKey) {
   return true;
 }
 
+const WORLD_PRESENCE_FILE = path.join(DATA_DIR, 'world_presence.json');
+/** Last known open-sea state per registered captain (MMO resume / crash recovery). */
+let worldPresenceStore = { v: 1, captains: {} };
+let worldPresenceDirty = false;
+
+function loadWorldPresence() {
+  try {
+    const raw = fs.readFileSync(WORLD_PRESENCE_FILE, 'utf-8');
+    const o = JSON.parse(raw);
+    if (o && typeof o.captains === 'object') worldPresenceStore = { v: 1, captains: { ...o.captains } };
+    else worldPresenceStore = { v: 1, captains: {} };
+  } catch (e) {
+    worldPresenceStore = { v: 1, captains: {} };
+  }
+}
+
+function saveWorldPresenceIfDirty() {
+  if (!worldPresenceDirty) return;
+  try {
+    writeFileAtomic(WORLD_PRESENCE_FILE, JSON.stringify(worldPresenceStore));
+    worldPresenceDirty = false;
+  } catch (e) {}
+}
+
+function persistCaptainWorldPresenceFromPlayer(captainKey, p) {
+  if (!captainKey || !p) return;
+  if (p.docked) return;
+  const ck = normalizeCaptainKey(String(captainKey));
+  if (!ck) return;
+  const cx = clampPlayerWorldX(p.x);
+  const cz = clampPlayerWorldX(p.z);
+  if (cx == null || cz == null) return;
+  worldPresenceStore.captains[ck] = {
+    savedAtMs: Date.now(),
+    worldSeed: WORLD_SEED >>> 0,
+    worldMapRevision: WORLD_MAP_REVISION >>> 0,
+    x: cx,
+    z: cz,
+    rotation: p.rotation,
+    docked: !!p.docked,
+    dockX: p.dockX != null ? p.dockX : null,
+    dockZ: p.dockZ != null ? p.dockZ : null,
+    dockAngle: p.dockAngle != null ? p.dockAngle : null,
+    dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
+    shipType: p.shipType != null ? String(p.shipType).slice(0, 24) : 'cutter',
+    shipName: p.shipName != null ? String(p.shipName).slice(0, 28) : '',
+    shipParts: p.shipParts && typeof p.shipParts === 'object' ? { ...p.shipParts } : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
+    health: p.health,
+    riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
+    morale: p.morale != null ? p.morale : 100,
+    flagAssetId: p.flagAssetId,
+    flagColor: p.flagColor != null ? String(p.flagColor).slice(0, 32) : '#1a1a1a'
+  };
+  worldPresenceDirty = true;
+}
+
+/** @returns {object|null} payload for `world_resume` */
+function tryApplyWorldPresenceToPlayer(captainKey, p) {
+  const ck = normalizeCaptainKey(String(captainKey || ''));
+  if (!ck || !p) return null;
+  const raw = worldPresenceStore.captains[ck];
+  if (!raw || typeof raw !== 'object') return null;
+  if ((raw.worldSeed >>> 0) !== (WORLD_SEED >>> 0)) return null;
+  if ((raw.worldMapRevision >>> 0) !== (WORLD_MAP_REVISION >>> 0)) return null;
+  const x = clampPlayerWorldX(raw.x);
+  const z = clampPlayerWorldX(raw.z);
+  if (x == null || z == null) return null;
+  p.x = x;
+  p.z = z;
+  if (raw.rotation != null && Number.isFinite(Number(raw.rotation))) p.rotation = Number(raw.rotation);
+  p.speed = 0;
+  if (raw.docked != null) p.docked = !!raw.docked;
+  if (raw.dockX !== undefined) p.dockX = raw.dockX;
+  if (raw.dockZ !== undefined) p.dockZ = raw.dockZ;
+  if (raw.dockAngle !== undefined) p.dockAngle = raw.dockAngle;
+  if (raw.dockBerthIndex !== undefined) p.dockBerthIndex = raw.dockBerthIndex;
+  if (raw.shipType) {
+    const st = String(raw.shipType).trim().slice(0, 24);
+    if (st) p.shipType = st;
+  }
+  if (raw.shipName != null) p.shipName = String(raw.shipName).slice(0, 28);
+  if (raw.shipParts && typeof raw.shipParts === 'object') {
+    p.shipParts = {
+      hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast',
+      ...p.shipParts,
+      ...raw.shipParts
+    };
+  }
+  if (raw.health != null && Number.isFinite(Number(raw.health))) p.health = Math.max(-20, Math.min(9999, Number(raw.health)));
+  if (raw.riggingHealth != null) p.riggingHealth = Math.max(0, Math.min(100, Number(raw.riggingHealth) || 0));
+  if (raw.morale != null) p.morale = Math.max(0, Math.min(100, Number(raw.morale) || 0));
+  if (raw.flagAssetId != null) {
+    const fa = sanitizeClientFlagAssetId(raw.flagAssetId);
+    if (fa != null) p.flagAssetId = fa;
+  }
+  if (raw.flagColor != null) p.flagColor = String(raw.flagColor).slice(0, 32);
+  return {
+    x: p.x, z: p.z, rotation: p.rotation,
+    docked: !!p.docked,
+    dockX: p.dockX, dockZ: p.dockZ, dockAngle: p.dockAngle, dockBerthIndex: p.dockBerthIndex,
+    shipType: p.shipType, shipName: p.shipName,
+    shipParts: p.shipParts ? { ...p.shipParts } : null,
+    health: p.health, riggingHealth: p.riggingHealth, morale: p.morale,
+    flagAssetId: p.flagAssetId, flagColor: p.flagColor
+  };
+}
+
 function loadCaptainAccounts() {
   try {
     const raw = fs.readFileSync(CAPTAIN_ACCOUNTS_FILE, 'utf-8');
@@ -1414,6 +1607,7 @@ function flushCaptainAccountsIfDirty() {
 }
 
 loadCaptainAccounts();
+loadWorldPresence();
 pruneStaleCaptainAccounts();
 setInterval(() => {
   pruneStaleCaptainAccounts();
@@ -1448,6 +1642,8 @@ const CORS_HEADERS = {
 
 function setWorldSeedAndPersist(newSeed) {
   WORLD_SEED = Number(newSeed) >>> 0;
+  ensureSimulationLayer();
+  gameSim.setWorldSeed(WORLD_SEED >>> 0);
   persistWorldSeedFile();
   const wt = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   broadcastAll({ type: 'world_seed', seed: WORLD_SEED, worldT: wt, wildlifeWorldT: wt });
@@ -1641,12 +1837,29 @@ const server = http.createServer((req, res) => {
       players: players.size,
       seed: WORLD_SEED,
       worldMapRevision: WORLD_MAP_REVISION >>> 0,
-      navigatorAuthConfigured: !!(NAVIGATOR_ADMIN_PASSWORD && String(NAVIGATOR_ADMIN_PASSWORD).length > 0)
+      navigatorAuthConfigured: !!(NAVIGATOR_ADMIN_PASSWORD && String(NAVIGATOR_ADMIN_PASSWORD).length > 0),
+      realm: getRealmConfig(),
+      maxPlayers: MAX_CONCURRENT_CAPTAINS > 0 ? MAX_CONCURRENT_CAPTAINS : null,
+      registeredCaptains: Object.keys(captainAccounts || {}).length,
+      aoiRadius: STATE_AOI_RADIUS
     }));
     return;
   }
 
   const reqPath = String(req.url || '').split('?')[0];
+  if (req.method === 'GET' && reqPath === '/api/realm') {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+    res.end(JSON.stringify({
+      realm: getRealmConfig(),
+      online: players.size,
+      registered: Object.keys(captainAccounts || {}).length,
+      seed: WORLD_SEED,
+      worldMapRevision: WORLD_MAP_REVISION >>> 0,
+      maxPlayers: MAX_CONCURRENT_CAPTAINS > 0 ? MAX_CONCURRENT_CAPTAINS : null,
+      aoiRadius: STATE_AOI_RADIUS
+    }));
+    return;
+  }
   if (req.method === 'GET' && (reqPath === '/favicon.ico' || reqPath === '/favicon.svg')) {
     const sendSvg = (buf) => {
       res.writeHead(200, {
@@ -1765,7 +1978,9 @@ function serverPopulationPayload() {
   return {
     type: 'server_pop',
     online: players.size,
-    registered: Object.keys(captainAccounts || {}).length
+    registered: Object.keys(captainAccounts || {}).length,
+    realm: getRealmConfig(),
+    maxPlayers: MAX_CONCURRENT_CAPTAINS > 0 ? MAX_CONCURRENT_CAPTAINS : null
   };
 }
 
@@ -1950,6 +2165,26 @@ wss.on('connection', (ws, req) => {
     ws.close();
     return;
   }
+  if (MAX_CONCURRENT_CAPTAINS > 0) {
+    let n = 0;
+    for (const c of wss.clients) {
+      if (c.readyState === 1) n++;
+    }
+    if (n > MAX_CONCURRENT_CAPTAINS) {
+      try {
+        ws.send(JSON.stringify({
+          type: 'server_full',
+          message: 'This realm is at capacity. Try again in a moment.',
+          realm: getRealmConfig(),
+          max: MAX_CONCURRENT_CAPTAINS
+        }));
+      } catch (e) {}
+      try {
+        ws.close();
+      } catch (e2) {}
+      return;
+    }
+  }
 
   const id = nextId++;
   ws.playerId = id;
@@ -1984,7 +2219,8 @@ wss.on('connection', (ws, req) => {
     boarding: null,
     partyTag: '',
     clientIp,
-    rtt: null
+    rtt: null,
+    lastNetSeq: 0
   };
 
   players.set(id, playerData);
@@ -2008,12 +2244,17 @@ wss.on('connection', (ws, req) => {
     wildlifeWorldT: initWorldT,
     worldMapRevision: WORLD_MAP_REVISION >>> 0,
     player: playerData,
-    players: Array.from(players.values()).filter(p => p.id !== id),
+    players: Array.from(players.values()).filter(p => p.id !== id && playerIncludedInSnapshot(playerData, p, STATE_AOI_RADIUS_SQ)),
     worldStory: sanitizeWorldStory(worldStoryQuest),
     worldQuests: null,
     playerStories: storySnap,
     party: partyPayload,
-    serverPop: { online: players.size, registered: Object.keys(captainAccounts || {}).length }
+    serverPop: {
+      online: players.size,
+      registered: Object.keys(captainAccounts || {}).length,
+      realm: getRealmConfig(),
+      maxPlayers: MAX_CONCURRENT_CAPTAINS > 0 ? MAX_CONCURRENT_CAPTAINS : null
+    }
   }));
   reconcileLeaderboardRows();
   ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
@@ -2050,25 +2291,29 @@ wss.on('connection', (ws, req) => {
         case 'update': {
           const p = players.get(id);
           if (!p) break;
-          if (msg.x !== undefined) {
-            const cx = clampPlayerWorldX(msg.x);
-            if (cx != null) p.x = cx;
+          ensureSimulationLayer();
+          if (!antiCheat.allowUpdateMessage(ws)) break;
+          if (msg.seq != null && Number.isFinite(Number(msg.seq))) {
+            const ns = Math.floor(Number(msg.seq));
+            if (ns > 0) p.lastNetSeq = ns;
           }
-          if (msg.z !== undefined) {
-            const cz = clampPlayerWorldX(msg.z);
-            if (cz != null) p.z = cz;
+          const ac = antiCheat.validatePlayerUpdate(p, msg, ws);
+          if (ac.kick) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'kicked',
+                reason: 'Fair sailing: this session sent impossible movement or damage (anticheat). You may rejoin.'
+              }));
+            } catch (e) {}
+            try { ws.close(); } catch (e2) {}
+            break;
           }
-          if (msg.rotation !== undefined) {
-            const r = Number(msg.rotation);
-            if (Number.isFinite(r)) p.rotation = Math.max(-1e4, Math.min(1e4, r));
-          }
-          if (msg.speed !== undefined) {
-            const sp = Number(msg.speed);
-            if (Number.isFinite(sp)) p.speed = Math.max(-120, Math.min(120, sp));
-          }
-          if (msg.health !== undefined) {
-            const h = Number(msg.health);
-            if (Number.isFinite(h)) p.health = Math.max(-20, Math.min(9999, h));
+          if (msg.x !== undefined && msg.z !== undefined) {
+            const cx = Number(msg.x);
+            const cz = Number(msg.z);
+            if (Number.isFinite(cx) && Number.isFinite(cz) && (p.docked || !ac.denyPositionHint)) {
+              gameSim.applyClientPositionHint(p, cx, cz);
+            }
           }
           if (msg.docked !== undefined) p.docked = !!msg.docked;
           if (msg.dockX !== undefined) p.dockX = msg.dockX;
@@ -2132,6 +2377,12 @@ wss.on('connection', (ws, req) => {
               markCaptainAccountsDirty();
             }
           }
+          break;
+        }
+        case 'world_checkpoint': {
+          const pl = players.get(id);
+          const ck = ws.captainAccountKey;
+          if (ck && pl) persistCaptainWorldPresenceFromPlayer(ck, pl);
           break;
         }
         case 'set_name': {
@@ -2279,6 +2530,13 @@ wss.on('connection', (ws, req) => {
           }
           sendPendingClanInvitesForCaptain(ws, newKey);
           broadcastServerPopulation();
+          const preferLocalVoyage = !!msg.preferLocalVoyage;
+          const resume = preferLocalVoyage ? null : tryApplyWorldPresenceToPlayer(newKey, p);
+          if (resume) {
+            try {
+              ws.send(JSON.stringify({ type: 'world_resume', realm: getRealmConfig(), ...resume }));
+            } catch (e) {}
+          }
           break;
         }
         case 'ship_update': {
@@ -3234,9 +3492,21 @@ wss.on('connection', (ws, req) => {
             captainAccounts = {};
             captainAccountsDirty = true;
             saveCaptainAccounts();
+            worldPresenceStore = { v: 1, captains: {} };
+            worldPresenceDirty = true;
             flushNavigatorMutationToDisk();
             broadcastAll({ type: 'navigator_wipe_local_voyage_data' });
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'wipe_all_client_voyage_data' }));
+            break;
+          }
+          if (action === 'world_announce') {
+            const text = msg.text != null ? String(msg.text).slice(0, 600) : '';
+            if (!text) {
+              ws.send(JSON.stringify({ type: 'admin_error', error: 'Empty announcement.' }));
+              break;
+            }
+            broadcastAll({ type: 'world_announce', text, t: Date.now() });
+            ws.send(JSON.stringify({ type: 'admin_ok', action: 'world_announce' }));
             break;
           }
           if (action === 'list_registered_captains') {
@@ -3261,6 +3531,10 @@ wss.on('connection', (ws, req) => {
               delete captainAccounts[ck];
               captainAccountsDirty = true;
               saveCaptainAccounts();
+            }
+            if (worldPresenceStore.captains && worldPresenceStore.captains[ck]) {
+              delete worldPresenceStore.captains[ck];
+              worldPresenceDirty = true;
             }
             flushNavigatorMutationToDisk();
             ws.send(JSON.stringify({ type: 'admin_ok', action: 'delete_registered_captain', captainKey: ck }));
@@ -3435,6 +3709,13 @@ wss.on('connection', (ws, req) => {
       if (Number.isFinite(sid) && sid === id) pl.boarding = null;
     }
     playerStories.delete(id);
+    if (leftCk && left && !left.docked) {
+      persistCaptainWorldPresenceFromPlayer(leftCk, left);
+      try {
+        writeFileAtomic(WORLD_PRESENCE_FILE, JSON.stringify(worldPresenceStore));
+        worldPresenceDirty = false;
+      } catch (e) {}
+    }
     players.delete(id);
     broadcast({ type: 'player_leave', id });
     broadcastServerPopulation();
@@ -3481,32 +3762,31 @@ setInterval(() => {
   try {
   if (players.size === 0) return;
   serverStateTickSeq++;
+  ensureSimulationLayer();
+  gameSim.stepAll(players);
   const includeCrew = (serverStateTickSeq % 2 === 0);
-  const snapshot = Array.from(players.values()).map(p => {
-    const row = {
-      id: p.id, x: p.x, z: p.z, rotation: p.rotation, speed: p.speed, health: p.health,
-      name: p.name, color: p.color, shipType: p.shipType, shipName: p.shipName,
-      captainKey: p.captainKey != null ? String(p.captainKey) : null,
-      partyTag: p.partyTag != null ? String(p.partyTag).slice(0, 24) : '',
-      flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
-      flagAssetId: (() => { const fa = sanitizeClientFlagAssetId(p.flagAssetId); return fa != null ? fa : 1; })(),
-      shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
-      docked: !!p.docked,
-      dockX: p.dockX != null ? p.dockX : null,
-      dockZ: p.dockZ != null ? p.dockZ : null,
-      dockAngle: p.dockAngle != null ? p.dockAngle : null,
-      dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
-      riggingHealth: p.riggingHealth != null ? p.riggingHealth : 100,
-      morale: p.morale != null ? p.morale : 100,
-      deckWalk: p.deckWalk || null,
-      boarding: p.boarding != null ? p.boarding : null,
-      rtt: p.rtt != null && Number.isFinite(p.rtt) ? Math.min(120000, Math.round(p.rtt)) : null
-    };
-    if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
-    return row;
-  });
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
-  broadcast({ type: 'state', players: snapshot, worldT: tickWorldT, wildlifeWorldT: tickWorldT });
+  const all = Array.from(players.values());
+  for (const client of wss.clients) {
+    if (client.readyState !== 1 || client.playerId == null) continue;
+    const viewer = players.get(client.playerId);
+    if (!viewer) continue;
+    const snap = [];
+    for (const p of all) {
+      if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
+      snap.push(buildStateRow(p, includeCrew || !!p.boarding));
+    }
+    try {
+      client.send(JSON.stringify({
+        type: 'state',
+        players: snap,
+        worldT: tickWorldT,
+        wildlifeWorldT: tickWorldT,
+        srvTick: serverStateTickSeq,
+        aoiR: STATE_AOI_RADIUS
+      }));
+    } catch (e) {}
+  }
   } catch (e) {
     console.error('[playground] state tick error:', e && e.message ? e.message : e);
   }
@@ -3524,6 +3804,16 @@ process.on('unhandledRejection', reason => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Pirate game server running on port ${PORT}`);
   console.log(`World seed: ${WORLD_SEED}`);
+  ensureSimulationLayer();
+  const ac = antiCheat && antiCheat.cfg;
+  if (ac) {
+    console.log(`[playground] simulation: authoritative wind + hull integration @ ${TICK_RATE}Hz (simulation-layer.js)`);
+    console.log(`[playground] anticheat: max ${ac.maxUpdatesPerSec}/s updates · Δpos≤${ac.maxPositionJump} · kick after ${ac.violationKickThreshold} violations / ${ac.violationWindowMs}ms (override AC_* env in simulation-layer.js)`);
+  }
+  const rc = getRealmConfig();
+  console.log(`[playground] realm: «${rc.name}» (${rc.id}) — REALM_NAME / REALM_ID env`);
+  console.log(`[playground] multiplayer AOI radius (world units): ${STATE_AOI_RADIUS} — set STATE_AOI_RADIUS env to tune; per-client state lists only nearby captains (+ boarding partners).`);
+  if (MAX_CONCURRENT_CAPTAINS > 0) console.log(`[playground] concurrent captain cap: ${MAX_CONCURRENT_CAPTAINS} (MAX_CONCURRENT_CAPTAINS)`);
   const navMsg = NAVIGATOR_ADMIN_PASSWORD
     ? `password configured (${NAVIGATOR_ADMIN_PASSWORD_SOURCE === 'env' ? 'NAVIGATOR_ADMIN_PASSWORD' : 'navigator_admin.secret'})`
     : 'NOT SET — set NAVIGATOR_ADMIN_PASSWORD or add navigator_admin.secret beside server.js for F3';
