@@ -37,6 +37,13 @@ const FACTION_PIRATE_SHIP_NAMES = [
   ['Diablo del Plata', 'Rey Negro', 'Costa Oscura', 'Carabela Maldita', 'Muerte Española'],
   ['Cão do Atlântico', 'Fantasma do Tejo', 'Navio da Maldição', 'Estrela Negra', 'Corsário do Sul']
 ];
+const FACTION_PATROL_SHIP_NAMES = [
+  ['HMS Vigilant', 'HMS Crescent', 'HMS Seahorse', 'HMS Kingfisher', 'HMS Sparrowhawk', 'HMS Bold', 'HMS Pallas', 'HMS Active', 'HMS Druid', 'HMS Squirrel', 'HMS Cygnet', 'HMS Rose', 'HMS Lynx', 'HMS Porcupine', 'HMS Rattlesnake', 'HMS Cruizer', 'HMS Scout', 'HMS Swallow', 'HMS Zephyr', 'HMS Falcon'],
+  ['HNLMS Holland', 'HNLMS Friesland', 'HNLMS Zeeland', 'HNLMS Gelderland', 'HNLMS Utrecht', 'HNLMS Overijssel', 'HNLMS Noord-Brabant', 'HNLMS Groningen', 'HNLMS Drenthe', 'HNLMS Wielingen', 'HNLMS Van Speijk', 'HNLMS Van Galen', 'HNLMS Van Nes', 'HNLMS Evertsen', 'HNLMS Piet Hein', 'HNLMS De Ruyter', 'HNLMS Tromp', 'HNLMS Kortenaer', 'HNLMS Banckert', 'HNLMS Van Kinsbergen'],
+  ['La Railleuse', 'La Sérieuse', 'La Volontaire', 'La Prudente', 'La Boudeuse', 'La Junon', 'La Nymphe', 'La Sensible', 'La Résolue', 'La Vénus', 'L\'Hirondelle', 'Le Faucon', 'Le Téméraire', 'Le Hardi', 'Le Brave', 'Le Vigilant', 'Le Tonnant', 'Le Cassard', 'Le Pluton', 'Le Mars'],
+  ['Nuestra Señora de Aránzazu', 'Santa Teresa', 'San Julián', 'San Vicente', 'Santa Rufina', 'San Hermenegildo', 'Santa Casilda', 'San Fulgencio', 'Santa Florentina', 'San Leandro', 'La Perla', 'El Rayo', 'La Estrella', 'El Veloz', 'La Brava', 'El Diligente', 'La Fama', 'El Marte', 'La Soledad', 'El Neptuno'],
+  ['NRP Príncipe Real', 'NRP Dom João', 'NRP Afonso de Albuquerque', 'NRP Bartolomeu Dias', 'NRP Vasco da Gama', 'NRP Pedro Álvares Cabral', 'NRP Diogo Cão', 'NRP Fernão de Magalhães', 'NRP Sagres', 'NRP Tritão', 'NRP Golfinho', 'NRP Águia', 'NRP Falcão', 'NRP Lince', 'NRP Pantera', 'NRP Leão', 'NRP Tigre', 'NRP Dragão', 'NRP Serpente', 'NRP Estrela do Mar']
+];
 
 function tradeShipCannonForType(shipType) {
   if (shipType === 'galleon') return 'heavy';
@@ -64,6 +71,13 @@ function proceduralPirateShipName(fid, cx, cz, idx, ws) {
   const f = (fid | 0) % FACTION_COUNT;
   const pool = FACTION_PIRATE_SHIP_NAMES[f] || FACTION_PIRATE_SHIP_NAMES[0];
   const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (ws | 0) ^ (f * 50261)) >>> 0;
+  return pool[th % pool.length];
+}
+
+function proceduralFactionPatrolShipName(fid, cx, cz, pid, ws) {
+  const f = (fid | 0) % FACTION_COUNT;
+  const pool = FACTION_PATROL_SHIP_NAMES[f] || FACTION_PATROL_SHIP_NAMES[0];
+  const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (pid | 0) * 83492791 ^ (ws | 0) ^ (f * 50261)) >>> 0;
   return pool[th % pool.length];
 }
 
@@ -873,9 +887,7 @@ function createServerNpcWorld(opts) {
       }
     }
     if (!haveSpawn) return false;
-    const patrolNameSalt = ((pid | 0) * 2654435761 ^ (pick.cx | 0) * 73856093 ^ (pick.cz | 0) * 19349663 ^ (ws | 0) ^ (fid * 50261)) >>> 0;
-    let patrolName = proceduralFactionMerchantShipName(fid, patrolNameSalt);
-    if (patrolName.length > 32) patrolName = patrolName.slice(0, 31) + '…';
+    const patrolName = proceduralFactionPatrolShipName(fid, pick.cx | 0, pick.cz | 0, pid, ws);
     const npc = {
       syncId: pid,
       x: nx,
