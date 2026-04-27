@@ -4022,7 +4022,7 @@ wss.on('connection', (ws, req) => {
 });
 
 /** Detect frozen/crashed browser tabs that never send TCP close — terminate stale sockets. */
-const WS_PING_INTERVAL_MS = Math.max(15000, Number(process.env.WS_PING_INTERVAL_MS) || 38000);
+const WS_PING_INTERVAL_MS = Math.max(15000, Number(process.env.WS_PING_INTERVAL_MS) || 22000);
 const wsHeartbeat = setInterval(() => {
   try {
     wss.clients.forEach(ws => {
