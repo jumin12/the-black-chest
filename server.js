@@ -3978,7 +3978,8 @@ setInterval(() => {
       broadcastAll({
         type: 'npc_sync',
         npcs: npcWorld.buildSyncRows(),
-        wind: npcWorld.getWindSample()
+        wind: npcWorld.getWindSample(),
+        srvTick: serverStateTickSeq
       });
     } catch (e) {}
   }
