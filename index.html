@@ -28303,7 +28303,11 @@ function hudConditionTier01(pct) {
   const p = Math.max(0, Math.min(100, Number(pct) || 0));
   return Math.min(5, Math.max(1, 6 - Math.ceil(p / 20)));
 }
-let _caplogAnimTimer = null;
+/** Per-frame hold for caplog / FPV toolbar PNGs. Mobile browsers throttle `setInterval` during touch; rAF + longer ms makes every frame paint. */
+function toolbarIconFrameMs() {
+  return isMobile ? 210 : 115;
+}
+let _caplogAnimRaf = null;
 function setCaplogButtonFrame(frame) {
   const img = document.getElementById('btn-caplog-img');
   if (!img) return;
@@ -28312,9 +28316,9 @@ function setCaplogButtonFrame(frame) {
 }
 function animateCaplogButton(targetOpen) {
   const target = targetOpen ? 5 : 1;
-  if (_caplogAnimTimer) {
-    clearInterval(_caplogAnimTimer);
-    _caplogAnimTimer = null;
+  if (_caplogAnimRaf != null) {
+    cancelAnimationFrame(_caplogAnimRaf);
+    _caplogAnimRaf = null;
   }
   const img = document.getElementById('btn-caplog-img');
   if (!img) return;
@@ -28326,17 +28330,24 @@ function animateCaplogButton(targetOpen) {
     return;
   }
   const step = targetOpen ? 1 : -1;
-  _caplogAnimTimer = setInterval(() => {
-    cur += step;
-    setCaplogButtonFrame(cur);
-    if (cur === target) {
-      clearInterval(_caplogAnimTimer);
-      _caplogAnimTimer = null;
+  const msStep = toolbarIconFrameMs();
+  let lastStepT = performance.now();
+  function tick(now) {
+    if (now - lastStepT >= msStep) {
+      lastStepT = now;
+      cur += step;
+      setCaplogButtonFrame(cur);
+      if (cur === target) {
+        _caplogAnimRaf = null;
+        return;
+      }
     }
-  }, 105);
+    _caplogAnimRaf = requestAnimationFrame(tick);
+  }
+  _caplogAnimRaf = requestAnimationFrame(tick);
 }
 
-let _fpvAnimTimer = null;
+let _fpvAnimRaf = null;
 function setFpvButtonFrame(frame) {
   const img = document.getElementById('btn-fpv-img');
   if (!img) return;
@@ -28346,9 +28357,9 @@ function setFpvButtonFrame(frame) {
 /** Deck walk on: animate fpv1→fpv5; off: fpv5→fpv1 (same cadence as Captain's Log icon). */
 function animateFpvButton(targetOnDeck) {
   const target = targetOnDeck ? 5 : 1;
-  if (_fpvAnimTimer) {
-    clearInterval(_fpvAnimTimer);
-    _fpvAnimTimer = null;
+  if (_fpvAnimRaf != null) {
+    cancelAnimationFrame(_fpvAnimRaf);
+    _fpvAnimRaf = null;
   }
   const img = document.getElementById('btn-fpv-img');
   if (!img) return;
@@ -28360,14 +28371,21 @@ function animateFpvButton(targetOnDeck) {
     return;
   }
   const step = targetOnDeck ? 1 : -1;
-  _fpvAnimTimer = setInterval(() => {
-    cur += step;
-    setFpvButtonFrame(cur);
-    if (cur === target) {
-      clearInterval(_fpvAnimTimer);
-      _fpvAnimTimer = null;
+  const msStep = toolbarIconFrameMs();
+  let lastStepT = performance.now();
+  function tick(now) {
+    if (now - lastStepT >= msStep) {
+      lastStepT = now;
+      cur += step;
+      setFpvButtonFrame(cur);
+      if (cur === target) {
+        _fpvAnimRaf = null;
+        return;
+      }
     }
-  }, 105);
+    _fpvAnimRaf = requestAnimationFrame(tick);
+  }
+  _fpvAnimRaf = requestAnimationFrame(tick);
 }
 function updateHUD() {
   const bar = document.getElementById('pc-combat-hud-bar');
