@@ -22,6 +22,13 @@ const SHIP_TYPES = {
 
 const FACTION_TRADE_COLORS = ['#c8102e', '#e87722', '#0055a4', '#e6bc0c', '#1a7a3e'];
 const FACTION_FLAG_PNG_IDS = [10, 13, 21, 19, 16];
+const RESERVED_PLAYER_FLAG_IDS = new Set([10, 13, 15, 16, 19, 21]);
+const PLAYER_FLAG_CHOICE_IDS = (() => {
+  const a = [];
+  for (let i = 1; i <= 26; i++) if (!RESERVED_PLAYER_FLAG_IDS.has(i)) a.push(i);
+  return a;
+})();
+const DEFAULT_PLAYER_FLAG_ASSET = 1;
 const FACTION_SHORT_NAMES = ['Britain', 'Netherlands', 'France', 'Spain', 'Portugal'];
 const FACTION_MERCHANT_SHIP_NAMES = [
   ['HMS Packet Lark', 'Britannia Merchant', 'Atlantic Factor'],
@@ -58,6 +65,11 @@ function shipHullRadius(shipType) {
 
 function factionFlagPngIdForFaction(fid) {
   return FACTION_FLAG_PNG_IDS[(fid | 0) % FACTION_COUNT] || FACTION_FLAG_PNG_IDS[0];
+}
+
+function randomChoosableFlagRng(rng) {
+  const ids = PLAYER_FLAG_CHOICE_IDS;
+  return ids[Math.floor(rng() * ids.length)] || DEFAULT_PLAYER_FLAG_ASSET;
 }
 
 function proceduralFactionMerchantShipName(fid, salt) {
@@ -594,7 +606,10 @@ function syncStoryBountyNpcs(npcs, playerStories, ctx, ws, edgeClamp) {
           storyStep: step,
           factionId: ((Math.floor(bx / 270) * 31 + Math.floor(bz / 270) * 17 + (ws | 0)) >>> 0) % FACTION_COUNT,
           flagColor: FACTION_TRADE_COLORS[0],
-          flagAssetId: factionFlagPngIdForFaction(0),
+          flagAssetId: randomChoosableFlagRng(() => {
+            const t = Math.imul(sid | 0, 1103515245) + 12345;
+            return ((t >>> 0) % 1000001) / 1000001;
+          }),
           flagPosition: 'mast',
           sailBonus: 0.1,
           attackNpcSyncId: null,
@@ -681,7 +696,7 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
         isHuntContract: true,
         factionId: pirateFaction,
         flagColor: FACTION_TRADE_COLORS[pirateFaction],
-        flagAssetId: factionFlagPngIdForFaction(pirateFaction),
+        flagAssetId: randomChoosableFlagRng(Math.random),
         sailBonus: 0.1,
         attackNpcSyncId: null,
         returnFireSyncId: null,
@@ -963,7 +978,7 @@ function createServerNpcWorld(opts) {
         riggingHealth: 100,
         factionId: pirateFaction,
         flagColor: FACTION_TRADE_COLORS[pirateFaction],
-        flagAssetId: factionFlagPngIdForFaction(pirateFaction),
+        flagAssetId: randomChoosableFlagRng(sr),
         sailBonus: 0.1,
         attackNpcSyncId: null,
         returnFireSyncId: null,
