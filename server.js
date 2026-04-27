@@ -171,11 +171,12 @@ function sanitizeBannerFromClient(raw) {
     if (!Number.isFinite(id) || id < 1 || id > 25) continue;
     const x = Math.max(0, Math.min(1, Number(e.x)));
     const y = Math.max(0, Math.min(1, Number(e.y)));
-    const s = Math.max(0.1, Math.min(1.4, Number.isFinite(Number(e.s)) ? Number(e.s) : 0.35));
+    const s = Math.max(0.06, Math.min(1.65, Number.isFinite(Number(e.s)) ? Number(e.s) : 0.35));
     let r = Number(e.r);
     if (!Number.isFinite(r)) r = 0;
     r = Math.max(-Math.PI * 2, Math.min(Math.PI * 2, r));
-    emblems.push({ id, x, y, s, r });
+    const mir = (e.mir === 1 || e.mir === true) ? 1 : 0;
+    emblems.push({ id, x, y, s, r, mir });
   }
   return { bg, field, emblems };
 }
