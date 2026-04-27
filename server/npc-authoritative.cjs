@@ -574,18 +574,20 @@ function syncStoryBountyNpcs(npcs, playerStories, ctx, ws, edgeClamp) {
       const existing = npcs.find(n => n.syncId === sid);
       const hp = shipType === 'warship' ? 125 : shipType === 'galleon' ? 105 : shipType === 'brigantine' ? 90 : 72;
       if (existing) {
-        existing.health = hp;
-        existing.type = shipType;
-        existing.name = pickStoryBountyCaptainName(shipType, pid, step);
-        existing.isStoryBounty = true;
-        existing.storyStep = step;
-        existing.missionOwnerPlayerId = pid;
-        const stuck =
-          ctx.dryLandAtWorldPosition(existing.x, existing.z) || !ctx.hasMinClearanceFromLand(existing.x, existing.z, 38);
-        if (stuck) {
-          existing.x = bx;
-          existing.z = bz;
-          existing.rotation = Number.isFinite(Number(rot)) ? Number(rot) : existing.rotation;
+        if (!existing.sinking) {
+          existing.health = hp;
+          existing.type = shipType;
+          existing.name = pickStoryBountyCaptainName(shipType, pid, step);
+          existing.isStoryBounty = true;
+          existing.storyStep = step;
+          existing.missionOwnerPlayerId = pid;
+          const stuck =
+            ctx.dryLandAtWorldPosition(existing.x, existing.z) || !ctx.hasMinClearanceFromLand(existing.x, existing.z, 38);
+          if (stuck) {
+            existing.x = bx;
+            existing.z = bz;
+            existing.rotation = Number.isFinite(Number(rot)) ? Number(rot) : existing.rotation;
+          }
         }
       } else {
         const newbie = {
@@ -837,7 +839,11 @@ function applyPlayerCannonHitAuthoritative(npcs, fromPlayerId, npcSyncId, ammoTy
       storyOwnerId: storyMission ? missionOwner : null,
       storyOutcome
     };
-    npcs.splice(idx, 1);
+    /* Let clients run the same sink animation as solo/host; remove from sim after ~4s (see step()). */
+    npc.health = 0;
+    npc.speed = 0;
+    npc.sinking = true;
+    npc.sinkTimer = 0;
   }
   out.ok = true;
   return out;
@@ -1509,6 +1515,12 @@ function createServerNpcWorld(opts) {
     syncQuestContractNpcs(npcs, playerQuests, ctx, playerMap);
     clearBoardLocks(npcs);
     applyNpcBoardingLocks(npcs, playerMap);
+    /* Match client `updateNpcs`: cannon kills stay in roster with sinking=true until animation completes. */
+    for (const n of npcs) {
+      if (!n.sinking) continue;
+      n.sinkTimer = (n.sinkTimer || 0) + dt;
+      if (n.sinkTimer > 4.25) n.health = -1000;
+    }
     for (const npc of npcs) {
       if (npc.sinking) continue;
       if (npc._boardLock) continue;
