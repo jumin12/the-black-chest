@@ -213,8 +213,9 @@ const AC_DEFAULTS = {
 /**
  * Per-socket rate limiting + soft validation. Hard limits clamp cheats; repeated absurdities → kick.
  */
-function createAntiCheatGate(overrides = {}) {
+function createAntiCheatGate(overrides = {}, hooks = {}) {
   const cfg = { ...AC_DEFAULTS, ...overrides };
+  const clampResumeXZ = typeof hooks.clampPlayerXZ === 'function' ? hooks.clampPlayerXZ : null;
 
   function ensureWsAc(ws) {
     if (!ws._ac) {
@@ -358,9 +359,26 @@ function createAntiCheatGate(overrides = {}) {
       if (Number.isFinite(cx) && Number.isFinite(cz)) {
         const d = Math.hypot(cx - p.x, cz - p.z);
         if (d > cfg.maxPositionJump) {
-          stripped.push('position');
-          denyPositionHint = true;
-          if (d > cfg.maxPositionJump * 3) kick = bumpViolation(ws, 'teleport') || kick;
+          /* First huge delta after connect: client continued voyage / reconnect at saved coords while
+           * server still has offshore spawn — snap once instead of denying hints and racking up kicks. */
+          const maxResumeSnap = 720000;
+          if (!ws._acResumePositionTrusted && clampResumeXZ && d <= maxResumeSnap) {
+            const c = clampResumeXZ(cx, cz);
+            if (c && Number.isFinite(c.x) && Number.isFinite(c.z)) {
+              ws._acResumePositionTrusted = true;
+              p.x = c.x;
+              p.z = c.z;
+              stripped.push('position_resume_snap');
+            } else {
+              stripped.push('position');
+              denyPositionHint = true;
+              if (d > cfg.maxPositionJump * 3) kick = bumpViolation(ws, 'teleport') || kick;
+            }
+          } else {
+            stripped.push('position');
+            denyPositionHint = true;
+            if (d > cfg.maxPositionJump * 3) kick = bumpViolation(ws, 'teleport') || kick;
+          }
         }
       }
     }

@@ -49,7 +49,14 @@ function ensureSimulationLayer() {
       edgeClamp: PLAYER_WORLD_EDGE_CLAMP,
       tickRate: TICK_RATE
     });
-    antiCheat = createAntiCheatGate();
+    antiCheat = createAntiCheatGate({}, {
+      clampPlayerXZ(x, z) {
+        const cx = clampPlayerWorldX(x);
+        const cz = clampPlayerWorldX(z);
+        if (cx == null || cz == null) return null;
+        return { x: cx, z: cz };
+      }
+    });
   }
 }
 function ensureNpcWorld() {
