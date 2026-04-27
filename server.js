@@ -2392,6 +2392,8 @@ wss.on('connection', (ws, req) => {
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
     flagAssetId: null,
+    /** Stable clan / session identity before a captain name is reserved (never derived from `Pirate_<id>` for leaderboard merge). */
+    captainKey: normalizeCaptainKey(`session_${id}`),
     color: `hsl(${Math.random() * 360}, 70%, 50%)`,
     name: `Pirate_${id}`,
     health: 100,
@@ -2620,7 +2622,9 @@ wss.on('connection', (ws, req) => {
             ? String(msg.captainToken).trim()
             : null;
 
-          const oldKey = ws.captainAccountKey || null;
+          const oldKey = ws.captainAccountKey
+            ? normalizeCaptainKey(String(ws.captainAccountKey))
+            : (p.captainKey ? normalizeCaptainKey(String(p.captainKey)) : null);
 
           if (tokenOffered && !captainAccounts[newKey]) {
             const kTok = findCaptainKeyByToken(tokenOffered);
