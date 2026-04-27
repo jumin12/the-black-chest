@@ -7608,6 +7608,8 @@ function getSortedUnlockedFlagIds(playerOpt) {
 }
 /** Captain’s Log ship tab: slot 1 = workshop hull jack when painted; then purchased jacks in unlock order. */
 const SHIP_PANEL_WORKSHOP_JACK = '__workshop_jack__';
+/** When the player has catalog jacks but no workshop hull jack: slot 0 = no PNG (blank / hull-only mast). */
+const SHIP_PANEL_BLANK_MAST = '__mast_blank__';
 function playerHasSavedCustomHullJack(playerOpt) {
   const pl = playerOpt || G.player;
   const h = pl && pl.hullBanner ? sanitizeBannerDesignClient(pl.hullBanner) : null;
@@ -7622,23 +7624,20 @@ function getShipPanelJackSlotMeta(playerOpt) {
   const pl = playerOpt || G.player;
   const unlocked = getSortedUnlockedFlagIds(pl);
   const hasW = playerHasSavedCustomHullJack(pl);
-  const slots = hasW ? [SHIP_PANEL_WORKSHOP_JACK, ...unlocked] : unlocked.slice();
+  let slots;
+  if (hasW) slots = [SHIP_PANEL_WORKSHOP_JACK, ...unlocked];
+  else if (unlocked.length) slots = [SHIP_PANEL_BLANK_MAST, ...unlocked];
+  else slots = [];
   return { slots, unlocked, hasW };
 }
 function shipPanelCurrentJackSlotIndex(playerOpt) {
   const pl = playerOpt || G.player;
-  const { slots, unlocked, hasW } = getShipPanelJackSlotMeta(pl);
+  const { slots, unlocked } = getShipPanelJackSlotMeta(pl);
   if (!slots.length) return 0;
   const eq = sanitizeFlagPngId(pl.flagAssetId);
   if (eq != null) {
     const uix = unlocked.indexOf(eq);
-    if (uix >= 0) return hasW ? uix + 1 : uix;
-  }
-  if (hasW) return 0;
-  const eff = getEffectivePlayerFlagAssetId(pl);
-  if (eff != null) {
-    const uix = unlocked.indexOf(eff);
-    if (uix >= 0) return uix;
+    if (uix >= 0) return uix + 1;
   }
   return 0;
 }
@@ -8312,26 +8311,22 @@ function normalizePlayerFlagAssetId(n) {
   if (RESERVED_PLAYER_FLAG_IDS.has(x)) return null;
   return x;
 }
-/** Saved `flagAssetId` may be null; resolves to an unlocked catalog jack if any, else a default PNG (unless the hull jack is custom-only). */
-function getEffectivePlayerFlagAssetId(player) {
-  const pl = player || G.player;
-  ensurePlayerFlagUnlocks();
-  const raw = pl && pl.flagAssetId;
-  const sid = sanitizeFlagPngId(raw);
-  if (sid != null && playerHasFlagUnlocked(sid, pl)) return sid;
-  const ids = getSortedUnlockedFlagIds(pl);
-  if (ids.length) return ids[0];
-  if (playerHasSavedCustomHullJack(pl)) return null;
-  return DEFAULT_PLAYER_FLAG_ASSET;
-}
-/** Hoisted catalog jack sent to the server / save file: only if unlocked; otherwise null (custom jack only). */
-function getNetworkFlagAssetId(player) {
-  const pl = player || G.player;
+/** Catalog jack flying on the mast: equipped id only if unlocked (null = workshop hull jack, blank mast, or hull art only). */
+function getPlayerMastCatalogFlagId(playerOpt) {
+  const pl = playerOpt || G.player;
   if (!pl) return null;
   ensurePlayerFlagUnlocks();
   const fa = sanitizeFlagPngId(pl.flagAssetId);
   if (fa == null) return null;
   return playerHasFlagUnlocked(fa, pl) ? fa : null;
+}
+/** @deprecated Prefer `getPlayerMastCatalogFlagId` — kept for call sites that mean “equipped catalog id” only. */
+function getEffectivePlayerFlagAssetId(player) {
+  return getPlayerMastCatalogFlagId(player);
+}
+/** Hoisted catalog jack sent to the server / save file: only if unlocked; otherwise null (custom jack only). */
+function getNetworkFlagAssetId(player) {
+  return getPlayerMastCatalogFlagId(player);
 }
 
 /** Wooden pole + hinge-mounted subdivided flag; registers for wind animation. */
@@ -14795,10 +14790,12 @@ function rebuildPlayerShip() {
   disposeObject3DSubtree(playerShipGroup);
   while (playerShipGroup.children.length) playerShipGroup.remove(playerShipGroup.children[0]);
   ensurePlayerCrewTasks();
+  const mastCat = getPlayerMastCatalogFlagId();
+  const hullForMast = mastCat != null ? null : getEffectiveHullBannerDesign(null);
   const ship = buildShipMesh(G.player.shipType, G.player.shipParts, DEFAULT_SAIL_TRIM_COLOR, '', {
     honorPlayerLoadout: true,
-    flagAssetId: getEffectivePlayerFlagAssetId(),
-    hullBannerDesign: getEffectiveHullBannerDesign(null),
+    flagAssetId: mastCat,
+    hullBannerDesign: hullForMast,
     sailBannerDesign: getEffectiveSailBannerDesign(null)
   });
   playerShipGroup.add(ship);
@@ -14807,7 +14804,7 @@ function rebuildPlayerShip() {
   const spec = SHIP_TYPES[G.player.shipType];
   shipNameSprite = null;
   if (countLivingNonPrisonerCrew() > 0) {
-    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', '', G.party?.tag || '', getEffectivePlayerFlagAssetId());
+    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', '', G.party?.tag || '', mastCat);
     shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     playerShipGroup.add(shipNameSprite);
   }
@@ -14826,7 +14823,7 @@ function updatePlayerShipNametagOnly() {
       shipNameSprite = null;
     }
     if (countLivingNonPrisonerCrew() <= 0) return;
-    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', '', G.party?.tag || '', getEffectivePlayerFlagAssetId());
+    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', '', G.party?.tag || '', getPlayerMastCatalogFlagId());
     shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     playerShipGroup.add(shipNameSprite);
   } catch (e) {}
@@ -22778,12 +22775,14 @@ function getPlayerShipCannonReadout() {
 window.captainsLogCycleUnlockedFlag = function (dir) {
   if (G.mode !== 'playing') return;
   ensurePlayerFlagUnlocks();
-  const { slots } = getShipPanelJackSlotMeta();
+  const { slots, unlocked } = getShipPanelJackSlotMeta();
   if (!slots.length) return;
+  const eq0 = sanitizeFlagPngId(G.player.flagAssetId);
+  if (eq0 != null && unlocked.indexOf(eq0) < 0) G.player.flagAssetId = null;
   let i = shipPanelCurrentJackSlotIndex();
   const next = (i + (dir | 0) + slots.length) % slots.length;
   const key = slots[next];
-  if (key === SHIP_PANEL_WORKSHOP_JACK) {
+  if (key === SHIP_PANEL_WORKSHOP_JACK || key === SHIP_PANEL_BLANK_MAST) {
     G.player.flagAssetId = null;
   } else {
     G.player.flagAssetId = key;
@@ -22811,27 +22810,37 @@ function updateShipPanel() {
   const { slots, hasW } = getShipPanelJackSlotMeta();
   const curSlot = shipPanelCurrentJackSlotIndex();
   const slotKey = slots[curSlot];
-  const effFlag = getEffectivePlayerFlagAssetId();
-  const equippedCatalog = sanitizeFlagPngId(G.player.flagAssetId);
-  const hullFlagId = sanitizeFlagPngId(G.player && G.player.flagAssetId) || effFlag;
-  const mastFlagId = effFlag;
+  const mastCatalog = getPlayerMastCatalogFlagId();
+  const equippedCatalog = mastCatalog;
+  const hullFlagId = mastCatalog;
+  const mastFlagId = mastCatalog;
   const showJackPicker = slots.length > 0;
   const flyCustomWorkshop = showJackPicker && slotKey === SHIP_PANEL_WORKSHOP_JACK;
-  const flyingPngId = !flyCustomWorkshop && slotKey != null && slotKey !== SHIP_PANEL_WORKSHOP_JACK ? slotKey : hullFlagId;
+  const isBlankMastPick = slotKey === SHIP_PANEL_BLANK_MAST;
+  let flyingPngId = null;
+  if (!flyCustomWorkshop && !isBlankMastPick && typeof slotKey === 'number') flyingPngId = slotKey;
+  else if (!flyCustomWorkshop && !isBlankMastPick) flyingPngId = mastCatalog;
   const flyFlagSrc = flyingPngId != null ? resolveGameAssetUrl(`assets/flags/flag${flyingPngId}.png`) : '';
   const hullJackOnlySrc = hullFlagId != null ? resolveGameAssetUrl(`assets/flags/flag${hullFlagId}.png`) : '';
   const mastFlagSrc = mastFlagId != null ? resolveGameAssetUrl(`assets/flags/flag${mastFlagId}.png`) : '';
   const flyCaption = flyCustomWorkshop
     ? 'Workshop hull jack (slot 1)'
-    : (flyingPngId != null ? `Catalog jack #${flyingPngId}` : 'Jack');
+    : (isBlankMastPick ? 'Blank mast (no catalog jack)'
+      : (flyingPngId != null ? `Catalog jack #${flyingPngId}` : 'Jack'));
+  const slot1Hint = hasW ? ' · slot 1 = workshop' : (slots.length > 1 ? ' · slot 1 = blank / hull-only' : '');
+  const flyCenterHtml = flyCustomWorkshop
+    ? `<img id="ship-panel-jack-fly-img" src="${flyFlagSrc}" alt="" width="160" height="120" decoding="async" style="max-width:100%;height:auto;border-radius:6px;border:1px solid rgba(80,110,140,0.35);background:#0a1628;"/>`
+    : (isBlankMastPick
+      ? `<div style="min-height:120px;display:flex;align-items:center;justify-content:center;text-align:center;padding:12px;font-size:11px;color:#9a9080;line-height:1.45;border-radius:6px;border:1px dashed rgba(80,110,140,0.35);background:rgba(10,22,40,0.35);">No catalog jack on the mast — hull workshop art or bare pole.</div>`
+      : `<img id="ship-panel-jack-fly-img" src="${flyFlagSrc}" alt="" width="160" height="120" decoding="async" style="max-width:100%;height:auto;border-radius:6px;border:1px solid rgba(80,110,140,0.35);background:#0a1628;"/>`);
   const unlockLine = showJackPicker
     ? `<div style="margin:10px 0 12px;padding:10px;background:rgba(22,32,42,0.4);border:1px solid rgba(100,130,160,0.3);border-radius:8px;">
         <div style="color:#a8c8e8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Your jack (flying)</div>
         <div class="flag-level-picker port-flag-level" style="max-width:100%;">
           <button type="button" class="flag-level-arrow" aria-label="Previous flag" onclick="captainsLogCycleUnlockedFlag(-1)">‹</button>
           <div class="flag-level-center">
-            <img id="ship-panel-jack-fly-img" src="${flyFlagSrc}" alt="" width="160" height="120" decoding="async" style="max-width:100%;height:auto;border-radius:6px;border:1px solid rgba(80,110,140,0.35);background:#0a1628;"/>
-            <div style="font-size:10px;color:#9a9080;text-align:center;margin-top:6px;">${flyCaption} · ${curSlot + 1} / ${slots.length}${hasW ? ' · slot 1 = workshop' : ''}</div>
+            ${flyCenterHtml}
+            <div style="font-size:10px;color:#9a9080;text-align:center;margin-top:6px;">${flyCaption} · ${curSlot + 1} / ${slots.length}${slot1Hint}</div>
           </div>
           <button type="button" class="flag-level-arrow" aria-label="Next flag" onclick="captainsLogCycleUnlockedFlag(1)">›</button>
         </div>
@@ -22842,12 +22851,20 @@ function updateShipPanel() {
           <img src="${hullJackOnlySrc}" alt="" width="160" height="120" decoding="async" style="max-width:100%;height:auto;border-radius:6px;border:1px solid rgba(80,110,140,0.35);"/>
         </div>`
       : '');
+  const mastExplain = equippedCatalog != null
+    ? `Other captains see catalog jack #${equippedCatalog} when you are underway.`
+    : (playerHasSavedCustomHullJack()
+      ? 'Workshop hull jack on the mast — no catalog PNG equipped.'
+      : 'No catalog jack — other captains see your hull/sail art or a bare mast.');
   const mastFlagBlock = mastFlagId != null
     ? `<div style="display:flex;align-items:center;gap:12px;margin:0 0 12px;padding:10px 12px;background:rgba(22,32,42,0.42);border:1px solid rgba(100,130,160,0.32);border-radius:8px;">
         <img src="${mastFlagSrc}" alt="" width="88" height="66" decoding="async" style="flex-shrink:0;width:88px;height:66px;object-fit:cover;border-radius:6px;border:1px solid rgba(80,110,140,0.4);background:#0a1628;"/>
-        <div style="min-width:0;"><div style="color:#a8c8e8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Your flag (on mast)</div><div style="color:#d8ccb8;font-size:12px;line-height:1.35;">Other captains see this jack when you are underway. ${equippedCatalog != null ? `Equipped catalog #${equippedCatalog}.` : (playerHasSavedCustomHullJack() ? 'Workshop hull jack — no catalog jack equipped.' : 'Using your best unlocked jack.')}</div></div>
+        <div style="min-width:0;"><div style="color:#a8c8e8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Your flag (on mast)</div><div style="color:#d8ccb8;font-size:12px;line-height:1.35;">${mastExplain}</div></div>
       </div>`
-    : '';
+    : `<div style="margin:0 0 12px;padding:10px 12px;background:rgba(22,32,42,0.42);border:1px solid rgba(100,130,160,0.32);border-radius:8px;">
+        <div style="color:#a8c8e8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Your flag (on mast)</div>
+        <div style="color:#d8ccb8;font-size:12px;line-height:1.35;">${mastExplain}</div>
+      </div>`;
   const shipTitleEsc = escapeHtml((G.player.shipName || '').trim() || 'Unnamed');
   info.innerHTML = `
     <div style="text-align:center;margin-bottom:4px;">
@@ -23482,7 +23499,7 @@ function getCargoPreviewMeshSig() {
   const c = (G.player.crew || []).map(m => `${m.name}:${m.role}:${m.health}`).join('|');
   const hB = getEffectiveHullBannerDesign(null);
   const sB = getEffectiveSailBannerDesign(null);
-  return `${G.player.shipType}|${JSON.stringify(G.player.shipParts)}|${c}|${getEffectivePlayerFlagAssetId()}|${G.player.shipName}|${hB ? JSON.stringify(hB) : ''}|${sB ? JSON.stringify(sB) : ''}`;
+  return `${G.player.shipType}|${JSON.stringify(G.player.shipParts)}|${c}|${getPlayerMastCatalogFlagId() ?? ''}|${G.player.shipName}|${hB ? JSON.stringify(hB) : ''}|${sB ? JSON.stringify(sB) : ''}`;
 }
 function getCargoInventoryUiSig() {
   return (G.player.cargoSlots || []).map(s => (s && s.count > 0) ? `${s.id}:${s.count}` : '').join(',');
@@ -23874,10 +23891,12 @@ function updateCargo3DMesh() {
     cargoShipPreview = null;
   }
   const nm = G.player.shipName || 'Ship';
+  const mastCat = getPlayerMastCatalogFlagId();
+  const hullFM = mastCat != null ? null : getEffectiveHullBannerDesign(null);
   cargoShipPreview = buildShipMesh(G.player.shipType, G.player.shipParts, DEFAULT_SAIL_TRIM_COLOR, nm, {
     honorPlayerLoadout: true,
-    flagAssetId: getEffectivePlayerFlagAssetId(),
-    hullBannerDesign: getEffectiveHullBannerDesign(null),
+    flagAssetId: mastCat,
+    hullBannerDesign: hullFM,
     sailBannerDesign: getEffectiveSailBannerDesign(null)
   });
   const crewForMesh = G.player.crew.map((c, i) => ({
@@ -24002,10 +24021,12 @@ function updateYardShipPreviewForType(shipType) {
     yardShipGroup = null;
   }
   const parts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
+  const mastCat = getPlayerMastCatalogFlagId();
+  const hullFM = mastCat != null ? null : getEffectiveHullBannerDesign(null);
   yardShipGroup = buildShipMesh(shipType, parts, DEFAULT_SAIL_TRIM_COLOR, '', {
     honorPlayerLoadout: true,
-    flagAssetId: getEffectivePlayerFlagAssetId(),
-    hullBannerDesign: getEffectiveHullBannerDesign(null),
+    flagAssetId: mastCat,
+    hullBannerDesign: hullFM,
     sailBannerDesign: getEffectiveSailBannerDesign(null)
   });
   yardShipGroup.rotation.y = yardShipYaw;
@@ -28434,9 +28455,11 @@ function update(dt) {
       const captainName = networkPlayerCaptainName(p);
       const shipTitle = (p.shipName && String(p.shipName).trim()) ? String(p.shipName).trim() : captainName;
       const visualParts = normalizeShipPartsForRemoteView(p.shipParts);
+      const rMast = sanitizeFlagPngId(p.flagAssetId);
+      const rHull = rMast != null ? null : getRemotePlayerHullBannerDesign(p);
       const sm = buildShipMesh(st, visualParts, DEFAULT_SAIL_TRIM_COLOR, shipTitle, {
-        flagAssetId: p.flagAssetId,
-        hullBannerDesign: getRemotePlayerHullBannerDesign(p),
+        flagAssetId: rMast,
+        hullBannerDesign: rHull,
         sailBannerDesign: getRemotePlayerSailBannerDesign(p)
       });
       if (captainName && (shipTitle !== captainName || String(p.partyTag || '').trim())) {
@@ -29857,12 +29880,13 @@ function updatePreviewShip() {
   const sb = window._creationSailBannerDraft ? sanitizeBannerDesignClient(window._creationSailBannerDraft) : null;
   const previewBannerGen = ++previewShipBannerComposeGen;
   const draftPl = { hullBanner: hb };
-  const previewPngJack = playerHasSavedCustomHullJack(draftPl) ? null : getEffectivePlayerFlagAssetId(draftPl);
+  const mastPv = playerHasSavedCustomHullJack(draftPl) ? null : getPlayerMastCatalogFlagId();
+  const hullForMastPv = mastPv != null ? null : hb;
   previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, DEFAULT_SAIL_TRIM_COLOR, shipName, {
     honorPlayerLoadout: true,
     hideShipNameLabel: true,
-    flagAssetId: previewPngJack,
-    hullBannerDesign: hb,
+    flagAssetId: mastPv,
+    hullBannerDesign: hullForMastPv,
     sailBannerDesign: sb,
     bannerComposeGen: previewBannerGen
   });
@@ -30982,9 +31006,6 @@ function launchGame() {
   ensurePlayerFlagUnlocks();
   G.player.flagAssetId = null;
   G.player.flagAchievements = DEFAULT_FLAG_ACHIEVEMENTS();
-  const starterJack = randomChoosableFlagRng(() => Math.random());
-  addFlagUnlock(starterJack);
-  G.player.flagAssetId = starterJack;
   const allCrew = getCrewFromUI();
   G.player.crew = allCrew.map((c, i) => ({
     name: c.name, role: c.role, health: 100, color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
@@ -31652,11 +31673,6 @@ function loadProgress() {
       G.player.sailBanner = null;
     }
     finalizePlayerFlagUnlocksAfterLoad();
-    if (sanitizeFlagPngId(G.player.flagAssetId) == null && !getSortedUnlockedFlagIds().length && !playerHasSavedCustomHullJack()) {
-      const starterJack = randomChoosableFlagRng(() => Math.random());
-      addFlagUnlock(starterJack);
-      G.player.flagAssetId = starterJack;
-    }
     if (data.townStockpiles && typeof data.townStockpiles === 'object') G.townStockpiles = data.townStockpiles;
     if (data.playerStats && typeof data.playerStats === 'object') {
       ensurePlayerStats();
