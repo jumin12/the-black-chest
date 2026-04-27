@@ -357,6 +357,63 @@
   let editorFactionColors = DEFAULT_EDIT_FACTION_COLORS.slice();
   let editorSelectedLibraryId = null;
 
+  function httpOriginFromWebSocketUrl(wsUrl) {
+    try {
+      const u = new URL(String(wsUrl).trim().replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:'));
+      return u.origin;
+    } catch (e) { return null; }
+  }
+  function normalizeUserWebSocketUrl(raw) {
+    if (raw == null) return null;
+    const s = String(raw).trim();
+    if (!s) return null;
+    if (/^wss?:\/\//i.test(s)) return s;
+    if (/^https?:\/\//i.test(s)) return s.replace(/^http/i, 'ws');
+    return null;
+  }
+  function meSyncFallbackHttpOrigin() {
+    const p = new URLSearchParams(location.search);
+    const qNorm = normalizeUserWebSocketUrl(p.get('server'));
+    if (qNorm) {
+      const http = httpOriginFromWebSocketUrl(qNorm);
+      return http || `${location.protocol}//${location.host}`;
+    }
+    return `${location.protocol}//${location.host}`;
+  }
+  let _meGameHttpOriginPromise = null;
+  function ensureMeGameHttpOrigin() {
+    if (_meGameHttpOriginPromise) return _meGameHttpOriginPromise;
+    _meGameHttpOriginPromise = (async () => {
+      if (normalizeUserWebSocketUrl(new URLSearchParams(location.search).get('server'))) {
+        return meSyncFallbackHttpOrigin();
+      }
+      try {
+        const lsNorm = normalizeUserWebSocketUrl(localStorage.getItem('pirates_server_wss'));
+        if (lsNorm) {
+          const http = httpOriginFromWebSocketUrl(lsNorm);
+          if (http) return http;
+        }
+      } catch (e) { /* noop */ }
+      try {
+        const r = await fetch(new URL('assets/multiplayer-server.json', location.href), { cache: 'no-store' });
+        if (r.ok) {
+          const j = await r.json();
+          const w = j && typeof j.wss === 'string' ? j.wss.trim() : '';
+          if (w) {
+            const wNorm = normalizeUserWebSocketUrl(w);
+            if (wNorm) {
+              let httpOrig = j && typeof j.httpOrigin === 'string' ? j.httpOrigin.trim() : '';
+              if (!httpOrig) httpOrig = httpOriginFromWebSocketUrl(wNorm) || '';
+              if (httpOrig) return httpOrig;
+            }
+          }
+        }
+      } catch (e) { /* noop */ }
+      return meSyncFallbackHttpOrigin();
+    })();
+    return _meGameHttpOriginPromise;
+  }
+
   function readMapLibraryIndex() {
     try {
       const raw = localStorage.getItem(MAP_LIBRARY_INDEX_KEY);
@@ -4320,16 +4377,18 @@
   document.getElementById('me-nav-unlock')?.addEventListener('click', () => {
     const pw = document.getElementById('me-nav-pw')?.value || '';
     const st = document.getElementById('me-nav-status');
-    fetch(`${location.protocol}//${location.host}/api/navigator-auth`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pw })
-    }).then(r => r.json()).then(j => {
-      if (j.ok && j.token) {
-        try { sessionStorage.setItem('pirates_navigator_sess', j.token); } catch (err) {}
-        if (st) st.textContent = 'Session OK — you can publish.';
-      } else if (st) st.textContent = j.error || 'Auth failed.';
-    }).catch(() => { if (st) st.textContent = 'Network error.'; });
+    ensureMeGameHttpOrigin()
+      .then(apiOrigin => fetch(`${apiOrigin}/api/navigator-auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw })
+      }))
+      .then(r => r.json()).then(j => {
+        if (j.ok && j.token) {
+          try { sessionStorage.setItem('pirates_navigator_sess', j.token); } catch (err) {}
+          if (st) st.textContent = 'Session OK — you can publish.';
+        } else if (st) st.textContent = j.error || 'Auth failed.';
+      }).catch(() => { if (st) st.textContent = 'Network error.'; });
   });
   document.getElementById('me-publish-world')?.addEventListener('click', () => {
     const st = document.getElementById('me-nav-status');
@@ -4348,15 +4407,17 @@
       } catch (err) { /* noop */ }
     }
     if (!mapPayload) mapPayload = serializeMap();
-    fetch(`${location.protocol}//${location.host}/api/world-map`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: tok, map: mapPayload })
-    }).then(r => r.json()).then(j => {
-      if (j.ok) {
-        if (st) st.textContent = `Published — revision ${j.revision}. Players sync this chart when they connect.`;
-      } else if (st) st.textContent = j.error || 'Publish failed.';
-    }).catch(() => { if (st) st.textContent = 'Network error.'; });
+    ensureMeGameHttpOrigin()
+      .then(apiOrigin => fetch(`${apiOrigin}/api/world-map`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: tok, map: mapPayload })
+      }))
+      .then(r => r.json()).then(j => {
+        if (j.ok) {
+          if (st) st.textContent = `Published — revision ${j.revision}. Players sync this chart when they connect.`;
+        } else if (st) st.textContent = j.error || 'Publish failed.';
+      }).catch(() => { if (st) st.textContent = 'Network error.'; });
   });
   document.getElementById('me-revert-world')?.addEventListener('click', () => {
     const st = document.getElementById('me-nav-status');
@@ -4368,15 +4429,17 @@
       return;
     }
     if (st) st.textContent = 'Reverting…';
-    fetch(`${location.protocol}//${location.host}/api/world-map-revert`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: tok })
-    }).then(r => r.json()).then(j => {
-      if (j.ok) {
-        if (st) st.textContent = `Reverted — revision ${j.revision}. Reload the voyage to pick up the chart.`;
-      } else if (st) st.textContent = j.error || 'Revert failed.';
-    }).catch(() => { if (st) st.textContent = 'Network error.'; });
+    ensureMeGameHttpOrigin()
+      .then(apiOrigin => fetch(`${apiOrigin}/api/world-map-revert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: tok })
+      }))
+      .then(r => r.json()).then(j => {
+        if (j.ok) {
+          if (st) st.textContent = `Reverted — revision ${j.revision}. Reload the voyage to pick up the chart.`;
+        } else if (st) st.textContent = j.error || 'Revert failed.';
+      }).catch(() => { if (st) st.textContent = 'Network error.'; });
   });
   document.getElementById('btn-gen-deco')?.addEventListener('click', () => generateDecorations());
 
