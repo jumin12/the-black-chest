@@ -3482,7 +3482,7 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
     playShipDamageSound(isPellet ? 0.52 : 0.88, npc.x, ny + hN * 0.42, npc.z);
   }
   npc.aggro = true;
-  npc.underFireTimer = 4.6;
+  npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
   let popMsg = `−${dh} hull`;
   if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
   else if (at === 'grape') popMsg = isPellet ? `Grape · −${dh}` : `Grapeshot · −${dh}`;
@@ -4008,6 +4008,7 @@ function runNpcSinkOutcome(npc, killerPlayerId) {
   }
   tryProgressFactionLetters(npc, kid);
   npc._boardingHostLock = false;
+  clearNpcBoardingPersist(npc);
   npc.sinking = true;
   npc.sinkTimer = 0;
   npc.speed = 0;
@@ -12138,8 +12139,22 @@ function applyBoardingCasualtyDeathsToLocalCrew(n) {
   try { rebuildPlayerShip(); updateCrewPanel(); } catch (e) {}
   if (ws?.readyState === 1) try { sendUpdate(); } catch (e) {}
 }
+function applyBoardingCasualtyDeathsToNpcCrew(npc, n) {
+  const k = Math.max(0, Math.min(24, n | 0));
+  if (!k || !npc || !Array.isArray(npc.crewData)) return;
+  let removed = 0;
+  for (let u = 0; u < k; u++) {
+    const idx = pickBoardingCasualtyCrewIndex(npc.crewData);
+    if (idx < 0) break;
+    npc.crewData.splice(idx, 1);
+    removed++;
+  }
+  if (!removed) return;
+  try { rebuildNPCShipMesh(npc); } catch (e) {}
+}
 function getNpcBoardingCrewCount(npc) {
   if (!npc) return 3;
+  if (Array.isArray(npc.crewData) && npc.crewData.length) return countCrewFighters(npc.crewData);
   if (Array.isArray(npc.crew) && npc.crew.length) return countCrewFighters(npc.crew);
   const sp = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   return Math.max(2, 2 + (sp.crewBunks | 0) % 5);
@@ -12513,12 +12528,17 @@ function startNpcBoardingAttack(npc) {
   const locks = computeBoardingLocks(G.player.x, G.player.z, G.player.rotation, npc.x, npc.z, G.player.shipType, npc.type);
   const pTot = countCrewFighters(G.player.crew);
   const eTot = getNpcBoardingCrewCount(npc);
+  const sid0 = npc.syncId | 0;
+  const defGold = 20 + (sid0 % 40), defWood = 4 + (sid0 % 5);
+  const nl = npc._bdNpcLoot && Number.isFinite(Number(npc._bdNpcLoot.gold))
+    ? { gold: Math.max(0, npc._bdNpcLoot.gold | 0), wood: Math.max(0, (npc._bdNpcLoot.wood != null ? npc._bdNpcLoot.wood : defWood) | 0) }
+    : { gold: defGold, wood: defWood };
   G.boarding = {
     phase: 'pull', pullT: 0, partnerPlayerId: null, npcSyncId: npc.syncId, attackerId: G.myId,
     tNet: 0, pAtk: pTot, eAtk: eTot, pHeart: pTot, eHeart: eTot, pTotal: pTot, eTotal: eTot, pTotStart: pTot, eTotStart: eTot,
     lockPX: locks.lockPX, lockPZ: locks.lockPZ, lockPR: locks.lockPR, lockEX: locks.lockEX, lockEZ: locks.lockEZ, lockER: locks.lockER,
     _p0x: G.player.x, _p0z: G.player.z, _e0x: npc.x, _e0z: npc.z,
-    nameOur: myN, nameTheir: theirN, surrenderPool: 0, isDefender: false, fightAcc: 0, npcLoot: { gold: 20 + ((npc.syncId | 0) % 40), wood: 4 + ((npc.syncId | 0) % 5) }
+    nameOur: myN, nameTheir: theirN, surrenderPool: 0, isDefender: false, fightAcc: 0, npcLoot: nl
   };
   npc._boardingHostLock = true;
   G.anchorDropping = false;
@@ -12547,9 +12567,16 @@ function boardingCombatTick() {
   }
   b.pHeart = b.pAtk; b.eHeart = b.eAtk;
   if (r(s + 3) < 0.1) b.surrenderPool = (b.surrenderPool | 0) + 1;
-  if (b.npcSyncId == null && boardingIAmSimLeader(b)) {
+  if (boardingIAmSimLeader(b)) {
     const dSelf = prevP - (b.pAtk | 0);
     if (dSelf > 0) applyBoardingCasualtyDeathsToLocalCrew(dSelf);
+    if (b.npcSyncId != null) {
+      const dEn = prevE - (b.eAtk | 0);
+      if (dEn > 0) {
+        const npc = G.npcs.find(n => n.syncId === b.npcSyncId);
+        if (npc) applyBoardingCasualtyDeathsToNpcCrew(npc, dEn);
+      }
+    }
   }
   try { spawnBoardingBodyMarker(playerShipGroup.children[0] || playerShipGroup, (r(s + 4) - 0.5) * 1.2, (r(s + 5) - 0.5) * 2.4); } catch (e) {}
   if (b.npcSyncId == null) {
@@ -12874,7 +12901,57 @@ function mergeRemainingPrizeTotalsIntoVictorHold() {
   }
   try { reconcileSlotsWithInventory(); } catch (e) {}
 }
+/** Persist NPC cargo/ledger after boarding spoils so repeat grapples cannot re-roll the same hold. */
+function persistNpcBoardingEnemyHoldToNpc(npc) {
+  if (!npc || !G._boardingEnemyHold) return;
+  const h = G._boardingEnemyHold;
+  const st = npc.type && SHIP_TYPES[npc.type] ? npc.type : 'sloop';
+  const spec = SHIP_TYPES[st] || SHIP_TYPES.sloop;
+  const maxB = Math.max(1, Math.min(48, spec.cargoSlots | 0));
+  const slotsIn = Array.isArray(h.cargoSlots) ? h.cargoSlots : [];
+  const slots = [];
+  for (let i = 0; i < maxB; i++) {
+    const s = slotsIn[i];
+    slots.push(s && s.id && (s.count | 0) > 0 ? { id: String(s.id), name: s.name, icon: s.icon, count: s.count | 0 } : null);
+  }
+  const inv = [];
+  if (Array.isArray(h.inventory)) {
+    for (const r of h.inventory) {
+      if (r && r.id && (r.count | 0) > 0) inv.push({ id: String(r.id), name: r.name, icon: r.icon, count: r.count | 0 });
+    }
+  }
+  npc._bdHold = { shipType: h.shipType || st, cargoSlots: slots, inventory: inv };
+  let g = 0, w = 0;
+  const acc = (row) => {
+    if (!row || !row.id) return;
+    const c = row.count | 0;
+    if (row.id === 'gold') g += c;
+    else if (row.id === 'wood') w += c;
+  };
+  for (const s of slots) if (s) acc(s);
+  for (const r of inv) acc(r);
+  npc._bdNpcLoot = { gold: g, wood: w };
+  if (npc.isTradeShip && npc.cargoGood) {
+    const gid = String(npc.cargoGood);
+    let u = 0;
+    for (const s of slots) if (s && s.id === gid) u += s.count | 0;
+    for (const r of inv) if (r && r.id === gid) u += r.count | 0;
+    npc.cargoUnits = u;
+  }
+}
+function clearNpcBoardingPersist(npc) {
+  if (!npc) return;
+  delete npc._bdHold;
+  delete npc._bdNpcLoot;
+}
 function clearBoardingSpoilsPvpHoldState() {
+  try {
+    const ctx = G._boardingSpoilsUiCtx;
+    if (ctx && ctx.b && ctx.b.npcSyncId != null && ctx.won && G._boardingEnemyHold) {
+      const n = G.npcs.find(nn => nn.syncId === ctx.b.npcSyncId);
+      if (n && !n.sinking) persistNpcBoardingEnemyHoldToNpc(n);
+    }
+  } catch (eP) {}
   try { if (typeof window.abortBoardingSpoilsCargoDrag === 'function') window.abortBoardingSpoilsCargoDrag(); } catch (e) {}
   G._boardingEnemyHold = null;
   G._boardingEnemyInitTotals = null;
@@ -13412,6 +13489,17 @@ function initBoardingSpoilsNpcEnemyHold(npc, b) {
   const st = npc.type && SHIP_TYPES[npc.type] ? npc.type : 'sloop';
   const spec = SHIP_TYPES[st] || SHIP_TYPES.sloop;
   const maxB = Math.max(1, Math.min(48, spec.cargoSlots | 0));
+  if (npc._bdHold && Array.isArray(npc._bdHold.cargoSlots) && npc._bdHold.cargoSlots.length === maxB) {
+    const slotsF = npc._bdHold.cargoSlots.map(s => (s && s.id && (s.count | 0) > 0
+      ? { id: String(s.id), name: s.name, icon: s.icon, count: s.count | 0 }
+      : null));
+    const invF = (npc._bdHold.inventory || []).map(r => (r && r.id && (r.count | 0) > 0
+      ? { id: String(r.id), name: r.name, icon: r.icon, count: r.count | 0 }
+      : null)).filter(Boolean);
+    G._boardingEnemyHold = { shipType: st, cargoSlots: slotsF, inventory: invF, fromPid: null };
+    G._boardingEnemyInitTotals = boardingEnemyHoldTotalsMap(slotsF, invF);
+    return;
+  }
   const slots = Array(maxB).fill(null);
   const inventory = [];
   const loot = b && b.npcLoot;
@@ -13458,6 +13546,7 @@ function initBoardingSpoilsNpcEnemyHold(npc, b) {
     : null)).filter(Boolean);
   G._boardingEnemyHold = { shipType: st, cargoSlots: slotsF, inventory: invF, fromPid: null };
   G._boardingEnemyInitTotals = boardingEnemyHoldTotalsMap(slotsF, invF);
+  persistNpcBoardingEnemyHoldToNpc(npc);
 }
 /**
  * NPC victory over the player: never take the player’s ship — only scuttle or strip the hold and cast off.
@@ -15770,12 +15859,12 @@ function updateNPCs(dt) {
         const mPfid = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
         const mRel = playerFactionRelation(mPfid);
         if (!npc.aggro && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
-          if (factionHostileToPlayer(mPfid)) {
+          if (factionHostileToPlayer(mPfid) || npc.underFireTimer > 0) {
             npc.aggro = true;
             npc.underFireTimer = Math.max(npc.underFireTimer || 0, 3.6);
           }
         }
-        if (npc.aggro && (G.playerSinking || G.player.health <= 0 || distToPlayer > 265 || (npc.underFireTimer <= 0 && distToPlayer > 158))) {
+        if (npc.aggro && (G.playerSinking || G.player.health <= 0 || (npc.underFireTimer <= 0 && distToPlayer > 280))) {
           npc.aggro = false;
         }
         const fighting = npc.aggro && distToPlayer < 162 && !G.playerSinking && G.player.health > 0;
@@ -15993,7 +16082,7 @@ function updateNPCs(dt) {
       ensurePolitics();
       const pirF = npc.factionId != null ? (npc.factionId | 0) % FACTION_COUNT : 0;
       if (!focus && !npc.escortRaider && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
-        if (factionHostileToPlayer(pirF)) {
+        if (factionHostileToPlayer(pirF) || npc.underFireTimer > 0) {
           npc.aggro = true;
           npc.underFireTimer = Math.max(npc.underFireTimer || 0, 2.9);
         } else if (!npc.aggro && distToPlayer < 152 && npcCombatPowerEstimate(npc) < playerCombatPowerEstimate() * 0.92) {
