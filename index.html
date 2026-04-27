@@ -17445,42 +17445,7 @@ async function connectToServer() {
         break;
       }
       case 'state': {
-        const wT = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
-        if (wT != null) anchorWildlifeClockFromServer(wT);
-        if (!Array.isArray(msg.players)) break;
-        const myIdForState = netPlayerId(G.myId);
-        if (myIdForState == null) break;
-        if (!msg.players.some(p => netPlayerId(p.id) === myIdForState)) break;
-        let selfRow = null;
-        const activeRemote = new Set();
-        msg.players.forEach(p => {
-          const pid = netPlayerId(p.id);
-          if (pid == null) return;
-          if (pid === G.myId) {
-            selfRow = p;
-            return;
-          }
-          activeRemote.add(pid);
-          const ex = G.otherPlayers.get(pid);
-          const prevCrew = ex && Array.isArray(ex.crewData) ? ex.crewData : null;
-          const patch = { ...p, id: pid };
-          if (!Array.isArray(patch.crewData)) delete patch.crewData;
-          if (ex) {
-            Object.assign(ex, patch);
-            if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
-          } else {
-            G.otherPlayers.set(pid, patch);
-          }
-          const row = G.otherPlayers.get(pid);
-          if (row) refreshOtherPlayerShipCacheKey(row);
-        });
-        for (const pid of Array.from(G.otherPlayers.keys())) {
-          if (!activeRemote.has(pid)) removeRemotePeer(pid);
-        }
-        recalcMultiplayerNpcAuthorityFromPeers();
-        try { ingestRemoteBoardingState(msg.players); } catch (e) {}
-        if (selfRow && G.mode === 'playing') try { reconcileLocalPlayerFromServerState(selfRow); } catch (e) {}
-        if (G.chatChannel === 'players') renderActivePlayersRoster();
+        G._pendingNetState = msg;
         break;
       }
       case 'ship_update': {
@@ -17959,19 +17924,23 @@ async function connectToServer() {
         notify(msg.error || 'Captain name not allowed on this server.');
         break;
       case 'world_seed': {
-        {
-          const wTs = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
-          if (wTs != null) anchorWildlifeClockFromServer(wTs);
+        if (msg.seed == null) {
+          const wTs0 = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
+          if (wTs0 != null) anchorWildlifeClockFromServer(wTs0);
+          break;
         }
-        if (msg.seed == null) break;
         const ns = Number(msg.seed) >>> 0;
         if (G.mode === 'playing') {
           const hadServerOrCustomChart = !!(G.customMap && G.customMap.heights) || appliedServerWorldMapRev > 0;
           applySharedWorldFromServerSeed(ns, { relocateAfterDroppingServerChart: hadServerOrCustomChart });
+          const wTs = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
+          if (wTs != null) anchorWildlifeClockFromServer(wTs);
         } else {
           G.worldSeed = ns;
           G.seed = ns;
           noise = new SimplexNoise(G.worldSeed);
+          const wTs = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
+          if (wTs != null) anchorWildlifeClockFromServer(wTs);
         }
         prefetchedServerSeed = ns;
         notify('The archipelago has been recharted (new world seed).');
@@ -18341,6 +18310,51 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   const cap = Math.min(0.45, 0.035 + d * 0.0075);
   G.player.x += dx * cap;
   G.player.z += dz * cap;
+}
+
+/**
+ * One authoritative `state` snapshot. Run at most once per frame (see `update`): processing a burst of
+ * `state` messages in one main-thread turn leaves `performance.now()` nearly unchanged while `worldT`
+ * steps every packet, which used to stack `anchorWildlifeClockFromServer` corrections and jerk fish/gulls.
+ */
+function applyNetStateMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  const wT = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
+  if (wT != null) anchorWildlifeClockFromServer(wT);
+  if (!Array.isArray(msg.players)) return;
+  const myIdForState = netPlayerId(G.myId);
+  if (myIdForState == null) return;
+  if (!msg.players.some(p => netPlayerId(p.id) === myIdForState)) return;
+  let selfRow = null;
+  const activeRemote = new Set();
+  msg.players.forEach(p => {
+    const pid = netPlayerId(p.id);
+    if (pid == null) return;
+    if (pid === G.myId) {
+      selfRow = p;
+      return;
+    }
+    activeRemote.add(pid);
+    const ex = G.otherPlayers.get(pid);
+    const prevCrew = ex && Array.isArray(ex.crewData) ? ex.crewData : null;
+    const patch = { ...p, id: pid };
+    if (!Array.isArray(patch.crewData)) delete patch.crewData;
+    if (ex) {
+      Object.assign(ex, patch);
+      if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
+    } else {
+      G.otherPlayers.set(pid, patch);
+    }
+    const row = G.otherPlayers.get(pid);
+    if (row) refreshOtherPlayerShipCacheKey(row);
+  });
+  for (const pid of Array.from(G.otherPlayers.keys())) {
+    if (!activeRemote.has(pid)) removeRemotePeer(pid);
+  }
+  recalcMultiplayerNpcAuthorityFromPeers();
+  try { ingestRemoteBoardingState(msg.players); } catch (e) {}
+  if (selfRow && G.mode === 'playing') try { reconcileLocalPlayerFromServerState(selfRow); } catch (e) {}
+  if (G.chatChannel === 'players') renderActivePlayersRoster();
 }
 
 /** Server-authoritative last session snapshot (MMO) — skipped when a local voyage save owns progress. */
@@ -26403,6 +26417,11 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 }
 
 function update(dt) {
+  if (G._pendingNetState) {
+    const st = G._pendingNetState;
+    G._pendingNetState = null;
+    if (G.mode === 'playing') try { applyNetStateMessage(st); } catch (e) {}
+  }
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
   if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
