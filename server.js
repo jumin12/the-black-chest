@@ -4,6 +4,9 @@ const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { createGameSimulation, createAntiCheatGate } = require('./simulation-layer.js');
+const { createServerNpcWorld } = require('./server/npc-authoritative.cjs');
+const { createWorldPoliticsStore, sanitizePlayerPoliticsPatch } = require('./server/world-politics.cjs');
+const { createTerrainContext, sampleOffshoreSpawn } = require('./server/terrain-context.cjs');
 
 const PORT = process.env.PORT || 3000;
 /** Realm identity for server browsers and the in-game HUD (env-tunable). */
@@ -36,6 +39,9 @@ const STATE_AOI_RADIUS_SQ = STATE_AOI_RADIUS * STATE_AOI_RADIUS;
 /** Authoritative wind + motion integration (see simulation-layer.js). */
 let gameSim = null;
 let antiCheat = null;
+/** Full NPC AI + spawn loop (server/npc-authoritative.cjs); snapshots broadcast as `npc_sync`. */
+let npcWorld = null;
+let npcWorldHadPlayers = false;
 function ensureSimulationLayer() {
   if (!gameSim) {
     gameSim = createGameSimulation({
@@ -44,6 +50,20 @@ function ensureSimulationLayer() {
       tickRate: TICK_RATE
     });
     antiCheat = createAntiCheatGate();
+  }
+}
+function ensureNpcWorld() {
+  if (!npcWorld) {
+    ensureSimulationLayer();
+    const pol = ensureWorldPolitics().getNpcPoliticsRef();
+    npcWorld = createServerNpcWorld({
+      windAt: (x, z) => gameSim.windAt(x, z),
+      worldSeed: WORLD_SEED >>> 0,
+      edgeClamp: PLAYER_WORLD_EDGE_CLAMP,
+      worldMapPayload: currentWorldMapPayloadOrNull(),
+      politicsRef: pol
+    });
+    npcWorld.setBroadcastAll(broadcastAll);
   }
 }
 
@@ -244,6 +264,14 @@ let leaderboardClientSeeded = false;
 /** Stable default when no file/env (matches client `CANONICAL_DEFAULT_WORLD_SEED`). Commit `world_seed.json` so restarts and deploys reload the same archipelago; live rankings persist in the same file under `leaderboard`. */
 const DEFAULT_WORLD_SEED = 42;
 let WORLD_SEED = DEFAULT_WORLD_SEED >>> 0;
+const WORLD_POLITICS_FILE = path.join(DATA_DIR, 'world_politics.json');
+let worldPolitics = null;
+function ensureWorldPolitics() {
+  if (!worldPolitics) {
+    worldPolitics = createWorldPoliticsStore({ filePath: WORLD_POLITICS_FILE, worldSeed: WORLD_SEED >>> 0 });
+  }
+  return worldPolitics;
+}
 
 /**
  * Navigator unlock password: prefer `NAVIGATOR_ADMIN_PASSWORD` (hosting secret / env).
@@ -335,6 +363,8 @@ let worldStoryQuest = {
 };
 /** Per connected captain: main story progress for bounty spawns (not global). */
 const playerStories = new Map();
+/** Per connected captain: hunt contracts (server-spawned targets). */
+const playerQuests = new Map();
 /** @type {object[]|null} */
 let worldQuests = null;
 let nextId = 1;
@@ -608,6 +638,10 @@ function scheduleIdlePersistedStateFlush() {
           lastWorldMapDiskWriteMs = now;
         }
       }
+      try {
+        const pol = ensureWorldPolitics();
+        if (typeof pol.consumeDirty === 'function' && pol.consumeDirty()) pol.save();
+      } catch (e) {}
     } catch (e) {}
   });
 }
@@ -1222,6 +1256,40 @@ function validateWorldMapPayload(map) {
   return true;
 }
 
+function currentWorldMapPayloadOrNull() {
+  return WORLD_MAP_PAYLOAD && validateWorldMapPayload(WORLD_MAP_PAYLOAD) ? WORLD_MAP_PAYLOAD : null;
+}
+
+function sanitizePlayerQuestsForServer(arr) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const q of arr) {
+    if (!q || q.type !== 'hunt' || !q.accepted) continue;
+    const target = String(q.target != null ? q.target : '').trim().slice(0, 64);
+    if (!target) continue;
+    const o = { type: 'hunt', accepted: true, target };
+    if (q.huntTargetSyncId != null && Number.isFinite(Number(q.huntTargetSyncId))) o.huntTargetSyncId = Math.floor(Number(q.huntTargetSyncId));
+    if (q.huntTargetFaction != null && Number.isFinite(Number(q.huntTargetFaction))) o.huntTargetFaction = Math.floor(Number(q.huntTargetFaction));
+    out.push(o);
+  }
+  return out.slice(0, 24);
+}
+
+/** If saved/open-sea coords sit on land or in a tight channel, snap back to deep water. */
+function repositionUndockedPlayerIfInShallowLand(p, salt) {
+  if (!p || p.docked) return;
+  const ctx = createTerrainContext({
+    worldSeed: WORLD_SEED >>> 0,
+    edgeClamp: PLAYER_WORLD_EDGE_CLAMP,
+    worldMapPayload: currentWorldMapPayloadOrNull()
+  });
+  if (!ctx.dryLandAtWorldPosition(p.x, p.z) && ctx.hasMinClearanceFromLand(p.x, p.z, 52)) return;
+  const sp = sampleOffshoreSpawn(ctx, (p.id | 0) ^ (salt | 0));
+  p.x = sp.x;
+  p.z = sp.z;
+  p.rotation = sp.rotation;
+}
+
 function readWorldMapDiskBundle(filePath) {
   try {
     if (!fs.existsSync(filePath)) return null;
@@ -1323,6 +1391,13 @@ function setWorldMapAndBroadcast(mapObj) {
   persistWorldMapToDisk();
   lastWorldMapDiskWriteMs = Date.now();
   broadcastAll({ type: 'world_map', revision: WORLD_MAP_REVISION });
+  try {
+    ensureNpcWorld();
+    if (npcWorld && typeof npcWorld.setWorldMapPayload === 'function') {
+      npcWorld.setWorldMapPayload(currentWorldMapPayloadOrNull());
+      npcWorld.reset(players);
+    }
+  } catch (e) {}
   return true;
 }
 
@@ -1339,6 +1414,13 @@ function revertWorldMapFromBackupAndBroadcast() {
     persistWorldMapToDisk();
     lastWorldMapDiskWriteMs = Date.now();
     broadcastAll({ type: 'world_map', revision: WORLD_MAP_REVISION });
+    try {
+      ensureNpcWorld();
+      if (npcWorld && typeof npcWorld.setWorldMapPayload === 'function') {
+        npcWorld.setWorldMapPayload(currentWorldMapPayloadOrNull());
+        npcWorld.reset(players);
+      }
+    } catch (e2) {}
     return true;
   } catch (e) {
     console.error('[playground] world_map revert failed:', e.message);
@@ -1614,6 +1696,7 @@ function tryApplyWorldPresenceToPlayer(captainKey, p) {
     }
   }
   if (raw.flagColor != null) p.flagColor = String(raw.flagColor).slice(0, 32);
+  repositionUndockedPlayerIfInShallowLand(p, 0x5eede1);
   return {
     x: p.x, z: p.z, rotation: p.rotation,
     docked: !!p.docked,
@@ -1704,9 +1787,16 @@ function setWorldSeedAndPersist(newSeed) {
   WORLD_SEED = Number(newSeed) >>> 0;
   ensureSimulationLayer();
   gameSim.setWorldSeed(WORLD_SEED >>> 0);
+  try {
+    ensureWorldPolitics().resetToSeed(WORLD_SEED >>> 0);
+  } catch (e) {}
   persistWorldSeedFile();
   const wt = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   broadcastAll({ type: 'world_seed', seed: WORLD_SEED, worldT: wt, wildlifeWorldT: wt });
+  if (npcWorld) {
+    npcWorld.setWorldSeed(WORLD_SEED >>> 0);
+    npcWorld.reset(players);
+  }
 }
 
 /** Static game assets (audio, models, maps). Render/VPS hosts must serve these; SPA fallback is only on Vercel. */
@@ -2021,18 +2111,8 @@ function broadcastAll(data) {
   });
 }
 
-/** Lowest connected player id simulates NPC traffic; broadcast on join/leave so clients migrate immediately if the prior host tab dies. */
-function broadcastNpcAuthority() {
-  const ids = [];
-  for (const c of wss.clients) {
-    if (c.readyState !== 1 || c.playerId == null) continue;
-    const n = Number(c.playerId);
-    if (Number.isFinite(n)) ids.push(n);
-  }
-  if (!ids.length) return;
-  const playerId = Math.min(...ids);
-  broadcastAll({ type: 'npc_authority', playerId });
-}
+/** Legacy no-op: NPC simulation runs on the server (`server/npc-authoritative.cjs`). */
+function sendNpcSimulationDelegates() {}
 
 function serverPopulationPayload() {
   return {
@@ -2249,14 +2329,18 @@ wss.on('connection', (ws, req) => {
   const id = nextId++;
   ws.playerId = id;
 
-  const spawnAngle = Math.random() * Math.PI * 2;
-  const spawnDist = 50 + Math.random() * 100;
+  const spawnCtx = createTerrainContext({
+    worldSeed: WORLD_SEED >>> 0,
+    edgeClamp: PLAYER_WORLD_EDGE_CLAMP,
+    worldMapPayload: currentWorldMapPayloadOrNull()
+  });
+  const sp0 = sampleOffshoreSpawn(spawnCtx, id);
 
   const playerData = {
     id,
-    x: Math.cos(spawnAngle) * spawnDist,
-    z: Math.sin(spawnAngle) * spawnDist,
-    rotation: 0,
+    x: sp0.x,
+    z: sp0.z,
+    rotation: sp0.rotation,
     speed: 0,
     shipType: 'cutter',
     shipName: '',
@@ -2298,6 +2382,14 @@ wss.on('connection', (ws, req) => {
     if (pr) partyPayload = buildPartySyncPayload(pr, myCkInit);
   }
   const initWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
+  const wpSnap = ensureWorldPolitics().snapshot();
+  const politicsWorldPayload = {
+    matrix: wpSnap.matrix,
+    fw: wpSnap.factionWealth,
+    pc: wpSnap.portController,
+    inf: wpSnap.inflation,
+    pg: wpSnap.portGarrison
+  };
   ws.send(JSON.stringify({
     type: 'init',
     id,
@@ -2311,6 +2403,10 @@ wss.on('connection', (ws, req) => {
     worldQuests: null,
     playerStories: storySnap,
     party: partyPayload,
+    politicsWorld: politicsWorldPayload,
+    myPlayerPolitics: ensureWorldPolitics().getPlayerStanding(id),
+    npcSimFromServer: true,
+    youAreNpcStepper: false,
     serverPop: {
       online: players.size,
       registered: Object.keys(captainAccounts || {}).length,
@@ -2344,7 +2440,7 @@ wss.on('connection', (ws, req) => {
 
   broadcast({ type: 'player_join', player: playerData }, id);
   broadcastServerPopulation();
-  broadcastNpcAuthority();
+  sendNpcSimulationDelegates();
 
   ws.on('message', (raw) => {
     try {
@@ -2438,6 +2534,10 @@ wss.on('connection', (ws, req) => {
               const s = sanitizeBoardingFromClient(msg.boarding);
               if (s != null) p.boarding = s;
             }
+          }
+          if (msg.playerPolitics != null && typeof msg.playerPolitics === 'object') {
+            const s = sanitizePlayerPoliticsPatch(msg.playerPolitics);
+            if (s) ensureWorldPolitics().setPlayerStanding(id, s);
           }
           const ck = ws.captainAccountKey;
           if (ck && captainAccounts[ck]) {
@@ -2713,10 +2813,10 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'world_quests_push': {
+          playerQuests.set(id, sanitizePlayerQuestsForServer(msg.quests));
           break;
         }
         case 'npc_sync': {
-          broadcast({ type: 'npc_sync', npcs: msg.npcs, wind: msg.wind }, id);
           break;
         }
         case 'npc_cannon': {
@@ -3804,6 +3904,7 @@ wss.on('connection', (ws, req) => {
       if (Number.isFinite(sid) && sid === id) pl.boarding = null;
     }
     playerStories.delete(id);
+    playerQuests.delete(id);
     if (leftCk && left && !left.docked) {
       persistCaptainWorldPresenceFromPlayer(leftCk, left);
       try {
@@ -3814,7 +3915,7 @@ wss.on('connection', (ws, req) => {
     players.delete(id);
     broadcast({ type: 'player_leave', id });
     broadcastServerPopulation();
-    broadcastNpcAuthority();
+    sendNpcSimulationDelegates();
     if (leftCk) {
       const prLeft = getPartyForCaptainKey(leftCk);
       if (prLeft) broadcastPartySync(prLeft.id);
@@ -3834,7 +3935,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-/** Detect frozen/crashed browser tabs that never send TCP close — terminate stale sockets so NPC authority migrates. */
+/** Detect frozen/crashed browser tabs that never send TCP close — terminate stale sockets. */
 const WS_PING_INTERVAL_MS = Math.max(15000, Number(process.env.WS_PING_INTERVAL_MS) || 38000);
 const wsHeartbeat = setInterval(() => {
   try {
@@ -3855,10 +3956,45 @@ const wsHeartbeat = setInterval(() => {
 let serverStateTickSeq = 0;
 setInterval(() => {
   try {
-  if (players.size === 0) return;
+  if (players.size === 0) {
+    npcWorldHadPlayers = false;
+    return;
+  }
   serverStateTickSeq++;
   ensureSimulationLayer();
   gameSim.stepAll(players);
+  ensureNpcWorld();
+  if (!npcWorldHadPlayers) {
+    npcWorld.setWorldSeed(WORLD_SEED >>> 0);
+    npcWorld.reset(players);
+    npcWorldHadPlayers = true;
+  }
+  try {
+    ensureWorldPolitics().tickEconomy(1 / TICK_RATE);
+  } catch (e) {}
+  npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
+  if (serverStateTickSeq % 4 === 0) {
+    try {
+      broadcastAll({
+        type: 'npc_sync',
+        npcs: npcWorld.buildSyncRows(),
+        wind: npcWorld.getWindSample()
+      });
+    } catch (e) {}
+  }
+  if (serverStateTickSeq % 540 === 0) {
+    try {
+      const wp = ensureWorldPolitics().snapshot();
+      broadcastAll({
+        type: 'politics_snap',
+        matrix: wp.matrix,
+        fw: wp.factionWealth,
+        pc: wp.portController,
+        inf: wp.inflation,
+        pg: wp.portGarrison
+      });
+    } catch (e) {}
+  }
   const includeCrew = (serverStateTickSeq % 2 === 0);
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   const all = Array.from(players.values());
