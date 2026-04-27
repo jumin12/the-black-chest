@@ -12607,6 +12607,10 @@ function endBoardingResolution() {
     const ePool = Math.max(b.eTotStart | 0, b.eTotal | 0, b.eHeart | 0, 1);
     b.surrenderPool = Math.max(b.surrenderPool | 0, Math.min(12, ePool));
   }
+  if (b.npcSyncId != null && youWin) {
+    const ePool = Math.max(b.eTotStart | 0, b.eTotal | 0, b.eHeart | 0, 1);
+    b.surrenderPool = Math.max(b.surrenderPool | 0, Math.min(12, ePool));
+  }
   if (!youWin) {
     if (b.npcSyncId != null) {
       G.player.anchored = false;
@@ -13377,7 +13381,142 @@ function renderBoardingSpoilsPrisonersStrip(maxPool, pickOrTakeN) {
   }
   queueBoardingSpoilsCrewPortraits();
 }
+/** Prize hull + loadout when you capture an NPC (same shape as `applyPrizeShipFromRemoteCaptainRow`). */
+function buildNpcPrizeCaptainRowFromNpc(npc) {
+  if (!npc) return null;
+  const merchant = !!npc.isTradeShip;
+  const patrol = !!npc.isFactionPatrol;
+  const mercCannon = merchant ? 'medium' : 'medium';
+  const fp = npc.flagPosition || 'mast';
+  const partsRaw = merchant
+    ? { hull: 'basic', sail: npc.sailPick === 'silk' ? 'silk' : 'basic', cannon: mercCannon, figurehead: 'none', flag: fp }
+    : patrol
+      ? { hull: 'basic', sail: 'war', cannon: mercCannon, figurehead: 'none', flag: fp }
+      : { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: fp };
+  const shipParts = merchant ? partsRaw : normalizeShipPartsForRemoteView(partsRaw);
+  const st = npc.type && SHIP_TYPES[npc.type] ? npc.type : 'sloop';
+  return {
+    shipType: st,
+    shipParts,
+    shipName: (npc.name && String(npc.name).trim().slice(0, 28)) || 'Prize',
+    flagAssetId: npc.flagAssetId !== undefined ? npc.flagAssetId : null,
+    crewData: Array.isArray(npc.crewData) ? npc.crewData.map(c => (c && typeof c === 'object' ? { ...c } : c)) : []
+  };
+}
+/** Populate dual-hold spoils UI from an NPC (same grid/ledger UX as PvP). */
+function initBoardingSpoilsNpcEnemyHold(npc, b) {
+  if (!npc) {
+    clearBoardingSpoilsPvpHoldState();
+    return;
+  }
+  const st = npc.type && SHIP_TYPES[npc.type] ? npc.type : 'sloop';
+  const spec = SHIP_TYPES[st] || SHIP_TYPES.sloop;
+  const maxB = Math.max(1, Math.min(48, spec.cargoSlots | 0));
+  const slots = Array(maxB).fill(null);
+  const inventory = [];
+  const loot = b && b.npcLoot;
+  const g0 = loot && loot.gold != null ? Math.max(0, loot.gold | 0) : (40 + ((npc.syncId | 0) % 90));
+  if (g0 > 0) {
+    const meta = getItemMeta('gold');
+    inventory.push({ id: 'gold', name: meta.name, icon: meta.icon, count: Math.min(999999, g0) });
+  }
+  const w0 = loot && loot.wood != null ? Math.max(0, loot.wood | 0) : (4 + ((npc.syncId | 0) % 12));
+  if (w0 > 0) {
+    const meta = getItemMeta('wood');
+    inventory.push({ id: 'wood', name: meta.name, icon: meta.icon, count: Math.min(999999, w0) });
+  }
+  if (npc.isTradeShip && npc.cargoGood && (npc.cargoUnits | 0) > 0) {
+    const id = String(npc.cargoGood);
+    const meta = getItemMeta(id);
+    const units = Math.max(0, npc.cargoUnits | 0);
+    let left = units;
+    for (let si = 0; si < maxB && left > 0; si++) {
+      const chunk = Math.min(left, ITEM_MAX_STACK);
+      slots[si] = { id, name: meta.name, icon: meta.icon, count: chunk };
+      left -= chunk;
+    }
+    if (left > 0) inventory.push({ id, name: meta.name, icon: meta.icon, count: left });
+  }
+  if (!npc.isTradeShip) {
+    const ballN = 8 + ((npc.syncId | 0) % 18);
+    const grapeN = 2 + ((npc.syncId | 0) % 8);
+    for (const pair of [['cannonballs', ballN], ['grapeshot', grapeN]]) {
+      const id = pair[0];
+      const n = pair[1] | 0;
+      if (n <= 0) continue;
+      const meta = getItemMeta(id);
+      inventory.push({ id, name: meta.name, icon: meta.icon, count: n });
+    }
+  }
+  const norm = normalizeBoardingHoldForSpoilsUi(slots, inventory);
+  while (norm.cargoSlots.length < maxB) norm.cargoSlots.push(null);
+  const slotsF = norm.cargoSlots.slice(0, maxB).map(s => (s && s.id && s.count > 0
+    ? { id: String(s.id), name: s.name, icon: s.icon, count: s.count | 0 }
+    : null));
+  const invF = norm.inventory.map(r => (r && r.id && r.count > 0
+    ? { id: String(r.id), name: r.name, icon: r.icon, count: r.count | 0 }
+    : null)).filter(Boolean);
+  G._boardingEnemyHold = { shipType: st, cargoSlots: slotsF, inventory: invF, fromPid: null };
+  G._boardingEnemyInitTotals = boardingEnemyHoldTotalsMap(slotsF, invF);
+}
+/**
+ * NPC victory over the player: never take the player’s ship — only scuttle or strip the hold and cast off.
+ */
+function resolveNpcVictorOverPlayerBoarding(b) {
+  const npc = b && b.npcSyncId != null ? G.npcs.find(n => n.syncId === b.npcSyncId) : null;
+  const capLabel = npc && npc.name ? String(npc.name) : 'Enemy crew';
+  if (npc) npc._boardingHostLock = false;
+  G.boarding = null;
+  clearBoardingBodyMarkers();
+  const tw0 = document.getElementById('boarding-tw-wrap');
+  if (tw0) { tw0.style.display = 'none'; tw0.removeAttribute('data-remote-only'); }
+  G.player.anchored = false;
+  try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
+  try { hideBoardingSpoilsModal(); } catch (eH) {}
+  const seed = (Math.imul((b && b.npcSyncId) | 0, 97531) + (G.time | 0)) >>> 0;
+  const scuttle = (seed & 1) === 0;
+  if (scuttle) {
+    G.lastAttacker = `${capLabel} — boarding`;
+    G.lastAttackerId = null;
+    const lootScuttle = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
+    sendLocalShipwreckLootToNet(lootScuttle);
+    G._suppressNextShipSunkBroadcast = true;
+    if (!Array.isArray(G.player.crew)) G.player.crew = [];
+    G.player.health = 0;
+    notify(`${capLabel} fires the magazine — your hull is done.`, 8200);
+  } else {
+    try { reconcileSlotsWithInventory(); } catch (e0) {}
+    const g0 = getInvCount('gold');
+    if (g0 > 0) subtractFromInventoryLedger('gold', g0);
+    const inv = [...(G.player.inventory || [])];
+    for (const row of inv) {
+      if (!row || !row.id) continue;
+      const id = String(row.id);
+      if (id === 'gold') continue;
+      const c = Math.max(0, row.count | 0);
+      if (c > 0) subtractFromInventoryLedger(id, c);
+    }
+    ensureCargoSlots();
+    for (let i = 0; i < G.player.cargoSlots.length; i++) {
+      const s = G.player.cargoSlots[i];
+      if (s && s.id && (s.count | 0) > 0) subtractFromInventoryLedger(String(s.id), s.count | 0);
+      G.player.cargoSlots[i] = null;
+    }
+    try { reconcileSlotsWithInventory(); } catch (e1) {}
+    if (countLivingNonPrisonerCrew() <= 0) {
+      try { ensureMinimalHelmAfterPvPCastOff(); } catch (eH) {}
+    }
+    rebuildPlayerShip();
+    updateCrewPanel();
+    notify(`${capLabel} takes every chest and cask, then cuts the lines — you sail away stripped.`, 8200);
+    try { if (ws?.readyState === 1) sendUpdate(true); } catch (e2) {}
+  }
+}
 function showBoardingSpoilsModal(won, b) {
+  if (!won && b && b.npcSyncId != null) {
+    resolveNpcVictorOverPlayerBoarding(b);
+    return;
+  }
   clearBoardingRopeLineMeshes();
   try { document.body.classList.remove('boarding-spoils-victory-open'); } catch (e) {}
   try { document.body.classList.remove('boarding-spoils-modal-open'); } catch (e) {}
@@ -13449,11 +13588,12 @@ function showBoardingSpoilsModal(won, b) {
   if (h) h.textContent = won ? 'VICTORY' : 'Defeat';
   if (txt) txt.textContent = won ? 'The enemy deck is strewn with spent powder and the fallen. Divide spoils below.' : 'You were beaten back to your own ship.';
   const partnerPvp = !!(won && b && b.partnerPlayerId != null && b.npcSyncId == null);
-  const gMax = won ? (b.npcLoot ? b.npcLoot.gold : (partnerPvp ? 0 : (b.partnerPlayerId != null ? 520 : 30))) : 0;
+  const useDualCargoSpoilsUi = partnerPvp || !!(won && b && b.npcSyncId != null);
+  const gMax = won && !useDualCargoSpoilsUi ? (b.npcLoot ? b.npcLoot.gold : (b.partnerPlayerId != null ? 520 : 30)) : 0;
   const goldRow = document.getElementById('boarding-spoils-gold-row');
   const goldLab = document.getElementById('boarding-spoils-gold-label');
-  if (goldRow) goldRow.style.display = (won && partnerPvp) ? 'none' : '';
-  if (goldLab) goldLab.textContent = (won && partnerPvp) ? '' : 'Loot to take (gold)';
+  if (goldRow) goldRow.style.display = (won && useDualCargoSpoilsUi) ? 'none' : '';
+  if (goldLab) goldLab.textContent = (won && useDualCargoSpoilsUi) ? '' : 'Loot to take (gold)';
   if (lootR) { lootR.max = String(Math.max(0, gMax)); lootR.value = String(Math.max(0, gMax * 0.5 | 0)); }
   G._boardingSpoilsPrisonerTake = 0;
   G._boardingSpoilsPrisonerPick = new Set();
@@ -13466,8 +13606,13 @@ function showBoardingSpoilsModal(won, b) {
       G._boardingEnemyInitTotals = null;
     }
     G._boardingSpoilsUiCtx = { won: true, partnerPvp: true, b };
+  } else if (won && b.npcSyncId != null) {
+    const nHold = G.npcs.find(nn => nn.syncId === b.npcSyncId);
+    initBoardingSpoilsNpcEnemyHold(nHold, b);
+    G._boardingSpoilsUiCtx = { won: true, partnerPvp: true, b };
   } else {
     clearBoardingSpoilsPvpHoldState();
+    G._boardingSpoilsUiCtx = null;
   }
   if (won) {
     if (partnerPvp) {
@@ -13548,11 +13693,16 @@ function showBoardingSpoilsModal(won, b) {
     if (g > 0) tryAddQuestCargo('gold', g);
     if ((pmax | 0) - pszK > 0) notify((pmax - pszK) + ' prisoners thrown over the rail.', 5000);
     if (b.npcSyncId != null) {
+      try { mergeRemainingPrizeTotalsIntoVictorHold(); } catch (e) {}
       try {
         spawnBoardingPrizeHullDecoyFromNet({ ...captureVictorRelinquishedHullPayload(), victorPlayerId: G.myId });
       } catch (e) {}
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
-      if (n && n.mesh) { runNpcSinkOutcome(n, G.myId); } else { abortActiveBoarding(''); }
+      const prizeRow = n ? buildNpcPrizeCaptainRowFromNpc(n) : null;
+      if (n && n.mesh && prizeRow) {
+        applyPrizeShipFromRemoteCaptainRow(prizeRow);
+        runNpcSinkOutcome(n, G.myId);
+      } else { abortActiveBoarding(''); }
     } else if (b.partnerPlayerId) {
       if (partnerPvp) try { mergeRemainingPrizeTotalsIntoVictorHold(); } catch (e) {}
       try {
@@ -13598,12 +13748,13 @@ function showBoardingSpoilsModal(won, b) {
     const { g, ptk, pmax } = readLootPrison();
     const maxPfS = Math.min(12, b.surrenderPool | 0);
     const woodB = b.npcLoot && b.npcLoot.wood != null ? b.npcLoot.wood : 6;
-    /* PvP: loot is only what you drag into your hold (+ prisoners). NPC keeps salvage bonus. */
+    /* PvP: loot is only what you drag into your hold (+ prisoners). NPC scuttle adds salvage like legacy slider path. */
     const g2 = b.npcSyncId != null ? (g + Math.min(32, 10 + (woodB * 2))) : (partnerPvp ? 0 : (g + Math.min(36, 12 + ((b.surrenderPool | 0) * 3))));
     if (g2 > 0) tryAddQuestCargo('gold', g2);
     if (b.npcSyncId != null && woodB > 0) tryAddQuestCargo('wood', woodB);
     addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfS, 0.55);
     if (b.npcSyncId != null) {
+      try { mergeRemainingPrizeTotalsIntoVictorHold(); } catch (e) {}
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
       if (n && n.mesh) runNpcSinkOutcome(n, G.myId);
     } else {
@@ -13642,6 +13793,7 @@ function showBoardingSpoilsModal(won, b) {
     if ((pmax | 0) - pszD > 0) notify((pmax - pszD) + ' survivors cast into the deep.', 4000);
     /* Loot and cast off: defeated keeps their hull (NPC resumes sailing; PvP victim unchanged). Only scuttle sinks. */
     if (b.npcSyncId != null) {
+      try { mergeRemainingPrizeTotalsIntoVictorHold(); } catch (e) {}
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
       if (n) {
         n._boardingHostLock = false;
