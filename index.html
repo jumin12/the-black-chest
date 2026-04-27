@@ -1027,10 +1027,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   #banner-editor-modal .banner-editor-controls label{display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:0;flex:1 1 140px;}
   #banner-editor-modal .banner-editor-controls input[type="range"]{width:100%;min-height:36px;touch-action:pan-y;}
 }
-#banner-editor-canvas{display:block;width:100%;max-width:320px;height:auto;margin:0 auto;border:1px solid rgba(80,60,40,0.55);border-radius:8px;touch-action:none;-webkit-touch-callout:none;cursor:crosshair;background:
-  linear-gradient(45deg,#2a2826 25%,transparent 25%),linear-gradient(-45deg,#2a2826 25%,transparent 25%),
-  linear-gradient(45deg,transparent 75%,#2a2826 75%),linear-gradient(-45deg,transparent 75%,#2a2826 75%);
-  background-size:12px 12px;background-position:0 0,0 6px,6px -6px,-6px 0;background-color:#1e1c1a;}
+#banner-editor-canvas{display:block;width:100%;max-width:320px;height:auto;margin:0 auto;border:1px solid rgba(80,60,40,0.55);border-radius:8px;touch-action:none;-webkit-touch-callout:none;cursor:crosshair;background:#000;}
 #banner-editor-emblem-grid .flag-emblem-swatch{touch-action:manipulation;}
 .flag-emblem-swatch{width:52px;height:40px;border-radius:7px;border:2px solid rgba(100,80,55,0.45);cursor:pointer;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,0.25);padding:0;overflow:hidden;background:#1a1410;}
 .flag-emblem-swatch canvas{display:block;width:100%;height:100%;}
@@ -2061,14 +2058,9 @@ body.game-help-mobile-minimal #game-help-panel{
   <div class="banner-editor-panel">
     <h3 id="banner-editor-title" style="margin:0 0 10px;color:#d4a848;font-size:17px;">Banner workshop</h3>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;">
-      <span id="banner-editor-tint-wrap" style="display:inline-flex;flex-direction:column;gap:4px;">
-        <label style="font-size:10px;color:#a89880;">Field tint <span style="display:block;">(under cloth / plain jack)</span>
-          <input type="color" id="banner-editor-bg" value="#6b3a28" style="width:100%;max-width:120px;height:40px;border:none;cursor:pointer;touch-action:manipulation;" /></label>
-      </span>
-      <label style="font-size:10px;color:#a89880;flex:1;min-width:140px;">Cloth pattern
-        <select id="banner-editor-field" style="width:100%;max-width:280px;margin-top:4px;padding:8px;background:#1a1410;color:#e0d6c2;border:1px solid rgba(120,90,50,0.5);border-radius:6px;font-size:13px;touch-action:manipulation;">
-        <option value="">Plain tint only (no cloth)</option>
-      </select></label>
+      <label style="font-size:10px;color:#a89880;flex:1;min-width:160px;">Cloth pattern (PNG)
+        <select id="banner-editor-field" style="width:100%;max-width:320px;margin-top:4px;padding:8px;background:#1a1410;color:#e0d6c2;border:1px solid rgba(120,90,50,0.5);border-radius:6px;font-size:13px;touch-action:manipulation;">
+        </select></label>
     </div>
     <p id="banner-editor-hint" style="font-size:10px;color:#7a6a58;margin:0 0 8px;line-height:1.45;">Tap the preview to place the selected emblem. Use sliders to scale and rotate. Pinch-zoom the page is disabled on the preview while editing.</p>
     <canvas id="banner-editor-canvas" width="320" height="220"></canvas>
@@ -7570,7 +7562,6 @@ function ensurePlayerFlagUnlocks() {
     out.push(id);
   }
   G.player.flagUnlocks = out;
-  if (!G.player.flagUnlocks.length) G.player.flagUnlocks.push(DEFAULT_PLAYER_FLAG_ASSET);
 }
 function finalizePlayerFlagUnlocksAfterLoad() {
   ensurePlayerFlagUnlocks();
@@ -8055,6 +8046,7 @@ const BANNER_CUSTOM_FIELD_ALLOW_CLIENT = new Set([
 ]);
 /** Empty sail cloth — cream-white PNG (no solid tint wash). `white-flag.png` is also available in the cloth list. */
 const BANNER_SAIL_DEFAULT_FIELD = 'assets/customflags/creamwhite-flag.png';
+const BANNER_HULL_DEFAULT_FIELD = 'assets/customflags/maroon-flag.png';
 function sanitizeBannerDesignClient(raw) {
   if (raw == null) return null;
   const o = typeof raw === 'object' ? raw : null;
@@ -8081,7 +8073,7 @@ function sanitizeBannerDesignClient(raw) {
   return { bg, field, emblems };
 }
 function defaultHullBannerDesign() {
-  return { bg: '#6b3a28', field: '', emblems: [] };
+  return { bg: '#6b3a28', field: BANNER_HULL_DEFAULT_FIELD, emblems: [] };
 }
 function defaultSailBannerDesign() {
   return { bg: '#ffffff', field: BANNER_SAIL_DEFAULT_FIELD, emblems: [] };
@@ -8105,25 +8097,31 @@ function loadImagePromise(src) {
 function composeBannerTexture(design, w, h, opts) {
   opts = opts || {};
   const isSail = !!opts.isSail;
+  const forEditor = !!opts.forEditor;
   const d = sanitizeBannerDesignClient(design);
   if (!d) return Promise.resolve(null);
   let fieldPath = d.field ? String(d.field).trim() : '';
   if (isSail && !fieldPath) fieldPath = BANNER_SAIL_DEFAULT_FIELD;
+  if (!isSail && !fieldPath) fieldPath = BANNER_HULL_DEFAULT_FIELD;
   const cachePayload = { bg: d.bg, field: fieldPath, emblems: d.emblems };
-  const key = _bannerCacheKey(cachePayload, w, h) + (isSail ? ':sail' : ':hull');
+  const key = _bannerCacheKey(cachePayload, w, h) + (isSail ? ':sail' : ':hull') + (forEditor ? ':ed' : '');
   if (_bannerTexCache.has(key)) return Promise.resolve(_bannerTexCache.get(key));
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, w, h);
+  if (forEditor) {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, w, h);
+  }
   const chain = Promise.resolve();
   return chain
     .then(() => (fieldPath ? loadImagePromise(fieldPath) : Promise.resolve(null)))
     .then(fIm => {
       if (fIm) {
         ctx.drawImage(fIm, 0, 0, w, h);
-      } else {
+      } else if (forEditor) {
         ctx.fillStyle = d.bg;
         ctx.fillRect(0, 0, w, h);
       }
@@ -8158,8 +8156,8 @@ function composeBannerTexture(design, w, h, opts) {
     });
 }
 function applySailBannerDesignToGroup(g, design, honor) {
-  if (!honor || !design || typeof design !== 'object') return;
-  const d = sanitizeBannerDesignClient(design);
+  if (!honor) return;
+  const d = design && typeof design === 'object' ? sanitizeBannerDesignClient(design) : null;
   if (!d) return;
   g.traverse(ch => {
     if (!ch.isMesh || !ch.userData || !ch.userData.isSail) return;
@@ -8168,10 +8166,10 @@ function applySailBannerDesignToGroup(g, design, honor) {
     const nm = new THREE.MeshLambertMaterial({
       color: 0xffffff,
       side: THREE.DoubleSide,
-      transparent: true,
+      transparent: opac < 0.999,
       opacity: opac,
-      alphaTest: 0.02,
-      depthWrite: false,
+      alphaTest: 0.06,
+      depthWrite: true,
       map: null
     });
     if (oldMat && oldMat.dispose) try { oldMat.dispose(); } catch (e) {}
@@ -8247,7 +8245,7 @@ function normalizePlayerFlagAssetId(n) {
   if (RESERVED_PLAYER_FLAG_IDS.has(x)) return null;
   return x;
 }
-/** Saved `flagAssetId` may be null (legacy); resolves to an unlocked PNG id the captain may fly. */
+/** Saved `flagAssetId` may be null; resolves to an unlocked catalog jack if any, else null (custom hull jack only). */
 function getEffectivePlayerFlagAssetId(player) {
   const pl = player || G.player;
   ensurePlayerFlagUnlocks();
@@ -8256,7 +8254,16 @@ function getEffectivePlayerFlagAssetId(player) {
   if (sid != null && playerHasFlagUnlocked(sid, pl)) return sid;
   const ids = getSortedUnlockedFlagIds(pl);
   if (ids.length) return ids[0];
-  return DEFAULT_PLAYER_FLAG_ASSET;
+  return null;
+}
+/** Hoisted catalog jack sent to the server / save file: only if unlocked; otherwise null (custom jack only). */
+function getNetworkFlagAssetId(player) {
+  const pl = player || G.player;
+  if (!pl) return null;
+  ensurePlayerFlagUnlocks();
+  const fa = sanitizeFlagPngId(pl.flagAssetId);
+  if (fa == null) return null;
+  return playerHasFlagUnlocked(fa, pl) ? fa : null;
 }
 
 /** Wooden pole + hinge-mounted subdivided flag; registers for wind animation. */
@@ -10630,12 +10637,14 @@ function refreshOtherPlayerShipCacheKey(p) {
 
 /** Hull flag: pole + hinge; `flagPlace` mast | side | stern. Optional `bannerDesign` = composed jack (Bannerlord-style). */
 function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAssetIdOpt, bannerDesignOpt) {
+  const hasCustomJack = !!(bannerDesignOpt && typeof bannerDesignOpt === 'object' && sanitizeBannerDesignClient(bannerDesignOpt));
+  const useId = flagAssetIdOpt != null ? sanitizeFlagPngId(flagAssetIdOpt) : null;
+  if (!hasCustomJack && useId == null) return;
   const poleMat = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
   const mH = spec.hullLen * 0.7;
   const mastIdx = Math.max(0, spec.masts - 1);
   const mZ = (mastIdx - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
   const mastBaseY = spec.hullH * 0.6;
-  const useId = flagAssetIdOpt != null ? (sanitizeFlagPngId(flagAssetIdOpt) ?? DEFAULT_PLAYER_FLAG_ASSET) : DEFAULT_PLAYER_FLAG_ASSET;
   const flagRig = new THREE.Group();
   let poleH = spec.hullLen * 0.36;
   let hingeZ = 0.02;
@@ -10661,8 +10670,8 @@ function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAsse
   flagHinge.position.set(0, poleH * 0.94, hingeZ);
   flagHinge.userData.isFlagHinge = true;
   let fmesh;
-  if (bannerDesignOpt && typeof bannerDesignOpt === 'object' && sanitizeBannerDesignClient(bannerDesignOpt)) {
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, alphaTest: 0.02 });
+  if (hasCustomJack) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, alphaTest: 0.06, depthWrite: true });
     fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78), mat);
     fmesh.userData.hullFlagCustom = true;
     composeBannerTexture(bannerDesignOpt, 256, 178, { isSail: false }).then(tex => {
@@ -10691,13 +10700,15 @@ function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAsse
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   meshOpts = meshOpts || {};
   const hideShipNameLabel = !!meshOpts.hideShipNameLabel;
-  const hullFlagPngId = meshOpts.flagAssetId != null ? (sanitizeFlagPngId(meshOpts.flagAssetId) ?? DEFAULT_PLAYER_FLAG_ASSET) : DEFAULT_PLAYER_FLAG_ASSET;
+  const hullFlagPngId = meshOpts.flagAssetId != null ? sanitizeFlagPngId(meshOpts.flagAssetId) : null;
   parts = normalizeShipParts(parts);
   const flagPlace = parts.flag || 'mast';
   const isMerchantHull = !!meshOpts.merchantHull;
   const honorPlayerLoadout = !!meshOpts.honorPlayerLoadout;
   const hullBannerDesign = meshOpts.hullBannerDesign && typeof meshOpts.hullBannerDesign === 'object'
     ? sanitizeBannerDesignClient(meshOpts.hullBannerDesign) : null;
+  const sailBannerSan = meshOpts.sailBannerDesign && typeof meshOpts.sailBannerDesign === 'object'
+    ? sanitizeBannerDesignClient(meshOpts.sailBannerDesign) : null;
   let cannonTier = parts.cannon;
   if (!isMerchantHull && !honorPlayerLoadout && (!cannonTier || cannonTier === 'none')) {
     cannonTier = 'light';
@@ -10784,9 +10795,9 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     yard.userData.isYard = true;
     sailPivot.add(yard);
 
-    const sg = new THREE.PlaneGeometry(sW, sH, 6, 6);
+    const sg = new THREE.PlaneGeometry(sW, sH, 14, 12);
     const sail = new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide }));
-    sail.position.set(0, -sH / 2, 0.08);
+    sail.position.set(0, -sH / 2, 0.16);
     sail.userData.isSail = true;
     sail.userData.windYawOnParent = true;
     sail.userData.basePositions = sg.attributes.position.array.slice();
@@ -10865,9 +10876,9 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   jibPivot.userData.isSailWindPivot = true;
   jibPivot.userData.windAngleScale = 0.88;
   const jibW = spec.hullW * 0.5, jibH = fmH * 0.5;
-  const jibGeo = new THREE.PlaneGeometry(jibW, jibH, 3, 3);
-  const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
-  jib.position.set(0, -jibH / 2, 0.08);
+  const jibGeo = new THREE.PlaneGeometry(jibW, jibH, 8, 6);
+  const jib = new THREE.Mesh(jibGeo, new THREE.MeshLambertMaterial({ color: sc, side: THREE.DoubleSide }));
+  jib.position.set(0, -jibH / 2, 0.15);
   jib.rotation.y = 0.22;
   jib.userData.isSail = true;
   jib.userData.isJib = true;
@@ -10891,11 +10902,11 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
 
   const mastForFlag = flagPlace === 'mast' ? (lastMainMastRig || null) : null;
   attachPirateFlagToShip(g, spec, flagPlace, mastForFlag, hullFlagPngId, hullBannerDesign);
-  applySailBannerDesignToGroup(g, meshOpts.sailBannerDesign, honorPlayerLoadout);
+  applySailBannerDesignToGroup(g, meshOpts.sailBannerDesign, honorPlayerLoadout || !!sailBannerSan);
 
   if (shipName && !hideShipNameLabel) {
     const swatch = flagColor ? String(flagColor) : '';
-    const label = meshOpts.flagAssetId != null
+    const label = hullFlagPngId != null
       ? makeTextSprite(shipName, '#e8dcc8', '', '', '', hullFlagPngId)
       : makeTextSprite(shipName, '#e8dcc8', '', swatch);
     label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
@@ -11676,11 +11687,14 @@ function applySailCanvasWindMesh(mesh, baseArr, furl, windPushZ, windBillowScale
     const mastClear = Math.min(1, Math.abs(bx) / Math.max(0.11, hW * 0.26));
     let zBillow = windPushZ * billowAmt * windBillowScale;
     if (zBillow < 0) zBillow *= 0.3;
-    zBillow *= (0.28 + 0.72 * mastClear);
+    const mastDampIn = 0.28 + 0.72 * mastClear;
+    const mastDampOut = 0.62 + 0.38 * mastClear;
+    zBillow *= zBillow >= 0 ? mastDampOut : mastDampIn;
     const horizT = Math.min(1, Math.abs(bx) / Math.max(0.05, hW));
     const offMast = Math.pow(Math.max(0, horizT - 0.1), 1.15);
     const verticalBell = Math.sin(Math.PI * anchor);
-    const bellyBoost = 1 + 0.72 * verticalBell * offMast * (0.3 + 0.7 * mastClear);
+    const centerBelly = verticalBell * (1 - horizT * 0.72);
+    const bellyBoost = 1 + 0.72 * verticalBell * offMast * (0.3 + 0.7 * mastClear) + 0.42 * centerBelly * (0.35 + 0.65 * Math.max(0, windPushZ));
     zBillow *= bellyBoost;
     const flutter = Math.sin(time * 2.0 + by * 3 + bx * 1.5) * 0.022 * (1 - f) * (0.38 + 0.62 * mastClear);
     nz += zBillow + flutter;
@@ -12818,7 +12832,7 @@ function captureVictorRelinquishedHullPayload() {
     shipType: G.player.shipType,
     shipParts: G.player.shipParts ? { ...G.player.shipParts } : {},
     shipName: G.player.shipName,
-    flagAssetId: getEffectivePlayerFlagAssetId(),
+    flagAssetId: getNetworkFlagAssetId(),
     name: (cap && cap.name) ? String(cap.name).trim().slice(0, 28) : 'Captain',
     partyTag: (G.party && G.party.tag) ? String(G.party.tag).slice(0, 24) : '',
     crewData: buildCrewSyncPayload(),
@@ -12838,9 +12852,9 @@ function spawnBoardingPrizeHullDecoyFromNet(msg) {
   const captainName = nameless ? '' : ((msg.name && String(msg.name).trim()) ? String(msg.name).trim().slice(0, 28) : 'Captain');
   const shipTitle = nameless ? '' : ((msg.shipName && String(msg.shipName).trim()) ? String(msg.shipName).trim().slice(0, 28) : captainName);
   const fa = msg.flagAssetId != null ? sanitizeFlagPngId(Number(msg.flagAssetId)) : null;
-  const sm = buildShipMesh(st, visualParts, DEFAULT_SAIL_TRIM_COLOR, shipTitle || ' ', { flagAssetId: fa != null ? fa : DEFAULT_PLAYER_FLAG_ASSET });
+  const sm = buildShipMesh(st, visualParts, DEFAULT_SAIL_TRIM_COLOR, shipTitle || ' ', { flagAssetId: fa });
   if (!nameless && captainName && (shipTitle !== captainName || String(msg.partyTag || '').trim())) {
-    const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, '', String(msg.partyTag || '').slice(0, 24), fa != null ? fa : DEFAULT_PLAYER_FLAG_ASSET);
+    const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, '', String(msg.partyTag || '').slice(0, 24), fa);
     const spec = SHIP_TYPES[st];
     capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     for (let ci = sm.children.length - 1; ci >= 0; ci--) {
@@ -12916,9 +12930,12 @@ function applyPrizeShipFromRemoteCaptainRow(row) {
   G.player.shipParts = cloneCaptainShipPartsFromRow(row);
   const nm = row.shipName != null ? String(row.shipName).trim().slice(0, 28) : '';
   if (nm) G.player.shipName = nm;
-  if (row.flagAssetId != null) {
-    const a = sanitizeFlagPngId(Number(row.flagAssetId));
-    if (a != null) G.player.flagAssetId = a;
+  if (row.flagAssetId !== undefined) {
+    if (row.flagAssetId === null) G.player.flagAssetId = null;
+    else {
+      const a = sanitizeFlagPngId(Number(row.flagAssetId));
+      if (a != null) G.player.flagAssetId = a;
+    }
   }
 }
 function applyBoardingSpoilLoserDefaultHull() {
@@ -17192,7 +17209,7 @@ function syncCaptainNameToServer() {
     shipType: G.player.shipType,
     shipParts: G.player.shipParts,
     flagColor: DEFAULT_SAIL_TRIM_COLOR,
-    flagAssetId: getEffectivePlayerFlagAssetId(),
+    flagAssetId: getNetworkFlagAssetId(),
     crew: buildCrewSyncPayload(),
     captainToken,
     preferLocalVoyage: !!voyageSaveExistsInStorage()
@@ -17518,7 +17535,7 @@ async function connectToServer() {
       shipType: G.player.shipType,
       shipParts: G.player.shipParts,
       flagColor: DEFAULT_SAIL_TRIM_COLOR,
-      flagAssetId: getEffectivePlayerFlagAssetId(),
+      flagAssetId: getNetworkFlagAssetId(),
       crew: buildCrewSyncPayload(),
       captainToken,
       preferLocalVoyage: !!voyageSaveExistsInStorage()
@@ -18537,7 +18554,7 @@ function sendUpdate(includeCrew) {
     shipName: G.player.shipName,
     shipParts: { ...G.player.shipParts },
     flagColor: DEFAULT_SAIL_TRIM_COLOR,
-    flagAssetId: getEffectivePlayerFlagAssetId(),
+    flagAssetId: getNetworkFlagAssetId(),
     deckWalk: (G.captainWalk && G.captainWalk.active) ? {
       x: G.captainWalk.x,
       z: G.captainWalk.z,
@@ -18661,9 +18678,12 @@ function applyWorldResumeFromServer(msg) {
   if (msg.health != null && Number.isFinite(Number(msg.health))) G.player.health = Math.max(0, Math.min(G.player.maxHealth || 100, Number(msg.health)));
   if (msg.riggingHealth != null) G.player.riggingHealth = Math.max(0, Math.min(100, Number(msg.riggingHealth) || 0));
   if (msg.morale != null) G.player.morale = Math.max(0, Math.min(100, Number(msg.morale) || 0));
-  if (msg.flagAssetId != null) {
-    const fa = sanitizeFlagPngId(msg.flagAssetId);
-    if (fa != null) G.player.flagAssetId = fa;
+  if (msg.flagAssetId !== undefined) {
+    if (msg.flagAssetId === null) G.player.flagAssetId = null;
+    else {
+      const fa = sanitizeFlagPngId(msg.flagAssetId);
+      if (fa != null) G.player.flagAssetId = fa;
+    }
   }
   if (msg.flagColor != null) G.player.flagColor = String(msg.flagColor).slice(0, 32);
   rebuildPlayerShip();
@@ -27266,7 +27286,7 @@ function update(dt) {
         sailBannerDesign: getRemotePlayerSailBannerDesign(p)
       });
       if (captainName && (shipTitle !== captainName || String(p.partyTag || '').trim())) {
-        const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, '', String(p.partyTag || '').slice(0, 24), sanitizeFlagPngId(p.flagAssetId) ?? DEFAULT_PLAYER_FLAG_ASSET);
+        const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, '', String(p.partyTag || '').slice(0, 24), sanitizeFlagPngId(p.flagAssetId));
         const spec = SHIP_TYPES[st];
         capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
         for (let ci = sm.children.length - 1; ci >= 0; ci--) {
@@ -28582,7 +28602,7 @@ function clearCrewHighlight() {
 function renderPreview() {
   if (!previewRenderer || !previewScene) return;
   if (previewShip) {
-    if (previewAutoRotate) previewRotY += 0.005;
+    if (previewAutoRotate && G.crewEditIdx == null) previewRotY += 0.005;
     previewShip.rotation.y = previewRotY;
   }
   previewRenderer.render(previewScene, previewCamera);
@@ -28659,22 +28679,21 @@ function redrawBannerEditorCanvas() {
   const w = cvs.width;
   const h = cvs.height;
   const isSail = _bannerEditorCtx.aspect === 'sail';
-  composeBannerTexture(d, w, h, { isSail }).then(tex => {
+  composeBannerTexture(d, w, h, { isSail, forEditor: true }).then(tex => {
     if (!tex || !tex.image) return;
     const ctx = cvs.getContext('2d');
-    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, w, h);
     ctx.drawImage(tex.image, 0, 0, w, h);
   });
 }
 function syncBannerEditorChrome() {
-  const tintWrap = document.getElementById('banner-editor-tint-wrap');
   const hint = document.getElementById('banner-editor-hint');
   const sail = _bannerEditorCtx.aspect === 'sail';
-  if (tintWrap) tintWrap.style.display = sail ? 'none' : '';
   if (hint) {
     hint.textContent = sail
-      ? 'Sails use a cloth base (cream by default)—no flat tint wash. Tap the preview to place the selected emblem.'
-      : 'Tap the preview to place the selected emblem. Plain jack uses tint only; add a cloth pattern for textured fields. Sliders adjust the selected emblem.';
+      ? 'Pick a cloth texture, then tap the preview to place emblems. Sliders adjust the selected emblem.'
+      : 'Pick a cloth texture for your jack, then tap the preview to place emblems.';
   }
 }
 function bannerEditorPlaceEmblemAtClientXY(clientX, clientY) {
@@ -28708,6 +28727,9 @@ function openBannerEditor(mode) {
   else if (mode === 'clan-sail') source = cloneBannerDesign((G.party && G.party.clanSailBanner) || defaultSailBannerDesign());
   if (_bannerEditorCtx.aspect === 'sail') {
     if (!source.field || String(source.field).trim() === '') source.field = BANNER_SAIL_DEFAULT_FIELD;
+  } else {
+    const f0 = source.field != null ? String(source.field).trim() : '';
+    if (!f0 || !BANNER_CUSTOM_FIELD_ALLOW_CLIENT.has(f0)) source.field = BANNER_HULL_DEFAULT_FIELD;
   }
   _bannerEditorCtx.draft = source;
   _bannerEditorCtx.selEmblemIx = source.emblems.length ? source.emblems.length - 1 : -1;
@@ -28715,8 +28737,6 @@ function openBannerEditor(mode) {
   if (title) {
     title.textContent = mode.startsWith('clan') ? 'Clan colors (captain)' : mode.includes('sail') ? 'Sail livery' : 'Hull jack';
   }
-  const bg = document.getElementById('banner-editor-bg');
-  if (bg) bg.value = source.bg;
   const field = document.getElementById('banner-editor-field');
   if (field) field.value = source.field || '';
   const cvs = document.getElementById('banner-editor-canvas');
@@ -28788,21 +28808,14 @@ function bindBannerEditorModalOnce() {
   const root = document.getElementById('banner-editor-modal');
   if (!root || root.dataset.bound === '1') return;
   root.dataset.bound = '1';
-  const onBgPick = () => {
-    if (_bannerEditorCtx.draft) {
-      _bannerEditorCtx.draft.bg = document.getElementById('banner-editor-bg').value;
-      scheduleBannerEditorRedraw();
-    }
-  };
-  document.getElementById('banner-editor-bg')?.addEventListener('input', onBgPick);
-  document.getElementById('banner-editor-bg')?.addEventListener('change', onBgPick);
   document.getElementById('banner-editor-field')?.addEventListener('change', () => {
     if (_bannerEditorCtx.draft) {
       const sel = document.getElementById('banner-editor-field');
       let v = sel ? (sel.value || '') : '';
       if (_bannerEditorCtx.aspect === 'sail' && !v) v = BANNER_SAIL_DEFAULT_FIELD;
+      if (_bannerEditorCtx.aspect !== 'sail' && !v) v = BANNER_HULL_DEFAULT_FIELD;
       _bannerEditorCtx.draft.field = v;
-      if (sel && _bannerEditorCtx.aspect === 'sail') sel.value = v;
+      if (sel) sel.value = v;
       scheduleBannerEditorRedraw();
     }
   });
@@ -28874,8 +28887,6 @@ function bindBannerEditorModalOnce() {
     if (!Number.isFinite(i) || !list[i] || !list[i].design) return;
     _bannerEditorCtx.draft = cloneBannerDesign(list[i].design);
     _bannerEditorCtx.selEmblemIx = _bannerEditorCtx.draft.emblems.length ? _bannerEditorCtx.draft.emblems.length - 1 : -1;
-    const bg = document.getElementById('banner-editor-bg');
-    if (bg) bg.value = _bannerEditorCtx.draft.bg;
     const field = document.getElementById('banner-editor-field');
     if (field) field.value = _bannerEditorCtx.draft.field || '';
     syncBannerEditorSlidersFromSelection();
@@ -28888,6 +28899,14 @@ function bindBannerEditorModalOnce() {
         _bannerEditorCtx.draft.field = BANNER_SAIL_DEFAULT_FIELD;
         const sEl = document.getElementById('banner-editor-field');
         if (sEl) sEl.value = BANNER_SAIL_DEFAULT_FIELD;
+      }
+    } else if (_bannerEditorCtx.draft) {
+      let fv = _bannerEditorCtx.draft.field != null ? String(_bannerEditorCtx.draft.field).trim() : '';
+      if (!fv || !BANNER_CUSTOM_FIELD_ALLOW_CLIENT.has(fv)) {
+        fv = BANNER_HULL_DEFAULT_FIELD;
+        _bannerEditorCtx.draft.field = fv;
+        const hEl = document.getElementById('banner-editor-field');
+        if (hEl) hEl.value = fv;
       }
     }
     const d = sanitizeBannerDesignClient(_bannerEditorCtx.draft);
@@ -29014,6 +29033,8 @@ function openGameCrewCustomizer(crewIdx) {
   if (G.mode !== 'playing') return;
   if (crewIdx < 0 || crewIdx >= G.player.crew.length) return;
   G.crewEditIdx = crewIdx;
+  previewAutoRotate = false;
+  previewRotY = 0.32;
   const lp = document.getElementById('log-panel');
   if (lp && lp.style.display !== 'none' && lp.style.display !== '') lp.style.display = 'none';
   document.getElementById('btn-log')?.classList.remove('active');
@@ -29038,6 +29059,7 @@ function applyGameCrewCustomization() {
   });
   normalizeCrewMemberRecord(m);
   G.crewEditIdx = null;
+  previewAutoRotate = true;
   previewCrewEditCamLock = false;
   document.getElementById('create-screen').classList.remove('create-screen--crew-edit');
   applyCreateScreenCrewEditVis(false);
@@ -29058,6 +29080,7 @@ function applyGameCrewCustomization() {
 
 function buildCreationUI() {
   G.crewEditIdx = null;
+  previewAutoRotate = true;
   previewCrewEditCamLock = false;
   document.getElementById('create-screen').classList.remove('create-screen--crew-edit');
   applyCreateScreenCrewEditVis(false);
@@ -29474,7 +29497,6 @@ function launchGame() {
   G.player.hullBanner = dHull || sanitizeBannerDesignClient(defaultHullBannerDesign());
   G.player.sailBanner = dSail || sanitizeBannerDesignClient(defaultSailBannerDesign());
   ensurePlayerFlagUnlocks();
-  if (!G.player.flagUnlocks.length) G.player.flagUnlocks.push(DEFAULT_PLAYER_FLAG_ASSET);
   G.player.flagAssetId = null;
   G.player.flagAchievements = DEFAULT_FLAG_ACHIEVEMENTS();
   const allCrew = getCrewFromUI();
@@ -29894,7 +29916,7 @@ function applyDefaultStartingLoadout(opts) {
       const fa = sanitizeFlagPngId(savedFlagAsset);
       G.player.flagAssetId = fa != null ? fa : null;
     }
-    if (savedFlagUnlocks && savedFlagUnlocks.length) {
+    if (savedFlagUnlocks != null) {
       G.player.flagUnlocks = savedFlagUnlocks.map(sanitizeFlagPngId).filter(Boolean);
     }
     if (savedFlagAch) {
@@ -29903,7 +29925,7 @@ function applyDefaultStartingLoadout(opts) {
     }
   } else {
     G.player.flagAssetId = null;
-    G.player.flagUnlocks = [DEFAULT_PLAYER_FLAG_ASSET];
+    G.player.flagUnlocks = [];
     G.player.flagAchievements = DEFAULT_FLAG_ACHIEVEMENTS();
     const capIdx = G.player.crew.findIndex(c => c && c.role === 'captain');
     if (capIdx >= 0) G.player.crew[capIdx].name = randomCaptainNameForServer();
@@ -29947,7 +29969,7 @@ function saveProgress() {
       x: G.player.x, z: G.player.z, rotation: G.player.rotation,
       health: G.player.health, shipType: G.player.shipType,
       shipName: G.player.shipName,
-      flagAssetId: getEffectivePlayerFlagAssetId(),
+      flagAssetId: getNetworkFlagAssetId(),
       flagUnlocks: getSortedUnlockedFlagIds().slice(),
       flagAchievements: (() => {
         try {
@@ -30115,7 +30137,7 @@ function loadProgress() {
     if (data.flagUnlocks != null && Array.isArray(data.flagUnlocks)) {
       G.player.flagUnlocks = data.flagUnlocks.map(sanitizeFlagPngId).filter(Boolean);
     } else {
-      G.player.flagUnlocks = PLAYER_FLAG_CHOICE_IDS.slice();
+      G.player.flagUnlocks = [];
     }
     ensureFlagAchievements();
     if (data.flagAchievements && typeof data.flagAchievements === 'object') {
@@ -30492,7 +30514,7 @@ function executeStartNewVoyageAfterConfirm() {
   G.player.inventory = getDefaultStartingInventory().map(i => ({ ...i }));
   G.player.cargoSlots = [];
   G.player.flagAssetId = null;
-  G.player.flagUnlocks = [DEFAULT_PLAYER_FLAG_ASSET];
+  G.player.flagUnlocks = [];
   G.player.flagAchievements = DEFAULT_FLAG_ACHIEVEMENTS();
   G.player.hullBanner = null;
   G.player.sailBanner = null;
@@ -30527,6 +30549,7 @@ document.getElementById('create-back').onclick = () => {
   if (mp) mp.style.display = 'none';
   if (G.crewEditIdx != null) {
     G.crewEditIdx = null;
+    previewAutoRotate = true;
     previewCrewEditCamLock = false;
     document.getElementById('create-screen').classList.remove('create-screen--crew-edit');
     applyCreateScreenCrewEditVis(false);

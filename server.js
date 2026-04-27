@@ -81,7 +81,7 @@ function buildStateRow(p, includeCrew) {
     flagColor: p.flagColor != null ? p.flagColor : '#1a1a1a',
     flagAssetId: (() => {
       const fa = sanitizeClientFlagAssetId(p.flagAssetId);
-      return fa != null ? fa : 1;
+      return fa != null ? fa : null;
     })(),
     shipParts: p.shipParts || { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     docked: !!p.docked,
@@ -1606,9 +1606,12 @@ function tryApplyWorldPresenceToPlayer(captainKey, p) {
   if (raw.health != null && Number.isFinite(Number(raw.health))) p.health = Math.max(-20, Math.min(9999, Number(raw.health)));
   if (raw.riggingHealth != null) p.riggingHealth = Math.max(0, Math.min(100, Number(raw.riggingHealth) || 0));
   if (raw.morale != null) p.morale = Math.max(0, Math.min(100, Number(raw.morale) || 0));
-  if (raw.flagAssetId != null) {
-    const fa = sanitizeClientFlagAssetId(raw.flagAssetId);
-    if (fa != null) p.flagAssetId = fa;
+  if (raw.flagAssetId !== undefined) {
+    if (raw.flagAssetId === null) p.flagAssetId = null;
+    else {
+      const fa = sanitizeClientFlagAssetId(raw.flagAssetId);
+      if (fa != null) p.flagAssetId = fa;
+    }
   }
   if (raw.flagColor != null) p.flagColor = String(raw.flagColor).slice(0, 32);
   return {
@@ -2259,7 +2262,7 @@ wss.on('connection', (ws, req) => {
     shipName: '',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
-    flagAssetId: 1,
+    flagAssetId: null,
     color: `hsl(${Math.random() * 360}, 70%, 50%)`,
     name: `Pirate_${id}`,
     health: 100,
@@ -2394,8 +2397,11 @@ wss.on('connection', (ws, req) => {
           if (msg.shipName !== undefined) p.shipName = String(msg.shipName || '').slice(0, 28);
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.flagAssetId !== undefined) {
-            const a = sanitizeClientFlagAssetId(msg.flagAssetId);
-            if (a != null) p.flagAssetId = a;
+            if (msg.flagAssetId === null) p.flagAssetId = null;
+            else {
+              const a = sanitizeClientFlagAssetId(msg.flagAssetId);
+              if (a != null) p.flagAssetId = a;
+            }
           }
           if (msg.hullBanner !== undefined) {
             p.hullBanner = sanitizeBannerFromClient(msg.hullBanner);
@@ -2563,8 +2569,11 @@ wss.on('connection', (ws, req) => {
           }
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.flagAssetId !== undefined) {
-            const a = sanitizeClientFlagAssetId(msg.flagAssetId);
-            if (a != null) p.flagAssetId = a;
+            if (msg.flagAssetId === null) p.flagAssetId = null;
+            else {
+              const a = sanitizeClientFlagAssetId(msg.flagAssetId);
+              if (a != null) p.flagAssetId = a;
+            }
           }
           if (msg.hullBanner !== undefined) {
             p.hullBanner = sanitizeBannerFromClient(msg.hullBanner);
