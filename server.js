@@ -93,7 +93,9 @@ function buildStateRow(p, includeCrew) {
     morale: p.morale != null ? p.morale : 100,
     deckWalk: p.deckWalk || null,
     boarding: p.boarding != null ? p.boarding : null,
-    rtt: p.rtt != null && Number.isFinite(p.rtt) ? Math.min(120000, Math.round(p.rtt)) : null
+    rtt: p.rtt != null && Number.isFinite(p.rtt) ? Math.min(120000, Math.round(p.rtt)) : null,
+    hullBanner: p.hullBanner != null && typeof p.hullBanner === 'object' ? p.hullBanner : null,
+    sailBanner: p.sailBanner != null && typeof p.sailBanner === 'object' ? p.sailBanner : null
   };
   if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
   return row;
@@ -105,6 +107,57 @@ function sanitizeClientFlagAssetId(v) {
   if (!Number.isFinite(x) || x < 1 || x > 26) return null;
   if (RESERVED_PLAYER_FLAG_ASSET_IDS.has(x)) return null;
   return x;
+}
+
+const BANNER_CUSTOM_FIELD_ALLOW = new Set([
+  'assets/customflags/black-flag.png',
+  'assets/customflags/creamwhite-flag.png',
+  'assets/customflags/darkbrown-flag.png',
+  'assets/customflags/darkpurple-flag.png',
+  'assets/customflags/green-flag.png',
+  'assets/customflags/lightbrown-flag.png',
+  'assets/customflags/lightpurple-flag.png',
+  'assets/customflags/maroon-flag.png',
+  'assets/customflags/mintwhite-flag.png',
+  'assets/customflags/navyblue-flag.png',
+  'assets/customflags/pink-flag.png',
+  'assets/customflags/red-flag.png',
+  'assets/customflags/tiel-flag.png',
+  'assets/customflags/white-flag.png',
+  'assets/customflags/yellow-flag.png'
+]);
+
+function sanitizeBannerFromClient(raw) {
+  if (raw == null) return null;
+  let o = raw;
+  if (typeof raw === 'string') {
+    try {
+      o = JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+  if (!o || typeof o !== 'object') return null;
+  const bgIn = String(o.bg != null ? o.bg : '#4a3020').trim().slice(0, 32);
+  const bg = /^#[0-9A-Fa-f]{6}$/.test(bgIn) ? bgIn : '#4a3020';
+  let field = o.field != null ? String(o.field).trim() : '';
+  if (field && !BANNER_CUSTOM_FIELD_ALLOW.has(field)) field = '';
+  const emblems = [];
+  const arr = Array.isArray(o.emblems) ? o.emblems : [];
+  for (let i = 0; i < arr.length && emblems.length < 6; i++) {
+    const e = arr[i];
+    if (!e || typeof e !== 'object') continue;
+    const id = Math.floor(Number(e.id));
+    if (!Number.isFinite(id) || id < 1 || id > 25) continue;
+    const x = Math.max(0, Math.min(1, Number(e.x)));
+    const y = Math.max(0, Math.min(1, Number(e.y)));
+    const s = Math.max(0.1, Math.min(1.4, Number.isFinite(Number(e.s)) ? Number(e.s) : 0.35));
+    let r = Number(e.r);
+    if (!Number.isFinite(r)) r = 0;
+    r = Math.max(-Math.PI * 2, Math.min(Math.PI * 2, r));
+    emblems.push({ id, x, y, s, r });
+  }
+  return { bg, field, emblems };
 }
 /** Compact boarding engagement relayed in `update` / `state` for multiplayer sync. */
 function sanitizeBoardingFromClient(b) {
@@ -319,6 +372,8 @@ function migratePartyRecord(pr) {
   if (!Array.isArray(pr.officerKeys)) pr.officerKeys = [];
   if (!pr.pendingInviteFrom || typeof pr.pendingInviteFrom !== 'object') pr.pendingInviteFrom = {};
   if (!Array.isArray(pr.pendingJoinRequests)) pr.pendingJoinRequests = [];
+  if (!('clanHullBanner' in pr)) pr.clanHullBanner = null;
+  if (!('clanSailBanner' in pr)) pr.clanSailBanner = null;
 }
 
 function deletePendingInviteMeta(pr, captainKey) {
@@ -714,7 +769,9 @@ function buildPartySyncPayload(p, viewerCaptainKey) {
     leaderCaptainKey: p.leaderKey,
     officerCaptainKeys: officerKeys,
     memberKeys,
-    members
+    members,
+    clanHullBanner: p.clanHullBanner != null && typeof p.clanHullBanner === 'object' ? p.clanHullBanner : null,
+    clanSailBanner: p.clanSailBanner != null && typeof p.clanSailBanner === 'object' ? p.clanSailBanner : null
   };
   if (viewerCaptainKey && canInviteToClan(p, viewerCaptainKey)) {
     out.pendingJoinRequests = (p.pendingJoinRequests || []).map(r => ({
@@ -2220,7 +2277,9 @@ wss.on('connection', (ws, req) => {
     partyTag: '',
     clientIp,
     rtt: null,
-    lastNetSeq: 0
+    lastNetSeq: 0,
+    hullBanner: null,
+    sailBanner: null
   };
 
   players.set(id, playerData);
@@ -2337,6 +2396,12 @@ wss.on('connection', (ws, req) => {
           if (msg.flagAssetId !== undefined) {
             const a = sanitizeClientFlagAssetId(msg.flagAssetId);
             if (a != null) p.flagAssetId = a;
+          }
+          if (msg.hullBanner !== undefined) {
+            p.hullBanner = sanitizeBannerFromClient(msg.hullBanner);
+          }
+          if (msg.sailBanner !== undefined) {
+            p.sailBanner = sanitizeBannerFromClient(msg.sailBanner);
           }
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
             p.shipParts = {
@@ -2500,6 +2565,12 @@ wss.on('connection', (ws, req) => {
           if (msg.flagAssetId !== undefined) {
             const a = sanitizeClientFlagAssetId(msg.flagAssetId);
             if (a != null) p.flagAssetId = a;
+          }
+          if (msg.hullBanner !== undefined) {
+            p.hullBanner = sanitizeBannerFromClient(msg.hullBanner);
+          }
+          if (msg.sailBanner !== undefined) {
+            p.sailBanner = sanitizeBannerFromClient(msg.sailBanner);
           }
           if (msg.shipParts !== undefined && msg.shipParts !== null && typeof msg.shipParts === 'object') {
             p.shipParts = {
@@ -3288,6 +3359,21 @@ wss.on('connection', (ws, req) => {
           pr.tag = newTag;
           savePartyStore();
           broadcastPartySync(pr.id);
+          break;
+        }
+        case 'party_set_banners': {
+          const ckB = ws.captainAccountKey || players.get(id)?.captainKey || null;
+          const prB = getPartyForCaptainKey(ckB);
+          migratePartyRecord(prB);
+          if (!prB || prB.leaderKey !== ckB) {
+            try { ws.send(JSON.stringify({ type: 'party_error', error: 'Only the clan captain may set crew jacks and sails.' })); } catch (e) {}
+            break;
+          }
+          if (msg.hullBanner !== undefined) prB.clanHullBanner = sanitizeBannerFromClient(msg.hullBanner);
+          if (msg.sailBanner !== undefined) prB.clanSailBanner = sanitizeBannerFromClient(msg.sailBanner);
+          savePartyStore();
+          broadcastPartySync(prB.id);
+          try { ws.send(JSON.stringify({ type: 'party_ok', action: 'clan_banners_set' })); } catch (e) {}
           break;
         }
         case 'party_promote_officer': {
