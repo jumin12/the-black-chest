@@ -1588,6 +1588,11 @@ function remapCaptainAccountKeyInParties(oldKey, newKey) {
       if (!pr.pendingInviteFrom[newKey]) pr.pendingInviteFrom[newKey] = meta;
       touched = true;
     }
+    if (Array.isArray(pr.pendingJoinRequests)) {
+      for (const r of pr.pendingJoinRequests) {
+        if (r && r.captainKey === oldKey) r.captainKey = newKey;
+      }
+    }
   }
   if (pidOld) {
     delete partyStore.captainParty[oldKey];
@@ -2381,6 +2386,7 @@ wss.on('connection', (ws, req) => {
   });
   const sp0 = sampleOffshoreSpawn(spawnCtx, id);
 
+  const placeholderCaptainName = `Pirate_${id}`;
   const playerData = {
     id,
     x: sp0.x,
@@ -2392,10 +2398,9 @@ wss.on('connection', (ws, req) => {
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
     flagAssetId: null,
-    /** Stable clan / session identity before a captain name is reserved (never derived from `Pirate_<id>` for leaderboard merge). */
-    captainKey: normalizeCaptainKey(`session_${id}`),
     color: `hsl(${Math.random() * 360}, 70%, 50%)`,
-    name: `Pirate_${id}`,
+    name: placeholderCaptainName,
+    captainKey: normalizeCaptainKey(placeholderCaptainName),
     health: 100,
     crewCount: 3,
     crewData: null,
@@ -2622,9 +2627,7 @@ wss.on('connection', (ws, req) => {
             ? String(msg.captainToken).trim()
             : null;
 
-          const oldKey = ws.captainAccountKey
-            ? normalizeCaptainKey(String(ws.captainAccountKey))
-            : (p.captainKey ? normalizeCaptainKey(String(p.captainKey)) : null);
+          const oldKey = ws.captainAccountKey || p.captainKey || null;
 
           if (tokenOffered && !captainAccounts[newKey]) {
             const kTok = findCaptainKeyByToken(tokenOffered);
@@ -2709,6 +2712,9 @@ wss.on('connection', (ws, req) => {
             }
           }
 
+          if (hadPlaceholderName && oldKey && oldKey !== newKey) {
+            remapCaptainAccountKeyInParties(oldKey, newKey);
+          }
           registerCaptainSessionSocket(ws, id, oldKey, newKey);
           p.name = displayName;
           p.captainKey = newKey;

@@ -152,17 +152,12 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     max-height:none;
   }
   body.game-playing #chat-box .chat-clan-panel{
-    max-height:min(140px,32vh);
-    margin-bottom:6px;
-    flex-shrink:0;
-  }
-  body.game-playing #chat-box.chat-box--party .chat-clan-panel{
-    flex:1 1 auto;
+    flex:1 1 0;
     min-height:0;
-    max-height:min(280px,50vh);
+    max-height:none;
+    margin-bottom:6px;
     overflow-y:auto;
     -webkit-overflow-scrolling:touch;
-    margin-bottom:6px;
   }
   body.game-playing #log-panel.captains-log{
     top:calc(50% - 40px);
@@ -3210,8 +3205,6 @@ const G = {
     riggingHealth: 100,
     anchored: false,
     shipName: 'The Black Wave',
-    /** Server session or reserved captain key (clan roster / flags); mirrors `G.myCaptainKey` when online. */
-    captainKey: null,
     flagAssetId: null,
     hullBanner: null,
     sailBanner: null,
@@ -3263,7 +3256,8 @@ const G = {
   combatPopups3D: [],
   swimmers: [],
   selectedAmmoType: 'ball',
-  playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null, lastAttackerNpcSyncId: null,
+  playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
+  lastKillerNpcX: null, lastKillerNpcZ: null,
   deathSpawnX: null, deathSpawnZ: null, lastBroadsideSide: 1,
   nearDock: null, docked: false,
   dockingAnim: null,
@@ -6583,7 +6577,8 @@ function checkPlayerSeaReefWreck() {
         G._playerReefScrapeUntil = G.time + 0.82;
         G.lastAttacker = 'Jagged reef';
         G.lastAttackerId = null;
-        G.lastAttackerNpcSyncId = null;
+        G.lastKillerNpcX = null;
+        G.lastKillerNpcZ = null;
         const spd = Math.abs(G.player.speed || 0);
         const dmg = Math.max(6, Math.min(28, Math.round(11 + spd * 14 + Math.random() * 8)));
         G.player.health = Math.max(0, G.player.health - dmg);
@@ -8106,11 +8101,12 @@ function _bannerCacheKey(d, w, h) {
   try { return JSON.stringify(d) + '@' + w + 'x' + h; } catch (e) { return ''; }
 }
 function loadImagePromise(src) {
+  const href = resolveGameAssetUrl(src);
   return new Promise(res => {
     const im = new Image();
     im.onload = () => res(im);
     im.onerror = () => res(null);
-    im.src = src;
+    im.src = href;
   });
 }
 function composeBannerTexture(design, w, h, opts) {
@@ -8168,34 +8164,12 @@ function composeBannerTexture(design, w, h, opts) {
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = true;
-      const rForAniso = (typeof renderer !== 'undefined' && renderer && renderer.capabilities)
-        ? renderer
-        : (typeof cargoRenderer !== 'undefined' && cargoRenderer && cargoRenderer.capabilities ? cargoRenderer : null);
-      if (rForAniso && rForAniso.capabilities.getMaxAnisotropy) {
-        tex.anisotropy = Math.min(8, rForAniso.capabilities.getMaxAnisotropy());
+      if (renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy) {
+        tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
       }
       _bannerTexCache.set(key, tex);
       return tex;
     });
-}
-/** Do not GPU-dispose textures still referenced by global PNG / banner caches (preview teardowns share them). */
-function isThreeTextureGloballyCached(tex) {
-  if (!tex) return false;
-  try {
-    if (G._flagPngTexCache) {
-      for (const k of Object.keys(G._flagPngTexCache)) {
-        if (G._flagPngTexCache[k] === tex) return true;
-      }
-    }
-  } catch (e) {}
-  try {
-    if (_bannerTexCache && _bannerTexCache.size) {
-      for (const v of _bannerTexCache.values()) {
-        if (v === tex) return true;
-      }
-    }
-  } catch (e2) {}
-  return false;
 }
 function applySailBannerDesignToGroup(g, design, honor) {
   if (!honor) return;
@@ -8216,8 +8190,12 @@ function applySailBannerDesignToGroup(g, design, honor) {
     });
     if (oldMat && oldMat.dispose) try { oldMat.dispose(); } catch (e) {}
     ch.material = nm;
+    const sailGen = (ch.userData._sailBannerTexGen = (ch.userData._sailBannerTexGen | 0) + 1);
+    const expectedShipGen = g.userData.bannerComposeGen;
     composeBannerTexture(d, 384, 512, { isSail: true }).then(tex => {
-      if (tex && ch.material) {
+      if (expectedShipGen != null && g.userData.bannerComposeGen !== expectedShipGen) return;
+      if (ch.userData._sailBannerTexGen !== sailGen || !ch.material) return;
+      if (tex) {
         ch.material.map = tex;
         ch.material.color.setHex(0xffffff);
         ch.material.needsUpdate = true;
@@ -8232,10 +8210,7 @@ function captainKeyMatchesPartyMember(ck) {
 }
 function getEffectiveHullBannerDesign(forPlayerRow) {
   if (forPlayerRow && forPlayerRow.hullBanner) return sanitizeBannerDesignClient(forPlayerRow.hullBanner);
-  const partyCk = (G.myCaptainKey && String(G.myCaptainKey).trim())
-    || (G.player && G.player.captainKey != null && String(G.player.captainKey).trim())
-    || '';
-  if (!forPlayerRow && G.party && partyCk && captainKeyMatchesPartyMember(partyCk) && G.party.clanHullBanner) {
+  if (!forPlayerRow && G.party && G.myCaptainKey && captainKeyMatchesPartyMember(G.myCaptainKey) && G.party.clanHullBanner) {
     return sanitizeBannerDesignClient(G.party.clanHullBanner);
   }
   if (!forPlayerRow && G.player.hullBanner) return sanitizeBannerDesignClient(G.player.hullBanner);
@@ -8246,10 +8221,7 @@ function getEffectiveSailBannerDesign(forPlayerRow) {
     const s = sanitizeBannerDesignClient(forPlayerRow.sailBanner);
     if (s) return s;
   }
-  const partyCk = (G.myCaptainKey && String(G.myCaptainKey).trim())
-    || (G.player && G.player.captainKey != null && String(G.player.captainKey).trim())
-    || '';
-  if (!forPlayerRow && G.party && partyCk && captainKeyMatchesPartyMember(partyCk) && G.party.clanSailBanner) {
+  if (!forPlayerRow && G.party && G.myCaptainKey && captainKeyMatchesPartyMember(G.myCaptainKey) && G.party.clanSailBanner) {
     const c = sanitizeBannerDesignClient(G.party.clanSailBanner);
     if (c) return c;
   }
@@ -10722,22 +10694,23 @@ function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAsse
     const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, alphaTest: 0.06, depthWrite: true });
     fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78), mat);
     fmesh.userData.hullFlagCustom = true;
+    const hullGen = (fmesh.userData._hullBannerTexGen = (fmesh.userData._hullBannerTexGen | 0) + 1);
+    const expectedShipGen = g.userData.bannerComposeGen;
     composeBannerTexture(bannerDesignOpt, 256, 178, { isSail: false }).then(tex => {
-      if (tex && fmesh.material) {
+      if (expectedShipGen != null && g.userData.bannerComposeGen !== expectedShipGen) return;
+      if (fmesh.userData._hullBannerTexGen !== hullGen || !fmesh.material) return;
+      if (tex) {
         fmesh.material.map = tex;
         fmesh.material.needsUpdate = true;
       }
     });
   } else {
     const ftex = loadOrGetFlagPngTexture(useId);
-    if (ftex.generateMipmaps != null) ftex.generateMipmaps = true;
+    ftex.generateMipmaps = true;
     ftex.minFilter = THREE.LinearMipmapLinearFilter;
     ftex.magFilter = THREE.LinearFilter;
-    const rForAniso = (typeof renderer !== 'undefined' && renderer && renderer.capabilities)
-      ? renderer
-      : (typeof cargoRenderer !== 'undefined' && cargoRenderer && cargoRenderer.capabilities ? cargoRenderer : null);
-    if (rForAniso && rForAniso.capabilities.getMaxAnisotropy) {
-      ftex.anisotropy = Math.min(8, rForAniso.capabilities.getMaxAnisotropy());
+    if (renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy) {
+      ftex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     }
     fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78),
       new THREE.MeshBasicMaterial({ map: ftex, side: THREE.DoubleSide }));
@@ -10773,6 +10746,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   }
   if (cannonTier !== 'none' && slotCap <= 0) cannonTier = 'none';
   const g = new THREE.Group();
+  if (meshOpts.bannerComposeGen != null) g.userData.bannerComposeGen = meshOpts.bannerComposeGen;
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
   else if (parts.hull === 'darkwood') hc = 0x2a1a0a;
@@ -13961,7 +13935,13 @@ function resolveNpcVictorOverPlayerBoarding(b) {
   if (scuttle) {
     G.lastAttacker = `${capLabel} — boarding`;
     G.lastAttackerId = null;
-    G.lastAttackerNpcSyncId = null;
+    if (npc && npc.x != null && npc.z != null) {
+      G.lastKillerNpcX = npc.x;
+      G.lastKillerNpcZ = npc.z;
+    } else {
+      G.lastKillerNpcX = null;
+      G.lastKillerNpcZ = null;
+    }
     const lootScuttle = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
     sendLocalShipwreckLootToNet(lootScuttle);
     G._suppressNextShipSunkBroadcast = true;
@@ -14692,11 +14672,8 @@ function disposeObject3DSubtree(root) {
           const map = m.map;
           if (map && !doneMap.has(map)) {
             doneMap.add(map);
-            if (!isThreeTextureGloballyCached(map)) {
-              try { map.dispose(); } catch (e) {}
-            }
+            try { map.dispose(); } catch (e) {}
           }
-          try { m.map = null; } catch (eM) {}
           doneMat.add(m);
           try { if (m.dispose) m.dispose(); } catch (e2) {}
         }
@@ -15987,11 +15964,8 @@ const SAIL_MAX_YAW = 0.78;
 const PLAYER_DEATH_SINK_SEC = 5.2;
 /** After the sink animation, wait this many seconds before respawning. */
 const PLAYER_RESPAWN_DELAY_SEC = 5;
-const PLAYER_RESPAWN_MIN_DIST = 130;
-const PLAYER_RESPAWN_TARGET_DIST = 230;
-/** Respawn point must stay this far from any AI hull (farther from the last killer). */
-const PLAYER_RESPAWN_NPC_CLEAR_DIST = 110;
-const PLAYER_RESPAWN_KILLER_NPC_MIN_DIST = 220;
+const PLAYER_RESPAWN_MIN_DIST = 92;
+const PLAYER_RESPAWN_TARGET_DIST = 175;
 function getPlayerVelocityForLead() {
   const windDot = Math.cos(G.wind.angle - G.player.rotation);
   const effectiveSpeed = Math.abs(G.player.speed * computePlayerSpeedModifiers(windDot));
@@ -18220,10 +18194,10 @@ async function connectToServer() {
         if (msg.player) {
           if (!voyageSaveExistsInStorage()) { G.player.x = msg.player.x; G.player.z = msg.player.z; }
           G.player.color = msg.player.color;
-          if (msg.player.captainKey != null && String(msg.player.captainKey).trim()) {
-            const sck = String(msg.player.captainKey).trim();
-            G.player.captainKey = sck;
-            G.myCaptainKey = sck;
+          if (msg.player.captainKey != null) G.myCaptainKey = String(msg.player.captainKey);
+          if (msg.player.name) {
+            const cap0 = getCaptainDisplayCrew();
+            if (cap0) cap0.name = String(msg.player.name).slice(0, 28);
           }
         }
         if (msg.players) {
@@ -18315,11 +18289,7 @@ async function connectToServer() {
         break;
       case 'client_pong': {
         if (msg.t != null && Number.isFinite(Number(msg.t))) {
-          const raw = Math.max(0, performance.now() - Number(msg.t));
-          const prev = G.clientServerRttMs;
-          G.clientServerRttMs = (prev != null && Number.isFinite(prev))
-            ? (prev * 0.72 + raw * 0.28)
-            : raw;
+          G.clientServerRttMs = Math.max(0, performance.now() - Number(msg.t));
         }
         if (G.myId != null && G.clientServerRttMs != null && ws?.readyState === 1) {
           const tNow = performance.now();
@@ -18328,6 +18298,7 @@ async function connectToServer() {
             try { ws.send(JSON.stringify({ type: 'rtt_update', ms: Math.round(G.clientServerRttMs) })); } catch (e) {}
           }
         }
+        if (G.chatChannel === 'players') renderActivePlayersRoster();
         break;
       }
       case 'player_join': {
@@ -18347,6 +18318,18 @@ async function connectToServer() {
         if (G.myId == null) break;
         const pid = netPlayerId(msg.id);
         if (pid == null) break;
+        if (pid === G.myId) {
+          if (msg.captainKey != null) G.myCaptainKey = String(msg.captainKey);
+          if (msg.name != null) {
+            const capSelf = getCaptainDisplayCrew();
+            if (capSelf) capSelf.name = String(msg.name).slice(0, 28);
+          }
+          try {
+            if (G.chatChannel === 'party') renderPartyChatPanel();
+            if (G.chatChannel === 'directory') renderClanDirectoryPanel();
+          } catch (e) {}
+          break;
+        }
         const row = G.otherPlayers.get(pid);
         if (row) {
           if (msg.name != null) row.name = String(msg.name).slice(0, 28);
@@ -18582,7 +18565,8 @@ async function connectToServer() {
         if (scuttleTrue) {
           G.lastAttacker = `${capName} — boarding`;
           G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
-          G.lastAttackerNpcSyncId = null;
+          G.lastKillerNpcX = null;
+          G.lastKillerNpcZ = null;
           const lootScuttle = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
           sendLocalShipwreckLootToNet(lootScuttle);
           G._suppressNextShipSunkBroadcast = true;
@@ -18593,29 +18577,12 @@ async function connectToServer() {
           try { reconcileSlotsWithInventory(); } catch (e) {}
           const dx = G.player.x, dz = G.player.z;
           let nx = dx, nz = dz;
-          for (let tries = 0; tries < 48; tries++) {
+          for (let tries = 0; tries < 32; tries++) {
             const ang = Math.random() * Math.PI * 2;
-            const dist = PLAYER_RESPAWN_TARGET_DIST + Math.random() * 90;
+            const dist = PLAYER_RESPAWN_TARGET_DIST + Math.random() * 72;
             nx = dx + Math.sin(ang) * dist;
             nz = dz + Math.cos(ang) * dist;
-            if (Math.hypot(nx - dx, nz - dz) < PLAYER_RESPAWN_MIN_DIST) continue;
-            let ok = true;
-            for (let ni = 0; ni < G.npcs.length; ni++) {
-              const n = G.npcs[ni];
-              if (!n || n.x == null || n.z == null) continue;
-              if (Math.hypot(nx - n.x, nz - n.z) < PLAYER_RESPAWN_NPC_CLEAR_DIST) {
-                ok = false;
-                break;
-              }
-            }
-            if (fromId != null && Number.isFinite(fromId)) {
-              const victor = G.otherPlayers.get(netPlayerId(fromId));
-              if (victor && victor.x != null && victor.z != null
-                && Math.hypot(nx - victor.x, nz - victor.z) < PLAYER_RESPAWN_KILLER_NPC_MIN_DIST) {
-                ok = false;
-              }
-            }
-            if (ok) break;
+            if (Math.hypot(nx - dx, nz - dz) >= PLAYER_RESPAWN_MIN_DIST) break;
           }
           G.player.x = nx;
           G.player.z = nz;
@@ -18653,6 +18620,8 @@ async function connectToServer() {
           } else {
             G.lastAttacker = `${capName} — boarding`;
             G.lastAttackerId = fromId != null && Number.isFinite(fromId) ? fromId : null;
+            G.lastKillerNpcX = null;
+            G.lastKillerNpcZ = null;
             const lootCast = buildHoldLootDropsForShipwreck(G.player.x, G.player.z, 96);
             sendLocalShipwreckLootToNet(lootCast);
             G._suppressNextShipSunkBroadcast = true;
@@ -18894,11 +18863,7 @@ async function connectToServer() {
       case 'name_reserved':
         if (msg.name && msg.captainToken) rememberCaptainToken(msg.name, msg.captainToken);
         if (msg.captainKey && msg.captainToken) rememberCaptainToken(String(msg.captainKey), msg.captainToken);
-        if (msg.captainKey) {
-          const ck = String(msg.captainKey);
-          G.myCaptainKey = ck;
-          G.player.captainKey = ck;
-        }
+        if (msg.captainKey) G.myCaptainKey = String(msg.captainKey);
         break;
       case 'name_rejected':
         notify(msg.error || 'Captain name not allowed on this server.');
@@ -22181,7 +22146,7 @@ function startMultiplayerRttLoop() {
     try { ws.send(JSON.stringify({ type: 'client_ping', t: performance.now() })); } catch (e) {}
   };
   tick();
-  _mpRttTimer = setInterval(tick, 4000);
+  _mpRttTimer = setInterval(tick, 2500);
   _mmoCheckpointTimer = setInterval(() => {
     maybeSendWorldCheckpointAfterSave(false);
   }, 20000);
@@ -22353,15 +22318,13 @@ function renderClanDirectoryPanel() {
   });
   const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const inClan = !!G.party;
-  const ck = G.myCaptainKey
-    || (G.player && G.player.captainKey != null && String(G.player.captainKey).trim())
-    || captainNameStorageKey(getCaptainDisplayCrew()?.name || '');
+  const ck = G.myCaptainKey || captainNameStorageKey(getCaptainDisplayCrew()?.name || '');
   list.innerHTML = rows.length ? rows.map(c => {
     const full = (c.members | 0) >= (c.max || 5);
     const canApply = !inClan && ck && !full;
     return `<div class="clan-dir-row">
       <div style="min-width:0;flex:1;"><strong style="color:#d4b878;">«${esc(c.tag)}»</strong><div style="font-size:10px;color:#8a7a68;margin-top:2px;">${c.members}/${c.max} captains</div></div>
-      ${canApply ? `<button type="button" class="clan-dir-apply clan-btn clan-btn--primary" data-party-id="${esc(c.id)}">Apply</button>` : `<span style="font-size:10px;color:#6a5a48;">${inClan ? 'In a clan' : full ? 'Full' : 'Connect to server'}</span>`}
+      ${canApply ? `<button type="button" class="clan-dir-apply clan-btn clan-btn--primary" data-party-id="${esc(c.id)}">Apply</button>` : `<span style="font-size:10px;color:#6a5a48;">${inClan ? 'In a clan' : full ? 'Full' : 'Reserve a name'}</span>`}
     </div>`;
   }).join('') : '<div style="color:#7a6a58;font-size:11px;">No clans yet — create one under the Clan tab.</div>';
   list.querySelectorAll('.clan-dir-apply').forEach(btn => {
@@ -22449,9 +22412,7 @@ function renderPartyChatPanel() {
   try {
   const el = document.getElementById('chat-party-panel');
   if (!el) return;
-  const ck = G.myCaptainKey
-    || (G.player && G.player.captainKey != null && String(G.player.captainKey).trim())
-    || captainNameStorageKey(getCaptainDisplayCrew()?.name || '');
+  const ck = G.myCaptainKey || captainNameStorageKey(getCaptainDisplayCrew()?.name || '');
   const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   let html = '';
   if (!ck) {
@@ -27868,11 +27829,15 @@ function update(dt) {
           G._abandonedShipDriftEnd = null;
           G.lastAttacker = 'No crew — ship abandoned';
           G.lastAttackerId = null;
+          G.lastKillerNpcX = null;
+          G.lastKillerNpcZ = null;
           G.player.health = 0;
         }
       } else {
         G.lastAttacker = 'No crew — ship abandoned';
         G.lastAttackerId = null;
+        G.lastKillerNpcX = null;
+        G.lastKillerNpcZ = null;
         G._abandonedShipDriftEnd = nowAb + 10000;
       }
     }
@@ -28539,8 +28504,9 @@ function update(dt) {
       }
       if (distP < hitR && b.y > SEA_LEVEL - 1 && !skipPvpHarbor) {
         if (b.owner === 'other_player') {
-          G.lastAttackerNpcSyncId = null;
           G.lastAttackerId = b.sourcePlayerId != null ? b.sourcePlayerId : null;
+          G.lastKillerNpcX = null;
+          G.lastKillerNpcZ = null;
           if (b.sourcePlayerId != null && G.otherPlayers.has(b.sourcePlayerId)) {
             const op = G.otherPlayers.get(b.sourcePlayerId);
             const capN = networkPlayerCaptainName(op);
@@ -28556,20 +28522,19 @@ function update(dt) {
           }
         } else {
           G.lastAttackerId = null;
-          let bestNpc = null;
-          let bestNpcD = 1e9;
+          let kn = null;
           for (let ni = 0; ni < G.npcs.length; ni++) {
             const n = G.npcs[ni];
-            if (!n) continue;
-            const d = Math.hypot(b.x - n.x, b.z - n.z);
-            if (d < 60 && d < bestNpcD) {
-              bestNpcD = d;
-              bestNpc = n;
-            }
+            if (n && Math.hypot(b.x - n.x, b.z - n.z) < 60) { kn = n; break; }
           }
-          G.lastAttackerNpcSyncId = bestNpc && bestNpc.syncId != null ? bestNpc.syncId : null;
-          if (bestNpc) G.lastAttacker = `${bestNpc.name} (${bestNpc.isTradeShip ? 'merchant' : 'AI pirate'})`;
-          else G.lastAttacker = '';
+          if (kn) {
+            G.lastAttacker = `${kn.name} (${kn.isTradeShip ? 'merchant' : 'AI pirate'})`;
+            G.lastKillerNpcX = kn.x;
+            G.lastKillerNpcZ = kn.z;
+          } else {
+            G.lastKillerNpcX = null;
+            G.lastKillerNpcZ = null;
+          }
         }
         applyAmmoHitToLocalPlayer(at, b.sourcePlayerId, b.x, b.z, isPellet);
         triggerCombatFireHint();
@@ -28851,26 +28816,19 @@ function update(dt) {
       syncAnchorStatusHud();
       const dx = G.deathSpawnX != null ? G.deathSpawnX : G.player.x;
       const dz = G.deathSpawnZ != null ? G.deathSpawnZ : G.player.z;
-      const killerNpcSid = G.lastAttackerNpcSyncId;
       let nx = G.player.x, nz = G.player.z;
-      for (let tries = 0; tries < 48; tries++) {
+      const kx = G.lastKillerNpcX;
+      const kz = G.lastKillerNpcZ;
+      const avoidNpc = kx != null && kz != null && Number.isFinite(Number(kx)) && Number.isFinite(Number(kz));
+      const minFromDeath = avoidNpc ? Math.max(PLAYER_RESPAWN_MIN_DIST, 118) : PLAYER_RESPAWN_MIN_DIST;
+      for (let tries = 0; tries < (avoidNpc ? 48 : 32); tries++) {
         const ang = Math.random() * Math.PI * 2;
-        const dist = PLAYER_RESPAWN_TARGET_DIST + Math.random() * 90;
+        const dist = (avoidNpc ? PLAYER_RESPAWN_TARGET_DIST + 118 : PLAYER_RESPAWN_TARGET_DIST) + Math.random() * (avoidNpc ? 110 : 72);
         nx = dx + Math.sin(ang) * dist;
         nz = dz + Math.cos(ang) * dist;
-        if (Math.hypot(nx - dx, nz - dz) < PLAYER_RESPAWN_MIN_DIST) continue;
-        let ok = true;
-        for (let ni = 0; ni < G.npcs.length; ni++) {
-          const n = G.npcs[ni];
-          if (!n || n.x == null || n.z == null) continue;
-          const d = Math.hypot(nx - n.x, nz - n.z);
-          const need = (n.syncId != null && n.syncId === killerNpcSid) ? PLAYER_RESPAWN_KILLER_NPC_MIN_DIST : PLAYER_RESPAWN_NPC_CLEAR_DIST;
-          if (d < need) {
-            ok = false;
-            break;
-          }
-        }
-        if (ok) break;
+        if (Math.hypot(nx - dx, nz - dz) < minFromDeath) continue;
+        if (avoidNpc && Math.hypot(nx - kx, nz - kz) < 218) continue;
+        break;
       }
       G.player.x = nx;
       G.player.z = nz;
@@ -28880,8 +28838,9 @@ function update(dt) {
       nudgePlayerSpawnClearOfShips();
       G.player.speed = 1;
       G.lastAttackerId = null;
-      G.lastAttackerNpcSyncId = null;
       G.lastAttacker = '';
+      G.lastKillerNpcX = null;
+      G.lastKillerNpcZ = null;
       applyDefaultStartingLoadout({ preserveCaptainIdentity: true });
       const _dOv2 = document.getElementById('death-overlay');
       if (_dOv2) _dOv2.style.display = 'none';
@@ -29733,13 +29692,15 @@ function updatePreviewShip() {
   const shipName = document.getElementById('ship-name-input')?.value.trim() || 'The Black Wave';
   const hb = window._creationHullBannerDraft ? sanitizeBannerDesignClient(window._creationHullBannerDraft) : null;
   const sb = window._creationSailBannerDraft ? sanitizeBannerDesignClient(window._creationSailBannerDraft) : null;
+  const previewBannerGen = ++previewShipBannerComposeGen;
   const previewPngJack = hb ? null : getEffectivePlayerFlagAssetId();
   previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, DEFAULT_SAIL_TRIM_COLOR, shipName, {
     honorPlayerLoadout: true,
     hideShipNameLabel: true,
     flagAssetId: previewPngJack,
     hullBannerDesign: hb,
-    sailBannerDesign: sb
+    sailBannerDesign: sb,
+    bannerComposeGen: previewBannerGen
   });
   buildCrewMeshes(previewShip, allCrew.map((c, i) => ({
     ...c, health: 100, task: ['helm','cannons','sails','lookout'][i] || 'idle'
@@ -29786,6 +29747,8 @@ function updatePreviewShipEditSingle() {
 
 let previewAutoRotate = true, previewDragX = 0, previewRotY = 0;
 let previewCrewEditCamLock = false;
+/** Monotonic guard so async banner textures do not apply to a disposed creation-preview mesh. */
+let previewShipBannerComposeGen = 0;
 
 function clearCrewHighlight() {
   if (!previewShip) return;
