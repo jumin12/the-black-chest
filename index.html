@@ -17230,6 +17230,7 @@ async function connectToServer() {
   }
 }
   G.myId = null;
+  G._lastNetStateWT = null;
   G.multiplayerNpcAuthorityId = null;
   try { stopMultiplayerRttLoop(); } catch (e) {}
   let socket;
@@ -18301,13 +18302,14 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   if (!Number.isFinite(sx) || !Number.isFinite(sz)) return;
   const dx = sx - G.player.x, dz = sz - G.player.z;
   const d = Math.hypot(dx, dz);
-  if (d > 155) {
+  /* Hard snap only on true divergence (stuck hints, tab resume, handoff) — lower threshold caused visible pops. */
+  if (d > 240) {
     G.player.x = sx;
     G.player.z = sz;
     return;
   }
-  if (d < 0.75) return;
-  const cap = Math.min(0.45, 0.035 + d * 0.0075);
+  if (d < 0.85) return;
+  const cap = Math.min(0.36, 0.03 + d * 0.0065);
   G.player.x += dx * cap;
   G.player.z += dz * cap;
 }
@@ -18325,6 +18327,13 @@ function applyNetStateMessage(msg) {
   const myIdForState = netPlayerId(G.myId);
   if (myIdForState == null) return;
   if (!msg.players.some(p => netPlayerId(p.id) === myIdForState)) return;
+  const wtNum = Number(wT);
+  /* Fallback matches server TICK_RATE / NET_SYNC_HZ (declared later in this file). */
+  let dtSnap = 1 / 45;
+  if (G._lastNetStateWT != null && Number.isFinite(wtNum) && Number.isFinite(G._lastNetStateWT)) {
+    dtSnap = Math.max(1 / 90, Math.min(0.48, wtNum - G._lastNetStateWT));
+  }
+  if (Number.isFinite(wtNum)) G._lastNetStateWT = wtNum;
   let selfRow = null;
   const activeRemote = new Set();
   msg.players.forEach(p => {
@@ -18340,6 +18349,12 @@ function applyNetStateMessage(msg) {
     const patch = { ...p, id: pid };
     if (!Array.isArray(patch.crewData)) delete patch.crewData;
     if (ex) {
+      const px0 = Number(ex.x), pz0 = Number(ex.z);
+      const px1 = Number(patch.x), pz1 = Number(patch.z);
+      if (Number.isFinite(px0) && Number.isFinite(pz0) && Number.isFinite(px1) && Number.isFinite(pz1) && dtSnap > 1e-4) {
+        ex._netVelX = (px1 - px0) / dtSnap;
+        ex._netVelZ = (pz1 - pz0) / dtSnap;
+      }
       Object.assign(ex, patch);
       if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
     } else {
@@ -26368,7 +26383,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     return ns;
   }
   const err = Math.hypot(p.x - ns.x, p.z - ns.z);
-  if (err > 240) {
+  /* Only snap on extreme desync (e.g. AOI resume); mid-range errors blend over a few frames. */
+  if (err > 420) {
     ns.x = p.x;
     ns.z = p.z;
     ns.ry = authR;
@@ -26376,19 +26392,28 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
   const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
   const th = authR;
-  /* Light prediction + gentler authority snap — harsh correction caused visible rubberband at 45Hz state. */
-  if (Math.abs(v) > 0.006) {
-    const pred = 0.4;
+  const evx = p._netVelX;
+  const evz = p._netVelZ;
+  let velPred =
+    Number.isFinite(evx) && Number.isFinite(evz) && (Math.abs(evx) > 1e-6 || Math.abs(evz) > 1e-6);
+  if (velPred) {
+    const vcap = 42;
+    const vm = Math.hypot(evx, evz);
+    const s = vm > vcap ? vcap / vm : 1;
+    ns.x += evx * s * dt;
+    ns.z += evz * s * dt;
+  } else if (Math.abs(v) > 0.006) {
+    const pred = 0.94;
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
-  const posK = 1 - Math.exp(-(err > 14 ? 8.2 : 5.4) * dt);
+  const posK = 1 - Math.exp(-(err > 85 ? 5.1 : err > 28 ? 4.0 : err > 12 ? 3.35 : 2.85) * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-14 * dt);
+  const rotK = 1 - Math.exp(-11 * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
