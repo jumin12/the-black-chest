@@ -8097,6 +8097,15 @@ function cloneBannerDesign(d) {
   return s ? { bg: s.bg, field: s.field, emblems: s.emblems.map(e => ({ ...e })) } : defaultHullBannerDesign();
 }
 const _bannerTexCache = new Map();
+const BANNER_TEX_CACHE_CAP = 56;
+function _trimBannerTexCache() {
+  while (_bannerTexCache.size > BANNER_TEX_CACHE_CAP) {
+    const k = _bannerTexCache.keys().next().value;
+    const tex = _bannerTexCache.get(k);
+    _bannerTexCache.delete(k);
+    if (tex && typeof tex.dispose === 'function') try { tex.dispose(); } catch (e) {}
+  }
+}
 function _bannerCacheKey(d, w, h) {
   try { return JSON.stringify(d) + '@' + w + 'x' + h; } catch (e) { return ''; }
 }
@@ -8119,8 +8128,8 @@ function composeBannerTexture(design, w, h, opts) {
   if (isSail && !fieldPath) fieldPath = BANNER_SAIL_DEFAULT_FIELD;
   if (!isSail && !fieldPath) fieldPath = BANNER_HULL_DEFAULT_FIELD;
   const cachePayload = { bg: d.bg, field: fieldPath, emblems: d.emblems };
-  const key = _bannerCacheKey(cachePayload, w, h) + (isSail ? ':sail' : ':hull') + (forEditor ? ':ed' : '');
-  if (_bannerTexCache.has(key)) return Promise.resolve(_bannerTexCache.get(key));
+  const key = _bannerCacheKey(cachePayload, w, h) + (isSail ? ':sail' : ':hull');
+  if (!forEditor && _bannerTexCache.has(key)) return Promise.resolve(_bannerTexCache.get(key));
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
@@ -8158,6 +8167,9 @@ function composeBannerTexture(design, w, h, opts) {
       return p;
     })
     .then(() => {
+      if (forEditor) {
+        return { image: canvas, _banner2d: true };
+      }
       const tex = new THREE.CanvasTexture(canvas);
       if (tex.colorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
       tex.needsUpdate = true;
@@ -8168,6 +8180,7 @@ function composeBannerTexture(design, w, h, opts) {
         tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
       }
       _bannerTexCache.set(key, tex);
+      _trimBannerTexCache();
       return tex;
     });
 }
@@ -18756,6 +18769,9 @@ async function connectToServer() {
         updatePiratesPanel();
         break;
       case 'leaderboard': {
+        const lbMsg = msg;
+        const runLeaderboardApply = () => {
+          const msg = lbMsg;
         let entries = Array.isArray(msg.entries) ? msg.entries : [];
         const cleared = msg.cleared === true;
         const serverHad = entries.length > 0;
@@ -18786,6 +18802,12 @@ async function connectToServer() {
         updatePiratesPanel();
         renderDebugLeaderboardPanel();
         if (G.chatChannel === 'players') renderActivePlayersRoster();
+        };
+        if (Array.isArray(lbMsg.entries) && lbMsg.entries.length > 420) {
+          setTimeout(runLeaderboardApply, 0);
+        } else {
+          runLeaderboardApply();
+        }
         break;
       }
       case 'admin_players':
@@ -22146,10 +22168,12 @@ function startMultiplayerRttLoop() {
     try { ws.send(JSON.stringify({ type: 'client_ping', t: performance.now() })); } catch (e) {}
   };
   tick();
-  _mpRttTimer = setInterval(tick, 2500);
+  const _rttMs = 2480 + ((Number(G.myId) || 0) % 19) * 67;
+  _mpRttTimer = setInterval(tick, _rttMs);
+  const _ckMs = 20200 + ((Number(G.myId) || 0) % 23) * 311;
   _mmoCheckpointTimer = setInterval(() => {
     maybeSendWorldCheckpointAfterSave(false);
-  }, 20000);
+  }, _ckMs);
 }
 function stopPlayersTabServices() {
   if (_playersTabPingTimer) {
@@ -22229,7 +22253,8 @@ function startPlayersTabServices() {
     renderActivePlayersRoster();
   };
   tick();
-  _playersTabPingTimer = setInterval(tick, 2500);
+  const _pivMs = 2460 + ((Number(G.myId) || 0) % 17) * 59;
+  _playersTabPingTimer = setInterval(tick, _pivMs);
 }
 
 function setChatChannel(ch) {
@@ -25189,7 +25214,8 @@ function startCaptainsLogLiveRefresh() {
     refreshCaptainsLogActiveTab();
   };
   tick();
-  captainsLogPollTimer = setInterval(tick, 2000);
+  const _logIv = 2060 + ((Number(G.myId) || 0) % 13) * 47;
+  captainsLogPollTimer = setInterval(tick, _logIv);
 }
 function switchLogTab(name) {
   document.querySelectorAll('.log-tab').forEach(t => { t.classList.remove('active'); t.style.borderBottom = 'none'; t.style.color = '#8f7a68'; });
@@ -25815,7 +25841,12 @@ function showPortTab(tab) {
       <button type="button" id="port-workshop-banners" class="clan-btn clan-btn--primary" style="width:100%;min-height:40px;touch-action:manipulation;">Customize flag and sail</button>`;
     content.appendChild(workshop);
     workshop.querySelector('#port-workshop-banners')?.addEventListener('click', () => { bindBannerEditorModalOnce(); openBannerEditor('game-hull'); });
-    const curFlag = getEffectivePlayerFlagAssetId();
+    const effHullJack = getEffectiveHullBannerDesign();
+    if (effHullJack && getNetworkFlagAssetId() != null) {
+      G.player.flagAssetId = null;
+      saveProgressDebounced();
+    }
+    const curFlag = effHullJack ? null : getNetworkFlagAssetId();
     const ids = PLAYER_FLAG_CHOICE_IDS;
     let portPickIdx = Math.max(0, ids.indexOf(curFlag));
     if (portPickIdx < 0) portPickIdx = 0;
@@ -25841,14 +25872,17 @@ function showPortTab(tab) {
     const syncPortFlagUi = () => {
       const id = ids[portPickIdx];
       const price = goldPriceForPlayerFlagAsset(id);
-      const flying = id === curFlag;
+      const flyingCustom = !!effHullJack && curFlag == null;
+      const flying = flyingCustom ? false : id === curFlag;
       const owned = playerHasFlagUnlocked(id);
       if (portImg) {
         portImg.src = resolveGameAssetUrl(`assets/flags/flag${id}.png`);
         void (portImg.decode && portImg.decode().catch(() => {}));
       }
       if (portCap) {
-        if (flying) {
+        if (flyingCustom) {
+          portCap.innerHTML = `<span style="color:#88c8a8;">Flying a painted workshop jack</span> · preview: catalog #${id}`;
+        } else if (flying) {
           portCap.innerHTML = `<span style="color:#88cc88;">Flying this jack</span> · catalog #${id}`;
         } else if (owned) {
           portCap.innerHTML = `Owned · banner #${id} — tap below to hoist.`;
@@ -25910,7 +25944,7 @@ window.portBuyPlayerFlag = function(flagAssetNum) {
   if (id == null) { notify('That banner is not sold here.'); return; }
   ensurePlayerFlagUnlocks();
   if (playerHasFlagUnlocked(id)) {
-    if (getEffectivePlayerFlagAssetId() === id) { notify('You already fly that jack.'); return; }
+    if (getNetworkFlagAssetId() === id) { notify('You already fly that jack.'); return; }
     G.player.hullBanner = null;
     G.player.flagAssetId = id;
     rebuildPlayerShip();
@@ -25921,7 +25955,7 @@ window.portBuyPlayerFlag = function(flagAssetNum) {
     updateShipPanel();
     return;
   }
-  if (getEffectivePlayerFlagAssetId() === id) { notify('You already fly that jack.'); return; }
+  if (getNetworkFlagAssetId() === id) { notify('You already fly that jack.'); return; }
   const pr = goldPriceForPlayerFlagAsset(id);
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (!gold || gold.count < pr) { notify('Not enough gold for that banner.'); return; }
@@ -29836,6 +29870,7 @@ function syncBannerEditorMirrorButton() {
 let _bannerEditorRedrawTimer = null;
 let _bannerEditorCanvasPtrBound = false;
 let _bannerEditorCanvasDragging = false;
+let _bannerEditorCanvasRedrawGen = 0;
 function ensureBannerEditorFieldSelect() {
   const sel = document.getElementById('banner-editor-field');
   if (!sel || sel.dataset.filled === '1') return;
@@ -29924,12 +29959,18 @@ function redrawBannerEditorCanvas() {
   const w = cvs.width;
   const h = cvs.height;
   const isSail = bannerEditorIsSailTab();
-  composeBannerTexture(d, w, h, { isSail, forEditor: true }).then(tex => {
-    if (!tex || !tex.image) return;
+  const gen = ++_bannerEditorCanvasRedrawGen;
+  composeBannerTexture(d, w, h, { isSail, forEditor: true }).then(obj => {
+    if (gen !== _bannerEditorCanvasRedrawGen) return;
+    try {
+      if (!cvs.isConnected) return;
+    } catch (e) {}
+    const im = obj && obj.image;
+    if (!im) return;
     const ctx = cvs.getContext('2d');
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(tex.image, 0, 0, w, h);
+    ctx.drawImage(im, 0, 0, w, h);
   });
 }
 function syncBannerEditorChrome() {
@@ -30053,6 +30094,7 @@ function openBannerEditor(mode) {
   redrawBannerEditorCanvas();
 }
 function closeBannerEditor() {
+  _bannerEditorCanvasRedrawGen++;
   const modal = document.getElementById('banner-editor-modal');
   if (modal) modal.style.display = 'none';
 }
@@ -30238,6 +30280,7 @@ function bindBannerEditorModalOnce() {
     } else if (scope === 'game') {
       G.player.hullBanner = hullD;
       G.player.sailBanner = sailD;
+      G.player.flagAssetId = null;
       rebuildPlayerShip();
       saveProgressDebounced();
       if (ws?.readyState === 1) sendUpdate();

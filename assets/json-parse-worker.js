@@ -1,5 +1,6 @@
 /**
  * Off-main-thread JSON.parse for large map/editor payloads to reduce frame hitches.
+ * Also suitable for huge leaderboard/cache strings when you pass `{ id, s }` from the main thread.
  */
 self.onmessage = function (ev) {
   const d = ev.data || {};
