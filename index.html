@@ -853,7 +853,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .crew-recruit-btn2:disabled{opacity:0.45;cursor:not-allowed;}
 #create-screen.create-screen--crew-edit #create-mob-tabs{display:none!important;}
 #create-screen.create-screen--crew-edit #create-crew-opts{display:none!important;}
-#create-screen.create-screen--crew-edit #create-opts.mob-active{display:block!important;}
+#create-screen.create-screen--crew-edit #create-opts.mob-active{display:block!important;max-height:min(72vh,620px)!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain;}
 #clan-invite-popup{
   display:none;position:fixed;inset:0;z-index:130;flex-direction:column;align-items:center;justify-content:flex-start;
   padding:max(calc(var(--ui-below-stats,96px) + 6px),16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(20px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
@@ -1054,10 +1054,10 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 #create-footer{display:flex;justify-content:center;padding:12px 14px;border-top:2px solid rgba(90,60,40,0.45);flex-shrink:0;background:linear-gradient(180deg,rgba(36,24,16,0.92),rgba(18,12,8,0.97));box-shadow:0 -6px 20px rgba(0,0,0,0.25);}
 @media(max-width:800px){
   #create-body{flex-direction:column;gap:0;padding:0;}
-  #create-opts{width:100%;border-right:none;border-bottom:none;max-height:none;overflow-y:auto;padding:12px 14px 16px;flex:1;min-height:0;display:none;border-radius:0;box-shadow:none;}
+  #create-opts{width:100%;border-right:none;border-bottom:none;max-height:min(62vh,520px);overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:12px 14px 16px;flex:1;min-height:0;display:none;border-radius:0;box-shadow:none;}
   #create-opts.mob-active{display:block;}
   #preview-3d-wrap{min-height:200px;flex:0 0 200px;border-radius:12px;}
-  #create-crew-opts{width:100%;border-left:none;border-top:none;max-height:none;overflow-y:auto;flex:1;min-height:0;display:none;padding:12px 14px 16px;box-shadow:none;}
+  #create-crew-opts{width:100%;border-left:none;border-top:none;max-height:min(62vh,520px);overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;flex:1;min-height:0;display:none;padding:12px 14px 16px;box-shadow:none;}
   #create-crew-opts.mob-active{display:block;}
   #create-preview{flex:0 0 auto;padding:10px 12px 0;}
   #create-header{padding:10px 12px;flex-wrap:wrap;gap:10px;}
@@ -3368,8 +3368,13 @@ const G = {
   },
   /** True while coasting to a stop before `player.anchored` becomes true. */
   anchorDropping: false,
-  /** Lowest-id incumbent keeps NPC simulation when peers join so world AI is not reset by a new connection. */
-  multiplayerNpcAuthorityId: null
+  /** Legacy fallback when server does not send `npc_sim_delegate` / init NPC fields. */
+  multiplayerNpcAuthorityId: null,
+  /** Server assigns exactly one session to upload `npc_sync`; not a public “player host”. */
+  npcSimDelegatedByServer: false,
+  /** When true (dedicated server), Node runs NPC AI; clients apply `npc_sync` only. */
+  npcSimFromServer: false,
+  iAmMultiplayerNpcStepper: false
 };
 
 try {
@@ -3831,7 +3836,7 @@ function beginEscortQuest(q) {
 }
 
 function ensureActiveContractNpcsForHost() {
-  if (!isMultiplayerHost() || G.mode !== 'playing') return;
+  if (!isMultiplayerHost() || G.mode !== 'playing' || G.npcSimFromServer) return;
   const qs = G.quests || [];
   for (let i = 0; i < qs.length; i++) {
     const q = qs[i];
@@ -3910,6 +3915,7 @@ function spawnHuntMarkNpcForQuest(q) {
   if (ws?.readyState === 1) G.npcSyncTimer = 0;
   saveProgressDebounced();
   notify(`Contract target at sea: ${nameStr}.`);
+  if (G.npcSimFromServer) broadcastWorldQuestsToServer();
 }
 function ensureEscortCargoNpcIfMissing(q) {
   if (!q.escortCargoSyncId) return;
@@ -4297,7 +4303,19 @@ function broadcastWorldStoryToServer() {
   } catch (e) {}
 }
 function broadcastWorldQuestsToServer() {
-  /* Quests are local to each voyage save; server no longer mirrors them globally. */
+  if (!ws || ws.readyState !== 1 || !G.npcSimFromServer) return;
+  try {
+    const quests = (G.quests || [])
+      .filter(q => q && q.type === 'hunt' && q.accepted)
+      .map(q => ({
+        type: 'hunt',
+        accepted: true,
+        target: String(q.target || '').slice(0, 64),
+        huntTargetSyncId: q.huntTargetSyncId,
+        huntTargetFaction: q.huntTargetFaction
+      }));
+    ws.send(JSON.stringify({ type: 'world_quests_push', quests }));
+  } catch (e) {}
 }
 function syncWorldProgressToServerIfNeeded() {
   const sq = G.storyQuest;
@@ -4395,7 +4413,7 @@ function spawnStoryBountyNpcForOwner(ownerPlayerId, story) {
   if (isMultiplayerHost()) G.npcSyncTimer = 0;
 }
 function syncHostStoryBountyFleet() {
-  if (!isMultiplayerHost()) return;
+  if (!isMultiplayerHost() || G.npcSimFromServer) return;
   let needNpcSync = false;
   const online = new Set();
   const myPid = netPlayerId(G.myId);
@@ -4492,7 +4510,7 @@ function ensureStoryBountyNpcPresent() {
 }
 
 function spawnStoryBountyNpc() {
-  if (!isMultiplayerHost() || G.myId == null) return;
+  if (!isMultiplayerHost() || G.myId == null || G.npcSimFromServer) return;
   removeStoryBountiesForPlayer(G.myId);
   spawnStoryBountyNpcForOwner(G.myId, G.storyQuest);
 }
@@ -4507,7 +4525,7 @@ function onStoryBountySunkByPlayer(npc) {
 }
 
 function tryRestoreStoryBountyAfterNpcReset() {
-  if (G.storyQuest.phase === 'active' && isMultiplayerHost()) syncHostStoryBountyFleet();
+  if (G.storyQuest.phase === 'active' && isMultiplayerHost() && !G.npcSimFromServer) syncHostStoryBountyFleet();
 }
 
 function storyBountyRerollLocal() {
@@ -7220,7 +7238,7 @@ function ensurePlayerInOpenOcean() {
   if (cm && cm.playerSpawn && Number.isFinite(cm.playerSpawn.x) && Number.isFinite(cm.playerSpawn.z)) {
     const px = cm.playerSpawn.x, pz = cm.playerSpawn.z;
     const spYaw = cm.playerSpawn.rotation != null && Number.isFinite(cm.playerSpawn.rotation) ? Number(cm.playerSpawn.rotation) : yawE;
-    if (!shipFootprintOverlapsLand(px, pz, spYaw, stE)) {
+    if (!shipFootprintOverlapsLand(px, pz, spYaw, stE) && hasMinClearanceFromLand(px, pz, 48)) {
       G.player.x = px;
       G.player.z = pz;
       if (cm.playerSpawn.rotation != null && Number.isFinite(cm.playerSpawn.rotation)) {
@@ -7230,17 +7248,17 @@ function ensurePlayerInOpenOcean() {
       return;
     }
   }
-  if (!shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, stE)) {
+  if (!shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, stE) && hasMinClearanceFromLand(G.player.x, G.player.z, 42)) {
     clampPlayerIntoWorldBounds();
     return;
   }
   let s = ((G.worldSeed | 0) ^ 0x2f9f3ed1) >>> 0;
   const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-  for (let a = 0; a < 72; a++) {
+  for (let a = 0; a < 96; a++) {
     const ang = rnd() * Math.PI * 2;
-    const dist = 200 + rnd() * 7200;
+    const dist = 320 + rnd() * 7600;
     const nx = Math.cos(ang) * dist, nz = Math.sin(ang) * dist;
-    if (!shipFootprintOverlapsLand(nx, nz, yawE, stE)) {
+    if (!shipFootprintOverlapsLand(nx, nz, yawE, stE) && hasMinClearanceFromLand(nx, nz, 48)) {
       G.player.x = nx;
       G.player.z = nz;
       clampPlayerIntoWorldBounds();
@@ -7283,7 +7301,7 @@ function relocatePlayerNearProceduralArchipelago() {
       const nz = meta.worldZ + Math.cos(ang) * pad;
       const ncx = Math.floor(nx / CHUNK_SIZE), ncz = Math.floor(nz / CHUNK_SIZE);
       if (!isChunkInWorld(ncx, ncz)) continue;
-      if (!shipFootprintOverlapsLand(nx, nz, yaw, st)) {
+      if (!shipFootprintOverlapsLand(nx, nz, yaw, st) && hasMinClearanceFromLand(nx, nz, 44)) {
         G.player.x = nx;
         G.player.z = nz;
         clampPlayerIntoWorldBounds();
@@ -12203,8 +12221,8 @@ function syncFloatingNametagVisibility() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Boarding: PvP (min playerId sim) + AI (attacker sim; host copies enemy hull */
-/*  from other players' boarding in state for authoritative npc_sync).        */
+/* Boarding: PvP (attacker sim) + AI (attacker sim; NPC stepper copies enemy hull */
+/*  from other players' boarding in state for authoritative npc_sync).          */
 /* -------------------------------------------------------------------------- */
 const BOARDING_MAX_RANGE = BROADSIDE_RANGE / 3;
 const BOARDING_PULL_DUR = 4.35;
@@ -12268,7 +12286,7 @@ function boardingIAmSimLeader(b) {
   const l = boardingSimLeaderId(b.partnerPlayerId);
   return G.myId != null && l === Number(G.myId);
 }
-/** When another captain boards an AI ship, the MP host does not run their tick — copy locked hull ex/er from state so npc_sync matches the attacker. */
+/** When another captain boards an AI ship, the NPC stepper does not run that hull’s AI tick — copy locked hull ex/er from state so npc_sync matches the attacker. */
 function applyHostForeignNpcBoardingFromPeers() {
   if (G.mode !== 'playing' || !isMultiplayerHost()) return;
   for (const row of G.otherPlayers.values()) {
@@ -14497,6 +14515,7 @@ function pickUniqueNPCShipNames(count, rng) {
   }
   return order.slice(0, n).map(i => NPC_SHIP_NAMES[i]);
 }
+/** True when this session runs the full NPC AI step and may send `npc_sync` (server picks the stepper; solo always local). */
 function isMultiplayerHost() {
   if (!ws || ws.readyState !== 1) {
     G.multiplayerNpcAuthorityId = null;
@@ -14504,10 +14523,17 @@ function isMultiplayerHost() {
   }
   /* Before `init` assigns `myId`, we still need local NPC/AI authority (and solo WS). */
   if (G.myId == null) return G.otherPlayers.size === 0;
+  /* Dedicated server runs full NPC AI (`server/npc-authoritative.cjs`); clients only apply `npc_sync`. */
+  if (G.npcSimFromServer) {
+    G.multiplayerNpcAuthorityId = null;
+    G.iAmMultiplayerNpcStepper = false;
+    return false;
+  }
   if (!G.otherPlayers.size) {
     G.multiplayerNpcAuthorityId = null;
     return true;
   }
+  if (G.npcSimDelegatedByServer) return !!G.iAmMultiplayerNpcStepper;
   const my = Number(G.myId);
   const oids = Array.from(G.otherPlayers.keys()).map(Number).filter(Number.isFinite);
   if (G.multiplayerNpcAuthorityId != null && Number.isFinite(Number(G.multiplayerNpcAuthorityId))) {
@@ -14517,8 +14543,12 @@ function isMultiplayerHost() {
   G.multiplayerNpcAuthorityId = minId;
   return my === minId;
 }
-/** Lowest numeric player id simulates AI traffic; keeps npc_sync consistent when peers join or leave. */
+/** Legacy: derive lowest-id stepper when server does not delegate. Skipped when `npcSimDelegatedByServer`. */
 function recalcMultiplayerNpcAuthorityFromPeers() {
+  if (G.npcSimDelegatedByServer) {
+    G.multiplayerNpcAuthorityId = null;
+    return;
+  }
   if (!G.myId || !ws || ws.readyState !== 1) {
     G.multiplayerNpcAuthorityId = null;
     return;
@@ -15345,6 +15375,9 @@ function tickFactionPatrolReserves(dt) {
 function spawnNPCs() {
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
+  if (ws && ws.readyState === 1 && G.npcSimFromServer) {
+    return;
+  }
   const npcSeed = (G.worldSeed | 0) * 7 + 13;
   const typePool = ['cutter','sloop','brigantine','galleon','warship'];
   const portCount = collectAllTradingPorts().length;
@@ -17511,7 +17544,12 @@ async function connectToServer() {
 }
   G.myId = null;
   G._lastNetStateWT = null;
+  G._lastNetStateSrvTick = null;
+  G._pendingNpcSync = null;
   G.multiplayerNpcAuthorityId = null;
+  G.npcSimFromServer = false;
+  G.npcSimDelegatedByServer = false;
+  G.iAmMultiplayerNpcStepper = false;
   try { stopMultiplayerRttLoop(); } catch (e) {}
   let socket;
   try { socket = new WebSocket(url); } catch (e) { return; }
@@ -17561,6 +17599,15 @@ async function connectToServer() {
     switch (msg.type) {
       case 'init':
         G.myId = netPlayerId(msg.id);
+        if (msg.npcSimFromServer === true) {
+          G.npcSimFromServer = true;
+          G.npcSimDelegatedByServer = true;
+          G.iAmMultiplayerNpcStepper = !!msg.youAreNpcStepper;
+        } else {
+          G.npcSimFromServer = false;
+          G.npcSimDelegatedByServer = false;
+          G.iAmMultiplayerNpcStepper = false;
+        }
         for (const opid of Array.from(G.otherPlayers.keys())) {
           removeRemotePeer(opid);
         }
@@ -17629,8 +17676,36 @@ async function connectToServer() {
         if (msg.party) applyPartySyncPayload(msg.party);
         else tryRestoreClanFromLocalSnapshot();
         if (msg.serverPop) applyServerPop(msg.serverPop);
+        if (msg.politicsWorld && G.npcSimFromServer) {
+          ensurePolitics();
+          const pw = msg.politicsWorld;
+          if (Array.isArray(pw.matrix) && pw.matrix.length === FACTION_COUNT) {
+            G.politics.matrix = pw.matrix.map(row => (Array.isArray(row) ? row.slice() : row));
+          }
+          if (Array.isArray(pw.fw) && pw.fw.length >= FACTION_COUNT) {
+            for (let i = 0; i < FACTION_COUNT; i++) {
+              if (pw.fw[i] != null && Number.isFinite(Number(pw.fw[i]))) G.politics.factionWealth[i] = Number(pw.fw[i]);
+            }
+          }
+          if (pw.pc && typeof pw.pc === 'object') G.politics.portController = { ...pw.pc };
+          if (pw.inf != null && Number.isFinite(Number(pw.inf))) G.politics.inflation = Number(pw.inf);
+          if (pw.pg && typeof pw.pg === 'object') G.politics.portGarrison = { ...pw.pg };
+        }
+        if (msg.myPlayerPolitics && typeof msg.myPlayerPolitics === 'object' && G.npcSimFromServer) {
+          ensurePolitics();
+          const mp = msg.myPlayerPolitics;
+          if (Array.isArray(mp.relations)) {
+            for (let i = 0; i < FACTION_COUNT; i++) {
+              if (mp.relations[i] != null && Number.isFinite(Number(mp.relations[i]))) G.politics.relations[i] = Number(mp.relations[i]);
+            }
+          }
+          if (mp.crimes != null && Number.isFinite(Number(mp.crimes))) G.politics.crimes = Math.max(0, Math.min(999, Math.floor(Number(mp.crimes))));
+          G.politics.joinedFaction = mp.joinedFaction != null && Number.isFinite(Number(mp.joinedFaction))
+            ? Math.max(0, Math.min(FACTION_COUNT - 1, Math.floor(Number(mp.joinedFaction))))
+            : null;
+        }
         /* Do not clear G.party when init omits party — connection runs before set_name; server sends party_sync after syncCaptainNameToServer. Clearing here forced everyone to recreate their clan on every reconnect / world revision. */
-        if (isMultiplayerHost()) syncHostStoryBountyFleet();
+        if (isMultiplayerHost() && !G.npcSimFromServer) syncHostStoryBountyFleet();
         if (G.mode === 'playing') {
           G.playWorldAwaitingNetInit = false;
           if (playWorldNetTimeoutId) {
@@ -17719,7 +17794,17 @@ async function connectToServer() {
         if (G.chatChannel === 'players') renderActivePlayersRoster();
         break;
       }
+      case 'npc_sim_delegate': {
+        if (msg.server !== true) break;
+        G.npcSimDelegatedByServer = true;
+        G.iAmMultiplayerNpcStepper = !!msg.youAreStepper;
+        G.multiplayerNpcAuthorityId = null;
+        break;
+      }
       case 'npc_authority': {
+        /* Older servers: public playerId for NPC stepper — prefer npc_sim_delegate when available. */
+        G.npcSimDelegatedByServer = false;
+        G.iAmMultiplayerNpcStepper = false;
         const aid = netPlayerId(msg.playerId);
         if (aid == null) break;
         G.multiplayerNpcAuthorityId = aid;
@@ -18253,7 +18338,7 @@ async function connectToServer() {
         const pid = Number(msg.playerId);
         if (G.myId != null && pid === Number(G.myId)) break;
         G.remotePlayerStories.set(pid, sanitizeClientWorldStory(msg.story));
-        if (isMultiplayerHost()) syncHostStoryBountyFleet();
+        if (isMultiplayerHost() && !G.npcSimFromServer) syncHostStoryBountyFleet();
         break;
       }
       case 'story_bounty_outcome': {
@@ -18275,7 +18360,7 @@ async function connectToServer() {
       case 'world_quests':
         break;
       case 'politics_snap': {
-        if (isMultiplayerHost()) break;
+        if (isMultiplayerHost() && !G.npcSimFromServer) break;
         ensurePolitics();
         if (Array.isArray(msg.matrix) && msg.matrix.length === FACTION_COUNT) {
           G.politics.matrix = msg.matrix.map(row => (Array.isArray(row) ? row.slice() : row));
@@ -18287,139 +18372,14 @@ async function connectToServer() {
         }
         if (msg.pc && typeof msg.pc === 'object') G.politics.portController = { ...msg.pc };
         if (msg.inf != null && Number.isFinite(Number(msg.inf))) G.politics.inflation = Number(msg.inf);
+        if (msg.pg && typeof msg.pg === 'object') G.politics.portGarrison = { ...msg.pg };
         break;
       }
       case 'npc_sync': {
         if (isMultiplayerHost()) break;
         if (G.myId == null) break;
         if (!Array.isArray(msg.npcs)) break;
-        const seen = new Set();
-        const npcBySyncId = new Map();
-        for (let _ni = 0; _ni < G.npcs.length; _ni++) {
-          const _n = G.npcs[_ni];
-          const _sid = netNpcSyncId(_n.syncId);
-          if (_sid != null) npcBySyncId.set(_sid, _n);
-        }
-        msg.npcs.forEach(nd => {
-          if (!nd) return;
-          const nid = netNpcSyncId(nd.id);
-          if (nid == null) return;
-          seen.add(nid);
-          let npc = npcBySyncId.get(nid);
-          const sbMeta = parseStoryBountyFromSyncId(nid);
-          const moNet = nd.mo != null && Number.isFinite(Number(nd.mo)) ? Math.floor(Number(nd.mo)) : (sbMeta ? sbMeta.ownerPlayerId : null);
-          if (!npc && sbMeta) {
-            const step = sbMeta ? sbMeta.step : 0;
-            const shipType = nd.t && SHIP_TYPES[nd.t] ? nd.t : (STORY_SHIP_ORDER[step] || 'sloop');
-            const name = nd.n || STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
-            const flagColor = nd.fc || '#5a0808';
-            const fa0 = nd.fa != null && sanitizeFlagPngId(nd.fa) != null ? sanitizeFlagPngId(nd.fa) : randomChoosableFlagRng(() => (nid % 997) / 997);
-            npc = {
-              syncId: nid,
-              missionOwnerPlayerId: moNet,
-              x: nd.x, z: nd.z,
-              rotation: nd.r,
-              health: nd.h,
-              type: shipType,
-              name,
-              flagColor,
-              flagAssetId: fa0,
-              flagPosition: nd.flag === 'mast' || nd.flag === 'side' || nd.flag === 'stern' ? nd.flag : AI_FLAG_POSITIONS[(nid | 0) % 3],
-              wanderAngle: 0, wanderTimer: 5,
-              underFireTimer: 0, fireJitter: 0,
-              isStoryBounty: true,
-              storyStep: step,
-              aggro: !!nd.aggro,
-              sinking: !!nd.sinking,
-              syncX: nd.x, syncZ: nd.z, syncR: nd.r,
-              riggingHealth: nd.rg != null ? Math.max(0, Math.min(100, nd.rg)) : 100
-            };
-            const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
-            const moC = moNet != null && Number.isFinite(Number(moNet)) ? Math.floor(Number(moNet)) : (sbMeta ? sbMeta.ownerPlayerId : 0);
-            npc.crewData = storyBountyCrewData(moC, step, shipType);
-            buildCrewMeshes(mesh, npc.crewData, npc.type);
-            npc.mesh = mesh;
-            scene.add(mesh);
-            G.npcs.push(npc);
-            npcBySyncId.set(nid, npc);
-          }
-          if (!npc && !sbMeta) {
-            const built = buildNpcFromNetSyncData(nd, nid);
-            if (built) {
-              npc = built;
-              G.npcs.push(npc);
-              npcBySyncId.set(nid, npc);
-            }
-          }
-          if (!npc) return;
-          const wasMer = !!npc.isTradeShip;
-          const wasPat = !!npc.isFactionPatrol;
-          if ('mer' in nd) {
-            if (nd.mer) {
-              npc.isTradeShip = true;
-              npc.isFactionPatrol = false;
-            } else {
-              npc.isTradeShip = false;
-              npc.isFactionPatrol = !!nd.pat;
-            }
-          } else if ('pat' in nd && !npc.isTradeShip) {
-            npc.isFactionPatrol = !!nd.pat;
-          }
-          if (nd.hcx != null) npc.homeCx = nd.hcx | 0;
-          if (nd.hcz != null) npc.homeCz = nd.hcz | 0;
-          if (nd.hdx != null) npc.homeDockX = nd.hdx;
-          if (nd.hdz != null) npc.homeDockZ = nd.hdz;
-          if (nd.ffi != null) {
-            const f = (nd.ffi | 0) % FACTION_COUNT;
-            if (npc.isTradeShip) npc.homeFaction = f;
-            else npc.factionId = f;
-          }
-          if ('atk' in nd && nd.atk != null && Number.isFinite(Number(nd.atk))) {
-            const aid = Number(nd.atk);
-            if (npc.isTradeShip) npc.returnFireSyncId = aid;
-            else npc.attackNpcSyncId = aid;
-          } else if ('atk' in nd) {
-            if (npc.isTradeShip) npc.returnFireSyncId = null;
-            else if (!npc.isStoryBounty) npc.attackNpcSyncId = null;
-          }
-          if (nd.sp != null && Number.isFinite(Number(nd.sp))) npc.speed = Number(nd.sp);
-          if (!npc.isStoryBounty && (wasMer !== !!npc.isTradeShip || wasPat !== !!npc.isFactionPatrol)) rebuildNPCShipMesh(npc);
-          if (nd.mo != null && Number.isFinite(Number(nd.mo))) npc.missionOwnerPlayerId = Math.floor(Number(nd.mo));
-          if (nd.fa != null && sanitizeFlagPngId(nd.fa) != null) npc.flagAssetId = sanitizeFlagPngId(nd.fa);
-          if (nd.t && SHIP_TYPES[nd.t] && (
-            nd.t !== npc.type ||
-            (nd.fc && nd.fc !== npc.flagColor) ||
-            (nd.n && nd.n !== npc.name)
-          )) {
-            npc.type = nd.t;
-            if (nd.n) npc.name = nd.n;
-            if (nd.fc) npc.flagColor = nd.fc;
-            rebuildNPCShipMesh(npc);
-          }
-          npc.syncX = nd.x; npc.syncZ = nd.z; npc.syncR = nd.r;
-          if (nd.h != null && Number.isFinite(Number(nd.h))) npc.health = Math.round(Number(nd.h));
-          npc.aggro = !!nd.aggro;
-          if (nd.rg != null) npc.riggingHealth = Math.max(0, Math.min(100, nd.rg));
-          if (npc.mesh) {
-            const rhNet = getNpcRiggingHealth(npc);
-            const rhKey = Math.round(rhNet);
-            if (npc._rigVisRh !== rhKey) {
-              npc._rigVisRh = rhKey;
-              applyRiggingVisualToGroup(npc.mesh, rhNet);
-            }
-          }
-          if (nd.sinking && !npc.sinking) {
-            npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
-          }
-        });
-        for (let j = G.npcs.length - 1; j >= 0; j--) {
-          const npc = G.npcs[j];
-          const sid = netNpcSyncId(npc.syncId);
-          if (sid == null || !seen.has(sid)) {
-            if (npc.mesh) { scene.remove(npc.mesh); npc.mesh = null; }
-            G.npcs.splice(j, 1);
-          }
-        }
+        G._pendingNpcSync = msg;
         break;
       }
       case 'npc_cannon':
@@ -18564,6 +18524,13 @@ function sendUpdate(includeCrew) {
     } : null,
     boarding: packBoardingForNetwork()
   };
+  if (G.npcSimFromServer && G.politics) {
+    payload.playerPolitics = {
+      relations: (G.politics.relations || []).slice(0, FACTION_COUNT),
+      crimes: G.politics.crimes | 0,
+      joinedFaction: G.politics.joinedFaction != null ? G.politics.joinedFaction : null
+    };
+  }
   if (G.player.hullBanner != null && typeof G.player.hullBanner === 'object') payload.hullBanner = G.player.hullBanner;
   if (G.player.sailBanner != null && typeof G.player.sailBanner === 'object') payload.sailBanner = G.player.sailBanner;
   if (includeCrew) payload.crewData = buildCrewSyncPayload();
@@ -18586,10 +18553,150 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     G.player.z = sz;
     return;
   }
-  if (d < 0.85) return;
-  const cap = Math.min(0.36, 0.03 + d * 0.0065);
+  /* Wider dead zone + gentler pull: small server/client drift from wind integration was read as jitter. */
+  if (d < 1.2) return;
+  const cap = Math.min(0.26, 0.018 + d * 0.0055);
   G.player.x += dx * cap;
   G.player.z += dz * cap;
+}
+
+/**
+ * Apply host NPC roster (non-authoritative clients). Keep work inside `update()` like `applyNetStateMessage`:
+ * running this directly in `ws.onmessage` lets several `npc_sync` packets process back-to-back in one
+ * browser turn and hitch the frame (stutter, input lag, “frozen” world until refresh).
+ */
+function applyNpcSyncMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  if (isMultiplayerHost() && !G.npcSimFromServer) return;
+  if (G.myId == null) return;
+  if (!Array.isArray(msg.npcs)) return;
+  const seen = new Set();
+  const npcBySyncId = new Map();
+  for (let _ni = 0; _ni < G.npcs.length; _ni++) {
+    const _n = G.npcs[_ni];
+    const _sid = netNpcSyncId(_n.syncId);
+    if (_sid != null) npcBySyncId.set(_sid, _n);
+  }
+  msg.npcs.forEach(nd => {
+    if (!nd) return;
+    const nid = netNpcSyncId(nd.id);
+    if (nid == null) return;
+    seen.add(nid);
+    let npc = npcBySyncId.get(nid);
+    const sbMeta = parseStoryBountyFromSyncId(nid);
+    const moNet = nd.mo != null && Number.isFinite(Number(nd.mo)) ? Math.floor(Number(nd.mo)) : (sbMeta ? sbMeta.ownerPlayerId : null);
+    if (!npc && sbMeta) {
+      const step = sbMeta ? sbMeta.step : 0;
+      const shipType = nd.t && SHIP_TYPES[nd.t] ? nd.t : (STORY_SHIP_ORDER[step] || 'sloop');
+      const name = nd.n || STORY_PIRATE_NAMES[shipType] || 'Notorious Pirate';
+      const flagColor = nd.fc || '#5a0808';
+      const fa0 = nd.fa != null && sanitizeFlagPngId(nd.fa) != null ? sanitizeFlagPngId(nd.fa) : randomChoosableFlagRng(() => (nid % 997) / 997);
+      npc = {
+        syncId: nid,
+        missionOwnerPlayerId: moNet,
+        x: nd.x, z: nd.z,
+        rotation: nd.r,
+        health: nd.h,
+        type: shipType,
+        name,
+        flagColor,
+        flagAssetId: fa0,
+        flagPosition: nd.flag === 'mast' || nd.flag === 'side' || nd.flag === 'stern' ? nd.flag : AI_FLAG_POSITIONS[(nid | 0) % 3],
+        wanderAngle: 0, wanderTimer: 5,
+        underFireTimer: 0, fireJitter: 0,
+        isStoryBounty: true,
+        storyStep: step,
+        aggro: !!nd.aggro,
+        sinking: !!nd.sinking,
+        syncX: nd.x, syncZ: nd.z, syncR: nd.r,
+        riggingHealth: nd.rg != null ? Math.max(0, Math.min(100, nd.rg)) : 100
+      };
+      const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: 'light', figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
+      const moC = moNet != null && Number.isFinite(Number(moNet)) ? Math.floor(Number(moNet)) : (sbMeta ? sbMeta.ownerPlayerId : 0);
+      npc.crewData = storyBountyCrewData(moC, step, shipType);
+      buildCrewMeshes(mesh, npc.crewData, npc.type);
+      npc.mesh = mesh;
+      scene.add(mesh);
+      G.npcs.push(npc);
+      npcBySyncId.set(nid, npc);
+    }
+    if (!npc && !sbMeta) {
+      const built = buildNpcFromNetSyncData(nd, nid);
+      if (built) {
+        npc = built;
+        G.npcs.push(npc);
+        npcBySyncId.set(nid, npc);
+      }
+    }
+    if (!npc) return;
+    const wasMer = !!npc.isTradeShip;
+    const wasPat = !!npc.isFactionPatrol;
+    if ('mer' in nd) {
+      if (nd.mer) {
+        npc.isTradeShip = true;
+        npc.isFactionPatrol = false;
+      } else {
+        npc.isTradeShip = false;
+        npc.isFactionPatrol = !!nd.pat;
+      }
+    } else if ('pat' in nd && !npc.isTradeShip) {
+      npc.isFactionPatrol = !!nd.pat;
+    }
+    if (nd.hcx != null) npc.homeCx = nd.hcx | 0;
+    if (nd.hcz != null) npc.homeCz = nd.hcz | 0;
+    if (nd.hdx != null) npc.homeDockX = nd.hdx;
+    if (nd.hdz != null) npc.homeDockZ = nd.hdz;
+    if (nd.ffi != null) {
+      const f = (nd.ffi | 0) % FACTION_COUNT;
+      if (npc.isTradeShip) npc.homeFaction = f;
+      else npc.factionId = f;
+    }
+    if ('atk' in nd && nd.atk != null && Number.isFinite(Number(nd.atk))) {
+      const aid = Number(nd.atk);
+      if (npc.isTradeShip) npc.returnFireSyncId = aid;
+      else npc.attackNpcSyncId = aid;
+    } else if ('atk' in nd) {
+      if (npc.isTradeShip) npc.returnFireSyncId = null;
+      else if (!npc.isStoryBounty) npc.attackNpcSyncId = null;
+    }
+    if (nd.sp != null && Number.isFinite(Number(nd.sp))) npc.speed = Number(nd.sp);
+    if (!npc.isStoryBounty && (wasMer !== !!npc.isTradeShip || wasPat !== !!npc.isFactionPatrol)) rebuildNPCShipMesh(npc);
+    if (nd.mo != null && Number.isFinite(Number(nd.mo))) npc.missionOwnerPlayerId = Math.floor(Number(nd.mo));
+    if (nd.fa != null && sanitizeFlagPngId(nd.fa) != null) npc.flagAssetId = sanitizeFlagPngId(nd.fa);
+    if (nd.t && SHIP_TYPES[nd.t] && (
+      nd.t !== npc.type ||
+      (nd.fc && nd.fc !== npc.flagColor) ||
+      (nd.n && nd.n !== npc.name)
+    )) {
+      npc.type = nd.t;
+      if (nd.n) npc.name = nd.n;
+      if (nd.fc) npc.flagColor = nd.fc;
+      rebuildNPCShipMesh(npc);
+    }
+    npc.syncX = nd.x; npc.syncZ = nd.z; npc.syncR = nd.r;
+    if (nd.h != null && Number.isFinite(Number(nd.h))) npc.health = Math.round(Number(nd.h));
+    npc.aggro = !!nd.aggro;
+    if (nd.rg != null) npc.riggingHealth = Math.max(0, Math.min(100, nd.rg));
+    if (npc.mesh) {
+      const rhNet = getNpcRiggingHealth(npc);
+      const rhKey = Math.round(rhNet);
+      if (npc._rigVisRh !== rhKey) {
+        npc._rigVisRh = rhKey;
+        applyRiggingVisualToGroup(npc.mesh, rhNet);
+      }
+    }
+    if (nd.sinking && !npc.sinking) {
+      npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
+    }
+  });
+  for (let j = G.npcs.length - 1; j >= 0; j--) {
+    const npc = G.npcs[j];
+    const sid = netNpcSyncId(npc.syncId);
+    if (sid == null || !seen.has(sid)) {
+      if (npc.mesh) { scene.remove(npc.mesh); npc.mesh = null; }
+      G.npcs.splice(j, 1);
+    }
+  }
 }
 
 /**
@@ -18606,12 +18713,20 @@ function applyNetStateMessage(msg) {
   if (myIdForState == null) return;
   if (!msg.players.some(p => netPlayerId(p.id) === myIdForState)) return;
   const wtNum = Number(wT);
-  /* Fallback matches server TICK_RATE / NET_SYNC_HZ (declared later in this file). */
+  /* Fallback matches server TICK_RATE (45Hz). Prefer srvTick delta when present — stable vs clock jitter. */
   let dtSnap = 1 / 45;
   if (G._lastNetStateWT != null && Number.isFinite(wtNum) && Number.isFinite(G._lastNetStateWT)) {
     dtSnap = Math.max(1 / 90, Math.min(0.48, wtNum - G._lastNetStateWT));
   }
+  const stNum = msg.srvTick != null ? Number(msg.srvTick) : null;
+  if (stNum != null && Number.isFinite(stNum) && G._lastNetStateSrvTick != null && Number.isFinite(G._lastNetStateSrvTick)) {
+    const dTick = stNum - G._lastNetStateSrvTick;
+    if (dTick > 0 && dTick <= 96) {
+      dtSnap = Math.max(1 / 90, Math.min(0.48, dTick / 45));
+    }
+  }
   if (Number.isFinite(wtNum)) G._lastNetStateWT = wtNum;
+  if (stNum != null && Number.isFinite(stNum)) G._lastNetStateSrvTick = stNum;
   let selfRow = null;
   const activeRemote = new Set();
   msg.players.forEach(p => {
@@ -21816,23 +21931,30 @@ function updateShipPanel() {
   ensurePlayerFlagUnlocks();
   const unlockedIds = getSortedUnlockedFlagIds();
   const effFlag = getEffectivePlayerFlagAssetId();
+  const hullFlagId = sanitizeFlagPngId(G.player && G.player.flagAssetId) || effFlag;
   let uIdx = unlockedIds.indexOf(effFlag);
   if (uIdx < 0) uIdx = 0;
   const showJack = unlockedIds.length > 0;
   const jackId = showJack ? unlockedIds[uIdx] : effFlag;
+  const flyingImgId = hullFlagId != null ? hullFlagId : jackId;
   const unlockLine = showJack
     ? `<div style="margin:10px 0 12px;padding:10px;background:rgba(22,32,42,0.4);border:1px solid rgba(100,130,160,0.3);border-radius:8px;">
-        <div style="color:#a8c8e8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Hoist a jack</div>
+        <div style="color:#a8c8e8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Your jack (flying)</div>
         <div class="flag-level-picker port-flag-level" style="max-width:100%;">
           <button type="button" class="flag-level-arrow" aria-label="Previous flag" onclick="captainsLogCycleUnlockedFlag(-1)">‹</button>
           <div class="flag-level-center">
-            <img src="assets/flags/flag${jackId}.png" alt="" width="160" height="120" decoding="async" style="max-width:100%;height:auto;border-radius:6px;border:1px solid rgba(80,110,140,0.35);"/>
-            <div style="font-size:10px;color:#9a9080;text-align:center;margin-top:6px;">Jack #${jackId} · ${uIdx + 1} / ${unlockedIds.length} unlocked</div>
+            <img src="assets/flags/flag${flyingImgId}.png" alt="" width="160" height="120" decoding="async" style="max-width:100%;height:auto;border-radius:6px;border:1px solid rgba(80,110,140,0.35);"/>
+            <div style="font-size:10px;color:#9a9080;text-align:center;margin-top:6px;">Flying #${flyingImgId}${hullFlagId != null && jackId != null && hullFlagId !== jackId ? ` · browsing #${jackId}` : ''} · ${uIdx + 1} / ${unlockedIds.length} unlocked</div>
           </div>
           <button type="button" class="flag-level-arrow" aria-label="Next flag" onclick="captainsLogCycleUnlockedFlag(1)">›</button>
         </div>
       </div>`
-    : '';
+    : (hullFlagId != null
+      ? `<div style="margin:10px 0 12px;padding:10px;background:rgba(22,32,42,0.4);border:1px solid rgba(100,130,160,0.3);border-radius:8px;text-align:center;">
+          <div style="color:#a8c8e8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Your jack</div>
+          <img src="assets/flags/flag${hullFlagId}.png" alt="" width="160" height="120" decoding="async" style="max-width:100%;height:auto;border-radius:6px;border:1px solid rgba(80,110,140,0.35);"/>
+        </div>`
+      : '');
   info.innerHTML = `
     <div style="text-align:center;color:#d4a848;font-size:16px;font-weight:bold;margin-bottom:4px;">${G.player.shipName}</div>
     <div style="text-align:center;color:#8a7a60;font-size:11px;margin-bottom:10px;">${spec.name} - ${spec.desc}</div>
@@ -26745,9 +26867,9 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 /** Must match server.js TICK_RATE (authoritative sim + interest-managed state). */
 const NET_SYNC_HZ = 45;
 /**
- * Slower than NET_SYNC_HZ on purpose. The host sends the full world NPC list each tick; 45Hz JSON + main-thread
- * apply in `npc_sync` (see ws.onmessage) can backlog WebSockets and stall frames for any player count — e.g. 2 players
- * with a large traffic/NPC sim. Non-hosts still interpolate from syncX/syncR; 12Hz is enough for ship-scale motion.
+ * Slower than NET_SYNC_HZ on purpose. The host sends the full world NPC list each tick; 45Hz JSON + applying
+ * several `npc_sync` in one `ws.onmessage` chain used to hitch the main thread — we now coalesce to one apply
+ * per frame in `update()` (`applyNpcSyncMessage`). Non-hosts interpolate from syncX/syncR; 12Hz is enough for ship-scale motion.
  */
 const NPC_NET_SYNC_HZ = 12;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
@@ -26769,6 +26891,11 @@ function update(dt) {
     const st = G._pendingNetState;
     G._pendingNetState = null;
     if (G.mode === 'playing') try { applyNetStateMessage(st); } catch (e) {}
+  }
+  if (G._pendingNpcSync) {
+    const npcSt = G._pendingNpcSync;
+    G._pendingNpcSync = null;
+    if (G.mode === 'playing') try { applyNpcSyncMessage(npcSt); } catch (e) {}
   }
   if (G.mode !== 'playing') return;
    G.time += dt; G.dt = dt;
@@ -27068,7 +27195,7 @@ function update(dt) {
   G._contractNpcRestoreAcc = (G._contractNpcRestoreAcc || 0) + dt;
   if (G._contractNpcRestoreAcc >= 2) {
     G._contractNpcRestoreAcc = 0;
-    if (isMultiplayerHost()) ensureActiveContractNpcsForHost();
+    if (isMultiplayerHost() && !G.npcSimFromServer) ensureActiveContractNpcsForHost();
   }
   resolvePlayerShipCollisionsAfterNpcs();
   if (!G.docked && !G.dockingAnim && !G.undockingAnim && !G.spectate && !G.playerSinking && !G.captainWalk?.active) {
@@ -27940,7 +28067,7 @@ function update(dt) {
 
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
-  if (isMultiplayerHost() && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
+  if (isMultiplayerHost() && !G.npcSimFromServer && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
     /* PvE boarding: locked hulls must not step at 12Hz while the rest of the sim uses 45Hz or grapple visuals desync. */
     const npcHz = (G.boarding && G.boarding.npcSyncId != null) ? NET_SYNC_HZ : NPC_NET_SYNC_HZ;
     G.npcSyncTimer = 1 / npcHz;
