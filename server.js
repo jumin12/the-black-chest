@@ -2601,7 +2601,8 @@ wss.on('connection', (ws, req) => {
 
           const acc = captainAccounts[newKey];
           if (acc) {
-            if (!tokenOffered || !secureTokenEquals(acc.token, tokenOffered)) {
+            const tokenOk = tokenOffered && secureTokenEquals(acc.token, tokenOffered);
+            if (!tokenOk) {
               try {
                 ws.send(JSON.stringify({
                   type: 'name_rejected',
