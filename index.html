@@ -8312,7 +8312,7 @@ function normalizePlayerFlagAssetId(n) {
   if (RESERVED_PLAYER_FLAG_IDS.has(x)) return null;
   return x;
 }
-/** Saved `flagAssetId` may be null; resolves to an unlocked catalog jack if any, else null (custom hull jack only). */
+/** Saved `flagAssetId` may be null; resolves to an unlocked catalog jack if any, else a default PNG (unless the hull jack is custom-only). */
 function getEffectivePlayerFlagAssetId(player) {
   const pl = player || G.player;
   ensurePlayerFlagUnlocks();
@@ -8321,7 +8321,8 @@ function getEffectivePlayerFlagAssetId(player) {
   if (sid != null && playerHasFlagUnlocked(sid, pl)) return sid;
   const ids = getSortedUnlockedFlagIds(pl);
   if (ids.length) return ids[0];
-  return null;
+  if (playerHasSavedCustomHullJack(pl)) return null;
+  return DEFAULT_PLAYER_FLAG_ASSET;
 }
 /** Hoisted catalog jack sent to the server / save file: only if unlocked; otherwise null (custom jack only). */
 function getNetworkFlagAssetId(player) {
@@ -17911,7 +17912,8 @@ function destroyAmbientWildlife() {
 
 function applySharedWorldFromServerSeed(s, opts) {
   opts = opts || {};
-  const preservePos = !!opts.preservePlayerPosition && !opts.relocateAfterDroppingServerChart;
+  /** Local voyage save wins over chart-drop relocation — otherwise Continue spawns at open ocean after `init`. */
+  const preservePos = !!opts.preservePlayerPosition;
   const saveX = G.player.x, saveZ = G.player.z, saveR = G.player.rotation;
   const seed = Number(s) >>> 0;
   G.customMap = null;
@@ -17932,7 +17934,7 @@ function applySharedWorldFromServerSeed(s, opts) {
   G.townFlagMeshes = [];
   destroyAmbientWildlife();
   if (!preservePos) ensurePlayerInOpenOcean();
-  if (opts.relocateAfterDroppingServerChart && G.mode === 'playing') {
+  if (opts.relocateAfterDroppingServerChart && G.mode === 'playing' && !preservePos) {
     relocatePlayerNearProceduralArchipelago();
   }
   updateChunks();
@@ -18206,6 +18208,7 @@ async function connectToServer() {
   try { socket = new WebSocket(url); } catch (e) { return; }
   ws = socket;
   ws.onopen = () => {
+    G._wsOpenedAt = Date.now();
     wsConnectErrorNotified = false;
     wsUserBanned = false;
     G._realmMotdShown = false;
@@ -18293,7 +18296,8 @@ async function connectToServer() {
               appliedServerWorldMapRev = 0;
               applySharedWorldFromServerSeed(G.worldSeed >>> 0, {
                 skipServerMapReapply: true,
-                relocateAfterDroppingServerChart: true
+                relocateAfterDroppingServerChart: true,
+                preservePlayerPosition: voyageSaveExistsInStorage()
               });
             }
           }
@@ -19248,6 +19252,8 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   const d = Math.hypot(dx, dz);
   /* Hard snap only on true divergence (stuck hints, tab resume, handoff) — lower threshold caused visible pops. */
   if (d > 240) {
+    /* After Continue, the server still has offshore spawn until several `update` hints arrive — do not snap back to spawn. */
+    if (voyageSaveExistsInStorage() && G._wsOpenedAt && (Date.now() - G._wsOpenedAt) < 5000) return;
     G.player.x = sx;
     G.player.z = sz;
     return;
@@ -29850,7 +29856,8 @@ function updatePreviewShip() {
   const hb = window._creationHullBannerDraft ? sanitizeBannerDesignClient(window._creationHullBannerDraft) : null;
   const sb = window._creationSailBannerDraft ? sanitizeBannerDesignClient(window._creationSailBannerDraft) : null;
   const previewBannerGen = ++previewShipBannerComposeGen;
-  const previewPngJack = hb ? null : getEffectivePlayerFlagAssetId();
+  const draftPl = { hullBanner: hb };
+  const previewPngJack = playerHasSavedCustomHullJack(draftPl) ? null : getEffectivePlayerFlagAssetId(draftPl);
   previewShip = buildShipMesh(G.player.shipType, G.player.shipParts, DEFAULT_SAIL_TRIM_COLOR, shipName, {
     honorPlayerLoadout: true,
     hideShipNameLabel: true,
@@ -30975,6 +30982,9 @@ function launchGame() {
   ensurePlayerFlagUnlocks();
   G.player.flagAssetId = null;
   G.player.flagAchievements = DEFAULT_FLAG_ACHIEVEMENTS();
+  const starterJack = randomChoosableFlagRng(() => Math.random());
+  addFlagUnlock(starterJack);
+  G.player.flagAssetId = starterJack;
   const allCrew = getCrewFromUI();
   G.player.crew = allCrew.map((c, i) => ({
     name: c.name, role: c.role, health: 100, color: c.color, hat: c.hat, outfit: c.outfit, parrot: c.parrot,
@@ -31642,6 +31652,11 @@ function loadProgress() {
       G.player.sailBanner = null;
     }
     finalizePlayerFlagUnlocksAfterLoad();
+    if (sanitizeFlagPngId(G.player.flagAssetId) == null && !getSortedUnlockedFlagIds().length && !playerHasSavedCustomHullJack()) {
+      const starterJack = randomChoosableFlagRng(() => Math.random());
+      addFlagUnlock(starterJack);
+      G.player.flagAssetId = starterJack;
+    }
     if (data.townStockpiles && typeof data.townStockpiles === 'object') G.townStockpiles = data.townStockpiles;
     if (data.playerStats && typeof data.playerStats === 'object') {
       ensurePlayerStats();
