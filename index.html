@@ -8223,10 +8223,11 @@ function captainKeyMatchesPartyMember(ck) {
 }
 function getEffectiveHullBannerDesign(forPlayerRow) {
   if (forPlayerRow && forPlayerRow.hullBanner) return sanitizeBannerDesignClient(forPlayerRow.hullBanner);
+  /* Personal workshop jack beats clan hull art so party sync cannot flash-replace a captain’s custom flag. */
+  if (!forPlayerRow && G.player.hullBanner) return sanitizeBannerDesignClient(G.player.hullBanner);
   if (!forPlayerRow && G.party && G.myCaptainKey && captainKeyMatchesPartyMember(G.myCaptainKey) && G.party.clanHullBanner) {
     return sanitizeBannerDesignClient(G.party.clanHullBanner);
   }
-  if (!forPlayerRow && G.player.hullBanner) return sanitizeBannerDesignClient(G.player.hullBanner);
   return null;
 }
 function getEffectiveSailBannerDesign(forPlayerRow) {
@@ -8234,13 +8235,13 @@ function getEffectiveSailBannerDesign(forPlayerRow) {
     const s = sanitizeBannerDesignClient(forPlayerRow.sailBanner);
     if (s) return s;
   }
-  if (!forPlayerRow && G.party && G.myCaptainKey && captainKeyMatchesPartyMember(G.myCaptainKey) && G.party.clanSailBanner) {
-    const c = sanitizeBannerDesignClient(G.party.clanSailBanner);
-    if (c) return c;
-  }
   if (!forPlayerRow && G.player.sailBanner) {
     const s = sanitizeBannerDesignClient(G.player.sailBanner);
     if (s) return s;
+  }
+  if (!forPlayerRow && G.party && G.myCaptainKey && captainKeyMatchesPartyMember(G.myCaptainKey) && G.party.clanSailBanner) {
+    const c = sanitizeBannerDesignClient(G.party.clanSailBanner);
+    if (c) return c;
   }
   return null;
 }
@@ -13123,6 +13124,31 @@ function applyPrizeShipFromRemoteCaptainRow(row) {
       if (a != null) G.player.flagAssetId = a;
     }
   }
+  if (row.hullBanner !== undefined) {
+    if (row.hullBanner == null) G.player.hullBanner = null;
+    else {
+      const d = sanitizeBannerDesignClient(row.hullBanner);
+      if (d) G.player.hullBanner = d;
+    }
+  }
+  if (row.sailBanner !== undefined) {
+    if (row.sailBanner == null) G.player.sailBanner = null;
+    else {
+      const d = sanitizeBannerDesignClient(row.sailBanner);
+      if (d) G.player.sailBanner = d;
+    }
+  }
+  /* Prize must be seaworthy: deck combat + hull damage could leave local HP at 0 before `G.boarding` clears, which sunk winners. */
+  const mh = G.player.maxHealth != null && Number.isFinite(Number(G.player.maxHealth)) ? Math.max(1, Number(G.player.maxHealth)) : 100;
+  const vh = row.health != null && Number.isFinite(Number(row.health)) ? Math.max(0, Number(row.health)) : null;
+  const ah = G.player.health != null && Number.isFinite(Number(G.player.health)) ? Math.max(0, Number(G.player.health)) : null;
+  const floorP = Math.max(1, Math.round(mh * 0.35));
+  const merged = Math.min(mh, Math.max(floorP, vh != null && vh > 0 ? vh : 0, ah != null && ah > 0 ? ah : 0));
+  G.player.health = merged > 0 ? merged : floorP;
+  const vr = row.riggingHealth != null && Number.isFinite(Number(row.riggingHealth)) ? Math.max(0, Math.min(100, Number(row.riggingHealth))) : null;
+  const ar = G.player.riggingHealth != null && Number.isFinite(Number(G.player.riggingHealth)) ? Math.max(0, Math.min(100, Number(G.player.riggingHealth))) : null;
+  const rMerged = Math.max(40, Math.min(100, Math.max(vr != null ? vr : 0, ar != null ? ar : 0)));
+  G.player.riggingHealth = rMerged;
 }
 function applyBoardingSpoilLoserDefaultHull() {
   G.player.shipType = 'cutter';
@@ -13853,11 +13879,17 @@ function buildNpcPrizeCaptainRowFromNpc(npc) {
       : { hull: 'darkwood', sail: 'war', cannon: npc.pirateCannon || tradeShipCannonForType(npc.type || 'sloop'), figurehead: 'skull', flag: fp };
   const shipParts = merchant ? partsRaw : normalizeShipPartsForRemoteView(partsRaw);
   const st = npc.type && SHIP_TYPES[npc.type] ? npc.type : 'sloop';
+  const nh = npc.health != null && Number.isFinite(Number(npc.health)) ? Math.round(Number(npc.health)) : null;
+  const nr = npc.riggingHealth != null && Number.isFinite(Number(npc.riggingHealth))
+    ? Math.max(0, Math.min(100, Number(npc.riggingHealth)))
+    : null;
   return {
     shipType: st,
     shipParts,
     shipName: (npc.name && String(npc.name).trim().slice(0, 28)) || 'Prize',
     flagAssetId: npc.flagAssetId !== undefined ? npc.flagAssetId : null,
+    health: nh,
+    riggingHealth: nr,
     crewData: Array.isArray(npc.crewData) ? npc.crewData.map(c => (c && typeof c === 'object' ? { ...c } : c)) : []
   };
 }
@@ -19355,7 +19387,7 @@ function applyNetStateMessage(msg) {
   msg.players.forEach(p => {
     const pid = netPlayerId(p.id);
     if (pid == null) return;
-    if (pid === G.myId) {
+    if (pid === myIdForState) {
       selfRow = p;
       return;
     }
@@ -27703,7 +27735,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
 function smoothRemotePlayerNetVelocity(p, dt) {
   const tx = p._netVelTargetX, tz = p._netVelTargetZ;
   if (Number.isFinite(tx) && Number.isFinite(tz)) {
-    const a = 1 - Math.exp(-16 * dt);
+    const a = 1 - Math.exp(-26 * dt);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -27748,13 +27780,13 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
-  const posK = 1 - Math.exp(-(err > 120 ? 3.4 : err > 55 ? 2.05 : err > 22 ? 1.2 : err > 8 ? 0.62 : 0.32) * dt);
+  const posK = 1 - Math.exp(-(err > 120 ? 5.2 : err > 55 ? 3.35 : err > 22 ? 2.05 : err > 8 ? 1.05 : 0.55) * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-6.8 * dt);
+  const rotK = 1 - Math.exp(-9.5 * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }

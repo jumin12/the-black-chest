@@ -3268,6 +3268,37 @@ wss.on('connection', (ws, req) => {
                 flagAssetId: vic.flagAssetId
               });
             }
+            /* Authoritative prize hull: mirror the capture on the victor's server row so `state` / validation match the client. */
+            if (atk && vic) {
+              const baseParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
+              const vParts = vic.shipParts && typeof vic.shipParts === 'object' ? vic.shipParts : {};
+              atk.shipType = vic.shipType != null ? String(vic.shipType).slice(0, 24) : atk.shipType;
+              atk.shipParts = { ...baseParts, ...(atk.shipParts && typeof atk.shipParts === 'object' ? atk.shipParts : {}), ...vParts };
+              if (vic.shipName != null) atk.shipName = String(vic.shipName).slice(0, 28);
+              if (vic.flagAssetId !== undefined) {
+                const fa = sanitizeClientFlagAssetId(vic.flagAssetId);
+                atk.flagAssetId = fa;
+              }
+              atk.hullBanner = vic.hullBanner != null && typeof vic.hullBanner === 'object' ? vic.hullBanner : null;
+              atk.sailBanner = vic.sailBanner != null && typeof vic.sailBanner === 'object' ? vic.sailBanner : null;
+              const mh = 100;
+              const vh = Number(vic.health);
+              const ah = Number(atk.health);
+              const floorP = Math.max(1, Math.round(mh * 0.35));
+              const nh = Math.min(mh, Math.max(
+                floorP,
+                Number.isFinite(vh) && vh > 0 ? vh : 0,
+                Number.isFinite(ah) && ah > 0 ? ah : 0
+              ));
+              atk.health = nh > 0 ? nh : floorP;
+              const vr = vic.riggingHealth != null ? Number(vic.riggingHealth) : 100;
+              const ar = atk.riggingHealth != null ? Number(atk.riggingHealth) : 100;
+              atk.riggingHealth = Math.max(40, Math.min(100, Math.max(
+                Number.isFinite(vr) ? vr : 0,
+                Number.isFinite(ar) ? ar : 0,
+                55
+              )));
+            }
           }
           /* Mercy with 0 gold must still notify the victim (client used to block and left them stuck). */
           const tws = findWsByPlayerId(targetId);
