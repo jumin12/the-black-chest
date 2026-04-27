@@ -2151,6 +2151,7 @@ body.game-help-mobile-minimal #game-help-panel{
       <div class="hud-box" id="hud-morale">Morale 100</div>
       <div class="hud-box" id="hud-food">Food 0</div>
       <div class="hud-box" id="hud-crew">Crew 0</div>
+      <div class="hud-box" id="hud-mmo-region" style="display:none;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="Charted waters on this realm">—</div>
     </div>
   </div>
   <div id="pc-combat-hud-bar" aria-hidden="false">
@@ -2574,6 +2575,14 @@ body.game-help-mobile-minimal #game-help-panel{
           </div>
           <div class="debug-roster-scroll" id="debug-admin-chat-log" style="max-height:260px;"></div>
         </section>
+        <section class="debug-section" aria-label="Realm broadcast">
+          <h4 class="debug-section-head">Realm broadcast</h4>
+          <p class="debug-map-hint" style="margin-bottom:10px;">Server-wide announcement: toast + world chat for <strong>every connected captain</strong> on this realm.</p>
+          <div class="debug-roster-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+            <input type="text" id="debug-realm-announce-input" maxlength="600" placeholder="Message to all captains…" style="flex:1;min-width:200px;max-width:520px;padding:8px 10px;border-radius:8px;border:1px solid rgba(120,90,60,0.5);background:rgba(12,10,8,0.85);color:#e8dcc8;font-size:13px;" autocomplete="off" />
+            <button type="button" id="debug-realm-announce-send">Send broadcast</button>
+          </div>
+        </section>
         <section class="debug-section" aria-label="Local accounts and repair">
           <h4 class="debug-section-head">Captain accounts &amp; saves</h4>
           <p class="debug-map-hint" style="margin-bottom:10px;"><strong>Server registry</strong> (names from the host). <strong>This browser</strong> shows local tokens keyed by captain name. Use <em>Wipe all clients' saves</em> (above) to clear every connected browser's voyage save plus the server's captain registry in one step.</p>
@@ -2646,6 +2655,7 @@ body.game-help-mobile-minimal #game-help-panel{
         <div id="chat-badge" style="display:none;align-items:center;justify-content:center;background:#cc2222;color:#fff;font-size:9px;font-weight:bold;min-width:16px;height:16px;border-radius:8px;padding:0 3px;font-family:sans-serif;"></div>
       </div>
     </div>
+    <div id="chat-realm-line" style="font-size:10px;color:#6a7a90;margin:-1px 0 5px 0;line-height:1.35;display:none;" title="Persistent realm — all captains share this chart"></div>
     <div id="chat-channel-row" class="chat-channel-row">
       <button type="button" id="chat-tab-global" class="chat-tab chat-tab--on">World</button>
       <button type="button" id="chat-tab-players" class="chat-tab">Players</button>
@@ -2904,6 +2914,25 @@ function clampNpcIntoWorldBounds(npc) {
   const lim = WORLD_EDGE_CLAMP - 24;
   npc.x = Math.max(-lim, Math.min(lim, npc.x));
   npc.z = Math.max(-lim, Math.min(lim, npc.z));
+}
+/** Procedural sea “chart” names — deterministic from world seed + cell (MMO exploration flavor). */
+const MMO_SEA_REGION_NAMES = [
+  'Sunfire Shoals', 'Whispering Expanse', 'Sable Drift', 'Gullweather Reach', 'Emberline Sea',
+  'Saltglass Shoals', 'Blacktide Run', 'Coralveil Banks', 'Stormpetrel Deep', 'Morrowwake',
+  'Ironwave Strait', 'Lantern Reef', 'Drowned Choir', 'Kelpheart Basin', 'Starfall Sound',
+  'Razorcurrent', 'Fogmark Channel', 'Tidewright', 'Hollowwake', 'Ashen Ripple',
+  'Mooncut Sea', 'Serpent\'s Lull', 'Brineglass', 'Crowline Shoals', 'Thundertide',
+  'Ashkel Drift', 'Widow\'s Rest', 'Goldwake', 'Sorrowdeep', 'Kingscut',
+  'Mistral Veer', 'Bonefoam Reach', 'Saffron Tide', 'Nightglass', 'Windward Crown'
+];
+function mmoSeaRegionLabel(wx, wz) {
+  const cell = 420;
+  const cx = Math.floor(Number(wx) / cell);
+  const cz = Math.floor(Number(wz) / cell);
+  const seed = (G.worldSeed != null ? G.worldSeed >>> 0 : 42) >>> 0;
+  let h = (seed ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
+  h = (h ^ (h >>> 13) ^ (cx * 12582917) ^ (cz * 2246822519)) >>> 0;
+  return MMO_SEA_REGION_NAMES[h % MMO_SEA_REGION_NAMES.length];
 }
 const RENDER_DIST = isMobile ? (isLowEndMobile ? 1 : 2) : 3;
 /** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload only; visibility uses `RENDER_DIST` ring). */
@@ -3266,8 +3295,13 @@ const G = {
   /** Server chat header: captains online / registered accounts (from `server_pop` / `init.serverPop`). */
   serverPopOnline: null,
   serverPopRegistered: null,
+  /** From server `realm` object (name, id, motd, version). */
+  realmConfig: null,
+  serverMaxPlayers: null,
   /** Last measured RTT to game server (ms), from `client_pong` after `client_ping`. */
   clientServerRttMs: null,
+  /** Monotonic counter for `update.seq` (server acks via `state` / authoritative self row). */
+  netSendSeq: 0,
   /** Throttle `rtt_update` WebSocket messages to the server. */
   _lastRttReportAt: 0,
   townFlagMeshes: [],
@@ -16897,7 +16931,8 @@ function syncCaptainNameToServer() {
     flagColor: DEFAULT_SAIL_TRIM_COLOR,
     flagAssetId: getEffectivePlayerFlagAssetId(),
     crew: buildCrewSyncPayload(),
-    captainToken
+    captainToken,
+    preferLocalVoyage: !!voyageSaveExistsInStorage()
   }));
 }
 
@@ -17203,6 +17238,7 @@ async function connectToServer() {
   ws.onopen = () => {
     wsConnectErrorNotified = false;
     wsUserBanned = false;
+    G._realmMotdShown = false;
     knownServerWorldMapRev = 0;
     serverWorldMapFetchToken++;
     notify('Connected to server');
@@ -17220,7 +17256,8 @@ async function connectToServer() {
       flagColor: DEFAULT_SAIL_TRIM_COLOR,
       flagAssetId: getEffectivePlayerFlagAssetId(),
       crew: buildCrewSyncPayload(),
-      captainToken
+      captainToken,
+      preferLocalVoyage: !!voyageSaveExistsInStorage()
     }));
     sendUpdate();
     syncWorldProgressToServerIfNeeded();
@@ -17325,6 +17362,24 @@ async function connectToServer() {
       case 'server_pop':
         applyServerPop(msg);
         break;
+      case 'world_resume':
+        try { applyWorldResumeFromServer(msg); } catch (e) {}
+        break;
+      case 'world_announce':
+        if (msg.text) {
+          notify(String(msg.text).slice(0, 600), 12000);
+          try { addChatMessage('Realm', String(msg.text).slice(0, 600), null, 'global', '', ''); } catch (e) {}
+        }
+        break;
+      case 'server_full':
+        wsSuppressReconnect = true;
+        if (wsReconnectTimer) {
+          clearTimeout(wsReconnectTimer);
+          wsReconnectTimer = null;
+        }
+        notify(msg.message || 'This realm is full. Try again later.', 8000);
+        try { ws.close(); } catch (e) {}
+        break;
       case 'client_pong': {
         if (msg.t != null && Number.isFinite(Number(msg.t))) {
           G.clientServerRttMs = Math.max(0, performance.now() - Number(msg.t));
@@ -17396,10 +17451,15 @@ async function connectToServer() {
         const myIdForState = netPlayerId(G.myId);
         if (myIdForState == null) break;
         if (!msg.players.some(p => netPlayerId(p.id) === myIdForState)) break;
+        let selfRow = null;
         const activeRemote = new Set();
         msg.players.forEach(p => {
           const pid = netPlayerId(p.id);
-          if (pid == null || pid === G.myId) return;
+          if (pid == null) return;
+          if (pid === G.myId) {
+            selfRow = p;
+            return;
+          }
           activeRemote.add(pid);
           const ex = G.otherPlayers.get(pid);
           const prevCrew = ex && Array.isArray(ex.crewData) ? ex.crewData : null;
@@ -17419,6 +17479,7 @@ async function connectToServer() {
         }
         recalcMultiplayerNpcAuthorityFromPeers();
         try { ingestRemoteBoardingState(msg.players); } catch (e) {}
+        if (selfRow && G.mode === 'playing') try { reconcileLocalPlayerFromServerState(selfRow); } catch (e) {}
         if (G.chatChannel === 'players') renderActivePlayersRoster();
         break;
       }
@@ -18213,6 +18274,10 @@ async function connectToServer() {
     }
   };
   ws.onclose = () => {
+    try {
+      const regEl = document.getElementById('hud-mmo-region');
+      if (regEl) regEl.style.display = 'none';
+    } catch (e) {}
     if (wsUserBanned) return;
     if (wsSuppressReconnect) {
       wsSuppressReconnect = false;
@@ -18227,8 +18292,10 @@ async function connectToServer() {
 function sendUpdate(includeCrew) {
   if (!ws || ws.readyState !== 1) return;
   if (includeCrew === undefined) includeCrew = true;
+  G.netSendSeq = (G.netSendSeq | 0) + 1;
   const payload = {
     type: 'update',
+    seq: G.netSendSeq,
     x: G.player.x, z: G.player.z, rotation: G.player.rotation, speed: G.player.speed, health: G.player.health,
     docked: G.docked,
     dockX: G.docked && G.nearDock ? G.nearDock.dockX : null,
@@ -18253,6 +18320,101 @@ function sendUpdate(includeCrew) {
   };
   if (includeCrew) payload.crewData = buildCrewSyncPayload();
   ws.send(JSON.stringify(payload));
+}
+
+/**
+ * Soft-merge local hull position toward the server’s integrated state (prediction reconciliation).
+ * Keeps near–Fortnite responsiveness while correcting wind / collision divergence.
+ */
+function reconcileLocalPlayerFromServerState(selfRow) {
+  if (!selfRow || G.spectate || G.playerSinking || G.docked || G.captainWalk?.active || G.boarding) return;
+  const sx = Number(selfRow.x), sz = Number(selfRow.z);
+  if (!Number.isFinite(sx) || !Number.isFinite(sz)) return;
+  const dx = sx - G.player.x, dz = sz - G.player.z;
+  const d = Math.hypot(dx, dz);
+  if (d > 155) {
+    G.player.x = sx;
+    G.player.z = sz;
+    return;
+  }
+  if (d < 0.75) return;
+  const cap = Math.min(0.45, 0.035 + d * 0.0075);
+  G.player.x += dx * cap;
+  G.player.z += dz * cap;
+}
+
+/** Server-authoritative last session snapshot (MMO) — skipped when a local voyage save owns progress. */
+function applyWorldResumeFromServer(msg) {
+  if (!msg || typeof msg !== 'object' || G.mode !== 'playing' || G.spectate || G.playerSinking) return;
+  if (voyageSaveExistsInStorage()) return;
+  const lim = WORLD_EDGE_CLAMP;
+  const x = Number(msg.x), z = Number(msg.z);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+  G.player.x = Math.max(-lim, Math.min(lim, x));
+  G.player.z = Math.max(-lim, Math.min(lim, z));
+  if (msg.rotation != null && Number.isFinite(Number(msg.rotation))) G.player.rotation = Number(msg.rotation);
+  G.player.speed = 0;
+  if (msg.docked) {
+    G.docked = false;
+    G.nearDock = null;
+    G.dockingAnim = null;
+    G.undockingAnim = null;
+  }
+  if (msg.shipType) {
+    const st = String(msg.shipType).trim().slice(0, 24);
+    if (st && SHIP_TYPES[st]) G.player.shipType = st;
+  }
+  if (msg.shipName != null) G.player.shipName = String(msg.shipName).slice(0, 28);
+  if (msg.shipParts && typeof msg.shipParts === 'object') {
+    G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...G.player.shipParts, ...msg.shipParts };
+  }
+  if (msg.health != null && Number.isFinite(Number(msg.health))) G.player.health = Math.max(0, Math.min(G.player.maxHealth || 100, Number(msg.health)));
+  if (msg.riggingHealth != null) G.player.riggingHealth = Math.max(0, Math.min(100, Number(msg.riggingHealth) || 0));
+  if (msg.morale != null) G.player.morale = Math.max(0, Math.min(100, Number(msg.morale) || 0));
+  if (msg.flagAssetId != null) {
+    const fa = sanitizeFlagPngId(msg.flagAssetId);
+    if (fa != null) G.player.flagAssetId = fa;
+  }
+  if (msg.flagColor != null) G.player.flagColor = String(msg.flagColor).slice(0, 32);
+  rebuildPlayerShip();
+  try {
+    playerShipGroup.position.set(G.player.x, worldSeaSurfaceY(G.player.x, G.player.z) + SHIP_FREEBOARD, G.player.z);
+    playerShipGroup.rotation.y = G.player.rotation;
+  } catch (e) {}
+  ensurePlayerInOpenOcean();
+  nudgePlayerSpawnClearOfShips();
+  flushGameViewRender();
+  if (msg.realm && typeof msg.realm === 'object') applyRealmHud(msg.realm, G.serverMaxPlayers);
+  notify('Welcome back — your hull is where you left it on this realm.', 5200);
+}
+
+function applyRealmHud(realm, maxPlayers) {
+  if (!realm || typeof realm !== 'object') return;
+  G.realmConfig = {
+    id: realm.id != null ? String(realm.id) : '',
+    name: realm.name != null ? String(realm.name) : '',
+    motd: realm.motd != null ? String(realm.motd) : '',
+    version: realm.version != null ? String(realm.version) : ''
+  };
+  if (maxPlayers != null && Number.isFinite(Number(maxPlayers))) G.serverMaxPlayers = Math.max(0, Math.floor(Number(maxPlayers)));
+  const line = document.getElementById('chat-realm-line');
+  if (line) {
+    const cap = G.serverMaxPlayers != null ? ` · cap ${G.serverMaxPlayers}` : '';
+    const nm = G.realmConfig.name || 'Realm';
+    const idb = G.realmConfig.id ? ` (${G.realmConfig.id})` : '';
+    line.style.display = 'block';
+    line.textContent = `${nm}${idb}${cap}`;
+    line.title = G.realmConfig.motd ? G.realmConfig.motd : 'Persistent shared world';
+  }
+  const regEl = document.getElementById('hud-mmo-region');
+  if (regEl && ws && ws.readyState === 1) {
+    regEl.style.display = '';
+    try { regEl.textContent = mmoSeaRegionLabel(G.player.x, G.player.z); } catch (e) {}
+  }
+  if (G.realmConfig.motd && String(G.realmConfig.motd).trim() && !G._realmMotdShown) {
+    G._realmMotdShown = true;
+    notify(String(G.realmConfig.motd).slice(0, 420), 10000);
+  }
 }
 
 function syncCombatShotMenuThumbOffset() {
@@ -19159,6 +19321,17 @@ function renderDebugLeaderboardPanel() {
   document.getElementById('debug-admin-clear-chat')?.addEventListener('click', () => {
     if (!confirm('Remove every chat message for all players?')) return;
     sendAdminNav({ action: 'clear_chat' });
+  });
+  document.getElementById('debug-realm-announce-send')?.addEventListener('click', () => {
+    const inp = document.getElementById('debug-realm-announce-input');
+    const text = inp && inp.value ? String(inp.value).trim() : '';
+    if (!text) {
+      notify('Enter a broadcast message.');
+      return;
+    }
+    sendAdminNav({ action: 'world_announce', text });
+    inp.value = '';
+    notify('Realm broadcast sent.');
   });
   document.getElementById('debug-admin-bans')?.addEventListener('click', e => {
     const btn = e.target.closest('.debug-admin-unban');
@@ -20756,16 +20929,32 @@ function applyServerPop(sp) {
   G.serverPopOnline = on;
   G.serverPopRegistered = reg;
   const el = document.getElementById('chat-server-pop');
-  if (el) el.textContent = `${Math.max(0, Math.floor(on))}/${Math.max(0, Math.floor(reg))}`;
+  if (el) {
+    const cap = sp.maxPlayers != null && Number.isFinite(Number(sp.maxPlayers)) ? Math.floor(Number(sp.maxPlayers)) : null;
+    el.textContent = cap != null
+      ? `${Math.max(0, Math.floor(on))}/${cap} online`
+      : `${Math.max(0, Math.floor(on))}/${Math.max(0, Math.floor(reg))}`;
+    el.title = cap != null
+      ? `Captains online / realm concurrent cap · ${Math.max(0, Math.floor(reg))} registered`
+      : 'Online now · Registered captains';
+  }
+  if (sp.realm && typeof sp.realm === 'object') {
+    applyRealmHud(sp.realm, sp.maxPlayers != null ? sp.maxPlayers : null);
+  }
 }
 
 let _playersTabPingTimer = null;
 /** Server RTT: send `client_ping` on an interval in multiplayer (not only on Chat → Captains). */
 let _mpRttTimer = null;
+let _mmoCheckpointTimer = null;
 function stopMultiplayerRttLoop() {
   if (_mpRttTimer) {
     clearInterval(_mpRttTimer);
     _mpRttTimer = null;
+  }
+  if (_mmoCheckpointTimer) {
+    clearInterval(_mmoCheckpointTimer);
+    _mmoCheckpointTimer = null;
   }
 }
 function startMultiplayerRttLoop() {
@@ -20780,6 +20969,10 @@ function startMultiplayerRttLoop() {
   };
   tick();
   _mpRttTimer = setInterval(tick, 2500);
+  _mmoCheckpointTimer = setInterval(() => {
+    if (G.mode !== 'playing' || !ws || ws.readyState !== 1 || !G.myCaptainKey) return;
+    try { ws.send(JSON.stringify({ type: 'world_checkpoint' })); } catch (e) {}
+  }, 88000);
 }
 function stopPlayersTabServices() {
   if (_playersTabPingTimer) {
@@ -26187,7 +26380,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 }
 
 /* ============================== GAME LOOP ================================ */
-/** Must match server.js TICK_RATE for smooth remote motion. */
+/** Must match server.js TICK_RATE (authoritative sim + interest-managed state). */
 const NET_SYNC_HZ = 45;
 /**
  * Slower than NET_SYNC_HZ on purpose. The host sends the full world NPC list each tick; 45Hz JSON + main-thread
@@ -27365,6 +27558,15 @@ function update(dt) {
   if (G.spectate) updateSpectateInfoPanel();
   try { updateBoardingUiOverlay(); } catch (e) {}
   try { tickRemoteBoardingSpectatorUi(); } catch (e) {}
+
+  G._mmoRegionAcc = (G._mmoRegionAcc || 0) + dt;
+  if (G._mmoRegionAcc >= 1.12 && G.mode === 'playing' && ws?.readyState === 1) {
+    G._mmoRegionAcc = 0;
+    const el = document.getElementById('hud-mmo-region');
+    if (el && el.style.display !== 'none') {
+      try { el.textContent = mmoSeaRegionLabel(G.player.x, G.player.z); } catch (e) {}
+    }
+  }
 
   sendTimer -= dt;
   if (sendTimer <= 0) {
