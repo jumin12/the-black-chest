@@ -873,7 +873,9 @@ function createServerNpcWorld(opts) {
       }
     }
     if (!haveSpawn) return false;
-    const labels = ['Patrol', 'Squadron', 'Coast Guard', 'Guardship'];
+    const patrolNameSalt = ((pid | 0) * 2654435761 ^ (pick.cx | 0) * 73856093 ^ (pick.cz | 0) * 19349663 ^ (ws | 0) ^ (fid * 50261)) >>> 0;
+    let patrolName = proceduralFactionMerchantShipName(fid, patrolNameSalt);
+    if (patrolName.length > 32) patrolName = patrolName.slice(0, 31) + '…';
     const npc = {
       syncId: pid,
       x: nx,
@@ -882,7 +884,7 @@ function createServerNpcWorld(opts) {
       speed: 0,
       health: 72 + sr() * 48,
       type: st,
-      name: `${FACTION_SHORT_NAMES[fid]} ${labels[Math.floor(sr() * labels.length)]} · ${(pid | 0) % 1000}`,
+      name: patrolName,
       factionId: fid,
       isFactionPatrol: true,
       patrolCannon: tradeShipCannonForType(st),

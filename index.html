@@ -214,7 +214,7 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .port-trade-icon .cargo-item-png,.port-trade-icon img{max-width:none;max-height:none;width:56px;height:56px;object-fit:contain;display:block;margin:-4px;}
 .combat-shot-toggle--grape .combat-shot-sphere{filter:drop-shadow(0 2px 5px rgba(0,0,0,0.6));}
 .combat-shot-toggle--chain .combat-shot-sphere{filter:drop-shadow(0 2px 5px rgba(0,0,0,0.6));}
-#hud-hull-box,#hud-sail-box{display:inline-flex;align-items:center;gap:4px;padding:3px 8px!important;min-width:0;}
+#hud-hull-box,#hud-sail-box{display:inline-flex;align-items:center;gap:3px;min-width:0;line-height:1.12;}
 #hud-shipcon,#hud-sailcon{width:46px;height:46px;object-fit:contain;object-position:center;display:block;flex-shrink:0;}
 #combat-shot-count{
   font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;min-width:1.35em;text-align:center;
@@ -2048,13 +2048,10 @@ body.game-help-mobile-minimal #game-help-panel{
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:14px;">
           <input type="checkbox" id="cap-parrot" style="width:18px;height:18px;accent-color:#d4a848;" /> Parrot
         </label>
-        <label>Hull jack & sails</label>
+        <label>Flag &amp; sail</label>
         <div id="creation-banner-row" style="display:flex;flex-direction:column;gap:8px;margin-top:4px;">
-          <p style="font-size:10px;color:#8a7a68;line-height:1.45;margin:0;">Design your own jack and sail livery (Bannerlord-style field + emblems). Classic painted jacks can be bought from the chandler when docked.</p>
-          <div style="display:flex;flex-wrap:wrap;gap:8px;">
-            <button type="button" id="creation-edit-hull-banner" class="clan-btn clan-btn--primary" style="flex:1;min-width:120px;">Design hull jack</button>
-            <button type="button" id="creation-edit-sail-banner" class="clan-btn" style="flex:1;min-width:120px;">Design sails</button>
-          </div>
+          <p style="font-size:10px;color:#8a7a68;line-height:1.45;margin:0;">Design your hull jack and sail livery (field + emblems). Classic painted jacks can be bought from the chandler when docked.</p>
+          <button type="button" id="creation-edit-banners" class="clan-btn clan-btn--primary" style="width:100%;max-width:320px;">Customize flag and sail</button>
         </div>
         </div>
       </div>
@@ -7852,6 +7849,11 @@ function proceduralPirateShipName(fid, cx, cz, idx) {
   const pool = FACTION_PIRATE_SHIP_NAMES[f];
   const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (G.worldSeed | 0) ^ (f * 50261)) >>> 0;
   return pool[th % pool.length];
+}
+/** Faction navy / patrol — uses the same per-crown merchant name pools (HMS…, VOC…, etc.) for consistent national flavor. */
+function proceduralFactionPatrolShipName(fid, cx, cz, syncId) {
+  const salt = ((syncId | 0) * 2654435761 ^ (cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (G.worldSeed | 0) ^ ((fid | 0) * 50261)) >>> 0;
+  return proceduralFactionMerchantShipName(fid, salt);
 }
 function playerCombatPowerEstimate() {
   const st = SHIP_TYPES[G.player.shipType || 'sloop'] || SHIP_TYPES.sloop;
@@ -15588,8 +15590,7 @@ function spawnOneFactionPatrol(factionId) {
   if (!haveSpawn) return false;
   const facCol = FACTION_TRADE_COLORS[fid];
   const cannonPart = tradeShipCannonForType(st);
-  const labels = ['Patrol', 'Squadron', 'Coast Guard', 'Guardship'];
-  const label = labels[Math.floor(sr() * labels.length)];
+  const patrolName = proceduralFactionPatrolShipName(fid, pick.cx | 0, pick.cz | 0, pid);
   const npc = {
     syncId: pid,
     x: nx, z: nz,
@@ -15597,7 +15598,7 @@ function spawnOneFactionPatrol(factionId) {
     speed: 0,
     health: 72 + sr() * 48,
     type: st,
-    name: `${FACTION_SHORT_NAMES[fid]} ${label} · ${(pid | 0) % 1000}`,
+    name: patrolName.length > 32 ? patrolName.slice(0, 31) + '…' : patrolName,
     factionId: fid,
     isFactionPatrol: true,
     patrolCannon: cannonPart,
@@ -22310,9 +22311,8 @@ function renderPartyChatPanel() {
       <input id="party-rename-input" type="text" maxlength="24" value="${esc(G.party.tag)}" style="flex:1;padding:8px 10px;background:rgba(26,18,12,0.9);border:1px solid rgba(140,100,40,0.4);color:#e0d6c2;border-radius:8px;min-width:0;" />
       <button type="button" id="party-rename-btn" class="clan-btn">Rename</button>
     </div>`;
-    html += `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
-      <button type="button" id="party-clan-hull-banner-btn" class="clan-btn" style="flex:1;min-width:120px;">Clan hull jack</button>
-      <button type="button" id="party-clan-sail-banner-btn" class="clan-btn" style="flex:1;min-width:120px;">Clan sails</button>
+    html += `<div style="margin-bottom:6px;">
+      <button type="button" id="party-clan-banners-btn" class="clan-btn clan-btn--primary" style="width:100%;max-width:320px;">Customize flag and sail</button>
     </div>
     <p style="font-size:10px;color:#6a5a48;margin:0 0 10px;line-height:1.4;">Clanmates automatically fly these designs while they sail with the crew.</p>`;
   }
@@ -22352,13 +22352,9 @@ function renderPartyChatPanel() {
     if (!v) { notify('Clan name cannot be empty.'); return; }
     if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'party_set_tag', tag: v }));
   });
-  document.getElementById('party-clan-hull-banner-btn')?.addEventListener('click', () => {
+  document.getElementById('party-clan-banners-btn')?.addEventListener('click', () => {
     bindBannerEditorModalOnce();
     openBannerEditor('clan-hull');
-  });
-  document.getElementById('party-clan-sail-banner-btn')?.addEventListener('click', () => {
-    bindBannerEditorModalOnce();
-    openBannerEditor('clan-sail');
   });
   document.getElementById('party-invite-btn')?.addEventListener('click', () => {
     const v = document.getElementById('party-invite-input')?.value?.trim() || '';
@@ -22466,6 +22462,7 @@ window.captainsLogCycleUnlockedFlag = function (dir) {
 
 function updateShipPanel() {
   const info = document.getElementById('ship-info');
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   const spec = SHIP_TYPES[G.player.shipType];
   ensureCargoSlots();
   const nHold = spec.cargoSlots || 8;
@@ -22515,9 +22512,16 @@ function updateShipPanel() {
         <div style="min-width:0;"><div style="color:#a8c8e8;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">Your flag (on mast)</div><div style="color:#d8ccb8;font-size:12px;line-height:1.35;">Other captains see this jack when you are underway. ${equippedCatalog != null ? `Equipped catalog #${equippedCatalog}.` : 'Using your best unlocked jack.'}</div></div>
       </div>`
     : '';
+  const shipNm = (G.player.shipName && String(G.player.shipName).trim()) ? String(G.player.shipName).trim().slice(0, 28) : 'Unnamed vessel';
   info.innerHTML = `
-    <div style="text-align:center;color:#d4a848;font-size:16px;font-weight:bold;margin-bottom:4px;">${G.player.shipName}</div>
-    <div style="text-align:center;color:#8a7a60;font-size:11px;margin-bottom:10px;">${spec.name} - ${spec.desc}</div>
+    <div style="margin-bottom:10px;">
+      <div style="color:#8a7a60;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Ship name</div>
+      <div style="display:flex;gap:6px;align-items:stretch;flex-wrap:wrap;">
+        <input type="text" id="log-ship-name-input" maxlength="28" value="${esc(shipNm)}" autocomplete="off" style="flex:1;min-width:140px;padding:7px 10px;background:rgba(26,18,12,0.92);border:1px solid rgba(140,100,40,0.38);color:#d4a848;border-radius:6px;font-size:14px;font-weight:bold;font-family:Georgia,serif;box-sizing:border-box;" />
+        <button type="button" id="log-ship-rename-btn" class="clan-btn clan-btn--primary" style="flex-shrink:0;align-self:stretch;">Apply</button>
+      </div>
+    </div>
+    <div style="text-align:center;color:#8a7a60;font-size:11px;margin-bottom:10px;">${spec.name} — ${spec.desc}</div>
     ${mastFlagBlock}
     ${unlockLine}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
@@ -22566,6 +22570,29 @@ function updateShipPanel() {
   requestAnimationFrame(() => {
     syncShipLogScrollbarThumb();
     requestAnimationFrame(() => syncShipLogScrollbarThumb());
+    const inp = document.getElementById('log-ship-name-input');
+    const btn = document.getElementById('log-ship-rename-btn');
+    const applyShipRenameFromLog = () => {
+      if (!inp || G.mode !== 'playing') return;
+      let v = String(inp.value || '').trim();
+      if (!v) v = 'Unnamed vessel';
+      v = v.slice(0, 28);
+      const cur = ((G.player.shipName != null && String(G.player.shipName).trim()) ? String(G.player.shipName).trim() : '');
+      if (v === cur) return;
+      G.player.shipName = v;
+      saveProgressDebounced();
+      if (ws?.readyState === 1) sendUpdate();
+      try { rebuildPlayerShip(); } catch (e) {}
+      notify('Ship renamed.', 2400);
+      updateShipPanel();
+    };
+    btn?.addEventListener('click', applyShipRenameFromLog);
+    inp?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        applyShipRenameFromLog();
+      }
+    });
   });
 }
 window.shipRepairHullFromCargoWood = function shipRepairHullFromCargoWood() {
@@ -25541,14 +25568,10 @@ function showPortTab(tab) {
     const workshop = document.createElement('div');
     workshop.style.cssText = 'margin-bottom:14px;padding:10px;background:rgba(40,32,22,0.55);border:1px solid rgba(160,120,60,0.35);border-radius:8px;';
     workshop.innerHTML = `<div style="color:#d4a848;font-size:11px;text-transform:uppercase;margin-bottom:8px;">Sign painter & sail loft</div>
-      <p style="color:#9a9080;font-size:10px;line-height:1.45;margin:0 0 10px;">Open a workshop to paint your hull jack or sail canvas (field + emblems). Your designs save with your voyage.</p>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;">
-        <button type="button" id="port-workshop-hull" class="clan-btn clan-btn--primary" style="flex:1;min-width:120px;">Hull jack</button>
-        <button type="button" id="port-workshop-sail" class="clan-btn" style="flex:1;min-width:120px;">Sail livery</button>
-      </div>`;
+      <p style="color:#9a9080;font-size:10px;line-height:1.45;margin:0 0 10px;">Paint your hull jack and sail canvas (field + emblems). Your designs save with your voyage.</p>
+      <button type="button" id="port-workshop-banners" class="clan-btn clan-btn--primary" style="width:100%;max-width:280px;">Customize flag and sail</button>`;
     content.appendChild(workshop);
-    workshop.querySelector('#port-workshop-hull')?.addEventListener('click', () => { bindBannerEditorModalOnce(); openBannerEditor('game-hull'); });
-    workshop.querySelector('#port-workshop-sail')?.addEventListener('click', () => { bindBannerEditorModalOnce(); openBannerEditor('game-sail'); });
+    workshop.querySelector('#port-workshop-banners')?.addEventListener('click', () => { bindBannerEditorModalOnce(); openBannerEditor('game-hull'); });
     const curFlag = getEffectivePlayerFlagAssetId();
     const ids = PLAYER_FLAG_CHOICE_IDS;
     let portPickIdx = Math.max(0, ids.indexOf(curFlag));
@@ -29868,15 +29891,10 @@ function bindBannerEditorModalOnce() {
 }
 function bindCreationBannerEditors() {
   bindBannerEditorModalOnce();
-  const h = document.getElementById('creation-edit-hull-banner');
-  const s = document.getElementById('creation-edit-sail-banner');
-  if (h && !h.dataset.bound) {
-    h.dataset.bound = '1';
-    h.addEventListener('click', () => openBannerEditor('creation-hull'));
-  }
-  if (s && !s.dataset.bound) {
-    s.dataset.bound = '1';
-    s.addEventListener('click', () => openBannerEditor('creation-sail'));
+  const b = document.getElementById('creation-edit-banners');
+  if (b && !b.dataset.bound) {
+    b.dataset.bound = '1';
+    b.addEventListener('click', () => openBannerEditor('creation-hull'));
   }
 }
 function applyCreateScreenCrewEditVis(isEdit) {
