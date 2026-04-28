@@ -32,6 +32,40 @@ function clampPlayerWorldX(x) {
   return Math.max(-PLAYER_WORLD_EDGE_CLAMP, Math.min(PLAYER_WORLD_EDGE_CLAMP, v));
 }
 
+/** Navigator (F3) session: skip anticheat clamps so goto/devtools can teleport and heal freely. Token must match `adminSessions`. */
+function applyNavigatorDevPlayerUpdate(p, msg) {
+  const stripped = [];
+  if (msg.speed !== undefined) {
+    const sp = Number(msg.speed);
+    if (Number.isFinite(sp)) p.speed = Math.max(-120, Math.min(120, sp));
+  }
+  if (msg.rotation !== undefined) {
+    const r = Number(msg.rotation);
+    if (Number.isFinite(r)) p.rotation = Math.max(-1e4, Math.min(1e4, r));
+  }
+  if (msg.health !== undefined) {
+    const h = Number(msg.health);
+    if (Number.isFinite(h)) p.health = Math.max(-100, Math.min(50000, h));
+  }
+  if (msg.riggingHealth !== undefined) {
+    const rg = Number(msg.riggingHealth);
+    if (Number.isFinite(rg)) p.riggingHealth = Math.max(0, Math.min(100, rg));
+  }
+  if (msg.morale !== undefined) {
+    const m = Number(msg.morale);
+    if (Number.isFinite(m)) p.morale = Math.max(0, Math.min(100, m));
+  }
+  if (msg.x !== undefined && msg.z !== undefined) {
+    const cx = clampPlayerWorldX(msg.x);
+    const cz = clampPlayerWorldX(msg.z);
+    if (cx != null && cz != null) {
+      p.x = cx;
+      p.z = cz;
+    }
+  }
+  return { kick: false, stripped, denyPositionHint: false };
+}
+
 /** Per-client interest radius (world units). Massively cuts bandwidth vs full-world snapshots at high player counts. */
 const STATE_AOI_RADIUS = Math.max(800, Math.min(20000, Number(process.env.STATE_AOI_RADIUS) || 5200));
 const STATE_AOI_RADIUS_SQ = STATE_AOI_RADIUS * STATE_AOI_RADIUS;
@@ -2514,12 +2548,18 @@ wss.on('connection', (ws, req) => {
           const p = players.get(id);
           if (!p) break;
           ensureSimulationLayer();
-          if (!antiCheat.allowUpdateMessage(ws)) break;
+          pruneAdminSessions();
+          const navTok = msg.navigatorToken != null ? String(msg.navigatorToken).trim().slice(0, 128) : '';
+          p.navigatorAcBypass = !!(navTok && adminSessions.get(navTok) > Date.now());
+          const allowNet = p.navigatorAcBypass || antiCheat.allowUpdateMessage(ws);
+          if (!allowNet) break;
           if (msg.seq != null && Number.isFinite(Number(msg.seq))) {
             const ns = Math.floor(Number(msg.seq));
             if (ns > 0) p.lastNetSeq = ns;
           }
-          const ac = antiCheat.validatePlayerUpdate(p, msg, ws);
+          const ac = p.navigatorAcBypass
+            ? applyNavigatorDevPlayerUpdate(p, msg)
+            : antiCheat.validatePlayerUpdate(p, msg, ws);
           if (ac.kick) {
             try {
               ws.send(JSON.stringify({
@@ -2530,7 +2570,7 @@ wss.on('connection', (ws, req) => {
             try { ws.close(); } catch (e2) {}
             break;
           }
-          if (msg.x !== undefined && msg.z !== undefined) {
+          if (!p.navigatorAcBypass && msg.x !== undefined && msg.z !== undefined) {
             const cx = Number(msg.x);
             const cz = Number(msg.z);
             if (Number.isFinite(cx) && Number.isFinite(cz) && (p.docked || !ac.denyPositionHint)) {
