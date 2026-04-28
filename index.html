@@ -1674,6 +1674,10 @@ body.game-help-mobile-minimal #game-help-panel{
   .hud-box{font-size:10px;padding:3px 7px;}
   #stats-ammo-stack .hud-box{white-space:normal;text-align:center;max-width:100%;line-height:1.25;}
   #hud-top{gap:4px;}
+  #hud-hull-box,#hud-sail-box{padding:1px 5px!important;}
+  #hud-hull-box #hud-shipcon,#hud-sail-box #hud-sailcon{
+    width:34px;height:34px;margin:-7px 1px -7px -3px;
+  }
   #combat-shot-wrap{
     left:50%;transform:translateX(-50%);
     bottom:calc(70px + 120px + 12px + env(safe-area-inset-bottom,0px));
@@ -1747,6 +1751,10 @@ body.game-help-mobile-minimal #game-help-panel{
   .ammo-type-btn{padding:7px 8px;font-size:9px;}
   #compass-quest-column{max-width:min(200px,calc(100vw - 92px));align-items:flex-start;}
   #story-brief-hud .story-brief-text{font-size:9px;}
+  #hud-hull-box #hud-shipcon,#hud-sail-box #hud-sailcon{
+    width:28px;height:28px;margin:-5px 0 -5px -2px;
+  }
+  #hud-hull-box,#hud-sail-box{padding:0 4px!important;}
 }
 /* F3 debug modal — tactical chart + roster */
 .debug-econ-readout{font-size:9px;font-family:ui-monospace,Consolas,"Courier New",monospace;color:rgba(118,128,138,0.38);letter-spacing:0.06em;margin:8px 0 0;padding:0;line-height:1.4;user-select:none;}
@@ -3147,6 +3155,13 @@ const CAM_ANGLE_MIN = 0.07;
 const CAM_ANGLE_MAX = Math.PI / 2 - 0.04;
 function clampCameraAngle(a) {
   return Math.max(CAM_ANGLE_MIN, Math.min(CAM_ANGLE_MAX, a));
+}
+/** Shortest signed angle from `fromRad` toward `toRad` (−π..π]. */
+function angleDeltaToward(fromRad, toRad) {
+  let d = toRad - fromRad;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }
 /** Default sailing chase pitch — lower than legacy PI/6.1 so the view stays closer to horizon (less top-down). */
 const CAM_ANGLE_CHASE_DEFAULT = Math.PI / 7.35;
@@ -20430,8 +20445,8 @@ function snapChaseYawBehindShipPreservePitch() {
   }
   mmbDoubleGestureArmed = false;
   const y = (G.player && G.player.rotation != null ? G.player.rotation : 0) + Math.PI;
-  G.camera.yaw = y;
-  G.camera.targetYaw = y;
+  const base = G.camera.yaw !== undefined ? G.camera.yaw : y;
+  G.camera.targetYaw = base + angleDeltaToward(base, y);
 }
 function resetChaseCameraBehindShip() {
   G.camera.mobileOrbitFree = false;
@@ -29585,16 +29600,25 @@ function update(dt) {
     if (keys['q']) { G.camera.targetYaw -= 1.5 * dt; G.camera.pcOrbitFree = true; }
     if (keys['e']) { G.camera.targetYaw += 1.5 * dt; G.camera.pcOrbitFree = true; }
   }
-  const _camD = isMobile ? 10.5 : 4;
-  G.camera.yaw += (G.camera.targetYaw - G.camera.yaw) * Math.min(1, _camD * dt);
+  const yawCatchK = isMobile ? 19 : 8.5;
+  const yawCatchA = 1 - Math.exp(-yawCatchK * dt);
+  const yTowardTgt = angleDeltaToward(G.camera.yaw, G.camera.targetYaw);
+  G.camera.yaw += yTowardTgt * Math.min(1, yawCatchA);
+
   G.camera.targetAngle = clampCameraAngle(G.camera.targetAngle);
-  G.camera.angle += (G.camera.targetAngle - G.camera.angle) * Math.min(1, _camD * dt);
+  const pitchCatchK = isMobile ? 10 : 5.2;
+  const pitchCatchA = 1 - Math.exp(-pitchCatchK * dt);
+  const pTowardTgt = G.camera.targetAngle - G.camera.angle;
+  G.camera.angle += pTowardTgt * Math.min(1, pitchCatchA);
+
+  const zoomCatchK = isMobile ? 10 : 5.5;
+  const zoomCatchA = 1 - Math.exp(-zoomCatchK * dt);
+  G.camera.zoom += (G.camera.targetZoom - G.camera.zoom) * Math.min(1, zoomCatchA);
 
   if (!G.touch.active) {
     G.camera.offsetX *= (1 - 2 * dt);
     G.camera.offsetZ *= (1 - 2 * dt);
   }
-  G.camera.zoom += (G.camera.targetZoom - G.camera.zoom) * Math.min(1, (isMobile ? 7.5 : 4) * dt);
   G.camera.zoom = clampCameraZoomLevel(G.camera.zoom);
   G.camera.targetZoom = clampCameraZoomLevel(G.camera.targetZoom);
 
@@ -30589,12 +30613,11 @@ function update(dt) {
     const orbitFree = G.spectate || (G.mode === 'playing' && G.sailingCameraMode === 'free')
       || (isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree || middleDown;
     if (!orbitFree) {
-      const targetY = G.player.rotation + Math.PI;
-      let camDiff = targetY - G.camera.yaw;
-      while (camDiff > Math.PI) camDiff -= Math.PI * 2;
-      while (camDiff < -Math.PI) camDiff += Math.PI * 2;
-      G.camera.yaw += camDiff * Math.min(1, 2.5 * dt);
-      G.camera.targetYaw = G.camera.yaw;
+      const wantY = G.player.rotation + Math.PI;
+      const chaseK = 6.4;
+      const chaseA = 1 - Math.exp(-chaseK * dt);
+      const td = angleDeltaToward(G.camera.targetYaw, wantY);
+      G.camera.targetYaw += td * Math.min(1, chaseA);
     }
     const cDist = orbitDistanceFromZoomLevel(G.camera.zoom), cAng = G.camera.angle, cYaw = G.camera.yaw;
     camera.position.set(
