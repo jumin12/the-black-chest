@@ -899,22 +899,6 @@ function sendToPlayerId(pid, obj) {
   }
 }
 
-const { createTavernGames } = require('./server/tavern-games.cjs');
-/** Dock games (Seelow dice / Hold'em) — authoritative stacks + crypto RNG. */
-let tavernGames = null;
-function ensureTavernGames() {
-  if (!tavernGames) {
-    tavernGames = createTavernGames({
-      players,
-      sendToPlayerId,
-      normalizeCaptainKey,
-      findWsByPlayerId,
-      getLeaderboardRank: getLeaderboardRankForPlayer
-    });
-  }
-  return tavernGames;
-}
-
 const BANS_FILE = path.join(DATA_DIR, 'bans.json');
 let leaderboardHistory = [];
 /** Max rows kept after merge/sort (large enough for full roster; still bounded for memory). */
@@ -949,15 +933,6 @@ function normalizeLbEntry(e) {
     if (ck) captainKey = ck;
   }
   return { name, gold, sinksAi, sinksPlayer, ransoms, deaths, boardings, playerId, captainKey, shipName, partyTag };
-}
-
-function getLeaderboardRankForPlayer(playerId) {
-  if (playerId == null || !Number.isFinite(Number(playerId))) return null;
-  const pid = Number(playerId);
-  for (let i = 0; i < leaderboardHistory.length; i++) {
-    if (normalizeLbEntry(leaderboardHistory[i]).playerId === pid) return i + 1;
-  }
-  return null;
 }
 
 /**
@@ -4048,10 +4023,6 @@ wss.on('connection', (ws, req) => {
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
         }
-        case 'tavern_cmd': {
-          ensureTavernGames().handleCmd(ws, id, msg);
-          break;
-        }
       }
     } catch (e) {
       console.error('[playground] ws message error:', e && e.message ? e.message : e);
@@ -4080,9 +4051,6 @@ wss.on('connection', (ws, req) => {
       } catch (e) {}
     }
     players.delete(id);
-    try {
-      ensureTavernGames().onDisconnect(id);
-    } catch (e) {}
     broadcast({ type: 'player_leave', id });
     broadcastServerPopulation();
     sendNpcSimulationDelegates();
