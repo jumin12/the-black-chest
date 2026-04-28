@@ -4077,15 +4077,19 @@ function detachNpcCrewAndSpawnBailSwimmers(npc, sinkOpts) {
 function runNpcSinkOutcome(npc, killerPlayerId, sinkOpts) {
   sinkOpts = sinkOpts || {};
   if (!npc || npc.sinking) return;
-  if (G.boarding && G.boarding.npcSyncId != null && Number(G.boarding.npcSyncId) === Number(npc.syncId)) {
-    try {
-      abortActiveBoarding('Their hull is going under — grapnels slip free.');
-    } catch (e) {}
+  if (G.boarding && G.boarding.npcSyncId != null && sinkOpts.fromBoardingPrizeUi !== true) {
+    const bSid = netNpcSyncId(G.boarding.npcSyncId);
+    const nSid = netNpcSyncId(npc.syncId);
+    if (bSid != null && nSid != null && bSid === nSid) {
+      try {
+        abortActiveBoarding('Their hull is going under — grapnels slip free.');
+      } catch (e) {}
+    }
   }
   const kid0 = killerPlayerId != null && Number.isFinite(Number(killerPlayerId))
     ? Math.floor(Number(killerPlayerId)) : null;
   const iKilled0 = kid0 != null && Number(kid0) === Number(G.myId);
-  if (ws?.readyState === 1 && !isMultiplayerHost() && iKilled0) {
+  if (ws?.readyState === 1 && !isMultiplayerHost() && iKilled0 && sinkOpts.fromBoardingPrizeUi === true) {
     try {
       ws.send(JSON.stringify({ type: 'npc_boarding_sink', npcSyncId: npc.syncId, fromId: G.myId }));
     } catch (e) {}
@@ -7285,11 +7289,12 @@ function nudgePlayerSavedPositionToValidSea(x, z, yaw, shipTypeOpt) {
 }
 
 /** Move the player to open ocean if the current seed would place them on land. */
-function ensurePlayerInOpenOcean() {
+function ensurePlayerInOpenOcean(opts) {
+  opts = opts || {};
   const cm = G.customMap;
   const stE = G.player.shipType || 'sloop';
   const yawE = G.player.rotation || 0;
-  if (cm && cm.playerSpawn && Number.isFinite(cm.playerSpawn.x) && Number.isFinite(cm.playerSpawn.z)) {
+  if (!opts.skipCustomMapSpawn && cm && cm.playerSpawn && Number.isFinite(cm.playerSpawn.x) && Number.isFinite(cm.playerSpawn.z)) {
     const px = cm.playerSpawn.x, pz = cm.playerSpawn.z;
     const spYaw = cm.playerSpawn.rotation != null && Number.isFinite(cm.playerSpawn.rotation) ? Number(cm.playerSpawn.rotation) : yawE;
     if (!shipFootprintOverlapsLand(px, pz, spYaw, stE) && hasMinClearanceFromLand(px, pz, 48)) {
@@ -14485,9 +14490,9 @@ function showBoardingSpoilsModal(won, b) {
       } catch (e) {}
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
       const prizeRow = n ? buildNpcPrizeCaptainRowFromNpc(n) : null;
-      if (n && n.mesh && prizeRow) {
+      if (n && prizeRow) {
         applyPrizeShipFromRemoteCaptainRow(prizeRow);
-        runNpcSinkOutcome(n, G.myId);
+        runNpcSinkOutcome(n, G.myId, { fromBoardingPrizeUi: true });
       } else { abortActiveBoarding(''); }
       clampPrizeVictorHullIntegrity();
     } else if (b.partnerPlayerId) {
@@ -14545,12 +14550,12 @@ function showBoardingSpoilsModal(won, b) {
     addBoardingSpoilsCaptivesFromPrisonerPick(G._boardingSpoilsPrisonerPick, maxPfS, 0.55);
     if (b.npcSyncId != null) {
       const n = G.npcs.find(nn => nn.syncId === b.npcSyncId);
-      if (n && n.mesh) {
+      if (n) {
         try {
           if (G._boardingEnemyHold) spillBoardingHoldCargoToSeaAt(n.x, n.z, G._boardingEnemyHold);
           spillBoardingSurvivorsAsSwimmers(n.x, n.z, b, G._boardingSpoilsPrisonerPick);
         } catch (e) {}
-        runNpcSinkOutcome(n, G.myId, { skipDefaultSwimmers: true, skipScatterLoot: true });
+        runNpcSinkOutcome(n, G.myId, { skipDefaultSwimmers: true, skipScatterLoot: true, fromBoardingPrizeUi: true });
       }
     } else {
       if (b.partnerPlayerId) {
@@ -14806,25 +14811,27 @@ function updateBoardingUiOverlay() {
     return;
   }
   const pSt = G.player.shipType || 'sloop';
-  let best = null, bestGap = 1e9, bestId = null;
+  let best = null, bestGapP = 1e9, bestId = null;
   if (G.otherPlayers && G.otherPlayers.size) {
     G.otherPlayers.forEach((op, pid) => {
       if (!canPlayerShipBeBoarded(op, pid)) return;
       const g = boardingSurfaceGapMeters(G.player.x, G.player.z, op.x, op.z, pSt, op.shipType || 'sloop');
       const brp = boardingGapMaxForShips(pSt, op.shipType || 'sloop');
-      if (g <= brp && g < bestGap) { bestGap = g; best = op; bestId = pid; }
+      if (g <= brp && g < bestGapP) { bestGapP = g; best = op; bestId = pid; }
     });
   }
-  let npcT = null;
+  let npcT = null, bestGapN = 1e9;
   for (const n of G.npcs) {
     if (!canNpcBeBoarded(n)) continue;
     if (!n.sinking && (n.health == null || n.health > 0)) {
       const g = boardingSurfaceGapMeters(G.player.x, G.player.z, n.x, n.z, pSt, n.type);
       const brn = boardingGapMaxForShips(pSt, n.type);
-      if (g <= brn && g < bestGap) { bestGap = g; npcT = n; }
+      if (g <= brn && g < bestGapN) { bestGapN = g; npcT = n; }
     }
   }
-  if (bestId != null) {
+  const useNpc = npcT && bestGapN < bestGapP;
+  const usePlayer = !useNpc && bestId != null && best;
+  if (usePlayer) {
     btn.style.display = 'block';
     const sg = otherShipGroups.get(bestId);
     if (sg && camera) {
@@ -14841,11 +14848,17 @@ function updateBoardingUiOverlay() {
     btn.onclick = () => startPlayerBoardingAttack(bestId);
   } else if (npcT) {
     btn.style.display = 'block';
-    if (npcT.mesh) {
+    if (camera) {
       const spec = SHIP_TYPES[npcT.type] || SHIP_TYPES.sloop;
-      const v = new THREE.Vector3(0, spec.hullH + spec.hullLen * 0.7 + 2 + 0.55, 0);
-      npcT.mesh.updateMatrixWorld();
-      v.applyMatrix4(npcT.mesh.matrixWorld);
+      const mastY = (spec.hullH || 1.3) + spec.hullLen * 0.7 + 2 + 0.55;
+      let v;
+      if (npcT.mesh) {
+        v = new THREE.Vector3(0, mastY, 0);
+        npcT.mesh.updateMatrixWorld();
+        v.applyMatrix4(npcT.mesh.matrixWorld);
+      } else {
+        v = new THREE.Vector3(npcT.x, worldSeaSurfaceY(npcT.x, npcT.z) + mastY, npcT.z);
+      }
       v.project(camera);
       const w = window.innerWidth, h = window.innerHeight;
       const x = (v.x * 0.5 + 0.5) * w, y = (-v.y * 0.5 + 0.5) * h;
@@ -19698,6 +19711,12 @@ function applyNpcSyncMessage(msg) {
     const sinkFromSync = !!nd.sinking || netHullDead;
     if (G.npcSimFromServer && sinkFromSync) applyAuthoritativeNpcSinkWorldFx(npc);
     if (sinkFromSync && !npc.sinking) {
+      if (G.boarding && G.boarding.npcSyncId != null) {
+        const bSid = netNpcSyncId(G.boarding.npcSyncId);
+        if (bSid != null && bSid === nid) {
+          abortActiveBoarding('Their hull is going under — grapnels slip free.');
+        }
+      }
       npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
       npc._sinkSkipSurfaceDebris = true;
       if (npc.mesh) removeCrewMeshesFromShipGroup(npc.mesh);
@@ -29528,7 +29547,7 @@ function update(dt) {
       G.player.z = nz;
       G.deathSpawnX = null;
       G.deathSpawnZ = null;
-      ensurePlayerInOpenOcean();
+      ensurePlayerInOpenOcean({ skipCustomMapSpawn: true });
       nudgePlayerSpawnClearOfShips();
       G.player.speed = 1;
       G.lastAttackerId = null;
