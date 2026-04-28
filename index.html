@@ -16133,8 +16133,10 @@ function pushPlayerOutOfShipOverlaps() {
       if (npc.sinking || npc.health <= 0) return;
       const nt = npcCollisionShipType(npc);
       if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) return;
-      const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, nt, margin, pHull, npcCollisionHullPart(npc));
+        const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, nt, margin, pHull, npcCollisionHullPart(npc));
       if (!sep) return;
+      let pushAmt = sep.depth * 0.62;
+      if (npc.tutorialRaidHull && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive) pushAmt *= 0.26;
       {
         const sid = npc.syncId != null ? npc.syncId : `u${Math.round(npc.x)}_${Math.round(npc.z)}`;
         const rKey = G.myId != null ? `me${G.myId}|npc${sid}` : `me|npc${sid}`;
@@ -16187,9 +16189,8 @@ function pushPlayerOutOfShipOverlaps() {
             notify(`Ramming impact — ${Math.round(stP.dmg)} hull damage`);
           }
         }
-        const push = sep.depth * 0.62;
-        G.player.x += sep.nx * push;
-        G.player.z += sep.nz * push;
+        G.player.x += sep.nx * pushAmt;
+        G.player.z += sep.nz * pushAmt;
         moved = true;
       }
     });
@@ -16807,11 +16808,32 @@ function resolveNpcHumanGrudgeAim(npc) {
   }
   return { bx, bz, pvx, pvz };
 }
-function npcFireBroadsideAtPlayer(npc) {
-  if (G.playerSinking || !G.player || G.player.health <= 0) return;
+/** Broadside yaw toward player's COM for tutorial pass (helps one clean volley). */
+function tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, weight) {
+  const dx = px - npc.x, dz = pz - npc.z;
+  const toP = Math.atan2(dx, dz);
+  const st = toP + Math.PI / 2, po = toP - Math.PI / 2;
+  let dSt = st - npc.rotation;
+  while (dSt > Math.PI) dSt -= Math.PI * 2;
+  while (dSt < -Math.PI) dSt += Math.PI * 2;
+  let dPo = po - npc.rotation;
+  while (dPo > Math.PI) dPo -= Math.PI * 2;
+  while (dPo < -Math.PI) dPo += Math.PI * 2;
+  const tgt = Math.abs(dSt) < Math.abs(dPo) ? st : po;
+  let dTu = tgt - npc.rotation;
+  while (dTu > Math.PI) dTu -= Math.PI * 2;
+  while (dTu < -Math.PI) dTu += Math.PI * 2;
+  npc.rotation += dTu * Math.min(1, (weight || 1) * 2.05 * dt) * npcSailingTurnFactor(npc);
+}
+/** Returns true iff a staggered battery was scheduled (not muted by aim rules). */
+function npcFireBroadsideAtPlayer(npc, opts) {
+  const tut = !!(opts && opts.tutorialRaid);
+  const minBear = tut ? Math.PI / 42 : Math.PI / 10;
+  const maxBear = tut ? Math.PI * 0.88 : Math.PI * 0.82;
+  if (G.playerSinking || !G.player || G.player.health <= 0) return false;
   const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const cc = npcEffectiveCannonSlots(npc);
-  if (cc <= 0) return;
+  if (cc <= 0) return false;
   const perSide = Math.ceil(cc / 2);
   const gm = npcCrewGunneryMult(npc);
   const aimJit = Math.max(0.38, 1.12 - gm * 0.11);
@@ -16826,15 +16848,22 @@ function npcFireBroadsideAtPlayer(npc) {
   }
   const dx = px - npc.x, dz = pz - npc.z;
   const dist = Math.hypot(dx, dz);
-  if (dist > 108 || dist < 2) return;
+  if (dist > 108 || dist < 2) return false;
 
   const toTargetAngle = Math.atan2(dx, dz);
   const relAngle = toTargetAngle - npc.rotation;
   const normRel = ((relAngle % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
   const absRel = Math.abs(normRel);
-  let side = absRel > Math.PI / 10 && absRel < Math.PI * 0.82 ? Math.sign(normRel) : 0;
-  if (side === 0 && absRel >= Math.PI * 0.82) side = Math.sign(normRel) || 1;
-  if (side === 0) return;
+  let side = absRel > minBear && absRel < maxBear ? Math.sign(normRel) : 0;
+  if (side === 0 && absRel >= maxBear) side = Math.sign(normRel) || 1;
+  /* Tutorial: if still ambiguous, choose side by player position vs our heading (avoid silent no-fire). */
+  if (side === 0 && tut) {
+    const fx = Math.sin(npc.rotation), fz = Math.cos(npc.rotation);
+    const rbx = px - npc.x, rbz = pz - npc.z;
+    const cross = fz * rbx - fx * rbz;
+    side = cross >= 0 ? 1 : -1;
+  }
+  if (side === 0) return false;
 
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
   const npcShipY = npc.mesh?.position.y || worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
@@ -16846,7 +16875,7 @@ function npcFireBroadsideAtPlayer(npc) {
 
   const shots = [];
   for (let g = 0; g < perSide; g++) {
-    if (Math.random() < 0.14) continue;
+    if (!tut && Math.random() < 0.14) continue;
     const jitter = (Math.random() - 0.5) * 0.62 * aimJit;
     const wide = (Math.random() - 0.5) * (0.38 + Math.random() * 0.35) * aimJit;
     const ang = jitter + wide;
@@ -16869,6 +16898,7 @@ function npcFireBroadsideAtPlayer(npc) {
     }
     shots.push({ g, wx, wy, wz, dirX, dirZ, side });
   }
+  if (!shots.length) return false;
   const staggerMs = Math.max(35, Math.round(BROADSIDE_GUN_STAGGER_SEC * 1000));
   shots.forEach((shot, idx) => {
     window.setTimeout(() => {
@@ -16886,6 +16916,7 @@ function npcFireBroadsideAtPlayer(npc) {
       if (masterSfxBusGain() > 0.02) playCannonSound(0.72, shot.wx, shot.wy, shot.wz);
     }, idx * staggerMs);
   });
+  return true;
 }
 
 function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
@@ -32743,7 +32774,7 @@ function startTutorialRaidEncounter() {
     return;
   }
   const nMax0 = npcMaxForwardSpeed(npc);
-  npc.speed = nMax0 * 0.55;
+  npc.speed = nMax0 * 0.28;
   G.tutorialRaidCutscene = {
     active: true,
     cinematicUi: true,
@@ -32787,18 +32818,20 @@ function tickTutorialRaidCutscene(dt) {
       tutorialRaidSetBanner('She shapes to cross your bow — hold your course.');
     }
     const distPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
-    let shouldFire = false;
-    if (!tr._volleyTriggered && tr.age >= 2.2) {
-      if (distPlayer < 94 && distPlayer > 5) shouldFire = true;
-      if (tr.age >= 16) shouldFire = true;
+    let attemptFire = false;
+    if (!tr._volleyTriggered && tr.age >= 2.0) {
+      if (distPlayer < 104 && distPlayer > 16) attemptFire = true;
+      if (tr.age >= 22) attemptFire = true;
     }
-    if (shouldFire) {
-      tr._volleyTriggered = true;
-      tr._volleyAtAge = tr.age;
-      tr.bannerPhase = 1;
-      tr.noPlayerHullDamageUntil = Math.max(nowMs + 5200, (tr.noPlayerHullDamageUntil || 0));
-      npcFireBroadsideAtPlayer(npc);
-      tutorialRaidSetBanner('Guns — she fires!');
+    if (attemptFire) {
+      const fired = npcFireBroadsideAtPlayer(npc, { tutorialRaid: true });
+      if (fired) {
+        tr._volleyTriggered = true;
+        tr._volleyAtAge = tr.age;
+        tr.bannerPhase = 1;
+        tr.noPlayerHullDamageUntil = Math.max(nowMs + 5200, (tr.noPlayerHullDamageUntil || 0));
+        tutorialRaidSetBanner('Guns — she fires!');
+      }
     }
     if (tr._volleyTriggered && tr._volleyAtAge != null && !tr._combatPhase) {
       const since = tr.age - tr._volleyAtAge;
@@ -32818,23 +32851,27 @@ function tickTutorialRaidNpcHost(dt, npc) {
   if (!tr || npc.syncId !== TUTORIAL_RAID_NPC_SYNC || !tr.scriptingActive) return;
   const px = G.player.x, pz = G.player.z;
   const sinR = Math.sin(G.player.rotation), cosR = Math.cos(G.player.rotation);
-  /** Starboard lateral from forward (sin,cos); ahead point just off player's starboard bow. */
+  /** Starboard lateral from forward (sin,cos). */
   const sideX = Math.cos(G.player.rotation), sideZ = -Math.sin(G.player.rotation);
   const nx = npc.x, nz = npc.z;
   const sharp = 2.32;
   const nmax = npcMaxForwardSpeed(npc);
+  const dPlayer = Math.hypot(nx - px, nz - pz);
   if (!tr._volleyTriggered) {
-    const tx = px + sinR * 36 + sideX * 14;
-    const tz = pz + cosR * 36 + sideZ * 14;
+    /* Wide crossing lane — avoids ramming orbit around the player's hull */
+    const tx = px + sinR * 18 + sideX * 76;
+    const tz = pz + cosR * 18 + sideZ * 76;
+    if (dPlayer >= 46 && dPlayer <= 148) tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, 0.74);
     const dx = tx - nx, dz = tz - nz;
     const distT = Math.hypot(dx, dz);
     const toT = Math.atan2(dx, dz);
     let dTurn = toT - npc.rotation;
     while (dTurn > Math.PI) dTurn -= Math.PI * 2;
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
-    npc.rotation += dTurn * Math.min(1, 3.15 * dt) * npcSailingTurnFactor(npc);
-    /* Match default pirate cruise (~0.78 nmax) like other open-sea NPCs. */
-    const tgt = distT > 52 ? nmax * 0.78 : Math.max(nmax * 0.24, npc.speed * 0.96);
+    npc.rotation += dTurn * Math.min(1, 1.92 * dt) * npcSailingTurnFactor(npc);
+    let tgt = distT > 80 ? nmax * 0.4 : Math.max(nmax * 0.14, npc.speed * 0.92);
+    if (dPlayer < 62) tgt = Math.min(tgt, nmax * 0.2);
+    if (dPlayer < 44) tgt = Math.min(tgt, nmax * 0.11);
     accelerateNpcToward(npc, dt, tgt);
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
@@ -32848,8 +32885,8 @@ function tickTutorialRaidNpcHost(dt, npc) {
     let dTurn = toAway - npc.rotation;
     while (dTurn > Math.PI) dTurn -= Math.PI * 2;
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
-    npc.rotation += dTurn * Math.min(1, 3.2 * dt) * npcSailingTurnFactor(npc);
-    accelerateNpcToward(npc, dt, nmax * 0.92);
+    npc.rotation += dTurn * Math.min(1, 2.68 * dt) * npcSailingTurnFactor(npc);
+    accelerateNpcToward(npc, dt, Math.min(nmax * 0.58, npc.speed + 0.015));
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
   }
