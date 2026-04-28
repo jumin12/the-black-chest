@@ -5185,12 +5185,26 @@ function buildTavernRoomChatHtml(room) {
   }
   return h;
 }
+function getTavernRecruitVenueKey() {
+  const d = G.nearDock;
+  if (!d || d.cx == null || d.cz == null) return '';
+  return `${d.cx | 0},${d.cz | 0}`;
+}
+function patchTavernRecruitGoldHintOnly() {
+  const hint = document.getElementById('tavern-recruit-hint');
+  if (!hint) return false;
+  const spec = SHIP_TYPES[G.player.shipType];
+  hint.innerHTML =
+    `Sailors: ${countSailorCrew()}/${spec.maxCrew} · Brig: ${countPrisonerCrew()}/${spec.maxPrisoners} | Cost: 25 gold each`;
+  return true;
+}
 function refreshTavernPanelIfOpen() {
   const pp = document.getElementById('port-panel');
   if (!pp || pp.style.display === 'none') return;
   const at = document.querySelector('.port-tab.active');
   if (!at || at.dataset.ptab !== 'tavern') return;
   const o = G.tavernSubOpts || {};
+  if (o.sub === 'recruit' && patchTavernRecruitGoldHintOnly()) return;
   try { showPortTab('tavern', o); } catch (e) {}
 }
 function countSailorCrew() { return (Array.isArray(G.player.crew) ? G.player.crew : []).filter(c => c && c.role !== 'prisoner').length; }
@@ -19050,7 +19064,10 @@ async function connectToServer() {
       case 'tavern_room_list':
         G._tavernRoomListCache = msg.rooms || [];
         G._tavernRoomListTown = msg.townKey || '';
-        refreshTavernPanelIfOpen();
+        {
+          const o = G.tavernSubOpts || {};
+          if (o.sub === 'dice' || o.sub === 'poker') refreshTavernPanelIfOpen();
+        }
         break;
       case 'tavern_state':
         G._tavernActiveRoomSnapshot = msg.room || null;
@@ -19061,6 +19078,7 @@ async function connectToServer() {
           showPortTab('tavern', { sub: 'table', roomId: rid, game: gg });
           break;
         }
+        if (G.tavernSubOpts && G.tavernSubOpts.sub === 'recruit') break;
         refreshTavernPanelIfOpen();
         break;
       case 'tavern_created':
@@ -26456,7 +26474,7 @@ function showPortTab(tab, opts) {
   } else if (tab === 'tavern') {
     G.tavernSubOpts = opts || {};
     const sub = opts.sub;
-    requestTavernRoomList(sub === 'dice' ? 'dice' : sub === 'poker' ? 'poker' : null);
+    if (sub === 'dice' || sub === 'poker') requestTavernRoomList(sub);
     if (sub === 'recruit') {
       const spec = SHIP_TYPES[G.player.shipType];
       const backBtn = document.createElement('button');
@@ -26467,17 +26485,40 @@ function showPortTab(tab, opts) {
         'margin-bottom:10px;padding:6px 12px;border-radius:6px;border:1px solid rgba(180,120,60,0.45);background:rgba(50,35,20,0.75);color:#e8dcc8;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
       backBtn.addEventListener('click', () => showPortTab('tavern'));
       content.appendChild(backBtn);
+      const venue = getTavernRecruitVenueKey();
+      if (
+        G._tavernRecruitVenue !== venue ||
+        !Array.isArray(G._tavernRecruitLineup) ||
+        G._tavernRecruitLineup.length !== 3
+      ) {
+        G._tavernRecruitVenue = venue;
+        G._tavernRecruitLineup = [0, 1, 2].map(() => ({
+          name: RECRUIT_NAMES[Math.floor(Math.random() * RECRUIT_NAMES.length)],
+          label: RECRUIT_ROLES[Math.floor(Math.random() * RECRUIT_ROLES.length)]
+        }));
+      }
       const hint = document.createElement('div');
+      hint.id = 'tavern-recruit-hint';
       hint.style.cssText = 'color:#8a7a60;font-size:11px;margin-bottom:8px;';
-      hint.innerHTML = `Sailors: ${countSailorCrew()}/${spec.maxCrew} · Brig: ${countPrisonerCrew()}/${spec.maxPrisoners} | Cost: 25 gold each`;
+      hint.innerHTML =
+        `Sailors: ${countSailorCrew()}/${spec.maxCrew} · Brig: ${countPrisonerCrew()}/${spec.maxPrisoners} | Cost: 25 gold each`;
       content.appendChild(hint);
-      for (let i = 0; i < 3; i++) {
-        const rName = RECRUIT_NAMES[Math.floor(Math.random() * RECRUIT_NAMES.length)];
-        const rRole = RECRUIT_ROLES[Math.floor(Math.random() * RECRUIT_ROLES.length)];
+      for (let i = 0; i < G._tavernRecruitLineup.length; i++) {
+        const sl = G._tavernRecruitLineup[i];
         const d = document.createElement('div');
-        d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
-        d.innerHTML = `<div><div style="color:#e0d6c2;font-size:13px;">${rName}</div><div style="color:#d4a848;font-size:10px;text-transform:uppercase;">${rRole}</div></div>
-          <button onclick="portRecruit('${rName}','${rRole}')" style="background:rgba(40,60,80,0.4);border:1px solid rgba(80,120,160,0.4);color:#88aacc;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Hire 25g</button>`;
+        d.id = `tavern-recruit-slot-${i}`;
+        d.style.cssText =
+          'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(30,20,12,0.5);border:1px solid rgba(140,100,40,0.2);border-radius:6px;margin-bottom:6px;';
+        const left = document.createElement('div');
+        left.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${escapeDebugHtml(sl.name)}</div><div style="color:#d4a848;font-size:10px;text-transform:uppercase;">${escapeDebugHtml(sl.label)}</div>`;
+        const hb = document.createElement('button');
+        hb.type = 'button';
+        hb.style.cssText =
+          'background:rgba(40,60,80,0.4);border:1px solid rgba(80,120,160,0.4);color:#88aacc;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+        hb.textContent = 'Hire 25g';
+        hb.addEventListener('click', () => portRecruitByIndex(i));
+        d.appendChild(left);
+        d.appendChild(hb);
         content.appendChild(d);
       }
     } else if (sub === 'dice' || sub === 'poker') {
@@ -26666,20 +26707,20 @@ ${buildTavernRoomChatHtml(rm)}
         wrap.appendChild(stackCol);
         const hostId = rm.hostPlayerId | 0;
         const seats = rm.seats || [];
-        wrap.querySelector('#tavern-fill-npc')?.addEventListener('click', () => {
+        buttonsSlot.querySelector('#tavern-fill-npc')?.addEventListener('click', () => {
           tavernWsSend({ type: 'tavern_fill_npcs', roomId: rm.id });
         });
-        wrap.querySelector('#tavern-start')?.addEventListener('click', () => {
+        buttonsSlot.querySelector('#tavern-start')?.addEventListener('click', () => {
           tavernWsSend({ type: 'tavern_start_game', roomId: rm.id });
         });
-        wrap.querySelector('#tavern-leave')?.addEventListener('click', () => {
+        buttonsSlot.querySelector('#tavern-leave')?.addEventListener('click', () => {
           tavernWsSend({ type: 'tavern_leave_room', roomId: rm.id });
           showPortTab('tavern', { sub: gTbl });
         });
-        wrap.querySelector('#tavern-cash')?.addEventListener('click', () => {
+        buttonsSlot.querySelector('#tavern-cash')?.addEventListener('click', () => {
           tavernWsSend({ type: 'tavern_cash_out', roomId: rm.id });
         });
-        wrap.querySelector('#tavern-dice-next')?.addEventListener('click', () => {
+        buttonsSlot.querySelector('#tavern-dice-next')?.addEventListener('click', () => {
           tavernWsSend({ type: 'tavern_dice_next_round', roomId: rm.id });
         });
         seats.forEach((s, ix) => {
@@ -27317,20 +27358,47 @@ window.portBuyShip = function(shipType) {
   updateShipPanel();
 };
 
-window.portRecruit = function(name, role) {
+window.portRecruitByIndex = function(ix) {
   const spec = SHIP_TYPES[G.player.shipType];
   if (countSailorCrew() >= spec.maxCrew) { notify('Sailor quarters full!'); return; }
   const gold = G.player.inventory.find(i => i.id === 'gold');
   if (!gold || gold.count < 25) { notify('Not enough gold!'); return; }
+  const slot = Array.isArray(G._tavernRecruitLineup) ? G._tavernRecruitLineup[ix] : null;
+  if (!slot) return;
+  const line = document.getElementById(`tavern-recruit-slot-${ix}`);
   gold.count -= 25;
   G.player.crew.push(normalizeCrewMemberRecord({
-    name, role: 'idle', health: 100, task: 'idle', color: '#5a5a5a',
-    missedMeals: 0, skills: randomRecruitSkills()
+    name: slot.name,
+    role: 'idle',
+    health: 100,
+    task: 'idle',
+    color: '#5a5a5a',
+    missedMeals: 0,
+    skills: randomRecruitSkills()
   }));
   reconcileSlotsWithInventory();
-  notify(`${name} joined your crew!`);
+  notify(`${slot.name} joined your crew!`);
   rebuildPlayerShip();
-  showPortTab('tavern', { sub: 'recruit' });
+  G._tavernRecruitLineup[ix] = {
+    name: RECRUIT_NAMES[Math.floor(Math.random() * RECRUIT_NAMES.length)],
+    label: RECRUIT_ROLES[Math.floor(Math.random() * RECRUIT_ROLES.length)]
+  };
+  if (line) {
+    const ns = G._tavernRecruitLineup[ix];
+    line.replaceChildren();
+    const left = document.createElement('div');
+    left.innerHTML = `<div style="color:#e0d6c2;font-size:13px;">${escapeDebugHtml(ns.name)}</div><div style="color:#d4a848;font-size:10px;text-transform:uppercase;">${escapeDebugHtml(ns.label)}</div>`;
+    const hb = document.createElement('button');
+    hb.type = 'button';
+    hb.style.cssText =
+      'background:rgba(40,60,80,0.4);border:1px solid rgba(80,120,160,0.4);color:#88aacc;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+    hb.textContent = 'Hire 25g';
+    hb.addEventListener('click', () => portRecruitByIndex(ix));
+    line.appendChild(left);
+    line.appendChild(hb);
+    line.style.opacity = '1';
+  }
+  patchTavernRecruitGoldHintOnly();
 };
 
 function createWorldQuestRng() {
