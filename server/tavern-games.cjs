@@ -3,7 +3,6 @@
 const crypto = require('crypto');
 
 const MAX_SYNC_GOLD = 999999;
-const MIN_BUY_IN = 20;
 const DICE_MAX_SEATS = 5;
 const POKER_MAX_SEATS = 5;
 const PORT_JOIN_RADIUS = 28;
@@ -170,6 +169,35 @@ function createTavernGames(deps) {
     return Math.hypot(dx, dz) <= PORT_JOIN_RADIUS;
   }
 
+  function hydratePlayerStacksFromAnchor(lobby) {
+    if (!lobby || lobby.phase === 'playing') return;
+    for (const s of lobby.seats) {
+      if (s.kind !== 'player' || s.playerId == null) continue;
+      const ws = findWsByPlayerId(s.playerId);
+      const c = ckFromWs(ws);
+      if (!c) continue;
+      const g = getAnchor(c);
+      if (g != null) s.stack = Math.max(0, g | 0);
+    }
+  }
+
+  function persistPlayerAnchorsFromStacks(lobby) {
+    if (!lobby) return;
+    for (const s of lobby.seats) {
+      if (s.kind !== 'player' || s.playerId == null) continue;
+      const ws = findWsByPlayerId(s.playerId);
+      const c = ckFromWs(ws);
+      if (!c) continue;
+      setAnchor(c, s.stack | 0);
+      sendToPlayerId(s.playerId, { type: 'tavern_wallet', gold: getAnchor(c) });
+    }
+  }
+
+  function clampStake(n, lo, hi) {
+    const v = Math.floor(Number(n) || 0);
+    return Math.max(lo, Math.min(hi, v));
+  }
+
   function augmentSeat(seat) {
     const out = {
       kind: seat.kind,
@@ -205,7 +233,7 @@ function createTavernGames(deps) {
       s.kind = 'npc';
       s.name = NPC_NAMES[randInt(NPC_NAMES.length)];
       s.playerId = null;
-      s.stack = 0;
+      s.stack = 80 + randInt(4120);
       s.npcFaceSeed = randInt(0x7fffffff);
     }
   }
@@ -217,7 +245,10 @@ function createTavernGames(deps) {
       gameType: lobby.gameType,
       hostPlayerId: lobby.hostPlayerId,
       phase: lobby.phase,
-      seats: lobby.seats.map(s => augmentSeat(s))
+      seats: lobby.seats.map(s => augmentSeat(s)),
+      diceAnte: lobby.diceAnte != null ? lobby.diceAnte | 0 : 10,
+      pokerBb: lobby.pokerBb != null ? lobby.pokerBb | 0 : 10,
+      pokerSb: lobby.pokerSb != null ? lobby.pokerSb | 0 : 5
     };
     if (lobby.game) {
       if (lobby.gameType === 'dice') {
@@ -259,6 +290,7 @@ function createTavernGames(deps) {
   }
 
   function broadcastLobby(lobby, extra) {
+    hydratePlayerStacksFromAnchor(lobby);
     const seen = new Set();
     for (const s of lobby.seats) {
       if (s.kind !== 'player' || s.playerId == null) continue;
@@ -271,6 +303,7 @@ function createTavernGames(deps) {
         ...(extra || {})
       });
     }
+    persistPlayerAnchorsFromStacks(lobby);
   }
 
   function leaveLobby(playerId, refund) {
@@ -286,11 +319,9 @@ function createTavernGames(deps) {
 
     for (const s of lobby.seats) {
       if (s.kind === 'player' && s.playerId === playerId) {
-        const stk = s.stack | 0;
-        if (refund && stk > 0 && ck) {
+        if (refund && ck) {
           const cur = getAnchor(ck);
-          if (cur != null) setAnchor(ck, cur + stk);
-          sendToPlayerId(playerId, { type: 'tavern_wallet', gold: getAnchor(ck) });
+          sendToPlayerId(playerId, { type: 'tavern_wallet', gold: cur != null ? cur : undefined });
         }
         s.kind = 'empty';
         s.playerId = null;
@@ -321,7 +352,12 @@ function createTavernGames(deps) {
   }
 
   function startDiceRound(lobby) {
-    const ante = lobby.game && lobby.game.ante ? lobby.game.ante : 10;
+    const ante =
+      lobby.game && lobby.game.ante != null
+        ? lobby.game.ante | 0
+        : lobby.diceAnte != null
+          ? lobby.diceAnte | 0
+          : 10;
     let pot = 0;
     const maxIx = Math.max(...lobby.seats.map(s => s.seatIndex));
     const dice = [];
@@ -506,8 +542,9 @@ function createTavernGames(deps) {
     if (ix < 0) ix = 0;
     const dealerSeat = occ0[(ix + 1) % occ0.length];
 
-    const SB = 5;
-    const BB = 10;
+    const BB = Math.max(5, lobby.pokerBb != null ? lobby.pokerBb | 0 : 10);
+    let SB = lobby.pokerSb != null ? lobby.pokerSb | 0 : Math.max(5, Math.floor(BB / 2));
+    if (SB >= BB) SB = Math.max(2, BB - 1);
     const maxIx = Math.max(...lobby.seats.map(s => s.seatIndex));
 
     const hole = [];
@@ -707,7 +744,10 @@ function createTavernGames(deps) {
         seats,
         game: null,
         portDockX: p0 && p0.dockX != null ? p0.dockX : null,
-        portDockZ: p0 && p0.dockZ != null ? p0.dockZ : null
+        portDockZ: p0 && p0.dockZ != null ? p0.dockZ : null,
+        diceAnte: 10,
+        pokerBb: 10,
+        pokerSb: 5
       };
       lobbies.set(id, lobby);
       const capName = (p0 && (p0.name || p0.shipName)) ? String(p0.name || p0.shipName).slice(0, 28) : 'Captain';
@@ -716,6 +756,8 @@ function createTavernGames(deps) {
       lobby.seats[0].name = capName;
       fillRemainingSeatsWithNpcs(lobby);
       playerLobby.set(playerId, id);
+      hydratePlayerStacksFromAnchor(lobby);
+      persistPlayerAnchorsFromStacks(lobby);
       sendToPlayerId(playerId, { type: 'tavern_push', lobby: serializeLobby(lobby, playerId) });
       return;
     }
@@ -765,60 +807,38 @@ function createTavernGames(deps) {
       }
       lobby.seats[si].kind = 'npc';
       lobby.seats[si].name = NPC_NAMES[randInt(NPC_NAMES.length)];
-      lobby.seats[si].stack = 500;
+      lobby.seats[si].stack = 80 + randInt(4120);
+      broadcastLobby(lobby);
+      return;
+    }
+
+    if (cmd === 'set_stakes') {
+      const lobby = lobbies.get(String(msg.lobbyId || ''));
+      if (!lobby || lobby.hostPlayerId !== playerId || lobby.phase !== 'lobby') {
+        sendToPlayerId(playerId, { type: 'tavern_err', error: 'Host can only change stakes between rounds.' });
+        return;
+      }
+      if (lobby.gameType === 'dice') {
+        const a = clampStake(msg.diceAnte != null ? msg.diceAnte : msg.ante, 5, 500);
+        lobby.diceAnte = a;
+      } else {
+        const bb = clampStake(msg.bigBlind != null ? msg.bigBlind : msg.pokerBb, 5, 500);
+        let sb = msg.smallBlind != null ? clampStake(msg.smallBlind, 2, bb - 1) : Math.max(2, Math.floor(bb / 2));
+        if (sb >= bb) sb = Math.max(2, bb - 1);
+        lobby.pokerBb = bb;
+        lobby.pokerSb = sb;
+      }
       broadcastLobby(lobby);
       return;
     }
 
     if (cmd === 'buy_chips') {
-      const lobby = lobbies.get(String(msg.lobbyId || ''));
-      if (!lobby) return;
-      const seat = lobby.seats.find(s => s.kind === 'player' && s.playerId === playerId);
-      if (!seat) return;
-      const amt = Math.max(0, Math.floor(Number(msg.amount) || 0));
-      if (amt < MIN_BUY_IN) {
-        sendToPlayerId(playerId, { type: 'tavern_err', error: `Minimum ${MIN_BUY_IN}g.` });
-        return;
-      }
-      const cur = getAnchor(ck);
-      if (msg.holdGold != null && cur == null) {
-        setAnchor(ck, Math.max(0, Math.floor(Number(msg.holdGold) || 0)));
-      }
-      const cur2 = getAnchor(ck);
-      if (cur2 == null || cur2 < amt) {
-        sendToPlayerId(playerId, { type: 'tavern_err', error: 'Not enough gold.' });
-        return;
-      }
-      setAnchor(ck, cur - amt);
-      seat.stack = (seat.stack | 0) + amt;
-      sendToPlayerId(playerId, { type: 'tavern_wallet', gold: getAnchor(ck) });
-      broadcastLobby(lobby);
+      sendToPlayerId(playerId, { type: 'tavern_err', error: 'You bet from purse gold — no chip window.' });
       return;
     }
 
     if (cmd === 'cash_out') {
-      const lobby = lobbies.get(String(msg.lobbyId || ''));
-      if (!lobby) return;
-      const seat = lobby.seats.find(s => s.kind === 'player' && s.playerId === playerId);
-      if (!seat) return;
-      const playing = lobby.phase === 'playing';
-      const g = lobby.game;
-      let ok = !playing;
-      if (playing && lobby.gameType === 'dice' && g && g.sub === 'showdown') ok = true;
-      if (playing && lobby.gameType === 'poker' && g && g.folded && g.folded[seat.seatIndex]) ok = true;
-      if (playing && lobby.gameType === 'poker' && g && g.street === 'showdown') ok = true;
-      if (!ok) {
-        sendToPlayerId(playerId, { type: 'tavern_err', error: 'Fold, wait for showdown, or finish between hands.' });
-        return;
-      }
-      const stk = seat.stack | 0;
-      if (stk > 0 && ck) {
-        const cur = getAnchor(ck);
-        if (cur != null) setAnchor(ck, cur + stk);
-        seat.stack = 0;
-        sendToPlayerId(playerId, { type: 'tavern_wallet', gold: getAnchor(ck) });
-      }
-      broadcastLobby(lobby);
+      sendToPlayerId(playerId, { type: 'tavern_err', error: 'Gold stays in your purse; leave the table to step away.' });
       return;
     }
 
@@ -832,14 +852,29 @@ function createTavernGames(deps) {
         });
         return;
       }
-      const ready = lobby.seats.filter(s => s.kind !== 'empty' && (s.stack | 0) > 0).length;
+      hydratePlayerStacksFromAnchor(lobby);
+      const ante = lobby.diceAnte != null ? lobby.diceAnte | 0 : 10;
+      const bbMin = lobby.pokerBb != null ? lobby.pokerBb | 0 : 10;
+      const ready = lobby.seats.filter(s => {
+        if (s.kind === 'empty') return false;
+        const st = s.stack | 0;
+        if (st <= 0) return false;
+        if (lobby.gameType === 'dice') return st >= ante;
+        return st >= bbMin;
+      }).length;
       if (ready < 2) {
-        sendToPlayerId(playerId, { type: 'tavern_err', error: 'Need two stacks with chips.' });
+        sendToPlayerId(playerId, {
+          type: 'tavern_err',
+          error:
+            lobby.gameType === 'dice'
+              ? `Need two players with at least ${ante}g (ante) in purse (or purse gold).`
+              : `Need two players with stack ≥ big blind (${bbMin}g).`
+        });
         return;
       }
       lobby.phase = 'playing';
       if (lobby.gameType === 'dice') {
-        lobby.game = { ante: 10, round: 0, sub: 'idle' };
+        lobby.game = { ante, round: 0, sub: 'idle' };
         startDiceRound(lobby);
       } else {
         const gh = initPokerHand(lobby);

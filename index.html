@@ -2407,7 +2407,7 @@ body.game-help-mobile-minimal #game-help-panel{
     <div id="log-tabs" style="display:flex;gap:0;margin-bottom:10px;border-bottom:2px solid rgba(180,140,60,0.3);">
       <div class="log-tab active" data-tab="ship" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#d4a848;border-bottom:2px solid #d4a848;margin-bottom:-2px;transition:all 0.2s;">Ship</div>
       <div class="log-tab" data-tab="inv" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Cargo</div>
-      <div class="log-tab log-tab--crew-badge" data-tab="crew" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px;min-height:52px;"><span id="log-tab-crew-mini" aria-hidden="true" style="display:flex;justify-content:center;gap:1px;line-height:0;margin-bottom:1px;"></span><span>Crew</span></div>
+      <div class="log-tab" data-tab="crew" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Crew</div>
       <div class="log-tab" data-tab="missions" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Missions</div>
       <div class="log-tab" data-tab="pirates" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Pirates</div>
       <div class="log-tab" data-tab="world" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">World</div>
@@ -25193,34 +25193,33 @@ function updateCrewPanel() {
   });
   _crewPanelRefreshSig = getCrewPanelRefreshSig();
   queueRefreshCrewPortraits();
-  refreshLogTabCrewMiniFaces();
   requestAnimationFrame(() => syncCrewRosterScrollbarThumb());
 }
 
-function refreshLogTabCrewMiniFaces() {
-  const host = document.getElementById('log-tab-crew-mini');
-  if (!host || !Array.isArray(G.player.crew)) return;
-  host.innerHTML = '';
+function populateTavernRecruitCrewBadge(mount) {
+  if (!mount || !Array.isArray(G.player.crew)) return;
+  mount.innerHTML = '';
   const sailors = G.player.crew.filter(c => c && c.role !== 'prisoner');
   const sel = sailors.slice(0, 4);
   if (!sel.length) {
     const sp = document.createElement('span');
-    sp.style.cssText = 'font-size:15px;line-height:1;opacity:0.75';
+    sp.style.cssText = 'font-size:44px;line-height:1;opacity:0.88';
     sp.textContent = '\u2693';
-    host.appendChild(sp);
+    mount.appendChild(sp);
     return;
   }
   sel.forEach(m => {
     const mi = G.player.crew.indexOf(m);
     if (mi < 0) return;
     const cvs = document.createElement('canvas');
-    cvs.width = 22;
-    cvs.height = 22;
-    cvs.style.cssText = 'width:18px;height:18px;border-radius:4px;display:block;border:1px solid rgba(120,90,55,0.45);vertical-align:middle;background:#1a1510';
+    cvs.width = 32;
+    cvs.height = 32;
+    cvs.style.cssText =
+      'width:32px;height:32px;border-radius:8px;display:block;border:1px solid rgba(180,140,80,0.42);vertical-align:middle;background:#14100c;box-shadow:0 4px 10px rgba(0,0,0,0.45);';
     cvs.className = 'crew-card-portrait';
     cvs.dataset.crewIdx = String(mi);
     cvs.title = m.name || 'Crew';
-    host.appendChild(cvs);
+    mount.appendChild(cvs);
   });
   queueRefreshCrewPortraits();
 }
@@ -26262,18 +26261,34 @@ function disposeTavernDiceThree() {
     const t = G.tavern.diceThree;
     if (!t) return;
     if (t.raf != null) cancelAnimationFrame(t.raf);
+    if (t.ro && t.ro.disconnect) {
+      try {
+        t.ro.disconnect();
+      } catch (e) {}
+    }
     if (t.renderer) {
       t.renderer.dispose();
       const cv = t.renderer.domElement;
       if (cv && cv.parentNode) cv.parentNode.removeChild(cv);
     }
+    if (t.faceTextures && t.faceTextures.length) {
+      t.faceTextures.forEach(tx => {
+        try {
+          tx.dispose && tx.dispose();
+        } catch (e) {}
+      });
+    }
     if (t.scene) {
       t.scene.traverse(obj => {
         if (obj.geometry) obj.geometry.dispose();
         if (obj.material) {
-          const m = obj.material;
-          if (Array.isArray(m)) m.forEach(x => x.dispose && x.dispose());
-          else if (m.dispose) m.dispose();
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          mats.forEach(mat => {
+            try {
+              if (mat.map) mat.map = null;
+              if (mat.dispose) mat.dispose();
+            } catch (e) {}
+          });
         }
       });
     }
@@ -26374,49 +26389,120 @@ function tavernRenderSeatRowInnerHTML(snap) {
     .map((s, i) => {
       if (s.kind === 'empty') return `<div style="font-size:10px;color:#6a5a48;">${i + 1}. \u2014 vacant</div>`;
       const st = (s.stack | 0) + 'g';
-      return `<div style="font-size:11px;margin-bottom:3px;line-height:1.35;"><strong style="color:#d4a848;">${i + 1}.</strong> ${tavernSeatNametagHtml(s)} · <span style="color:#b8a890;">${st}</span></div>`;
+      return `<div style="font-size:11px;margin-bottom:3px;line-height:1.35;"><strong style="color:#d4a848;">${i + 1}.</strong> ${tavernSeatNametagHtml(s)} · <span style="color:#dcb878;">${st}</span> <span style="font-size:9px;color:#7a7060;">(purse)</span></div>`;
     })
     .join('');
 }
 
+/** Pip positions for dice faces 1–6 (classic layout). */
+function tavernDiePipPositions(n, w) {
+  const cx = w / 2;
+  const spread = w * 0.285;
+  const L = [
+    [cx - spread, cx - spread],
+    [cx + spread, cx - spread],
+    [cx - spread, cx],
+    [cx + spread, cx],
+    [cx - spread, cx + spread],
+    [cx + spread, cx + spread]
+  ];
+  if (n === 1) return [[cx, cx]];
+  if (n === 2) return [L[0], L[5]];
+  if (n === 3) return [L[0], [cx, cx], L[5]];
+  if (n === 4) return [L[0], L[1], L[4], L[5]];
+  if (n === 5) return [L[0], L[1], [cx, cx], L[4], L[5]];
+  return L;
+}
+
+/** Builds six reusable canvas textures — one dispose list per dice scene via ensureTavernDiceThree. */
+function tavernCreateDieFaceTextureSet(THREE) {
+  const SZ = 128;
+  const out = [];
+  for (let n = 1; n <= 6; n++) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = SZ;
+    const ctx = canvas.getContext('2d');
+    const grd = ctx.createLinearGradient(0, 0, SZ, SZ);
+    grd.addColorStop(0, '#fdf6ea');
+    grd.addColorStop(0.55, '#efe4d4');
+    grd.addColorStop(1, '#dccfb8');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, SZ, SZ);
+    ctx.strokeStyle = 'rgba(58,38,18,0.88)';
+    ctx.lineWidth = 3.5;
+    ctx.strokeRect(2.5, 2.5, SZ - 5, SZ - 5);
+    ctx.fillStyle = '#221810';
+    const r = SZ * 0.082;
+    tavernDiePipPositions(n, SZ).forEach(([x, y]) => {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    out.push(tex);
+  }
+  return out;
+}
+
 function ensureTavernDiceThree(containerEl, diceBySeat, seatMeta) {
   disposeTavernDiceThree();
+  const faceTex = tavernCreateDieFaceTextureSet(THREE);
+  /* Box faces: +X -X +Y -Y +Z -Z — values so opposites sum to 7 */
+  const faceVals = [1, 6, 2, 5, 3, 4];
   const canvas = document.createElement('canvas');
-  canvas.style.cssText = 'width:100%;height:220px;display:block;border-radius:10px;background:linear-gradient(#1a1510,#0d0a08);';
+  canvas.style.cssText =
+    'width:100%;height:230px;display:block;border-radius:12px;' +
+    'background:linear-gradient(180deg,#1a120e 0%,#0a0705 50%,#040302 100%);' +
+    'border:2px solid rgba(110,78,44,0.5);box-shadow:inset 0 0 48px rgba(0,0,0,0.55),0 5px 20px rgba(0,0,0,0.5);';
   containerEl.appendChild(canvas);
   const w = Math.max(280, containerEl.clientWidth || 320);
-  const h = 220;
+  const h = 230;
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setSize(w, h);
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x0d0a08, 0.045);
+  scene.fog = new THREE.FogExp2(0x0a0806, 0.038);
   const camera = new THREE.PerspectiveCamera(38, w / h, 0.2, 80);
-  camera.position.set(0, 6.2, 11.5);
-  camera.lookAt(0, 0.4, 0);
+  camera.position.set(0, 6.4, 11.2);
+  camera.lookAt(0, 0.35, 0);
 
-  const amb = new THREE.AmbientLight(0xc9b8a0, 0.55);
-  scene.add(amb);
-  const dir = new THREE.DirectionalLight(0xfff2dc, 0.95);
-  dir.position.set(4, 14, 6);
-  scene.add(dir);
+  scene.add(new THREE.AmbientLight(0x7a6a58, 0.42));
+  const moon = new THREE.DirectionalLight(0xc8dff0, 0.28);
+  moon.position.set(-6, 12, -4);
+  scene.add(moon);
+  const lantern = new THREE.PointLight(0xffb060, 1.05, 28, 1.8);
+  lantern.position.set(0, 6.2, 2);
+  scene.add(lantern);
 
-  const wood = new THREE.MeshStandardMaterial({ color: 0x5c3d28, roughness: 0.55, metalness: 0.08 });
-  const felt = new THREE.MeshStandardMaterial({ color: 0x1e4a32, roughness: 0.85, metalness: 0.02 });
-  const tableTop = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.35, 0.28, 48), felt);
-  tableTop.position.y = 0.15;
+  const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a3020, roughness: 0.62, metalness: 0.06 });
+  const brassMat = new THREE.MeshStandardMaterial({ color: 0xb89250, roughness: 0.35, metalness: 0.55 });
+  const feltMat = new THREE.MeshStandardMaterial({
+    color: 0x164530,
+    roughness: 0.88,
+    metalness: 0.03,
+    emissive: new THREE.Color(0x051810),
+    emissiveIntensity: 0.12
+  });
+
+  const tableTop = new THREE.Mesh(new THREE.CylinderGeometry(4.35, 4.42, 0.32, 52), feltMat);
+  tableTop.position.y = 0.16;
   scene.add(tableTop);
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(4.25, 0.15, 12, 48), wood);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(4.38, 0.14, 10, 52), woodMat);
   rim.rotation.x = Math.PI / 2;
-  rim.position.y = 0.26;
+  rim.position.y = 0.28;
   scene.add(rim);
+  const band = new THREE.Mesh(new THREE.TorusGeometry(4.5, 0.055, 8, 52), brassMat);
+  band.rotation.x = Math.PI / 2;
+  band.position.y = 0.31;
+  scene.add(band);
 
   const npcMat = [
-    new THREE.MeshStandardMaterial({ color: 0x8a6a4a }),
-    new THREE.MeshStandardMaterial({ color: 0x6a7a90 }),
-    new THREE.MeshStandardMaterial({ color: 0x7a6a88 }),
-    new THREE.MeshStandardMaterial({ color: 0x6a8a72 }),
-    new THREE.MeshStandardMaterial({ color: 0x7a7860 })
+    new THREE.MeshStandardMaterial({ color: 0x7a5a42 }),
+    new THREE.MeshStandardMaterial({ color: 0x5a6a78 }),
+    new THREE.MeshStandardMaterial({ color: 0x6a5a68 }),
+    new THREE.MeshStandardMaterial({ color: 0x5a7a62 }),
+    new THREE.MeshStandardMaterial({ color: 0x6a6858 })
   ];
   const sm = (seatMeta || []).slice(0, 5);
   const seated = sm.filter(s => s && s.kind !== 'empty');
@@ -26424,27 +26510,32 @@ function ensureTavernDiceThree(containerEl, diceBySeat, seatMeta) {
   let ring = 0;
   seated.forEach((st, ix) => {
     const ang = (ring++ / nSeat) * Math.PI * 2 + Math.PI / 10;
-    const px = Math.sin(ang) * 5.1;
-    const pz = Math.cos(ang) * 5.1;
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.42, 1.1, 14), npcMat[(st.seatIndex != null ? st.seatIndex : ix) % npcMat.length]);
-    body.position.set(px, 0.85, pz);
+    const px = Math.sin(ang) * 5.15;
+    const pz = Math.cos(ang) * 5.15;
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.38, 0.42, 1.12, 14),
+      npcMat[(st.seatIndex != null ? st.seatIndex : ix) % npcMat.length]
+    );
+    body.position.set(px, 0.86, pz);
     body.lookAt(0, 0.8, 0);
     scene.add(body);
   });
 
-  const pipMat = new THREE.MeshStandardMaterial({ color: 0xf5f0e6, roughness: 0.35 });
-  const diceMeshes = [];
   const makeDie = (vx, vz, d1, d2) => {
     const g = new THREE.BoxGeometry(0.72, 0.72, 0.72);
-    const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xf2ebe2, roughness: 0.4 }));
-    mesh.position.set(vx, 0.65, vz);
-    mesh.rotation.set(Math.random(), Math.random(), Math.random());
+    const mats = faceVals.map(fv => {
+      const t = faceTex[fv - 1];
+      return new THREE.MeshStandardMaterial({
+        map: t,
+        roughness: 0.4,
+        metalness: 0.04
+      });
+    });
+    const mesh = new THREE.Mesh(g, mats);
+    mesh.position.set(vx, 0.66, vz);
+    mesh.rotation.set(Math.random() * 0.8, Math.random() * 0.8, Math.random() * 0.8);
     scene.add(mesh);
-    /* crude pip overlays */
-    const pip = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 10), pipMat);
-    pip.position.copy(mesh.position).add(new THREE.Vector3(0.38, 0.15, 0));
-    scene.add(pip);
-    diceMeshes.push({ mesh, pip, d1: d1 || 1, d2: d2 || 1 });
+    diceMeshes.push({ mesh, d1: d1 || 1, d2: d2 || 1 });
   };
 
   if (Array.isArray(diceBySeat) && seatMeta) {
@@ -26452,29 +26543,30 @@ function ensureTavernDiceThree(containerEl, diceBySeat, seatMeta) {
       const roll = diceBySeat[st.seatIndex];
       if (!roll || roll.length < 2) return;
       const ang = (ix / nSeat) * Math.PI * 2;
-      const vx = Math.sin(ang) * 1.5;
-      const vz = Math.cos(ang) * 1.1;
-      makeDie(vx - 0.45, vz + 0.12, roll[0], roll[1]);
-      makeDie(vx + 0.45, vz - 0.12, roll[0], roll[1]);
+      const vx = Math.sin(ang) * 1.45;
+      const vz = Math.cos(ang) * 1.05;
+      makeDie(vx - 0.46, vz + 0.12, roll[0], roll[1]);
+      makeDie(vx + 0.46, vz - 0.12, roll[0], roll[1]);
     });
   }
   if (!diceMeshes.length) {
-    makeDie(-0.5, 0.4, 3, 4);
-    makeDie(0.5, -0.35, 2, 5);
+    makeDie(-0.52, 0.38, 3, 4);
+    makeDie(0.52, -0.34, 2, 5);
   }
 
   let t0 = performance.now();
   function tick() {
     const t = (performance.now() - t0) * 0.001;
     diceMeshes.forEach(d => {
-      d.mesh.rotation.x += 0.35 + d.d1 * 0.02;
-      d.mesh.rotation.y += 0.42 + d.d2 * 0.02;
-      d.pip.position.copy(d.mesh.position).add(new THREE.Vector3(0.42 + Math.sin(t + d.d1) * 0.03, 0.18 + Math.sin(t * 2) * 0.05, 0));
+      d.mesh.rotation.x += 0.32 + d.d1 * 0.018;
+      d.mesh.rotation.y += 0.4 + d.d2 * 0.018;
+      d.mesh.rotation.z += 0.08 + Math.sin(t * 1.2 + d.d1) * 0.02;
     });
+    lantern.position.x = Math.sin(t * 0.45) * 0.35;
     renderer.render(scene, camera);
     G.tavern.diceThree.raf = requestAnimationFrame(tick);
   }
-  G.tavern.diceThree = { renderer, scene, camera, raf: null };
+  G.tavern.diceThree = { renderer, scene, camera, raf: null, ro: null, faceTextures: faceTex };
   tick();
 
   const ro = new ResizeObserver(() => {
@@ -26508,10 +26600,19 @@ function renderTavernMainLobby(container) {
       'padding:12px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.28);border-radius:10px;cursor:pointer;text-align:center;transition:border-color 0.15s,background 0.15s;';
     cell.tabIndex = 0;
     cell.setAttribute('role', 'button');
-    const vis = t.img
-      ? `<img src="${t.img}" alt="" width="72" height="72" style="object-fit:contain;display:block;margin:0 auto 10px;opacity:0.95;"/>`
-      : `<div style="font-size:44px;line-height:1;margin-bottom:8px;opacity:0.85;">${t.emoji || '🏴‍☠️'}</div>`;
+    let vis = '';
+    if (t.key === 'recruit') {
+      vis = `<div id="tavern-recruit-crew-mount" style="min-height:78px;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:3px;margin-bottom:10px;"></div>`;
+    } else if (t.img) {
+      vis = `<img src="${t.img}" alt="" width="72" height="72" style="object-fit:contain;display:block;margin:0 auto 10px;opacity:0.95;"/>`;
+    } else {
+      vis = `<div style="font-size:44px;line-height:1;margin-bottom:10px;opacity:0.85;">${t.emoji || '🏴‍☠️'}</div>`;
+    }
     cell.innerHTML = `${vis}<div style="color:#e0c890;font-size:13px;font-weight:600;margin-bottom:4px;">${t.title}</div><div style="color:#9a8a78;font-size:10px;line-height:1.35;">${t.blurb}</div>`;
+    if (t.key === 'recruit') {
+      const m = cell.querySelector('#tavern-recruit-crew-mount');
+      if (m) populateTavernRecruitCrewBadge(m);
+    }
     const open = () => {
       if (t.key === 'recruit') showPortTab('tavern', { sub: 'recruit' });
       else showPortTab('tavern', { sub: t.key });
@@ -26550,7 +26651,7 @@ function renderTavernDiceGame(container) {
   const status = document.createElement('div');
   status.id = 'tavern-dice-status';
   status.style.cssText = 'color:#d4a848;font-size:11px;margin-bottom:8px;';
-  status.textContent = `Purse (inventory): ${getInvCount('gold')}g · sync’d with realm`;
+  status.textContent = `Purse: ${getInvCount('gold')} gold · realm sync`;
   wrap.appendChild(status);
 
   const canvasHost = document.createElement('div');
@@ -26567,7 +26668,13 @@ function renderTavernDiceGame(container) {
     <label style="font-size:10px;color:#b8a890;">Table name<input type="text" id="tavern-dice-lobby-name" maxlength="32" placeholder="e.g. Wharf rollers" style="margin-left:6px;width:140px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/></label>
     <button type="button" id="tavern-dice-create" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(140,180,140,0.45);background:rgba(30,55,35,0.55);color:#b8e8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Create table</button>
     <input type="text" id="tavern-dice-join-id" placeholder="Lobby id" style="width:120px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/>
-    <button type="button" id="tavern-dice-join" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(120,140,180,0.45);background:rgba(30,38,55,0.55);color:#c8d8f8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>`;
+    <button type="button" id="tavern-dice-join" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(120,140,180,0.45);background:rgba(30,38,55,0.55);color:#c8d8f8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>
+    <div style="width:100%;margin-top:8px;padding:9px 11px;background:linear-gradient(180deg,rgba(48,34,20,0.72),rgba(22,16,10,0.82));border:1px solid rgba(196,150,80,0.35);border-radius:10px;box-shadow:inset 0 1px 0 rgba(255,220,160,0.07);">
+      <div style="font-size:10px;color:#b89a78;margin-bottom:7px;line-height:1.45;">Wagers come from your purse — no separate chips. The host sets the round ante before dealing.</div>
+      <label style="font-size:10px;color:#d8c8a8;display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap;">Round ante (gold)
+        <input type="number" id="tavern-dice-ante" min="5" max="500" value="10" style="width:76px;padding:5px 7px;border-radius:6px;border:1px solid rgba(140,100,42,0.5);background:rgba(10,8,6,0.8);color:#f2ead8;font-size:11px;"/></label>
+      <button type="button" id="tavern-dice-apply-stakes" title="Host only · lobby phase" style="margin-left:8px;margin-top:4px;padding:6px 12px;border-radius:6px;border:1px solid rgba(212,168,92,0.5);background:linear-gradient(180deg,#6a4828,#443018);color:#ffe8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Apply ante</button>
+    </div>`;
   wrap.appendChild(ctrls);
 
   const lobbyPanel = document.createElement('div');
@@ -26615,18 +26722,25 @@ function renderTavernDiceGame(container) {
     const div = document.getElementById('tavern-dice-lobby');
     const host = document.getElementById('tavern-dice-canvas-host');
     const act = document.getElementById('tavern-dice-actions');
+    const stBar = document.getElementById('tavern-dice-status');
+    const anteIn = document.getElementById('tavern-dice-ante');
+    if (anteIn && snap && snap.diceAnte != null && document.activeElement !== anteIn) anteIn.value = String(snap.diceAnte | 0);
+    if (stBar) {
+      let t = `Purse: ${getInvCount('gold')} gold · realm sync`;
+      if (snap && snap.diceAnte != null) t += ` · host ante ${snap.diceAnte | 0}g`;
+      stBar.textContent = t;
+    }
     if (act) act.replaceChildren();
     if (!snap || !snap.game || snap.gameType !== 'dice') {
       if (div) {
         if (snap && snap.id)
           div.innerHTML = `<div style="margin-bottom:8px;"><strong style="color:#d4a848;">${escapeHtml(snap.name || 'Table')}</strong> <span style="color:#6a6058;font-size:10px;font-family:ui-monospace,monospace">${escapeHtml(snap.id)}</span></div>
             <div style="margin-bottom:8px;padding:8px;background:rgba(0,0,0,0.22);border-radius:8px;border:1px solid rgba(140,100,40,0.2);">${tavernRenderSeatRowInnerHTML(snap)}</div>
-            <div style="color:#8a7a60;font-size:10px;">Five seats (you + four locals). Buy at least 20g chips, then the host starts · each round antes a pot and highest roll takes it.</div>`;
+            <div style="color:#8a7a60;font-size:10px;">Five seats · each player needs at least the ante in purse · host starts the round · highest pair of dice wins the pot.</div>`;
         else div.textContent = '';
       }
       ensureTavernDiceThree(host, null, snap ? snap.seats : []);
       if (act && snap && snap.id) {
-        const amt = 100;
         const pid = G.myId;
         const isHost = snap.hostPlayerId === pid;
         const mk = (label, fn) => {
@@ -26638,8 +26752,6 @@ function renderTavernDiceGame(container) {
           b.onclick = fn;
           act.appendChild(b);
         };
-        mk(`Buy ${amt}g chips`, () => tavernNetSend('buy_chips', { lobbyId: snap.id, amount: amt, holdGold: getInvCount('gold') }));
-        mk('Cash out', () => tavernNetSend('cash_out', { lobbyId: snap.id }));
         if (isHost) {
           mk('Start dice', () => tavernNetSend('start', { lobbyId: snap.id }));
         }
@@ -26662,7 +26774,6 @@ function renderTavernDiceGame(container) {
     ensureTavernDiceThree(host, g.dice, snap.seats);
     if (act && snap.id) {
       act.replaceChildren();
-      const amt = 100;
       const pid = G.myId;
       const isHost = snap.hostPlayerId === pid;
       const mk = (label, fn) => {
@@ -26674,8 +26785,6 @@ function renderTavernDiceGame(container) {
         b.onclick = fn;
         act.appendChild(b);
       };
-      mk(`Buy ${amt}g chips`, () => tavernNetSend('buy_chips', { lobbyId: snap.id, amount: amt, holdGold: getInvCount('gold') }));
-      mk('Cash out', () => tavernNetSend('cash_out', { lobbyId: snap.id }));
       if (isHost) mk('Next roll', () => tavernNetSend('dice_next', { lobbyId: snap.id }));
     }
   }
@@ -26694,6 +26803,26 @@ function renderTavernDiceGame(container) {
     if (!id) return;
     tavernNetSend('join', { lobbyId: id });
   };
+  const applyDiceStake = document.getElementById('tavern-dice-apply-stakes');
+  if (applyDiceStake)
+    applyDiceStake.onclick = () => {
+      const snap = G.tavern.snapshot;
+      if (!snap || !snap.id || snap.gameType !== 'dice') {
+        notify('Join a Seelow table first.');
+        return;
+      }
+      if (snap.hostPlayerId !== G.myId) {
+        notify('Only the table host can set the ante.');
+        return;
+      }
+      if (snap.phase !== 'lobby') {
+        notify('The host can change the ante between rounds (lobby).');
+        return;
+      }
+      const anteEl = document.getElementById('tavern-dice-ante');
+      const v = Math.max(5, Math.min(500, parseInt(anteEl && anteEl.value, 10) || 10));
+      tavernNetSend('set_stakes', { lobbyId: snap.id, diceAnte: v });
+    };
 
   refreshFromSnapshot();
   tavernNetSend('list');
@@ -26705,6 +26834,12 @@ function renderTavernPokerGame(container) {
 
   const wrap = document.createElement('div');
   wrap.id = 'tavern-poker-root';
+
+  const pokerShell = document.createElement('div');
+  pokerShell.style.cssText =
+    'margin-top:8px;padding:14px;border-radius:16px;background:' +
+    'linear-gradient(155deg,#2a2418 0%,#17120e 42%,#0c0a08 100%);' +
+    'border:2px solid rgba(160,118,72,0.45);box-shadow:inset 0 0 0 1px rgba(212,168,92,0.12),0 8px 32px rgba(0,0,0,0.5);';
 
   const backBtn = document.createElement('button');
   backBtn.type = 'button';
@@ -26728,7 +26863,15 @@ function renderTavernPokerGame(container) {
     <label style="font-size:10px;color:#b8a890;display:flex;align-items:center;gap:6px;">Table name<input type="text" id="tavern-poker-lobby-name" maxlength="32" placeholder="Golden grogs" style="width:148px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/></label>
     <button type="button" id="tavern-poker-create" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(140,180,140,0.45);background:rgba(30,55,35,0.55);color:#b8e8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Create table</button>
     <input type="text" id="tavern-poker-join-id" placeholder="Lobby id" style="width:120px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/>
-    <button type="button" id="tavern-poker-join" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(120,140,180,0.45);background:rgba(30,38,55,0.55);color:#c8d8f8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>`;
+    <button type="button" id="tavern-poker-join" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(120,140,180,0.45);background:rgba(30,38,55,0.55);color:#c8d8f8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>
+    <div style="width:100%;margin-top:8px;padding:9px 11px;background:linear-gradient(180deg,rgba(38,48,58,0.65),rgba(18,22,32,0.82));border:1px solid rgba(188,150,90,0.38);border-radius:10px;">
+      <div style="font-size:10px;color:#baa890;margin-bottom:8px;line-height:1.45;">Stakes use purse gold only — the host sets small &amp; big blinds before the first deal.</div>
+      <label style="font-size:10px;color:#d8c8b0;display:inline-flex;align-items:center;gap:6px;">Small blind (g)
+        <input type="number" id="tavern-poker-sb" min="2" max="498" value="5" style="width:64px;padding:5px 6px;border-radius:6px;border:1px solid rgba(120,90,50,0.55);background:rgba(8,10,14,0.82);color:#f0ead8;font-size:11px;"/></label>
+      <label style="font-size:10px;color:#d8c8b0;margin-left:10px;display:inline-flex;align-items:center;gap:6px;">Big blind (g)
+        <input type="number" id="tavern-poker-bb" min="5" max="500" value="10" style="width:64px;padding:5px 6px;border-radius:6px;border:1px solid rgba(120,90,50,0.55);background:rgba(8,10,14,0.82);color:#f0ead8;font-size:11px;"/></label>
+      <button type="button" id="tavern-poker-apply-stakes" title="Host only · lobby phase" style="margin-left:10px;margin-top:6px;padding:6px 13px;border-radius:6px;border:1px solid rgba(212,168,92,0.52);background:linear-gradient(180deg,#584830,#342818);color:#ffeccd;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Apply blinds</button>
+    </div>`;
   wrap.appendChild(ctrlDiv);
 
   function renderPokerTownList() {
@@ -26758,7 +26901,12 @@ function renderTavernPokerGame(container) {
 
   const felt = document.createElement('div');
   felt.style.cssText =
-    'position:relative;padding:14px;border-radius:14px;background:radial-gradient(ellipse at center,#1a6a4a 0%,#0f3d2c 70%);border:2px solid rgba(220,190,120,0.35);box-shadow:inset 0 0 40px rgba(0,0,0,0.45);min-height:180px;';
+    'position:relative;padding:20px 17px 17px;border-radius:18px;min-height:196px;' +
+    'background:' +
+    'radial-gradient(ellipse 92% 72% at 48% 38%,#20654a 0%,#123d30 44%,#081f19 100%),' +
+    'repeating-linear-gradient(-12deg,transparent,transparent 5px,rgba(0,0,0,0.06) 5px,rgba(0,0,0,0.06) 7px);' +
+    'border:3px solid rgba(96,68,36,0.92);' +
+    'box-shadow:inset 0 0 62px rgba(0,0,0,0.62),inset 0 0 0 1px rgba(212,168,92,0.14),0 4px 28px rgba(0,0,0,0.48);';
 
   const seatsRow = document.createElement('div');
   seatsRow.id = 'tavern-poker-seat-row';
@@ -26781,17 +26929,18 @@ function renderTavernPokerGame(container) {
   holeDiv.style.cssText = 'margin-top:10px;font-size:12px;color:#e8dcc8;min-height:78px;padding:10px;background:rgba(0,0,0,0.18);border-radius:10px;border:1px solid rgba(212,168,72,0.12);';
   felt.appendChild(holeDiv);
 
-  wrap.appendChild(felt);
-
   const info = document.createElement('div');
   info.id = 'tavern-poker-info';
-  info.style.cssText = 'margin-top:10px;font-size:11px;color:#b8a890;line-height:1.45;';
-  wrap.appendChild(info);
+  info.style.cssText = 'margin-top:12px;font-size:11px;color:#c4b8a0;line-height:1.55;padding:0 2px;';
 
   const actions = document.createElement('div');
   actions.id = 'tavern-poker-actions';
-  actions.style.cssText = 'margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;';
-  wrap.appendChild(actions);
+  actions.style.cssText = 'margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;';
+
+  pokerShell.appendChild(felt);
+  pokerShell.appendChild(info);
+  pokerShell.appendChild(actions);
+  wrap.appendChild(pokerShell);
 
   container.innerHTML = '';
   mountTavernGameOverlay(wrap);
@@ -26802,7 +26951,9 @@ function renderTavernPokerGame(container) {
     for (let i = 0; i < n; i++) {
       const c = document.createElement('div');
       c.style.cssText =
-        'width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#ffe9a8,#d4a018 55%,#7a5508);border:1px solid rgba(120,80,20,0.6);box-shadow:0 2px 4px rgba(0,0,0,0.45);';
+        'width:22px;height:22px;border-radius:50%;' +
+        'background:radial-gradient(circle at 32% 28%,#ffe8a8,#d4a018 52%,#5a3a0a 100%);' +
+        'border:1px solid rgba(100,70,24,0.95);box-shadow:0 2px 5px rgba(0,0,0,0.55),inset 0 1px 0 rgba(255,248,200,0.35);';
       coins.appendChild(c);
     }
   }
@@ -26857,31 +27008,29 @@ function renderTavernPokerGame(container) {
 
     const inf = document.getElementById('tavern-poker-info');
     if (inf && snap) {
+      const pg = getInvCount('gold');
+      const bbv = snap.pokerBb != null ? snap.pokerBb | 0 : 10;
+      const sbv = snap.pokerSb != null ? snap.pokerSb | 0 : Math.max(2, Math.floor(bbv / 2));
       inf.innerHTML =
-        `<strong>Street</strong> ${escapeHtml(String(streetLabel))} · pot <strong style="color:#d4a848;">${snap.game ? snap.game.pot | 0 : 0}</strong>g` +
-        (snap.game && snap.game.message ? `<br/><span style="color:#dfd4c8;">${escapeHtml(snap.game.message)}</span>` : '');
+        `<div style="color:#baa898;font-size:10px;margin-bottom:4px;">Purse <strong style="color:#d4a848;">${pg}</strong> gold · blinds <strong style="color:#c8b090;">${sbv}</strong> / <strong style="color:#e0c878;">${bbv}</strong> (small/big)</div>` +
+        `<div><strong>Street</strong> ${escapeHtml(String(streetLabel))} · pot <strong style="color:#e8bc58;">${snap.game ? snap.game.pot | 0 : 0}</strong>g` +
+        (snap.game && snap.game.message ? ` · <span style="color:#dfd4c8;">${escapeHtml(snap.game.message)}</span>` : '') +
+        `</div>`;
     }
 
     const act = document.getElementById('tavern-poker-actions');
     act.replaceChildren();
     if (!snap || !snap.id) return;
+    const bbIn = document.getElementById('tavern-poker-bb');
+    const sbIn = document.getElementById('tavern-poker-sb');
+    if (snap.gameType === 'poker') {
+      if (bbIn && snap.pokerBb != null && document.activeElement !== bbIn) bbIn.value = String(snap.pokerBb | 0);
+      if (sbIn && snap.pokerSb != null && document.activeElement !== sbIn) sbIn.value = String(snap.pokerSb | 0);
+    }
     const pid = G.myId;
     const isHost = snap.hostPlayerId === pid;
-    const amt = 100;
-    const buy = document.createElement('button');
-    buy.type = 'button';
-    buy.textContent = `Buy ${amt}g chips`;
-    buy.style.cssText =
+    const btnHostStyle =
       'padding:6px 12px;border-radius:6px;border:1px solid rgba(200,180,100,0.45);background:rgba(70,55,30,0.65);color:#f8e8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
-    buy.onclick = () => tavernNetSend('buy_chips', { lobbyId: snap.id, amount: amt, holdGold: getInvCount('gold') });
-    act.appendChild(buy);
-    const cash = document.createElement('button');
-    cash.type = 'button';
-    cash.textContent = 'Cash out to purse';
-    cash.style.cssText =
-      'padding:6px 12px;border-radius:6px;border:1px solid rgba(180,120,120,0.45);background:rgba(55,35,35,0.65);color:#f8c8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
-    cash.onclick = () => tavernNetSend('cash_out', { lobbyId: snap.id });
-    act.appendChild(cash);
 
     const g = snap.game;
     if (isHost) {
@@ -26889,14 +27038,14 @@ function renderTavernPokerGame(container) {
         const st = document.createElement('button');
         st.type = 'button';
         st.textContent = 'Start Hold\'em';
-        st.style.cssText = buy.style.cssText;
+        st.style.cssText = btnHostStyle;
         st.onclick = () => tavernNetSend('start', { lobbyId: snap.id });
         act.appendChild(st);
       } else if (g && g.street === 'showdown') {
         const nh = document.createElement('button');
         nh.type = 'button';
         nh.textContent = 'Deal next hand';
-        nh.style.cssText = buy.style.cssText;
+        nh.style.cssText = btnHostStyle;
         nh.onclick = () => tavernNetSend('poker_next_hand', { lobbyId: snap.id });
         act.appendChild(nh);
       }
@@ -26943,6 +27092,29 @@ function renderTavernPokerGame(container) {
     if (!id) return;
     tavernNetSend('join', { lobbyId: id });
   };
+  const applyPokerStake = document.getElementById('tavern-poker-apply-stakes');
+  if (applyPokerStake)
+    applyPokerStake.onclick = () => {
+      const snap = G.tavern.snapshot;
+      if (!snap || !snap.id || snap.gameType !== 'poker') {
+        notify('Join a Hold\'em table first.');
+        return;
+      }
+      if (snap.hostPlayerId !== G.myId) {
+        notify('Only the table host can set blinds.');
+        return;
+      }
+      if (snap.phase !== 'lobby') {
+        notify('The host can change blinds while the table is still in the lobby (between full games).');
+        return;
+      }
+      const bbEl = document.getElementById('tavern-poker-bb');
+      const sbEl = document.getElementById('tavern-poker-sb');
+      const bb = Math.max(5, Math.min(500, parseInt(bbEl && bbEl.value, 10) || 10));
+      let sb = Math.max(2, Math.min(498, parseInt(sbEl && sbEl.value, 10) || Math.max(2, Math.floor(bb / 2))));
+      if (sb >= bb) sb = Math.max(2, bb - 1);
+      tavernNetSend('set_stakes', { lobbyId: snap.id, bigBlind: bb, smallBlind: sb });
+    };
 
   refreshPokerUi();
   tavernNetSend('list');
