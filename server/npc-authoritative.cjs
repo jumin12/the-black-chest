@@ -243,8 +243,8 @@ function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
   const rigF = Math.max(0.26, Math.pow(rm, 1.32));
-  /* ~player-scale top speed: hulls were topping out far below human captains in pursuit/trade legs. */
-  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.09;
+  /* ~player-scale top speed (+50% vs legacy tuning). */
+  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.09 * 1.5;
 }
 
 function npcWindEffect(npc, windAt) {
