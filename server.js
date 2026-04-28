@@ -7,6 +7,7 @@ const { createGameSimulation, createAntiCheatGate } = require('./simulation-laye
 const { createServerNpcWorld } = require('./server/npc-authoritative.cjs');
 const { createWorldPoliticsStore, sanitizePlayerPoliticsPatch } = require('./server/world-politics.cjs');
 const { createTerrainContext, sampleOffshoreSpawn } = require('./server/terrain-context.cjs');
+const { createTavernGames } = require('./server/tavern-games.cjs');
 
 const PORT = process.env.PORT || 3000;
 /** Realm identity for server browsers and the in-game HUD (env-tunable). */
@@ -2204,6 +2205,8 @@ function findWsByPlayerId(pid) {
   return null;
 }
 
+const tavernGames = createTavernGames({ players, findWsByPlayerId });
+
 function findWsByCaptainKey(ck) {
   if (!ck) return null;
   const pid = findPlayerIdByCaptainKey(ck);
@@ -4023,6 +4026,20 @@ wss.on('connection', (ws, req) => {
           broadcast({ type: 'leaderboard', entries: leaderboardHistory });
           break;
         }
+        case 'tavern_list_rooms':
+        case 'tavern_create_room':
+        case 'tavern_join_room':
+        case 'tavern_leave_room':
+        case 'tavern_host_update_room':
+        case 'tavern_fill_npcs':
+        case 'tavern_start_game':
+        case 'tavern_sync_room':
+        case 'tavern_dice_next_round':
+        case 'tavern_poker_action':
+        case 'tavern_cash_out': {
+          tavernGames.handle(ws, msg, id);
+          break;
+        }
       }
     } catch (e) {
       console.error('[playground] ws message error:', e && e.message ? e.message : e);
@@ -4050,6 +4067,7 @@ wss.on('connection', (ws, req) => {
         worldPresenceDirty = false;
       } catch (e) {}
     }
+    tavernGames.onPlayerDisconnect(id);
     players.delete(id);
     broadcast({ type: 'player_leave', id });
     broadcastServerPopulation();

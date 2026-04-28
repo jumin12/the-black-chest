@@ -4996,7 +4996,7 @@ function getItemMeta(id) {
   return ITEM_DEFS[id] || { name: String(id), icon: '' };
 }
 /** Bump when replacing PNGs under `assets/items/` (same filename is cached aggressively by browsers and CDNs). */
-const ITEMS_IMAGE_CACHE_BUST = '4';
+const ITEMS_IMAGE_CACHE_BUST = '5';
 function itemsAssetUrl(file) {
   const f = String(file || '').replace(/^assets\/items\//, '').replace(/^\//, '');
   return 'assets/items/' + f + '?v=' + ITEMS_IMAGE_CACHE_BUST;
@@ -5013,7 +5013,9 @@ const ITEM_PNG = {
   gold: itemsAssetUrl('gold.png'),
   silver: itemsAssetUrl('gold.png'),
   rum: itemsAssetUrl('rum.png'),
-  gunpowder: itemsAssetUrl('gunpowder.png')
+  gunpowder: itemsAssetUrl('gunpowder.png'),
+  dice: itemsAssetUrl('dice.png'),
+  poker: itemsAssetUrl('poker.png')
 };
 (function _applyItemAssetUrlsToHudDom() {
   try {
@@ -5062,6 +5064,119 @@ function getInvCount(id) {
     if (i && i.id === id) t += Math.max(0, Math.floor(Number(i.count) || 0));
   }
   return t;
+}
+function applyTavernGoldDelta(delta) {
+  const d = Math.floor(Number(delta) || 0);
+  if (!d) return;
+  let gold = G.player.inventory && G.player.inventory.find(i => i && i.id === 'gold');
+  if (!gold) {
+    gold = { id: 'gold', name: 'Gold Coins', icon: '', count: 0 };
+    if (!G.player.inventory) G.player.inventory = [];
+    G.player.inventory.push(gold);
+  }
+  gold.count = Math.max(0, (gold.count | 0) + d);
+  reconcileSlotsWithInventory();
+  saveProgressDebounced();
+}
+function packTavernDockMeta() {
+  const d = G.nearDock;
+  if (!d || d.cx == null || d.cz == null) return null;
+  return {
+    townCx: d.cx | 0,
+    townCz: d.cz | 0,
+    dockX: d.dockX != null ? Number(d.dockX) : 0,
+    dockZ: d.dockZ != null ? Number(d.dockZ) : 0
+  };
+}
+function buildTavernCrewModelsSnapshot() {
+  const out = [];
+  const crew = G.player.crew || [];
+  for (let i = 0; i < Math.min(10, crew.length); i++) {
+    const c = crew[i];
+    if (!c) continue;
+    out.push({
+      name: String(c.name || '').slice(0, 24),
+      role: c.role,
+      hat: c.hat,
+      color: c.color,
+      outfit: c.outfit,
+      parrot: c.parrot
+    });
+  }
+  return out;
+}
+function tavernWsSend(base) {
+  if (!ws || ws.readyState !== 1) return;
+  const m = packTavernDockMeta();
+  if (!m) return;
+  try { ws.send(JSON.stringify({ ...base, ...m })); } catch (e) {}
+}
+function requestTavernRoomList(game) {
+  const payload = { type: 'tavern_list_rooms' };
+  if (game === 'dice' || game === 'poker') payload.game = game;
+  tavernWsSend(payload);
+}
+function buildTavernTableSvgMarkup(room) {
+  if (!room) return '';
+  const game = room.game;
+  const seats = room.seats || [];
+  const max = game === 'poker' ? 5 : 4;
+  const R = game === 'poker' ? 122 : 128;
+  const cx0 = 280;
+  const cy0 = 160;
+  let seatG = '';
+  const lim = Math.min(seats.length, max);
+  for (let i = 0; i < lim; i++) {
+    const s = seats[i];
+    const a = (i / Math.max(lim, 1)) * Math.PI * 2 - Math.PI / 2;
+    const cx = cx0 + Math.cos(a) * R;
+    const cy = cy0 + Math.sin(a) * (R * 0.82);
+    if (!s || s.kind === 'empty') continue;
+    const col =
+      (s.avatar && s.avatar.color) ||
+      (s.crewModels && s.crewModels[0] && s.crewModels[0].color) ||
+      '#98765a';
+    const nm = escapeDebugHtml(String(s.name || '').slice(0, 14));
+    const folded = s.folded ? ' · folded' : '';
+    const stk = s.stack != null ? s.stack | 0 : 0;
+    seatG += `<g transform="translate(${cx},${cy})"><ellipse rx="26" ry="32" fill="${col}" stroke="#221a14" stroke-width="1.5"/><circle cx="0" cy="-10" r="13" fill="#e8d8c8" stroke="#221a14" stroke-width="1"/><text y="54" text-anchor="middle" fill="#e8eef6" font-size="10" font-family="Georgia,serif">${nm}${folded}</text><text y="68" text-anchor="middle" fill="#d8b848" font-size="9">${stk}g</text></g>`;
+  }
+  let centerExtra = '';
+  if (game === 'dice' && room.dice && room.dice.msg) {
+    centerExtra += `<text x="${cx0}" y="${cy0 + 100}" text-anchor="middle" fill="#e8dfd0" font-size="11" font-family="Georgia,serif">${escapeDebugHtml(String(room.dice.msg))}</text>`;
+  }
+  if (game === 'dice' && room.dice && Array.isArray(room.dice.rolls)) {
+    let rx = cx0 - 70;
+    room.dice.rolls.forEach(r => {
+      if (!r || r.out) return;
+      const ds = (r.d || []).join(' · ');
+      centerExtra += `<text x="${rx}" y="${cy0 - 10}" fill="#f8f2e4" font-size="11" font-family="Georgia,serif">${escapeDebugHtml(String(r.name || ''))}: ${escapeDebugHtml(ds)}</text>`;
+      rx += 140;
+    });
+  }
+  if (game === 'poker' && room.poker) {
+    const brd = room.poker.board || [];
+    const ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+    const suits = ['♣', '♦', '♥', '♠'];
+    const pot = room.poker.pot != null ? room.poker.pot | 0 : 0;
+    brd.forEach((c, i) => {
+      const rk = ranks[Math.floor(c / 4) % 13];
+      const su = suits[c % 4];
+      const red = c % 4 === 1 || c % 4 === 2 ? '#c03838' : '#1a1a1a';
+      const bx = cx0 - (brd.length * 52) / 2 + i * 52;
+      centerExtra += `<g transform="translate(${bx},${cy0 - 58})"><rect width="46" height="64" rx="5" fill="#fdfcf8" stroke="#333"/><text x="6" y="40" fill="${red}" font-size="18" font-family="Georgia,serif">${rk}${su}</text></g>`;
+    });
+    centerExtra += `<text x="${cx0}" y="${cy0 + 96}" text-anchor="middle" fill="#d4e4ff" font-size="11" font-family="Georgia,serif">Pot ${pot}g · ${escapeDebugHtml(String(room.poker.msg || ''))}</text>`;
+  }
+  return `<div style="width:100%;overflow:auto;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 320" width="100%" height="auto" preserveAspectRatio="xMidYMid meet" style="max-height:360px;display:block;background:radial-gradient(ellipse at center,#2a4860 0%,#162430 72%);border-radius:14px;border:1px solid rgba(200,170,110,0.25);">${seatG}<ellipse cx="${cx0}" cy="${cy0}" rx="152" ry="92" fill="#4a3828" stroke="#a08060" stroke-width="3" opacity="0.98"/>${centerExtra}</svg></div>`;
+}
+function refreshTavernPanelIfOpen() {
+  const pp = document.getElementById('port-panel');
+  if (!pp || pp.style.display === 'none') return;
+  const at = document.querySelector('.port-tab.active');
+  if (!at || at.dataset.ptab !== 'tavern') return;
+  const o = G.tavernSubOpts || {};
+  try { showPortTab('tavern', o); } catch (e) {}
 }
 function countSailorCrew() { return (Array.isArray(G.player.crew) ? G.player.crew : []).filter(c => c && c.role !== 'prisoner').length; }
 function countPrisonerCrew() { return (Array.isArray(G.player.crew) ? G.player.crew : []).filter(c => c && c.role === 'prisoner').length; }
@@ -18910,6 +19025,40 @@ async function connectToServer() {
         if (!('party' in msg)) break;
         applyPartySyncPayload(msg.party);
         break;
+      case 'tavern_inventory_delta': {
+        if (msg.delta != null && Number.isFinite(Number(msg.delta))) applyTavernGoldDelta(Number(msg.delta));
+        const dz = Math.floor(Number(msg.delta) || 0);
+        if (dz) notify(dz >= 0 ? `+${dz} gold` : `${dz} gold`, 2200);
+        refreshTavernPanelIfOpen();
+        break;
+      }
+      case 'tavern_room_list':
+        G._tavernRoomListCache = msg.rooms || [];
+        G._tavernRoomListTown = msg.townKey || '';
+        refreshTavernPanelIfOpen();
+        break;
+      case 'tavern_state':
+        G._tavernActiveRoomSnapshot = msg.room || null;
+        if (G._tavernJoinRoomPending && msg.room && (msg.room.id | 0) === (G._tavernJoinRoomPending | 0)) {
+          const rid = msg.room.id | 0;
+          const gg = msg.room.game === 'poker' ? 'poker' : 'dice';
+          G._tavernJoinRoomPending = null;
+          showPortTab('tavern', { sub: 'table', roomId: rid, game: gg });
+          break;
+        }
+        refreshTavernPanelIfOpen();
+        break;
+      case 'tavern_created':
+        if (msg.room) {
+          G._tavernActiveRoomSnapshot = msg.room;
+          requestTavernRoomList(msg.room.game === 'poker' ? 'poker' : 'dice');
+          showPortTab('tavern', { sub: 'table', roomId: msg.room.id, game: msg.room.game === 'poker' ? 'poker' : 'dice' });
+        }
+        notify('Room ready — buy in when you sit.', 3800);
+        break;
+      case 'tavern_error':
+        notify(String(msg.error || 'Tavern error.'));
+        break;
       case 'party_chart_markers': {
         if (msg.fromCaptainKey == null) break;
         const from = String(msg.fromCaptainKey);
@@ -26290,7 +26439,9 @@ function showPortTab(tab, opts) {
       });
     }
   } else if (tab === 'tavern') {
+    G.tavernSubOpts = opts || {};
     const sub = opts.sub;
+    requestTavernRoomList(sub === 'dice' ? 'dice' : sub === 'poker' ? 'poker' : null);
     if (sub === 'recruit') {
       const spec = SHIP_TYPES[G.player.shipType];
       const backBtn = document.createElement('button');
@@ -26314,15 +26465,261 @@ function showPortTab(tab, opts) {
           <button onclick="portRecruit('${rName}','${rRole}')" style="background:rgba(40,60,80,0.4);border:1px solid rgba(80,120,160,0.4);color:#88aacc;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Hire 25g</button>`;
         content.appendChild(d);
       }
+    } else if (sub === 'dice' || sub === 'poker') {
+      const game = sub;
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.textContent = '← Back';
+      backBtn.style.cssText = 'margin-bottom:10px;padding:6px 12px;border-radius:6px;border:1px solid rgba(180,120,60,0.45);background:rgba(50,35,20,0.75);color:#e8dcc8;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+      backBtn.addEventListener('click', () => showPortTab('tavern'));
+      content.appendChild(backBtn);
+      const ttl = document.createElement('div');
+      ttl.style.cssText = 'color:#d4a848;font-size:13px;margin-bottom:6px;letter-spacing:0.04em;text-transform:uppercase;';
+      ttl.textContent = game === 'poker' ? 'Texas Hold’em · rooms in port' : 'Seelowe dice (Cee-lo) · rooms in port';
+      content.appendChild(ttl);
+      const goldLine = document.createElement('div');
+      goldLine.style.cssText = 'color:#8a7a60;font-size:11px;margin-bottom:10px;';
+      goldLine.textContent = `Gold in hold: ${getInvCount('gold')} — bets use cargo gold; leave table to return winnings.`;
+      content.appendChild(goldLine);
+      const roomsCached = Array.isArray(G._tavernRoomListCache)
+        ? G._tavernRoomListCache.filter(r => r && r.game === game)
+        : [];
+      if (roomsCached.length === 0) {
+        const em = document.createElement('div');
+        em.style.cssText = 'color:#7a6a58;font-size:11px;margin-bottom:8px;font-style:italic;';
+        em.textContent = 'No rooms listed yet — host one below.';
+        content.appendChild(em);
+      }
+      roomsCached.forEach(rm => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(26,44,62,0.45);border:1px solid rgba(120,140,170,0.28);border-radius:8px;margin-bottom:8px;';
+        const ante = rm.stakes && rm.stakes.diceAnte != null ? rm.stakes.diceAnte : 1;
+        const sb = rm.stakes && rm.stakes.pokerSb != null ? rm.stakes.pokerSb : 5;
+        const bb = rm.stakes && rm.stakes.pokerBb != null ? rm.stakes.pokerBb : 10;
+        const stk = game === 'dice' ? `Ante ${ante}g` : `SB ${sb}g · BB ${bb}g`;
+        row.innerHTML = `<div style="min-width:0;"><div style="color:#e0dcc8;font-size:13px;">${escapeDebugHtml(String(rm.name || 'Table'))}</div>
+          <div style="color:#8a9098;font-size:10px;">${stk} · ${(rm.seats || []).filter(s => s && s.kind !== 'empty').length}/${(rm.seats || []).length} seated</div></div>`;
+        const jb = document.createElement('button');
+        jb.type = 'button';
+        jb.style.cssText = 'flex-shrink:0;background:rgba(50,120,160,0.35);border:1px solid rgba(120,180,220,0.45);color:#c8e0f0;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+        jb.textContent = 'Join';
+        jb.addEventListener('click', () => {
+          const amt = prompt(`Buy-in (gold from cargo)?`, game === 'dice' ? '50' : '200');
+          const bring = Math.max(1, Math.floor(Number(amt) || 50));
+          if (bring > getInvCount('gold')) { notify('Not enough gold in hold.'); return; }
+          tavernWsSend({
+            type: 'tavern_join_room',
+            roomId: rm.id,
+            bringGold: bring,
+            crewModels: buildTavernCrewModelsSnapshot(),
+            displayName: ((getCaptainDisplayCrew() && getCaptainDisplayCrew().name) || G.player.name || 'Captain').slice(0, 28)
+          });
+          G._tavernJoinRoomPending = rm.id;
+          showPortTab('tavern', { sub: 'table', roomId: rm.id, game });
+        });
+        row.appendChild(jb);
+        content.appendChild(row);
+      });
+      const hostBox = document.createElement('div');
+      hostBox.style.cssText = 'margin-top:12px;padding:12px;background:rgba(32,48,42,0.5);border:1px solid rgba(140,170,140,0.25);border-radius:10px;';
+      hostBox.innerHTML = `<div style="color:#a8c8a8;font-size:11px;text-transform:uppercase;margin-bottom:8px;">Host a ${game === 'poker' ? 'poker' : 'dice'} table</div>
+        <input type="text" id="tavern-new-room-name" placeholder="Room name" maxlength="28" style="width:100%;box-sizing:border-box;padding:8px;margin-bottom:8px;background:rgba(0,0,0,0.25);border:1px solid rgba(140,170,140,0.35);border-radius:6px;color:#e8e8dc;font-size:12px;font-family:Georgia,serif;"/>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+          ${game === 'dice'
+          ? `<label style="font-size:10px;color:#9aa8a0;">Ante<input id="tavern-st-diceAnte" type="number" min="1" max="500" value="1" style="width:72px;margin-left:6px;"/></label>`
+          : `<label style="font-size:10px;color:#9aa8a0;">SB<input id="tavern-st-sb" type="number" min="1" max="500" value="5" style="width:56px;margin-left:4px;"/></label>
+             <label style="font-size:10px;color:#9aa8a0;">BB<input id="tavern-st-bb" type="number" min="2" max="1000" value="10" style="width:56px;margin-left:4px;"/></label>`}
+        </div>`;
+      content.appendChild(hostBox);
+      const createBtn = document.createElement('button');
+      createBtn.type = 'button';
+      createBtn.textContent = 'Create room';
+      createBtn.style.cssText = 'width:100%;padding:10px;border-radius:8px;background:rgba(60,140,110,0.45);border:1px solid rgba(140,210,170,0.45);color:#d8f0e8;cursor:pointer;font-size:12px;font-family:Georgia,serif;';
+      createBtn.addEventListener('click', () => {
+        const nmEl = hostBox.querySelector('#tavern-new-room-name');
+        const name = nmEl ? String(nmEl.value || '').slice(0, 28).trim() : 'Hall';
+        const stakes = {};
+        if (game === 'dice') {
+          const el = hostBox.querySelector('#tavern-st-diceAnte');
+          stakes.diceAnte = el ? Math.max(1, Math.floor(Number(el.value) || 1)) : 1;
+        } else {
+          const sbe = hostBox.querySelector('#tavern-st-sb');
+          const bbe = hostBox.querySelector('#tavern-st-bb');
+          stakes.pokerSb = sbe ? Math.max(1, Math.floor(Number(sbe.value) || 5)) : 5;
+          stakes.pokerBb = bbe ? Math.max(2, Math.floor(Number(bbe.value) || 10)) : 10;
+        }
+        tavernWsSend({
+          type: 'tavern_create_room',
+          game,
+          name: name || 'Table',
+          stakes
+        });
+        requestTavernRoomList(game);
+      });
+      hostBox.appendChild(createBtn);
+      const refBtn = document.createElement('button');
+      refBtn.type = 'button';
+      refBtn.textContent = 'Refresh rooms';
+      refBtn.style.cssText = 'width:100%;margin-top:8px;padding:6px;font-size:10px;background:transparent;border:1px dashed rgba(180,170,140,0.35);color:#a89878;border-radius:6px;cursor:pointer;font-family:Georgia,serif;';
+      refBtn.addEventListener('click', () => requestTavernRoomList(game));
+      content.appendChild(refBtn);
+    } else if (sub === 'table') {
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.textContent = '← Lobby';
+      backBtn.style.cssText = 'margin-bottom:10px;padding:6px 12px;border-radius:6px;border:1px solid rgba(180,120,60,0.45);background:rgba(50,35,20,0.75);color:#e8dcc8;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+      const gTbl = opts.game === 'poker' ? 'poker' : 'dice';
+      backBtn.addEventListener('click', () => showPortTab('tavern', { sub: gTbl }));
+      content.appendChild(backBtn);
+      tavernWsSend({ type: 'tavern_sync_room', roomId: opts.roomId | 0 });
+      const rm = G._tavernActiveRoomSnapshot;
+      const wrap = document.createElement('div');
+      let seatedMe = false;
+      if (rm && rm.seats) {
+        seatedMe = rm.seats.some(s => s && s.kind === 'player' && (s.playerId | 0) === (G.myId | 0));
+      }
+      if (rm && !seatedMe) {
+        const sit = document.createElement('button');
+        sit.type = 'button';
+        sit.textContent = 'Buy in & take a seat';
+        sit.style.cssText =
+          'display:block;margin-bottom:10px;padding:10px 14px;background:rgba(60,120,170,0.45);border:1px solid rgba(140,200,255,0.55);color:#eaf6ff;border-radius:10px;cursor:pointer;font-size:12px;font-family:Georgia,serif;';
+        sit.addEventListener('click', () => {
+          const amt = prompt('Gold from cargo to bring to table?', rm.game === 'poker' ? '200' : '50');
+          const bring = Math.max(1, Math.floor(Number(amt) || 50));
+          if (bring > getInvCount('gold')) {
+            notify('Not enough gold in hold.');
+            return;
+          }
+          tavernWsSend({
+            type: 'tavern_join_room',
+            roomId: rm.id,
+            bringGold: bring,
+            crewModels: buildTavernCrewModelsSnapshot(),
+            displayName: ((getCaptainDisplayCrew() && getCaptainDisplayCrew().name) || G.player.name || 'Captain').slice(0, 28)
+          });
+          G._tavernJoinRoomPending = rm.id;
+        });
+        content.appendChild(sit);
+      }
+      wrap.style.cssText = 'color:#cfd8e0;font-size:11px;line-height:1.45;';
+      if (!rm || (rm.id | 0) !== (opts.roomId | 0)) {
+        wrap.textContent = 'Syncing room state… reopen if this hangs.';
+      } else {
+        const isHostPlayer = (rm.hostPlayerId | 0) === (G.myId | 0);
+        wrap.innerHTML = buildTavernTableSvgMarkup(rm) + `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;">
+          ${isHostPlayer && rm.phase === 'lobby'
+          ? `<button type="button" id="tavern-fill-npc" style="padding:8px 12px;background:rgba(80,100,140,0.4);border:1px solid rgba(140,170,210,0.45);color:#d8e4ff;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Fill empties with locals</button>
+             <button type="button" id="tavern-start" style="padding:8px 12px;background:rgba(100,140,100,0.4);border:1px solid rgba(160,220,160,0.45);color:#e0ffe8;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Start game</button>`
+          : ''}
+          <button type="button" id="tavern-leave" style="padding:8px 12px;background:rgba(140,70,70,0.35);border:1px solid rgba(220,140,140,0.45);color:#ffd8d8;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Leave table</button>
+          ${seatedMe ? `<button type="button" id="tavern-cash" style="padding:8px 12px;background:rgba(180,150,70,0.35);border:1px solid rgba(230,210,140,0.45);color:#fff6d8;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Cash out winnings</button>` : ''}
+          ${isHostPlayer && rm.game === 'dice' && rm.phase === 'playing' ? `<button type="button" id="tavern-dice-next" style="padding:8px 12px;background:rgba(140,140,210,0.35);border:1px solid rgba(180,180,255,0.45);color:#e8e8ff;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Roll another round</button>` : ''}
+        </div>`;
+        const hostId = rm.hostPlayerId | 0;
+        const seats = rm.seats || [];
+        wrap.querySelector('#tavern-fill-npc')?.addEventListener('click', () => {
+          tavernWsSend({ type: 'tavern_fill_npcs', roomId: rm.id });
+        });
+        wrap.querySelector('#tavern-start')?.addEventListener('click', () => {
+          tavernWsSend({ type: 'tavern_start_game', roomId: rm.id });
+        });
+        wrap.querySelector('#tavern-leave')?.addEventListener('click', () => {
+          tavernWsSend({ type: 'tavern_leave_room', roomId: rm.id });
+          showPortTab('tavern', { sub: gTbl });
+        });
+        wrap.querySelector('#tavern-cash')?.addEventListener('click', () => {
+          tavernWsSend({ type: 'tavern_cash_out', roomId: rm.id });
+        });
+        wrap.querySelector('#tavern-dice-next')?.addEventListener('click', () => {
+          tavernWsSend({ type: 'tavern_dice_next_round', roomId: rm.id });
+        });
+        seats.forEach((s, ix) => {
+          if (!(hostId === (G.myId | 0) && rm.phase === 'lobby')) return;
+          if (!s || s.kind !== 'empty') return;
+          const fill = document.createElement('button');
+          fill.style.cssText = 'margin:6px 4px;padding:5px 8px;font-size:10px;';
+          fill.textContent = `Seat ${ix + 1}: add NPC`;
+          fill.addEventListener('click', () => tavernWsSend({ type: 'tavern_fill_npcs', roomId: rm.id }));
+          wrap.appendChild(fill);
+        });
+        if ((G.myId | 0) === hostId && rm.phase === 'lobby') {
+          const nh = document.createElement('input');
+          nh.placeholder = 'Rename room';
+          nh.style.cssText = 'margin-top:8px;width:100%;padding:6px;background:rgba(0,0,0,0.2);border:1px solid rgba(140,170,210,0.35);border-radius:6px;color:#e8e8e0;font-size:11px;font-family:Georgia,serif;';
+          nh.value = rm.name || '';
+          const saver = document.createElement('button');
+          saver.textContent = 'Apply stakes / name';
+          saver.style.cssText = 'margin-top:8px;width:100%;padding:8px;font-size:11px;background:rgba(50,70,110,0.45);border:1px solid rgba(140,170,230,0.45);color:#dfe8ff;border-radius:8px;cursor:pointer;font-family:Georgia,serif;';
+          saver.addEventListener('click', () => {
+            const stakes = {};
+            stakes.diceAnte = parseInt(prompt('Dice ante?', String((rm.stakes && rm.stakes.diceAnte) || 1)), 10);
+            stakes.pokerSb = parseInt(prompt('Poker SB?', String((rm.stakes && rm.stakes.pokerSb) || 5)), 10);
+            stakes.pokerBb = parseInt(prompt('Poker BB?', String((rm.stakes && rm.stakes.pokerBb) || 10)), 10);
+            tavernWsSend({
+              type: 'tavern_host_update_room',
+              roomId: rm.id,
+              name: String(nh.value || '').slice(0, 28),
+              stakes: {
+                diceAnte: Math.max(1, stakes.diceAnte || 1),
+                pokerSb: Math.max(1, stakes.pokerSb || 5),
+                pokerBb: Math.max(2, stakes.pokerBb || 10)
+              }
+            });
+          });
+          wrap.appendChild(nh);
+          wrap.appendChild(saver);
+        }
+        let mySeatIx = -1;
+        seats.forEach((s, i) => { if (s && s.kind === 'player' && (s.playerId | 0) === (G.myId | 0)) mySeatIx = i; });
+        if (mySeatIx >= 0 && rm.game === 'poker' && rm.poker && rm.poker.phase === 'betting' && ((rm.poker.toAct | 0) === mySeatIx)) {
+          const act = document.createElement('div');
+          act.style.cssText = 'margin-top:12px;padding:12px;background:rgba(50,42,72,0.55);border:1px solid rgba(160,140,210,0.45);border-radius:10px;';
+          act.innerHTML = `<div style="margin-bottom:8px;color:#e8dcf8;">Pot ${rm.poker.pot | 0}g · face ${rm.poker.facingBet || 0}g · street ${escapeDebugHtml(String(rm.poker.street || ''))}</div>`;
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+          const mkBtn = (label, fn) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = label;
+            b.style.cssText = 'padding:8px 12px;background:rgba(60,140,210,0.45);border:1px solid rgba(140,200,255,0.55);color:#e8f4ff;border-radius:8px;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+            b.addEventListener('click', fn);
+            return b;
+          };
+          row.appendChild(mkBtn('Fold', () => tavernWsSend({ type: 'tavern_poker_action', roomId: rm.id, seatIndex: mySeatIx, action: 'fold' })));
+          row.appendChild(mkBtn('Call', () => tavernWsSend({ type: 'tavern_poker_action', roomId: rm.id, seatIndex: mySeatIx, action: 'call' })));
+          row.appendChild(mkBtn('Check', () => tavernWsSend({ type: 'tavern_poker_action', roomId: rm.id, seatIndex: mySeatIx, action: 'check' })));
+          row.appendChild(mkBtn('Raise…', () => {
+            const to = prompt('Raise — total contrib this street?', String((rm.poker.facingBet | 0) + (rm.poker.bbAmt | 10)));
+            const rt = Math.floor(Number(to) || 0);
+            tavernWsSend({ type: 'tavern_poker_action', roomId: rm.id, seatIndex: mySeatIx, action: 'raise_total', raiseTo: rt });
+          }));
+          act.appendChild(row);
+          wrap.appendChild(act);
+        }
+      }
+      content.appendChild(wrap);
     } else {
       const intro = document.createElement('div');
       intro.style.cssText = 'color:#8a7a60;font-size:11px;line-height:1.45;margin-bottom:12px;';
-      intro.textContent = 'The tavernkeep sweeps sawdust from the planks — sailors for hire find a berth here.';
+      intro.textContent = 'Tavern — crew, dice, and poker. Wagers use cargo gold; the host can pull locals in to fill chairs.';
       content.appendChild(intro);
       const grid = document.createElement('div');
       grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px;';
       const tiles = [
-        { key: 'recruit', title: 'Recruitment', blurb: 'Hire hands for your crew.', icon: null }
+        { key: 'recruit', title: 'Recruitment', blurb: 'Hire hands for your crew.', useIcon: null },
+        {
+          key: 'dice',
+          title: 'Seelowe dice',
+          blurb: 'Street Cee-lo for up to four. Default 1g ante per round.',
+          useIcon: 'dice'
+        },
+        {
+          key: 'poker',
+          title: 'Texas Hold’em',
+          blurb: 'Five seats, blinds in gold. Defaults 5g / 10g.',
+          useIcon: 'poker'
+        }
       ];
       for (const t of tiles) {
         const cell = document.createElement('div');
@@ -26330,12 +26727,18 @@ function showPortTab(tab, opts) {
           'padding:12px;background:rgba(30,20,12,0.55);border:1px solid rgba(140,100,40,0.28);border-radius:10px;cursor:pointer;text-align:center;transition:border-color 0.15s,background 0.15s;';
         cell.tabIndex = 0;
         cell.setAttribute('role', 'button');
-        const vis = t.img
-          ? `<img src="${t.img}" alt="" width="72" height="72" style="object-fit:contain;display:block;margin:0 auto 10px;opacity:0.95;"/>`
-          : `<div style="font-size:44px;line-height:1;margin-bottom:8px;opacity:0.85;">⚓</div>`;
+        let vis;
+        if (t.useIcon && ITEM_PNG[t.useIcon]) {
+          const u = resolveGameAssetUrl(ITEM_PNG[t.useIcon]);
+          vis = `<img src="${String(u).replace(/&/g, '&amp;')}" alt="" width="72" height="72" style="object-fit:contain;display:block;margin:0 auto 10px;opacity:0.95;"/>`;
+        } else {
+          vis = '<div style="font-size:44px;line-height:1;margin-bottom:8px;opacity:0.85;">⚓</div>';
+        }
         cell.innerHTML = `${vis}<div style="color:#e0c890;font-size:13px;font-weight:600;margin-bottom:4px;">${t.title}</div><div style="color:#9a8a78;font-size:10px;line-height:1.35;">${t.blurb}</div>`;
         const open = () => {
           if (t.key === 'recruit') showPortTab('tavern', { sub: 'recruit' });
+          else if (t.key === 'dice') showPortTab('tavern', { sub: 'dice' });
+          else if (t.key === 'poker') showPortTab('tavern', { sub: 'poker' });
         };
         cell.addEventListener('click', open);
         cell.addEventListener('keydown', ev => {
