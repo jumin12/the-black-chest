@@ -7,6 +7,7 @@ const { createGameSimulation, createAntiCheatGate } = require('./simulation-laye
 const { createServerNpcWorld } = require('./server/npc-authoritative.cjs');
 const { createWorldPoliticsStore, sanitizePlayerPoliticsPatch } = require('./server/world-politics.cjs');
 const { createTerrainContext, sampleOffshoreSpawn } = require('./server/terrain-context.cjs');
+const { createGambleManager } = require('./server/gamble-authoritative.cjs');
 
 const PORT = process.env.PORT || 3000;
 /** Realm identity for server browsers and the in-game HUD (env-tunable). */
@@ -2389,6 +2390,8 @@ function collectAdminPlayerList() {
   return out;
 }
 
+const gambleManager = createGambleManager({ players, sendToPlayerId });
+
 wss.on('connection', (ws, req) => {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -3143,6 +3146,18 @@ wss.on('connection', (ws, req) => {
             game,
             payload
           });
+          break;
+        }
+        case 'gamble_create':
+        case 'gamble_join':
+        case 'gamble_leave':
+        case 'gamble_commit':
+        case 'gamble_start':
+        case 'gamble_poker_action':
+        case 'gamble_poker_next_hand': {
+          try {
+            gambleManager.handle(id, msg);
+          } catch (e) {}
           break;
         }
         case 'swimmer_spawn': {
@@ -4078,6 +4093,7 @@ wss.on('connection', (ws, req) => {
         worldPresenceDirty = false;
       } catch (e) {}
     }
+    try { gambleManager.disconnect(id); } catch (e) {}
     players.delete(id);
     broadcast({ type: 'player_leave', id });
     broadcastServerPopulation();

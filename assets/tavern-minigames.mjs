@@ -5,6 +5,15 @@
 
 const _roomListeners = new Map(); // roomId -> Set<(payload)=>void>
 
+let _serverGambleHandler = null;
+export function pipeServerGambleMessage(msg) {
+  if (_serverGambleHandler) {
+    try {
+      _serverGambleHandler(msg);
+    } catch (e) {}
+  }
+}
+
 export function subscribeGambleRoom(roomId, fn) {
   const id = String(roomId || '');
   if (!id) return () => {};
@@ -170,6 +179,10 @@ function buildDiceTableScene(THREE, mountEl, finalPips) {
 }
 
 export function openSeelowDiceTable(ctx) {
+  if (ctx && ctx.authoritative) {
+    openSeelowDiceAuthoritative(ctx);
+    return;
+  }
   const root = document.createElement('div');
   root.style.cssText =
     'position:fixed;inset:0;z-index:95;display:flex;align-items:center;justify-content:center;background:rgba(6,4,3,0.78);padding:12px;font-family:Georgia,serif;';
@@ -464,6 +477,10 @@ function aiDecide(strength, street, facingBet, stack, pot, rng) {
 }
 
 export function openTexasHoldemPoker(ctx) {
+  if (ctx && ctx.authoritative) {
+    openTexasHoldemPokerAuthoritative(ctx);
+    return;
+  }
   const root = document.createElement('div');
   root.style.cssText =
     'position:fixed;inset:0;z-index:95;display:flex;align-items:center;justify-content:center;background:rgba(6,4,3,0.78);padding:12px;font-family:Georgia,serif;';
@@ -756,4 +773,297 @@ export function openTexasHoldemPoker(ctx) {
       actEl.appendChild(dealBtn);
     })();
   }
+}
+
+/* ---- Server-authoritative multiplayer (realm host) ---- */
+
+function openSeelowDiceAuthoritative(ctx) {
+  let roomId = '';
+  let committedDedup = false;
+  let sceneHandle = null;
+  const mount3dHolder = document.createElement('div');
+  mount3dHolder.style.cssText = 'width:100%;height:260px;border-radius:8px;overflow:hidden;border:1px solid rgba(80,60,40,0.5);background:#0e0c0a;';
+
+  const root = document.createElement('div');
+  root.style.cssText =
+    'position:fixed;inset:0;z-index:95;display:flex;align-items:center;justify-content:center;background:rgba(6,4,3,0.78);padding:12px;font-family:Georgia,serif;';
+  const panel = document.createElement('div');
+  panel.style.cssText =
+    'max-width:520px;width:100%;background:linear-gradient(165deg,rgba(34,24,16,0.98),rgba(12,9,6,0.99));border:1px solid rgba(200,150,80,0.45);border-radius:12px;padding:14px 16px;color:#e8dcc8;box-shadow:0 12px 44px rgba(0,0,0,0.55);';
+  panel.innerHTML = `<h3 style="margin:0 0 8px;font-size:18px;color:#e0c890;">Seelow — Realm table</h3>
+    <div style="font-size:11px;color:#9a8a78;line-height:1.45;margin-bottom:8px;">Server resolves rolls; gold payouts come from the realm (one pot, no duplicate wins). Dock at port, create or join a room, commit your ante, then the host starts.</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+      <label style="font-size:11px;">Ante <input id="srv-dice-stake" type="number" min="5" max="500" value="15" style="width:64px;background:#1a1510;border:1px solid #5a4030;color:#e8dcc8;padding:4px;border-radius:4px;"/></label>
+      <button type="button" id="srv-dice-create" style="padding:6px 10px;border-radius:6px;border:1px solid #c9a24a;background:#4a3020;color:#f0e0c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Create room</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+      <input id="srv-dice-join" type="text" placeholder="Room id" style="flex:1;min-width:120px;background:#1a1510;border:1px solid #5a4030;color:#e8dcc8;padding:4px 8px;border-radius:4px;font-size:11px;"/>
+      <button type="button" id="srv-dice-joinbtn" style="padding:6px 10px;border-radius:6px;border:1px solid #666;background:#2a2220;color:#ddd;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>
+    </div>
+    <div id="srv-dice-members" style="font-size:11px;color:#c0b8a8;margin-bottom:6px;line-height:1.45;"></div>
+    <button type="button" id="srv-dice-commit" style="margin-right:8px;padding:6px 12px;border-radius:6px;border:1px solid rgba(120,160,120,0.5);background:rgba(30,50,30,0.6);color:#b8d8b0;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Commit ante</button>
+    <button type="button" id="srv-dice-start" style="padding:6px 12px;border-radius:6px;border:1px solid #c9a24a;background:linear-gradient(180deg,#6a4a20,#3a2208);color:#f0e0c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Start roll</button>
+    <div style="margin-top:10px;"></div>`;
+  panel.appendChild(mount3dHolder);
+  const logEl = document.createElement('pre');
+  logEl.style.cssText =
+    'margin:10px 0 0;font-size:11px;color:#c8bba8;white-space:pre-wrap;max-height:120px;overflow:auto;line-height:1.4;';
+  panel.appendChild(logEl);
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.textContent = 'Close';
+  closeBtn.style.cssText =
+    'margin-top:10px;padding:8px 12px;border-radius:8px;border:1px solid #555;background:#2a2220;color:#ccc;cursor:pointer;font-family:Georgia,serif;';
+  panel.appendChild(closeBtn);
+  root.appendChild(panel);
+  document.body.appendChild(root);
+
+  const goldHint = document.createElement('div');
+  goldHint.style.cssText = 'font-size:11px;color:#d4a848;margin-bottom:6px;';
+  panel.insertBefore(goldHint, panel.querySelector('#srv-dice-members'));
+
+  function refreshGoldLine() {
+    goldHint.textContent = `Your gold: ${ctx.getGold()}`;
+  }
+  refreshGoldLine();
+
+  const log = t => {
+    logEl.textContent += (logEl.textContent ? '\n' : '') + t;
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  function renderMembers(r) {
+    if (!r) return;
+    roomId = r.id;
+    const el = panel.querySelector('#srv-dice-members');
+    const cr = r.creatorId === ctx.myId ? ' (you are host)' : '';
+    el.innerHTML = `<strong>Room</strong> ${r.id}${cr}<br/>` + r.members.map(m => `· ${m.name} #${m.playerId} ${m.committed ? '✓ committed' : ''}`).join('<br/>');
+    panel.querySelector('#srv-dice-start').style.display = r.creatorId === ctx.myId ? 'inline-block' : 'none';
+    refreshGoldLine();
+  }
+
+  function onServer(msg) {
+    if (msg.type === 'gamble_created') {
+      roomId = msg.roomId;
+      renderMembers(msg.room);
+      log(`Room opened: ${roomId}`);
+    } else if (msg.type === 'gamble_room') {
+      renderMembers(msg.room);
+    } else if (msg.type === 'gamble_commit_ack') {
+      if (msg.ok && !committedDedup) {
+        committedDedup = true;
+        ctx.trySpendGold(msg.stake);
+        refreshGoldLine();
+        log(`Committed ${msg.stake}g`);
+      } else if (!msg.ok) log(`Commit failed: ${msg.reason || '?'}`);
+    } else if (msg.type === 'gamble_settle' && msg.game === 'dice') {
+      if (sceneHandle) sceneHandle.dispose();
+      sceneHandle = buildDiceTableScene(ctx.THREE, mount3dHolder, [3, 3, 3]);
+      log(`— Realm result (${msg.reason || ''}) —`);
+      (msg.results || []).forEach(row => log(`${row.name}: cargo ${row.cargo} (${(row.dice || []).join(',')})`));
+      refreshGoldLine();
+    } else if (msg.type === 'gamble_error') {
+      ctx.notify(msg.code || 'gamble error');
+    }
+  }
+
+  _serverGambleHandler = onServer;
+
+  panel.querySelector('#srv-dice-create').onclick = () => {
+    committedDedup = false;
+    const st = Math.max(5, Math.min(500, Number(panel.querySelector('#srv-dice-stake').value) || 15));
+    ctx.sendGamble({ type: 'gamble_create', game: 'dice', stake: st, maxPlayers: 4 });
+  };
+  panel.querySelector('#srv-dice-joinbtn').onclick = () => {
+    committedDedup = false;
+    const id = String(panel.querySelector('#srv-dice-join').value || '').trim();
+    if (!id) return;
+    ctx.sendGamble({ type: 'gamble_join', roomId: id });
+  };
+  panel.querySelector('#srv-dice-commit').onclick = () => {
+    if (!roomId) return log('Join or create a room first.');
+    ctx.sendGamble({ type: 'gamble_commit', roomId });
+  };
+  panel.querySelector('#srv-dice-start').onclick = () => {
+    if (!roomId) return;
+    ctx.sendGamble({ type: 'gamble_start', roomId });
+  };
+  closeBtn.onclick = () => {
+    if (roomId) ctx.sendGamble({ type: 'gamble_leave', roomId });
+    if (sceneHandle) sceneHandle.dispose();
+    _serverGambleHandler = null;
+    try {
+      root.remove();
+    } catch (e) {}
+  };
+}
+
+function openTexasHoldemPokerAuthoritative(ctx) {
+  let roomId = '';
+  let committedDedup = false;
+
+  const root = document.createElement('div');
+  root.style.cssText =
+    'position:fixed;inset:0;z-index:95;display:flex;align-items:center;justify-content:center;background:rgba(6,4,3,0.78);padding:12px;font-family:Georgia,serif;';
+  const panel = document.createElement('div');
+  panel.style.cssText =
+    'max-width:720px;width:100%;max-height:96vh;overflow:auto;background:linear-gradient(165deg,rgba(34,24,16,0.98),rgba(12,9,6,0.99));border:1px solid rgba(200,150,80,0.45);border-radius:12px;padding:14px 16px;color:#e8dcc8;box-shadow:0 12px 44px rgba(0,0,0,0.55);';
+  panel.innerHTML = `<h3 style="margin:0 0 8px;font-size:18px;color:#e0c890;">Hold'em — Realm table</h3>
+    <div style="font-size:11px;color:#9a8a78;line-height:1.45;margin-bottom:8px;">Buy-in is locked on the server; bets use table stacks. One pot per street authority — leaving returns your stack as gold.</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+      <label style="font-size:11px;">Buy-in <input id="srv-pk-buy" type="number" min="20" max="500" value="80" style="width:64px;background:#1a1510;border:1px solid #5a4030;color:#e8dcc8;padding:4px;border-radius:4px;"/></label>
+      <button type="button" id="srv-pk-create" style="padding:6px 10px;border-radius:6px;border:1px solid #c9a24a;background:#4a3020;color:#f0e0c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Create</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+      <input id="srv-pk-join" type="text" placeholder="Room id" style="flex:1;min-width:120px;background:#1a1510;border:1px solid #5a4030;color:#e8dcc8;padding:4px 8px;border-radius:4px;font-size:11px;"/>
+      <button type="button" id="srv-pk-joinbtn" style="padding:6px 10px;border-radius:6px;border:1px solid #666;background:#2a2220;color:#ddd;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>
+    </div>
+    <div id="srv-pk-meta" style="font-size:11px;color:#c0b8a8;margin-bottom:8px;line-height:1.45;"></div>
+    <button type="button" id="srv-pk-commit" style="margin-right:8px;padding:6px 12px;border-radius:6px;border:1px solid rgba(120,160,120,0.5);background:rgba(30,50,30,0.6);color:#b8d8b0;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Commit buy-in</button>
+    <button type="button" id="srv-pk-start" style="padding:6px 12px;border-radius:6px;border:1px solid #c9a24a;background:linear-gradient(180deg,#6a4a20,#3a2208);color:#f0e0c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Start hand</button>
+    <div style="display:flex;align-items:center;gap:8px;margin:12px 0;font-size:11px;color:#c0b090;">
+      <span>Pot:</span><span id="srv-pk-pot">0</span>
+      <img src="assets/items/gold_0001.png" width="16" height="16" alt="" style="vertical-align:middle;opacity:0.95;"/>
+      <span id="srv-pk-street" style="color:#a8d898;"></span>
+      <span id="srv-pk-stack" style="margin-left:8px;color:#d4a848;"></span>
+    </div>
+    <div id="srv-pk-board" style="min-height:104px;display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;"></div>
+    <div id="srv-pk-hole" style="display:flex;gap:6px;margin-bottom:8px;"></div>
+    <div id="srv-pk-actions" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
+    <pre id="srv-pk-log" style="margin:0;font-size:11px;color:#c8bba8;white-space:pre-wrap;max-height:96px;overflow:auto;"></pre>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.textContent = 'Leave table';
+  closeBtn.style.cssText =
+    'margin-top:10px;padding:8px 12px;border-radius:8px;border:1px solid #555;background:#2a2220;color:#ccc;cursor:pointer;font-family:Georgia,serif;';
+  panel.appendChild(closeBtn);
+  root.appendChild(panel);
+  document.body.appendChild(root);
+
+  const logEl = panel.querySelector('#srv-pk-log');
+  const potEl = panel.querySelector('#srv-pk-pot');
+  const streetEl = panel.querySelector('#srv-pk-street');
+  const stackEl = panel.querySelector('#srv-pk-stack');
+  const boardEl = panel.querySelector('#srv-pk-board');
+  const holeEl = panel.querySelector('#srv-pk-hole');
+  const actEl = panel.querySelector('#srv-pk-actions');
+
+  const log = t => {
+    logEl.textContent += (logEl.textContent ? '\n' : '') + t;
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  function renderCards(container, cards) {
+    container.innerHTML = '';
+    (cards || []).forEach(c => {
+      const img = document.createElement('img');
+      img.width = 72;
+      img.height = 100;
+      img.style.borderRadius = '6px';
+      img.src = cardSvgDataUrl(c.r, c.s);
+      container.appendChild(img);
+    });
+  }
+
+  function renderFromState(msg) {
+    const r = msg.room;
+    if (!r) return;
+    const you = msg.you || {
+      stack: r.stacks != null ? r.stacks[ctx.myId] ?? r.stacks[String(ctx.myId)] ?? 0 : 0,
+      hole: []
+    };
+    roomId = r.id;
+    const meta = panel.querySelector('#srv-pk-meta');
+    const cr = r.creatorId === ctx.myId ? ' · you host' : '';
+    meta.innerHTML = `<strong>${r.id}</strong>${cr}<br/>` + r.members.map(m => `· ${m.name} #${m.playerId} ${m.committed ? '✓' : ''}`).join('<br/>');
+    panel.querySelector('#srv-pk-start').style.display = r.creatorId === ctx.myId && r.phase === 'lobby' ? 'inline-block' : 'none';
+    const pk = r.poker;
+    if (pk) {
+      potEl.textContent = String(pk.pot | 0);
+      streetEl.textContent = pk.street || '';
+      renderCards(boardEl, pk.board || []);
+    } else {
+      potEl.textContent = '0';
+      streetEl.textContent = r.phase === 'between_hands' ? 'Between hands' : '';
+      boardEl.innerHTML = '';
+    }
+    renderCards(holeEl, you.hole);
+    stackEl.textContent = `Table stack: ${you.stack != null ? you.stack : 0}`;
+    actEl.innerHTML = '';
+    const btnStyle =
+      'padding:8px 12px;border-radius:8px;border:1px solid rgba(200,150,80,0.45);background:rgba(60,45,28,0.85);color:#e8dcc8;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+    const mk = (label, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.style.cssText = btnStyle;
+      b.onclick = fn;
+      actEl.appendChild(b);
+    };
+    if (r.phase === 'between_hands' && r.creatorId === ctx.myId) {
+      mk('Deal next hand', () => ctx.sendGamble({ type: 'gamble_poker_next_hand', roomId: r.id }));
+    }
+    if (r.phase === 'play' && pk && pk.actorId === ctx.myId) {
+      mk('Fold', () => ctx.sendGamble({ type: 'gamble_poker_action', roomId: r.id, action: 'fold' }));
+      mk('Check', () => ctx.sendGamble({ type: 'gamble_poker_action', roomId: r.id, action: 'check' }));
+      mk('Call', () => ctx.sendGamble({ type: 'gamble_poker_action', roomId: r.id, action: 'call' }));
+      mk('Raise', () => {
+        const raise = Math.max(10, Math.floor((r.stake * 0.06) | 0) || 10);
+        ctx.sendGamble({ type: 'gamble_poker_action', roomId: r.id, action: 'raise', raise });
+      });
+    }
+  }
+
+  function onServer(msg) {
+    if (msg.type === 'gamble_created') {
+      roomId = msg.roomId;
+      renderFromState({ room: msg.room, you: { stack: 0, hole: [] } });
+    } else if (msg.type === 'gamble_room') {
+      renderFromState({ room: msg.room, you: { stack: 0, hole: [] } });
+    } else if (msg.type === 'gamble_state') {
+      renderFromState(msg);
+    } else if (msg.type === 'gamble_commit_ack') {
+      if (msg.ok && !committedDedup) {
+        committedDedup = true;
+        ctx.trySpendGold(msg.stake);
+        log(`Committed ${msg.stake}g`);
+      } else if (!msg.ok) log(`Commit failed: ${msg.reason || '?'}`);
+    } else if (msg.type === 'gamble_poker_showdown') {
+      log(`Showdown — winners: ${(msg.winners || []).join(', ')}`);
+      (msg.hands || []).forEach(h => log(`${h.name}: ${h.rank}`));
+    } else if (msg.type === 'gamble_settle' && msg.game === 'poker') {
+      log('Table closed — gold returned from realm.');
+    } else if (msg.type === 'gamble_error') {
+      ctx.notify(msg.code || 'gamble');
+    }
+  }
+
+  _serverGambleHandler = onServer;
+
+  panel.querySelector('#srv-pk-create').onclick = () => {
+    committedDedup = false;
+    const st = Math.max(20, Math.min(500, Number(panel.querySelector('#srv-pk-buy').value) || 80));
+    ctx.sendGamble({ type: 'gamble_create', game: 'poker', stake: st, maxPlayers: 5 });
+  };
+  panel.querySelector('#srv-pk-joinbtn').onclick = () => {
+    committedDedup = false;
+    const id = String(panel.querySelector('#srv-pk-join').value || '').trim();
+    if (!id) return;
+    ctx.sendGamble({ type: 'gamble_join', roomId: id });
+  };
+  panel.querySelector('#srv-pk-commit').onclick = () => {
+    if (!roomId) return log('Join or create a room first.');
+    ctx.sendGamble({ type: 'gamble_commit', roomId });
+  };
+  panel.querySelector('#srv-pk-start').onclick = () => {
+    if (!roomId) return;
+    ctx.sendGamble({ type: 'gamble_start', roomId });
+  };
+  closeBtn.onclick = () => {
+    if (roomId) ctx.sendGamble({ type: 'gamble_leave', roomId });
+    _serverGambleHandler = null;
+    try {
+      root.remove();
+    } catch (e) {}
+  };
 }

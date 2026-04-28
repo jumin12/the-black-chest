@@ -18644,6 +18644,26 @@ async function connectToServer() {
         } catch (e) {}
         break;
       }
+      case 'gamble_settle': {
+        try {
+          applyGambleSettleFromServer(msg);
+        } catch (e) {}
+        try {
+          TavernMG.pipeServerGambleMessage(msg);
+        } catch (e) {}
+        break;
+      }
+      case 'gamble_commit_ack':
+      case 'gamble_created':
+      case 'gamble_room':
+      case 'gamble_state':
+      case 'gamble_poker_showdown':
+      case 'gamble_error': {
+        try {
+          TavernMG.pipeServerGambleMessage(msg);
+        } catch (e) {}
+        break;
+      }
       case 'server_full':
         wsSuppressReconnect = true;
         if (wsReconnectTimer) {
@@ -25934,6 +25954,22 @@ function leavePort() {
   updateStoryBriefHud();
 }
 
+function applyGambleSettleFromServer(msg) {
+  if (!msg || msg.type !== 'gamble_settle' || !msg.payouts || G.myId == null) return;
+  const raw = msg.payouts[G.myId] != null ? msg.payouts[G.myId] : msg.payouts[String(G.myId)];
+  const add = Math.floor(Number(raw) || 0);
+  if (!add) return;
+  let row = G.player.inventory.find(i => i.id === 'gold');
+  if (!row) {
+    const m = getItemMeta('gold');
+    row = { id: 'gold', name: m.name, icon: m.icon || '', count: 0 };
+    G.player.inventory.push(row);
+  }
+  row.count += add;
+  reconcileSlotsWithInventory();
+  if (add > 0) notify(`Realm gambling: +${add} gold`, 4200);
+}
+
 function makeTavernMinigameCtx() {
   const cap = getCaptainDisplayCrew();
   return {
@@ -25976,7 +26012,14 @@ function makeTavernMinigameCtx() {
         );
       } catch (e) {}
     },
-    isDocked: () => !!G.docked
+    isDocked: () => !!G.docked,
+    authoritative: !!(typeof ws !== 'undefined' && ws && ws.readyState === 1),
+    sendGamble: o => {
+      if (ws?.readyState !== 1) return;
+      try {
+        ws.send(JSON.stringify(o));
+      } catch (e) {}
+    }
   };
 }
 
