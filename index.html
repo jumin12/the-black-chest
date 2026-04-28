@@ -1174,8 +1174,8 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 #settings-panel h3{color:#d4a848;margin:0 0 16px;font-size:20px;letter-spacing:0.06em;text-shadow:0 1px 2px rgba(0,0,0,0.35);}
 #settings-panel label{color:#a09080;font-size:11px;text-transform:uppercase;display:block;margin-top:12px;letter-spacing:0.08em;}
 #settings-volume,#settings-music-volume,#settings-sfx-volume{width:100%;margin-top:6px;accent-color:#d4a848;}
-#settings-scheme-row,#settings-mobile-camera-row{margin-top:8px;}
-#settings-scheme-row select,#settings-scheme-row .scheme-select,#settings-mobile-camera-row select{width:100%;margin-top:6px;background:rgba(16,10,6,0.9);color:#e0d6c2;border:1px solid rgba(120,90,35,0.4);border-radius:6px;padding:10px;font-family:Georgia,serif;font-size:13px;}
+#settings-scheme-row,#settings-sailing-camera-row{margin-top:8px;}
+#settings-scheme-row select,#settings-scheme-row .scheme-select,#settings-sailing-camera-row select{width:100%;margin-top:6px;background:rgba(16,10,6,0.9);color:#e0d6c2;border:1px solid rgba(120,90,35,0.4);border-radius:6px;padding:10px;font-family:Georgia,serif;font-size:13px;}
 .settings-actions{display:flex;flex-direction:column;gap:10px;margin-top:20px;}
 .settings-btn{width:100%;padding:12px 16px;border-radius:8px;cursor:pointer;font-family:Georgia,serif;font-size:14px;font-weight:600;transition:filter 0.15s,box-shadow 0.15s;touch-action:manipulation;border:1px solid rgba(140,110,60,0.45);}
 .settings-btn:hover{filter:brightness(1.05);}
@@ -2723,7 +2723,7 @@ body.game-help-mobile-minimal #game-help-panel{
         <div class="game-help-pane active" data-help-pane="basics" id="game-help-pane-basics">
           <div class="help-for-pc">
             <h3>Helm &amp; camera</h3>
-            <p><kbd>W</kbd> <kbd>S</kbd> trim sail · <kbd>A</kbd> <kbd>D</kbd> rudder (turns build gradually with speed, like a sailing ship). <kbd>Q</kbd> <kbd>E</kbd> swing the camera; middle-mouse drag looks around and <strong>releases</strong> back to the chase angle behind the ship. <strong>Double-click</strong> the middle button for a <strong>free camera</strong> that stays put until you double-click middle again; wheel zooms between horizon and deck.</p>
+            <p><kbd>W</kbd> <kbd>S</kbd> trim sail · <kbd>A</kbd> <kbd>D</kbd> rudder (turns build gradually with speed, like a sailing ship). <kbd>Q</kbd> <kbd>E</kbd> swing the camera. <strong>Settings → Sailing camera:</strong> in <em>Chase</em>, middle-mouse drag looks around; on release the view snaps behind the ship but <strong>keeps your up/down tilt</strong>. <strong>Double-click</strong> the middle button forces <em>Chase</em> and snaps behind the ship. In <em>Free</em>, the orbit stays until you change it in Settings or double-click middle. <kbd>Home</kbd> resets the camera. Wheel zooms between horizon and deck.</p>
             <p><kbd>M</kbd> full chart · <kbd>Esc</kbd> settings / close panels.</p>
             <h3>Log &amp; chat</h3>
             <p><kbd>B</kbd> Captain&rsquo;s Log · <kbd>I</kbd> cargo · <kbd>C</kbd> crew · <kbd>T</kbd> chat.</p>
@@ -2834,11 +2834,11 @@ body.game-help-mobile-minimal #game-help-panel{
         <option value="3">Edge broadsides</option>
       </select>
     </div>
-    <div id="settings-mobile-camera-row" style="display:none;">
-      <label for="settings-mobile-camera-select">Sailing camera</label>
-      <select id="settings-mobile-camera-select">
-        <option value="chase">Chase — look around, then snap behind ship</option>
-        <option value="free">Free — orbit stays until you change this (or dock)</option>
+    <div id="settings-sailing-camera-row">
+      <label for="settings-sailing-camera-select">Sailing camera (at sea)</label>
+      <select id="settings-sailing-camera-select">
+        <option value="chase">Chase — snap behind ship; upward tilt stays (PC: middle release)</option>
+        <option value="free">Free — orbit stays until Settings or dock (PC: double middle-mouse for chase)</option>
       </select>
     </div>
     <div class="settings-actions">
@@ -3309,10 +3309,8 @@ const G = {
     angle: CAM_ANGLE_CHASE_DEFAULT, targetAngle: CAM_ANGLE_CHASE_DEFAULT, yaw: Math.PI, targetYaw: Math.PI,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
     mobileOrbitFree: false,
-    /** PC: Q/E or middle-mouse orbit — keep yaw until resetChaseCameraBehindShip (dock, leave port, spectate, touch zoom). */
-    pcOrbitFree: false,
-    /** PC: double middle-click toggles — stays free until double middle-click again (single release still snaps when off). */
-    pcStickyFreeCam: false
+    /** PC: Q/E or middle-mouse orbit — in Chase mode, yaw snaps behind ship on release; tilt can persist. */
+    pcOrbitFree: false
   },
   touch: { joyX: 0, joyY: 0, active: false },
   portCooldown: 0, starboardCooldown: 0,
@@ -3330,8 +3328,8 @@ const G = {
   showFiringArches: true,
   mobileControlScheme: 0,
   combatFlashUntil: 0,
-  /** Mobile only: `chase` = orbit then snap behind ship; `free` = orbit view stays until you change this or dock. */
-  mobileSailingCameraMode: 'chase',
+  /** `chase` = snap behind ship after orbit (yaw only; tilt persists on PC); `free` = orbit holds until Settings / dock / PC double middle-mouse. */
+  sailingCameraMode: 'chase',
   crewDeckCombatT: 0,
   /** Server chat header: captains online / registered accounts (from `server_pop` / `init.serverPop`). */
   serverPopOnline: null,
@@ -3389,8 +3387,9 @@ try {
   const _pfa = localStorage.getItem('pirates_show_firing_arches');
   /* Default on: only an explicit '0' disables (older saves used '1' to enable). */
   G.showFiringArches = _pfa !== '0';
-  const _pmc = localStorage.getItem('pirates_mobile_camera_mode');
-  if (_pmc === 'free' || _pmc === 'chase') G.mobileSailingCameraMode = _pmc;
+  let _scm = localStorage.getItem('pirates_sailing_camera_mode');
+  if (_scm !== 'free' && _scm !== 'chase') _scm = localStorage.getItem('pirates_mobile_camera_mode');
+  if (_scm === 'free' || _scm === 'chase') G.sailingCameraMode = _scm;
 } catch (e) {}
 
 /** One active play session per browser profile (shared localStorage): block second tab from entering the voyage. */
@@ -20039,7 +20038,7 @@ const keys = {};
 /** Hold W (or ↑) alone ~3s to engage; A/D/S or arrow keys cancel; touch steering disables. */
 let autoSailActive = false, autoSailWTimer = 0, joyAutoSailAcc = 0;
 let middleDown = false, lastMX = 0, lastMY = 0;
-/** PC: after middle-mouse up, wait for a second middle-mouse down to toggle sticky free-cam (double-click). */
+/** PC: after middle-mouse up, arm a short window for second middle-click (double-click) to force Chase + snap behind ship. */
 let mmbChaseSnapTimer = null;
 let mmbDoubleGestureArmed = false;
 /** Mobile chase mode: snap behind ship shortly after orbit finger lifts. */
@@ -20048,10 +20047,25 @@ let mobileOrbitSnapTimer = null;
 let mobileOrbitTouchId = null, mobileOrbitLX = 0, mobileOrbitLY = 0;
 const CAM_ORBIT_SENS_X = 0.0055;
 const CAM_ORBIT_SENS_Y = 0.0042;
+function snapChaseYawBehindShipPreservePitch() {
+  G.camera.mobileOrbitFree = false;
+  G.camera.pcOrbitFree = false;
+  if (mobileOrbitSnapTimer) {
+    clearTimeout(mobileOrbitSnapTimer);
+    mobileOrbitSnapTimer = null;
+  }
+  if (mmbChaseSnapTimer) {
+    clearTimeout(mmbChaseSnapTimer);
+    mmbChaseSnapTimer = null;
+  }
+  mmbDoubleGestureArmed = false;
+  const y = (G.player && G.player.rotation != null ? G.player.rotation : 0) + Math.PI;
+  G.camera.yaw = y;
+  G.camera.targetYaw = y;
+}
 function resetChaseCameraBehindShip() {
   G.camera.mobileOrbitFree = false;
   G.camera.pcOrbitFree = false;
-  G.camera.pcStickyFreeCam = false;
   if (mobileOrbitSnapTimer) {
     clearTimeout(mobileOrbitSnapTimer);
     mobileOrbitSnapTimer = null;
@@ -21033,9 +21047,14 @@ window.addEventListener('mousedown', e => {
         clearTimeout(mmbChaseSnapTimer);
         mmbChaseSnapTimer = null;
       }
-      G.camera.pcStickyFreeCam = !G.camera.pcStickyFreeCam;
-      if (G.camera.pcStickyFreeCam) G.camera.pcOrbitFree = true;
-      else resetChaseCameraBehindShip();
+      G.sailingCameraMode = 'chase';
+      try {
+        localStorage.setItem('pirates_sailing_camera_mode', 'chase');
+        localStorage.setItem('pirates_mobile_camera_mode', 'chase');
+      } catch (err) {}
+      const camSel = document.getElementById('settings-sailing-camera-select');
+      if (camSel) camSel.value = 'chase';
+      snapChaseYawBehindShipPreservePitch();
     }
     middleDown = true;
     lastMX = e.clientX;
@@ -21047,7 +21066,6 @@ window.addEventListener('mouseup', e => {
   if (e.button === 1) {
     middleDown = false;
     if (G.mode === 'playing' && !G.spectate && !G.captainWalk?.active) {
-      if (G.camera.pcStickyFreeCam) return;
       if (mmbChaseSnapTimer) {
         clearTimeout(mmbChaseSnapTimer);
         mmbChaseSnapTimer = null;
@@ -21057,13 +21075,9 @@ window.addEventListener('mouseup', e => {
         mmbChaseSnapTimer = null;
         mmbDoubleGestureArmed = false;
         if (G.mode !== 'playing' || G.spectate || G.captainWalk?.active) return;
-        if (G.camera.pcStickyFreeCam || middleDown) return;
-        G.camera.pcOrbitFree = false;
-        const y = (G.player && G.player.rotation != null ? G.player.rotation : 0) + Math.PI;
-        G.camera.yaw = y;
-        G.camera.targetYaw = y;
-        G.camera.targetAngle = CAM_ANGLE_CHASE_DEFAULT;
-        G.camera.angle = CAM_ANGLE_CHASE_DEFAULT;
+        if (middleDown) return;
+        if (G.sailingCameraMode !== 'chase') return;
+        snapChaseYawBehindShipPreservePitch();
       }, 430);
     }
   }
@@ -21129,7 +21143,7 @@ window.addEventListener('touchend', e => {
   for (let i = 0; i < e.changedTouches.length; i++) {
     if (e.changedTouches[i].identifier === mobileOrbitTouchId) {
       mobileOrbitTouchId = null;
-      if (isMobile && G.mode === 'playing' && !G.captainWalk?.active && G.mobileSailingCameraMode === 'chase') {
+      if (isMobile && G.mode === 'playing' && !G.captainWalk?.active && G.sailingCameraMode === 'chase') {
         if (mobileOrbitSnapTimer) {
           clearTimeout(mobileOrbitSnapTimer);
           mobileOrbitSnapTimer = null;
@@ -21137,7 +21151,7 @@ window.addEventListener('touchend', e => {
         mobileOrbitSnapTimer = setTimeout(() => {
           mobileOrbitSnapTimer = null;
           if (mobileOrbitTouchId != null) return;
-          if (G.mode !== 'playing' || G.mobileSailingCameraMode !== 'chase') return;
+          if (G.mode !== 'playing' || G.sailingCameraMode !== 'chase') return;
           G.camera.mobileOrbitFree = false;
         }, 340);
       }
@@ -23611,7 +23625,9 @@ function chaseCameraLookAtXYZ(camX, camZ, cDist) {
   let lx = camX + ox;
   let lz = camZ + oz;
   let ly;
-  if ((isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree || G.camera.pcStickyFreeCam) {
+  const orbitLookAt = (isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree
+    || (G.mode === 'playing' && !G.spectate && G.sailingCameraMode === 'free');
+  if (orbitLookAt) {
     ly = spectateCameraLookAtY();
   } else {
     const spec = SHIP_TYPES[G.player.shipType || 'sloop'];
@@ -29827,7 +29843,8 @@ function update(dt) {
   if (G.captainWalk.active) {
     updateCaptainWalk(dt);
   } else {
-    const orbitFree = G.spectate || (isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree || G.camera.pcStickyFreeCam || middleDown;
+    const orbitFree = G.spectate || (G.mode === 'playing' && G.sailingCameraMode === 'free')
+      || (isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree || middleDown;
     if (!orbitFree) {
       const targetY = G.player.rotation + Math.PI;
       let camDiff = targetY - G.camera.yaw;
@@ -29962,7 +29979,8 @@ function warmUpGameView() {
   if (G.captainWalk.active) {
     updateCaptainWalk(0);
   } else {
-    if (!G.spectate && !(isMobile && G.camera.mobileOrbitFree) && !G.camera.pcOrbitFree && !G.camera.pcStickyFreeCam && !middleDown) {
+    if (!G.spectate && !(G.mode === 'playing' && G.sailingCameraMode === 'free')
+      && !(isMobile && G.camera.mobileOrbitFree) && !G.camera.pcOrbitFree && !middleDown) {
       const y = G.player.rotation + Math.PI;
       G.camera.yaw = y;
       G.camera.targetYaw = y;
@@ -31756,12 +31774,12 @@ function openSettingsPanel(options = {}) {
   if (firingArcs) firingArcs.checked = !!G.showFiringArches;
   const row = document.getElementById('settings-scheme-row');
   if (row) row.style.display = isMobile ? 'block' : 'none';
-  const camRow = document.getElementById('settings-mobile-camera-row');
-  if (camRow) camRow.style.display = isMobile ? 'block' : 'none';
+  const camRow = document.getElementById('settings-sailing-camera-row');
+  if (camRow) camRow.style.display = G.mode === 'playing' ? 'block' : 'none';
   const sel = document.getElementById('settings-scheme-select');
   if (sel) sel.value = String(G.mobileControlScheme);
-  const camSel = document.getElementById('settings-mobile-camera-select');
-  if (camSel) camSel.value = G.mobileSailingCameraMode === 'free' ? 'free' : 'chase';
+  const camSel = document.getElementById('settings-sailing-camera-select');
+  if (camSel) camSel.value = G.sailingCameraMode === 'free' ? 'free' : 'chase';
   if (isMobile && G.mode === 'playing' && !fromMainMenu) hideMobileControls();
 }
 
@@ -31902,10 +31920,13 @@ document.getElementById('settings-scheme-select')?.addEventListener('change', e 
   if (isMobile) applyMobileControlScheme(G.mobileControlScheme);
 });
 
-document.getElementById('settings-mobile-camera-select')?.addEventListener('change', e => {
+document.getElementById('settings-sailing-camera-select')?.addEventListener('change', e => {
   const v = e.target.value === 'free' ? 'free' : 'chase';
-  G.mobileSailingCameraMode = v;
-  try { localStorage.setItem('pirates_mobile_camera_mode', v); } catch (err) {}
+  G.sailingCameraMode = v;
+  try {
+    localStorage.setItem('pirates_sailing_camera_mode', v);
+    localStorage.setItem('pirates_mobile_camera_mode', v);
+  } catch (err) {}
   if (v === 'chase') resetChaseCameraBehindShip();
 });
 
