@@ -32529,6 +32529,52 @@ function showTutorialStep() {
   document.getElementById('tutorial-next').textContent = last ? 'Done' : 'Next';
 }
 
+/** Suppress Helm HUD / touch layers during the scripted raid cinematic. */
+function tutorialRaidUiSetSuppressed(suppress) {
+  if (suppress && G._tutorialRaidUiSnap) return;
+  if (!suppress && !G._tutorialRaidUiSnap) return;
+  const ids = ['ui-layer', 'touch-controls', 'touch-broadsides-layer', 'touch-zoom', 'deck-spyglass-btn'];
+  if (suppress) {
+    G._tutorialRaidUiSnap = {};
+    for (let ii = 0; ii < ids.length; ii++) {
+      const id = ids[ii];
+      const el = document.getElementById(id);
+      if (el) {
+        G._tutorialRaidUiSnap[id] = el.style.display;
+        el.style.display = 'none';
+      }
+    }
+  } else {
+    const snap = G._tutorialRaidUiSnap;
+    G._tutorialRaidUiSnap = null;
+    for (let ii = 0; ii < ids.length; ii++) {
+      const id = ids[ii];
+      const el = document.getElementById(id);
+      if (el && snap && Object.prototype.hasOwnProperty.call(snap, id)) {
+        el.style.display = snap[id] || '';
+      }
+    }
+  }
+}
+
+function tutorialRaidRevealCombatPhase() {
+  const tr = G.tutorialRaidCutscene;
+  if (!tr || tr._combatPhase) return;
+  const npc = G.npcs.find(n => n.syncId === TUTORIAL_RAID_NPC_SYNC);
+  tr._combatPhase = true;
+  tr.cinematicUi = false;
+  tr.cameraActive = false;
+  tr.scriptingActive = false;
+  tr._showSinkDirective = true;
+  tr._released = true;
+  if (npc) npc.aggro = true;
+  const past = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1;
+  tr.lockHelmEnd = past;
+  tutorialRaidSetBanner('');
+  tutorialRaidUiSetSuppressed(false);
+  notify('Run her down and sink her — Z starboard, X port.', 4800);
+}
+
 function tutorialRaidSetBanner(text) {
   const root = document.getElementById('tutorial-raid-cutscene-root');
   const ban = document.getElementById('tutorial-raid-cinematic');
@@ -32558,6 +32604,7 @@ function tutorialRaidSetBanner(text) {
 
 function disposeTutorialRaidCutscene() {
   tutorialRaidSetBanner('');
+  tutorialRaidUiSetSuppressed(false);
   G.localTutorialRaidNpcSurrogate = false;
   const ring = document.getElementById('tutorial-raid-world-target');
   if (ring) {
@@ -32572,7 +32619,7 @@ function updateTutorialRaidTargetHighlightUi() {
   if (!ring || typeof THREE === 'undefined' || !camera) return;
   const tr = G.tutorialRaidCutscene;
   const npc = G.npcs && G.npcs.find(n => n.syncId === TUTORIAL_RAID_NPC_SYNC);
-  const show = !!(tr && tr.active && tr._showSinkDirective && npc && !npc.sinking
+  const show = !!(tr && tr.active && tr._combatPhase && npc && !npc.sinking
     && (npc.health == null || npc.health > 0) && G.mode === 'playing' && !G.spectate);
   if (!show || !npc.mesh) {
     ring.style.display = 'none';
@@ -32695,22 +32742,26 @@ function startTutorialRaidEncounter() {
     notify('Keep a weather eye — you will meet pirates soon enough. Broadsides: Z starboard, X port.', 6200);
     return;
   }
-  npc.speed = npcMaxForwardSpeed(npc) * 0.38;
+  const nMax0 = npcMaxForwardSpeed(npc);
+  npc.speed = nMax0 * 0.55;
   G.tutorialRaidCutscene = {
     active: true,
+    cinematicUi: true,
+    _combatPhase: false,
     scriptingActive: true,
     npcSyncId: TUTORIAL_RAID_NPC_SYNC,
     age: 0,
     cameraActive: true,
     bannerPhase: -1,
-    lockHelmEnd: nowMs + 9800,
+    lockHelmEnd: nowMs + 120000,
     noPlayerHullDamageUntil: nowMs + 780,
     _volleyTriggered: false,
+    _volleyAtAge: null,
     _released: false,
     _showSinkDirective: false
   };
+  tutorialRaidUiSetSuppressed(true);
   tutorialRaidSetBanner('Sail ho — raider bears down toward your bow!');
-  notify('Raiders!', 2200);
 }
 
 function tickTutorialRaidCutscene(dt) {
@@ -32730,32 +32781,36 @@ function tickTutorialRaidCutscene(dt) {
     disposeTutorialRaidCutscene();
     return;
   }
-  if (tr.age >= 2.2 && tr.bannerPhase < 0) {
-    tr.bannerPhase = 0;
-    tutorialRaidSetBanner('She tries to cross your bow — hold your course!');
+  if (tr.cinematicUi && !tr._combatPhase) {
+    if (tr.age >= 2.0 && tr.bannerPhase < 0) {
+      tr.bannerPhase = 0;
+      tutorialRaidSetBanner('She shapes to cross your bow — hold your course.');
+    }
+    const distPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
+    let shouldFire = false;
+    if (!tr._volleyTriggered && tr.age >= 2.2) {
+      if (distPlayer < 94 && distPlayer > 5) shouldFire = true;
+      if (tr.age >= 16) shouldFire = true;
+    }
+    if (shouldFire) {
+      tr._volleyTriggered = true;
+      tr._volleyAtAge = tr.age;
+      tr.bannerPhase = 1;
+      tr.noPlayerHullDamageUntil = Math.max(nowMs + 5200, (tr.noPlayerHullDamageUntil || 0));
+      npcFireBroadsideAtPlayer(npc);
+      tutorialRaidSetBanner('Guns — she fires!');
+    }
+    if (tr._volleyTriggered && tr._volleyAtAge != null && !tr._combatPhase) {
+      const since = tr.age - tr._volleyAtAge;
+      if (since >= 0.95 && since < 4.8 && tr.bannerPhase === 1) {
+        tr.bannerPhase = 2;
+        tutorialRaidSetBanner('She falls off…');
+      }
+      const fled = distPlayer > 118;
+      if (since >= 2.0 && fled) tutorialRaidRevealCombatPhase();
+      else if (since >= 11) tutorialRaidRevealCombatPhase();
+    }
   }
-  if (tr.age >= 3.9 && tr.bannerPhase === 0) {
-    tr.bannerPhase = 1;
-    tutorialRaidSetBanner('Guns! She fires a broadside — brace!');
-  }
-  if (tr.age >= 4.15 && !tr._volleyTriggered) {
-    tr._volleyTriggered = true;
-    tr.noPlayerHullDamageUntil = Math.max(nowMs + 5200, (tr.noPlayerHullDamageUntil || 0));
-    npcFireBroadsideAtPlayer(npc);
-  }
-  if (tr.age >= 4.55 && tr.bannerPhase === 1) {
-    tr.bannerPhase = 2;
-    tutorialRaidSetBanner('She falls off and runs — she still has way on her!');
-  }
-  if (!tr._released && tr.age >= 9.05) {
-    tr._released = true;
-    tr.scriptingActive = false;
-    tr._showSinkDirective = true;
-    npc.aggro = true;
-    tutorialRaidSetBanner('Strike her hull and sink her! Broadsides: Z (starboard) · X (port).');
-    notify('Cut the raider apart with round shot, then mop up loot from your cargo hold.', 9100);
-  }
-  if (tr.age >= 14) tr.cameraActive = false;
 }
 
 function tickTutorialRaidNpcHost(dt, npc) {
@@ -32768,7 +32823,7 @@ function tickTutorialRaidNpcHost(dt, npc) {
   const nx = npc.x, nz = npc.z;
   const sharp = 2.32;
   const nmax = npcMaxForwardSpeed(npc);
-  if (tr.age < 8.25) {
+  if (!tr._volleyTriggered) {
     const tx = px + sinR * 36 + sideX * 14;
     const tz = pz + cosR * 36 + sideZ * 14;
     const dx = tx - nx, dz = tz - nz;
@@ -32778,7 +32833,8 @@ function tickTutorialRaidNpcHost(dt, npc) {
     while (dTurn > Math.PI) dTurn -= Math.PI * 2;
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
     npc.rotation += dTurn * Math.min(1, 3.15 * dt) * npcSailingTurnFactor(npc);
-    const tgt = distT > 42 ? nmax * 0.62 : Math.max(nmax * 0.09, npc.speed * 0.96);
+    /* Match default pirate cruise (~0.78 nmax) like other open-sea NPCs. */
+    const tgt = distT > 52 ? nmax * 0.78 : Math.max(nmax * 0.24, npc.speed * 0.96);
     accelerateNpcToward(npc, dt, tgt);
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
