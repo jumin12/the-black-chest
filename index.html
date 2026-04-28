@@ -2998,9 +2998,21 @@ function initPortraitMode() {
       if (overlay) { overlay.style.display = 'none'; overlay.setAttribute('aria-hidden', 'true'); }
       return;
     }
-    const w = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 0;
-    const h = (typeof window !== 'undefined' && window.innerHeight) ? window.innerHeight : 0;
-    const land = w > 0 && h > 0 && w > h;
+    /** Use CSS orientation when available — innerWidth/innerHeight wrongly become “landscape” when the keyboard shrinks viewport height while staying in portrait. */
+    let land = false;
+    try {
+      if (window.matchMedia && window.matchMedia('(orientation: landscape)').matches) land = true;
+      else if (window.matchMedia && window.matchMedia('(orientation: portrait)').matches) land = false;
+      else {
+        const w = window.innerWidth || 0;
+        const h = window.innerHeight || 0;
+        if (w > 0 && h > 0) land = w > h;
+      }
+    } catch (e) {
+      const w = window.innerWidth || 0;
+      const h = window.innerHeight || 0;
+      land = w > 0 && h > 0 && w > h;
+    }
     if (overlay) {
       overlay.style.display = land ? 'flex' : 'none';
       overlay.setAttribute('aria-hidden', land ? 'false' : 'true');
@@ -3022,6 +3034,19 @@ function initPortraitMode() {
     } catch (e) { /* */ }
     window.addEventListener('resize', showLandscapeOverlay);
     window.addEventListener('orientationchange', function () { tryLockPortrait(); showLandscapeOverlay(); });
+    /** Typing focuses a field: never block the viewport with the rotate prompt (keyboard aspect ratio is unreliable). */
+    document.addEventListener('focusin', function (e) {
+      const t = e.target;
+      if (!overlay || !t) return;
+      const tag = t.tagName;
+      if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && !/button|submit|reset|checkbox|radio|range|file|image/i.test(t.type || ''))) {
+        overlay.style.display = 'none';
+        overlay.setAttribute('aria-hidden', 'true');
+      }
+    });
+    document.addEventListener('focusout', function () {
+      setTimeout(showLandscapeOverlay, 120);
+    });
     var lockOnce = function () { tryLockPortrait(); showLandscapeOverlay(); };
     document.addEventListener('pointerdown', lockOnce, { once: true, passive: true });
     window.addEventListener('pointerdown', lockOnce, { once: true, passive: true });
@@ -3101,8 +3126,8 @@ const FACTION_COLONIAL_PREFIXES = [
 ];
 const DEFAULT_SAIL_TRIM_COLOR = '#c9b89a';
 const BANNED_FROM_PORT_RELATION = -40;
-/** Player sail accel/decel and max SOG (player only, not AI). Tuned ~40% below prior 0.7 base. */
-const PLAYER_BASE_SPEED_MULT = 0.42;
+/** Player sail accel/decel and max SOG (player only, not AI). +50% vs prior 0.42 base (was tuned down from legacy 0.7). */
+const PLAYER_BASE_SPEED_MULT = 0.63;
 
 /** Camera zoom level: higher = closer to the ship (deck view); lower = wider (horizon). */
 const CAM_ZOOM_HORIZON = 70;
@@ -11753,7 +11778,7 @@ const _cwTmpQ = new THREE.Quaternion();
 const _cwTmpQ2 = new THREE.Quaternion();
 const _muzzleW = new THREE.Vector3();
 /** Max deck walk speed (ship-local units/s); kept modest for a slow, deliberate stride. */
-const CAPTAIN_WALK_MAX_SPEED = 1.22;
+const CAPTAIN_WALK_MAX_SPEED = 1.83;
 /** Acceleration toward target walk velocity (ship-local units/s²). */
 const CAPTAIN_WALK_ACCEL = 4.8;
 const CAPTAIN_WALK_EYE = 0.82;
@@ -28499,13 +28524,17 @@ function drawWorldMapCanvas(ctx, w, h, centerX, centerZ, s, opts) {
   });
 
   const px = wx2sx(G.player.x), py = wz2sy(G.player.z);
-  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
-  const pr = G.player.rotation;
-  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 2.5; ctx.beginPath();
-  ctx.moveTo(px, py); ctx.lineTo(px - Math.sin(pr) * 14, py - Math.cos(pr) * 14); ctx.stroke();
+  const plyaw = G.player.rotation;
+  const fTriApex = 22 * (w >= 420 ? 1.06 : 0.94);
+  const fTriHalf = Math.max(5.5, fTriApex * 0.5);
+  drawChartHeadingTriangle(ctx, px, py, plyaw, fTriApex, fTriHalf);
+  ctx.fillStyle = '#ffd85a';
+  ctx.fill();
+  ctx.strokeStyle = '#261c10';
+  ctx.lineWidth = 2.35;
+  ctx.stroke();
   ctx.fillStyle = '#d4a848'; ctx.font = 'bold 12px Georgia,serif'; ctx.textAlign = 'center';
-  ctx.fillText(G.player.shipName || 'You', px, py + 18);
+  ctx.fillText(G.player.shipName || 'You', px, py + 22);
 
   if (mapChartLayers.missions) {
     drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, { mini: false, debugShipLayers });
@@ -28834,6 +28863,23 @@ fmCanvas.addEventListener('touchend', e => { e.stopPropagation(); fmTouchId = nu
 document.getElementById('minimap').onclick = toggleFullmap;
 document.getElementById('fullmap-close').onclick = toggleFullmap;
 
+/** Elongated heading marker for sea chart / minimap: tip points toward forward heading (world yaw). */
+function drawChartHeadingTriangle(ctx, cx, cy, yaw, apexLen, halfBaseW) {
+  const fx = -Math.sin(yaw), fy = -Math.cos(yaw);
+  const rx = fy, ry = -fx;
+  const tipX = cx + fx * apexLen;
+  const tipY = cy + fy * apexLen;
+  const bx = cx - fx * (apexLen * 0.32);
+  const by = cy - fy * (apexLen * 0.32);
+  const b1x = bx + rx * halfBaseW, b1y = by + ry * halfBaseW;
+  const b2x = bx - rx * halfBaseW, b2y = by - ry * halfBaseW;
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(b1x, b1y);
+  ctx.lineTo(b2x, b2y);
+  ctx.closePath();
+}
+
 /** Pixels per world unit; `mmZoom` (initialized to max zoom-in to match the full chart ceiling). */
 function drawMinimap() {
   ensureMapChartLayerListeners();
@@ -28959,25 +29005,16 @@ function drawMinimap() {
     drawChartMissionOverlays(ctx, w, h, wx2sx, wz2sy, { mini: true });
   }
   drawUserChartMarkers(ctx, wx2sx, wz2sy, true);
-  ctx.fillStyle = '#ffdd44'; ctx.beginPath(); ctx.arc(cx, cy, Math.max(3.8, 3.5 * (chartScale * 0.9)), 0, Math.PI * 2); ctx.fill();
   const pyaw = G.player.rotation;
-  const arrLen = w >= 220 ? 13 : 10;
-  const ax0 = cx - Math.sin(pyaw) * 2.5;
-  const ay0 = cy - Math.cos(pyaw) * 2.5;
-  const ax1 = cx - Math.sin(pyaw) * arrLen;
-  const ay1 = cy - Math.cos(pyaw) * arrLen;
-  ctx.strokeStyle = '#1a140a'; ctx.lineWidth = 3.2; ctx.beginPath(); ctx.moveTo(ax0, ay0); ctx.lineTo(ax1, ay1); ctx.stroke();
-  ctx.strokeStyle = '#ffdd44'; ctx.lineWidth = 1.85; ctx.beginPath(); ctx.moveTo(ax0, ay0); ctx.lineTo(ax1, ay1); ctx.stroke();
-  const ah = 0.5;
-  const tip = 5.2;
-  ctx.fillStyle = '#ffdd44';
-  ctx.beginPath();
-  ctx.moveTo(ax1, ay1);
-  ctx.lineTo(ax1 - Math.sin(pyaw - ah) * tip, ay1 - Math.cos(pyaw - ah) * tip);
-  ctx.lineTo(ax1 - Math.sin(pyaw + ah) * tip, ay1 - Math.cos(pyaw + ah) * tip);
-  ctx.closePath();
-  ctx.fill();
-  ctx.save();
+  const triApex = w >= 220 ? 15.8 : 12.8;
+  const triHalfBase = Math.max(3.9, triApex * 0.52) * chartScale;
+  drawChartHeadingTriangle(mmCtx, cx, cy, pyaw, triApex * chartScale * 1.02, triHalfBase);
+  mmCtx.fillStyle = '#f8e068';
+  mmCtx.fill();
+  mmCtx.strokeStyle = '#252018';
+  mmCtx.lineWidth = w >= 220 ? 1.75 : 1.45;
+  mmCtx.stroke();
+  mmCtx.save();
   const mv = ctx.createRadialGradient(cx, cy, Math.min(w, h) * 0.18, cx, cy, Math.max(w, h) * 0.72);
   mv.addColorStop(0, 'rgba(255,235,210,0)');
   mv.addColorStop(0.6, 'rgba(90,65,42,0.12)');

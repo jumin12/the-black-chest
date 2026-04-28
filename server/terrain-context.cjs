@@ -133,7 +133,7 @@ function createTerrainContext(opts) {
   };
 }
 
-/** Deterministic open-ocean spawn with strong clearance from islands (new connections + bad resumes). */
+/** Deterministic spawn: prefer open water offshore of a trading port/island (~165–295u from docks), fallback to legacy random ocean clearance. */
 function sampleOffshoreSpawn(ctx, salt) {
   let h = ((ctx.worldSeed ^ (Number(salt) | 0)) >>> 0) + 2463534242;
   const rnd = () => {
@@ -148,6 +148,22 @@ function sampleOffshoreSpawn(ctx, salt) {
     if (dryLand(nx, nz)) return false;
     return ctx.hasMinClearanceFromLand(nx, nz, minClear);
   };
+  const ports = typeof ctx.collectAllTradingPorts === 'function' ? ctx.collectAllTradingPorts() : [];
+  for (let attempt = 0; attempt < 160; attempt++) {
+    if (!ports.length) break;
+    const p = ports[(Math.floor(rnd() * ports.length) + attempt) % ports.length];
+    const cx = p.dockX != null ? Number(p.dockX) : (p.worldX != null ? Number(p.worldX) : 0);
+    const cz = p.dockZ != null ? Number(p.dockZ) : (p.worldZ != null ? Number(p.worldZ) : 0);
+    const ang = rnd() * Math.PI * 2;
+    const dist = 165 + rnd() * 130;
+    const nx = cx + Math.cos(ang) * dist;
+    const nz = cz + Math.sin(ang) * dist;
+    if (Math.abs(nx) > lim || Math.abs(nz) > lim) continue;
+    if (ok(nx, nz)) {
+      const face = ang + Math.PI + (rnd() - 0.5) * 0.75;
+      return { x: nx, z: nz, rotation: face };
+    }
+  }
   for (let attempt = 0; attempt < 170; attempt++) {
     const bias = 0.36 + rnd() * 0.64;
     const nx = (rnd() * 2 - 1) * lim * bias;
