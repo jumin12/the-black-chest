@@ -12773,9 +12773,16 @@ function mergeBoardingFromLeaderPayload(bo, leaderId) {
     if (bo.ex != null) { b.lockPX = bo.ex; b.lockPZ = bo.ez; b.lockPR = bo.er; }
     if (bo.nx != null) { b.lockEX = bo.nx; b.lockEZ = bo.nz; b.lockER = bo.nr; }
   }
+  if (b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null) {
+    const pr = netPlayerId(b.partnerPlayerId);
+    if (pr != null) {
+      const my = Number(G.myId), op = Number(pr);
+      if (Number.isFinite(my) && Number.isFinite(op)) b.attackerId = Math.min(my, op);
+    }
+  }
 }
 function tryStartDefenderFromNetwork(attackerId, bo) {
-  if (G.boarding || G.docked || G.playerSinking) return;
+  if (G.docked || G.playerSinking) return;
   if (G.myId == null) return;
   if (G.player.health != null && G.player.health <= 0) return;
   const sidN = Math.floor(Number(bo.sid));
@@ -12783,6 +12790,19 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
   const atk = G.otherPlayers.get(attackerId);
   if (!atk) return;
   if (!canPlayerShipBeBoarded(atk, attackerId)) return;
+  const myNid = Number(G.myId);
+  const atkNid = Number(netPlayerId(attackerId));
+  if (!Number.isFinite(myNid) || !Number.isFinite(atkNid)) return;
+  const canonAtk = Math.min(myNid, atkNid);
+  const exBoard = G.boarding;
+  if (exBoard && exBoard.npcSyncId == null && exBoard.partnerPlayerId != null
+      && netPlayerId(exBoard.partnerPlayerId) === atkNid) {
+    exBoard.attackerId = canonAtk;
+    exBoard.isDefender = true;
+    mergeBoardingFromLeaderPayload(bo, canonAtk);
+    return;
+  }
+  if (G.boarding) return;
   const aName = atk ? (atk.shipName || networkPlayerCaptainName(atk)) : 'Attacker';
   const myN = (G.player.shipName || '').trim() || 'Your ship';
   const locks = computeBoardingLocks(G.player.x, G.player.z, G.player.rotation, atk.x, atk.z, G.player.shipType, atk.shipType || 'sloop');
@@ -12794,7 +12814,7 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
     pullT: 0,
     partnerPlayerId: attackerId,
     npcSyncId: null,
-    attackerId,
+    attackerId: canonAtk,
     tNet: bo.t | 0,
     pAtk: bo.ea | 0, eAtk: bo.pa | 0, pHeart: bo.eH | 0, eHeart: bo.pH | 0, pTotal: pTot, eTotal: eTot,
     pTotStart: pTot, eTotStart: eTot,
@@ -12813,9 +12833,14 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
   if (isCombatHudEventNearPlayer(midX, midZ)) notify('Boarded — all hands! Repel!', 5000);
 }
 function startPlayerBoardingAttack(targetId) {
-  if (G.boarding || G.docked || G.playerSinking || G.spectate) return;
+  if (G.docked || G.playerSinking || G.spectate) return;
   const tid = netPlayerId(targetId);
   if (tid == null || tid === G.myId) return;
+  if (G.boarding) {
+    if (G.boarding.npcSyncId == null && G.boarding.partnerPlayerId != null
+        && netPlayerId(G.boarding.partnerPlayerId) === tid) return;
+    return;
+  }
   const op = G.otherPlayers.get(tid);
   if (!op || !canPlayerShipBeBoarded(op, tid)) return;
   if (G.myId == null) return;
@@ -12829,12 +12854,13 @@ function startPlayerBoardingAttack(targetId) {
   const locks = computeBoardingLocks(G.player.x, G.player.z, G.player.rotation, op.x, op.z, G.player.shipType, op.shipType || 'sloop');
   const pTot = countCrewFighters(G.player.crew);
   const eTot = countCrewFighters(getRemotePlayerCrewRoster(op));
+  const canonAtk = Math.min(Number(G.myId), Number(tid));
   G.boarding = {
     phase: 'pull',
     pullT: 0,
     partnerPlayerId: tid,
     npcSyncId: null,
-    attackerId: G.myId,
+    attackerId: canonAtk,
     tNet: 0, pAtk: pTot, eAtk: eTot, pHeart: pTot, eHeart: eTot, pTotal: pTot, eTotal: eTot, pTotStart: pTot, eTotStart: eTot,
     lockPX: locks.lockPX, lockPZ: locks.lockPZ, lockPR: locks.lockPR, lockEX: locks.lockEX, lockEZ: locks.lockEZ, lockER: locks.lockER,
     _p0x: G.player.x, _p0z: G.player.z, _e0x: op.x, _e0z: op.z,
@@ -12997,7 +13023,14 @@ function endBoardingResolution() {
   if (!b || b.phase !== 'fight') return;
   let youWin;
   if ((b.pAtk | 0) <= 0 && (b.eAtk | 0) <= 0) {
-    youWin = !!b.isDefender;
+    if (b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null) {
+      const my = Number(G.myId);
+      const pr = Number(netPlayerId(b.partnerPlayerId));
+      /* Both crews wiped: isDefender is false if both captains mashed "board" — use deterministic tie-break so only one sees victory. */
+      youWin = Number.isFinite(my) && Number.isFinite(pr) && my === Math.min(my, pr);
+    } else {
+      youWin = !!b.isDefender;
+    }
   } else {
     /* Local p* is always your crew, e* the enemy — you win if any of your crew remain (exclusive end states from sim). */
     youWin = ((b.pAtk | 0) > 0);
@@ -14774,7 +14807,7 @@ function ingestRemoteBoardingState(players) {
     if (bo.ph === 'e') continue;
     if (G.boardingVictimAwaitingDecision) continue;
     if (G._boardingSpoilsCooldownUntil && nowIngest < G._boardingSpoilsCooldownUntil) continue;
-    if (Math.floor(Number(bo.sid)) > 0 && netPlayerId(bo.sid) === G.myId && !G.boarding) {
+    if (Math.floor(Number(bo.sid)) > 0 && netPlayerId(bo.sid) === G.myId) {
       tryStartDefenderFromNetwork(pid, bo);
     }
   }
@@ -16767,7 +16800,7 @@ function updateNPCs(dt) {
       }
       const ex = npc.syncX - npc.x, ez = npc.syncZ - npc.z;
       const err = Math.hypot(ex, ez);
-      if (err > 140) {
+      if (err > 215) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
       } else {

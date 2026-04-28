@@ -149,6 +149,8 @@ function createGameSimulation(opts) {
   function stepPlayer(p) {
     if (p.docked) return;
     if (p.deckWalk && p.deckWalk.active) return;
+    /* Grappled/boarding hulls are client-locked; wind step here desyncs server x/z from hints → anticheat denies updates and ships "teleport". */
+    if (p.boarding && typeof p.boarding === 'object') return;
     const r = p.rotation != null && Number.isFinite(Number(p.rotation)) ? Number(p.rotation) : 0;
     const eff = effectiveSailingSpeed(p, noise);
     const nx = p.x + Math.sin(r) * eff * dt;
@@ -358,7 +360,13 @@ function createAntiCheatGate(overrides = {}, hooks = {}) {
       const cz = Number(msg.z);
       if (Number.isFinite(cx) && Number.isFinite(cz)) {
         const d = Math.hypot(cx - p.x, cz - p.z);
-        if (d > cfg.maxPositionJump) {
+        let maxJump = cfg.maxPositionJump;
+        if (inBoarding) maxJump = Math.max(maxJump, 96);
+        else if (p.speed != null && Number.isFinite(Number(p.speed))) {
+          const sp = Math.abs(Number(p.speed));
+          maxJump = Math.min(52, maxJump + sp * 0.95);
+        }
+        if (d > maxJump) {
           /* First huge delta after connect: client continued voyage / reconnect at saved coords while
            * server still has offshore spawn — snap once instead of denying hints and racking up kicks. */
           const maxResumeSnap = 720000;

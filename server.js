@@ -227,7 +227,12 @@ function sanitizeBoardingFromClient(b) {
   }
   const atIn = b.at != null && Number.isFinite(Number(b.at)) ? Number(b.at)
     : (b.attackerId != null && Number.isFinite(Number(b.attackerId)) ? Number(b.attackerId) : null);
-  if (atIn != null) o.at = Math.max(0, Math.min(0x7fffffff, Math.floor(atIn)));
+  if (atIn != null) {
+    let ai = Math.max(0, Math.min(0x7fffffff, Math.floor(atIn)));
+    /* PvP: single deterministic sim authority — must match client min(attacker, victim). */
+    if (sid > 0) ai = Math.min(ai, sid);
+    o.at = ai;
+  }
   return o;
 }
 /**
