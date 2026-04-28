@@ -4027,6 +4027,7 @@ function applyNpcBoardingScuttleSinkVisualLocal(npc) {
 function applyAuthoritativeNpcSinkWorldFx(npc) {
   if (!npc || !G.npcSimFromServer || npc._authSinkFxApplied) return;
   npc._authSinkFxApplied = true;
+  if (!isLowestConnectedPlayerIdForFx()) return;
   const wasEscortContractShip = !!npc.isEscortCargo;
   const missionOwner = npc.missionOwnerPlayerId != null ? npc.missionOwnerPlayerId : (npc.isStoryBounty ? G.myId : null);
   const storyMission = !!(npc.isStoryBounty && missionOwner != null);
@@ -4150,7 +4151,8 @@ function runNpcSinkOutcome(npc, killerPlayerId, sinkOpts) {
    
   npc._sinkDebrisAcc = 0;
   npc._sinkExtraLootN = 0;
-  npc._sinkSkipSurfaceDebris = !!(wasEscortContractShip || sinkOpts.skipScatterLoot);
+  /* Single scatter batch from this function; the per-frame sink loop would spawn many extra loot_spawn and felt like duplicates. */
+  npc._sinkSkipSurfaceDebris = true;
   detachNpcCrewAndSpawnBailSwimmers(npc, sinkOpts);
   const lootTypes = goldLoot > 0
     ? ['wood', 'iron', 'gunpowder', 'food', 'cannonballs']
@@ -8408,6 +8410,17 @@ function getEffectivePlayerFlagAssetId(player) {
 function getNetworkFlagAssetId(player) {
   return getPlayerMastCatalogFlagId(player);
 }
+/** One client sends authoritative sink loot/swimmer_net messages so N players do not each broadcast the same drops. */
+function isLowestConnectedPlayerIdForFx() {
+  const my = netPlayerId(G.myId);
+  if (my == null) return false;
+  let minId = my;
+  for (const pid of G.otherPlayers.keys()) {
+    const n = netPlayerId(pid);
+    if (n != null && n < minId) minId = n;
+  }
+  return my === minId;
+}
 
 /** Wooden pole + hinge-mounted subdivided flag; registers for wind animation. */
 function addDockFactionFlag(group, tf, fxx, fzz, fyy, dockAngle, dockWidX, dockWidZ) {
@@ -11064,7 +11077,9 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     const swatch = flagColor ? String(flagColor) : '';
     const label = hullFlagPngId != null
       ? makeTextSprite(shipName, '#e8dcc8', '', '', '', hullFlagPngId)
-      : makeTextSprite(shipName, '#e8dcc8', '', swatch);
+      : hullBannerDesign
+        ? makeTextSprite(shipName, '#e8dcc8', '', '', '', null, hullBannerDesign)
+        : makeTextSprite(shipName, '#e8dcc8', '', swatch);
     label.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     g.add(label);
   }
@@ -12269,7 +12284,45 @@ function drawNametagFlagPng(ctx, x, y, w, h, pngId) {
   }
 }
 
-function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex = '', clanTag = '', flagPngIdOpt = null) {
+function refreshAllBannerNametags() {
+  try { updatePlayerShipNametagOnly(); } catch (e) {}
+  try {
+    for (const grp of otherShipGroups.values()) {
+      if (grp && grp.userData && typeof grp.userData._refreshNametagForBanner === 'function') grp.userData._refreshNametagForBanner();
+    }
+  } catch (e) {}
+}
+function drawNametagBannerDesign(ctx, x, y, w, h, design) {
+  const d = sanitizeBannerDesignClient(design);
+  if (!d) {
+    drawNametagMiniFlag(ctx, x, y, w, h, DEFAULT_SAIL_TRIM_COLOR);
+    return;
+  }
+  let fieldPath = d.field ? String(d.field).trim() : '';
+  if (!fieldPath) fieldPath = BANNER_HULL_DEFAULT_FIELD;
+  const cachePayload = { bg: d.bg, field: fieldPath, emblems: d.emblems };
+  const NW = 88;
+  const NH = 64;
+  const key = _bannerCacheKey(cachePayload, NW, NH) + ':hull';
+  const cached = _bannerTexCache.get(key);
+  if (cached && cached.image && cached.image.width) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, 5);
+    ctx.clip();
+    ctx.drawImage(cached.image, x, y, w, h);
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(0,0,0,0.42)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, 5);
+    ctx.stroke();
+    return;
+  }
+  composeBannerTexture(d, NW, NH, { isSail: false }).then(() => { try { refreshAllBannerNametags(); } catch (e) {} });
+  drawNametagMiniFlag(ctx, x, y, w, h, d.bg || DEFAULT_SAIL_TRIM_COLOR);
+}
+
+function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex = '', clanTag = '', flagPngIdOpt = null, hullBannerDesignOpt = null) {
   const canvas = document.createElement('canvas');
   const tag = String(clanTag || '').trim().slice(0, 24);
   const cap = String(subtitle || '').trim();
@@ -12283,8 +12336,10 @@ function makeTextSprite(text, color = '#d4a848', subtitle = '', factionColorHex 
   ctx.strokeStyle = 'rgba(160,130,80,0.45)'; ctx.lineWidth = 1.5;
   ctx.roundRect(8, 4, 496, h - 8, 10); ctx.stroke();
   const pngSlot = sanitizeFlagPngId(flagPngIdOpt);
-  const hasFac = !!pngSlot || !!factionColorHex;
+  const bannerD = hullBannerDesignOpt && typeof hullBannerDesignOpt === 'object' ? sanitizeBannerDesignClient(hullBannerDesignOpt) : null;
+  const hasFac = !!pngSlot || !!bannerD || !!factionColorHex;
   if (pngSlot) drawNametagFlagPng(ctx, 18, 20, 44, 36, pngSlot);
+  else if (bannerD) drawNametagBannerDesign(ctx, 18, 20, 44, 36, bannerD);
   else if (factionColorHex) drawNametagMiniFlag(ctx, 18, 20, 44, 36, factionColorHex);
   const tx = hasFac ? 76 : 256;
   const yShip = hasCaptainLine ? 28 : 40;
@@ -14928,7 +14983,7 @@ function rebuildPlayerShip() {
   const spec = SHIP_TYPES[G.player.shipType];
   shipNameSprite = null;
   if (countLivingNonPrisonerCrew() > 0) {
-    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', '', G.party?.tag || '', mastCat);
+    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', '', G.party?.tag || '', mastCat, mastCat == null ? hullForMast : null);
     shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     playerShipGroup.add(shipNameSprite);
   }
@@ -14947,7 +15002,9 @@ function updatePlayerShipNametagOnly() {
       shipNameSprite = null;
     }
     if (countLivingNonPrisonerCrew() <= 0) return;
-    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', '', G.party?.tag || '', getPlayerMastCatalogFlagId());
+    const mastTag = getPlayerMastCatalogFlagId();
+    const hullTag = mastTag == null ? getEffectiveHullBannerDesign(null) : null;
+    shipNameSprite = makeTextSprite(G.player.shipName, '#e8dcc8', getCaptainDisplayCrew()?.name || '', '', G.party?.tag || '', mastTag, hullTag);
     shipNameSprite.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
     playerShipGroup.add(shipNameSprite);
   } catch (e) {}
@@ -28693,8 +28750,10 @@ function update(dt) {
         hullBannerDesign: rHull,
         sailBannerDesign: getRemotePlayerSailBannerDesign(p)
       });
+      sm.userData._refreshNametagForBanner = null;
+      sm.userData._remotePlayerId = id;
       if (captainName && (shipTitle !== captainName || String(p.partyTag || '').trim())) {
-        const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, '', String(p.partyTag || '').slice(0, 24), sanitizeFlagPngId(p.flagAssetId));
+        const capLabel = makeTextSprite(shipTitle, '#e8dcc8', captainName, '', String(p.partyTag || '').slice(0, 24), rMast, rMast == null ? rHull : null);
         const spec = SHIP_TYPES[st];
         capLabel.position.set(0, spec.hullH + spec.hullLen * 0.7 + 2, 0);
         for (let ci = sm.children.length - 1; ci >= 0; ci--) {
@@ -28702,6 +28761,29 @@ function update(dt) {
           if (ch instanceof THREE.Sprite) sm.remove(ch);
         }
         sm.add(capLabel);
+        sm.userData._refreshNametagForBanner = () => {
+          try {
+            const p2 = G.otherPlayers.get(sm.userData._remotePlayerId);
+            if (!p2) return;
+            const captainName2 = networkPlayerCaptainName(p2);
+            const shipTitle2 = (p2.shipName && String(p2.shipName).trim()) ? String(p2.shipName).trim() : captainName2;
+            const st2 = p2.shipType || 'sloop';
+            const rMast2 = sanitizeFlagPngId(p2.flagAssetId);
+            const rHull2 = rMast2 != null ? null : getRemotePlayerHullBannerDesign(p2);
+            let oldSpr = null;
+            for (let ci = sm.children.length - 1; ci >= 0; ci--) {
+              const ch = sm.children[ci];
+              if (ch instanceof THREE.Sprite && ch.userData && ch.userData.isFloatingNametag) { oldSpr = ch; break; }
+            }
+            if (!oldSpr) return;
+            const newLab = makeTextSprite(shipTitle2, '#e8dcc8', captainName2, '', String(p2.partyTag || '').slice(0, 24), rMast2, rMast2 == null ? rHull2 : null);
+            const spec2 = SHIP_TYPES[st2];
+            newLab.position.set(0, spec2.hullH + spec2.hullLen * 0.7 + 2, 0);
+            sm.remove(oldSpr);
+            disposeObject3DSubtree(oldSpr);
+            sm.add(newLab);
+          } catch (e) {}
+        };
       }
       const pCrew = p.crewData && p.crewData.length ? p.crewData.map((c, ci) => {
         let task = c.task;
