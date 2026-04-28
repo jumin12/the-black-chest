@@ -2723,7 +2723,7 @@ body.game-help-mobile-minimal #game-help-panel{
         <div class="game-help-pane active" data-help-pane="basics" id="game-help-pane-basics">
           <div class="help-for-pc">
             <h3>Helm &amp; camera</h3>
-            <p><kbd>W</kbd> <kbd>S</kbd> trim sail · <kbd>A</kbd> <kbd>D</kbd> rudder (turns build gradually with speed, like a sailing ship). <kbd>Q</kbd> <kbd>E</kbd> swing the camera. <strong>Settings → Sailing camera:</strong> in <em>Chase</em>, middle-mouse drag looks around; on release the view snaps behind the ship but <strong>keeps your up/down tilt</strong>. <strong>Double-click</strong> the middle button forces <em>Chase</em> and snaps behind the ship. In <em>Free</em>, the orbit stays until you change it in Settings or double-click middle. <kbd>Home</kbd> resets the camera. Wheel zooms between horizon and deck.</p>
+            <p><kbd>W</kbd> <kbd>S</kbd> trim sail · <kbd>A</kbd> <kbd>D</kbd> rudder (turns build gradually with speed, like a sailing ship). <kbd>Q</kbd> <kbd>E</kbd> swing the camera. <strong>Settings → Sailing camera:</strong> in <em>Chase</em>, middle-mouse drag looks around; on release the view snaps behind the ship but <strong>keeps your up/down tilt</strong>. <strong>Double-click</strong> the middle button <strong>toggles</strong> chase and free camera (and syncs the setting). <kbd>Home</kbd> resets the camera. Wheel zooms between horizon and deck.</p>
             <p><kbd>M</kbd> full chart · <kbd>Esc</kbd> settings / close panels.</p>
             <h3>Log &amp; chat</h3>
             <p><kbd>B</kbd> Captain&rsquo;s Log · <kbd>I</kbd> cargo · <kbd>C</kbd> crew · <kbd>T</kbd> chat.</p>
@@ -2838,7 +2838,7 @@ body.game-help-mobile-minimal #game-help-panel{
       <label for="settings-sailing-camera-select">Sailing camera (at sea)</label>
       <select id="settings-sailing-camera-select">
         <option value="chase">Chase — snap behind ship; upward tilt stays (PC: middle release)</option>
-        <option value="free">Free — orbit stays until Settings or dock (PC: double middle-mouse for chase)</option>
+        <option value="free">Free — orbit stays until Settings or dock (PC: double middle-mouse toggles chase)</option>
       </select>
     </div>
     <div class="settings-actions">
@@ -3328,7 +3328,7 @@ const G = {
   showFiringArches: true,
   mobileControlScheme: 0,
   combatFlashUntil: 0,
-  /** `chase` = snap behind ship after orbit (yaw only; tilt persists on PC); `free` = orbit holds until Settings / dock / PC double middle-mouse. */
+  /** `chase` = snap behind ship after orbit (yaw only; tilt persists on PC); `free` = orbit holds until Settings / dock / PC double middle-mouse toggle. */
   sailingCameraMode: 'chase',
   crewDeckCombatT: 0,
   /** Server chat header: captains online / registered accounts (from `server_pop` / `init.serverPop`). */
@@ -8078,12 +8078,13 @@ function factionsConsideredAtWar(a, b) {
 function playerBannedFromFactionPort(fid) {
   return playerFactionRelation(fid) <= BANNED_FROM_PORT_RELATION;
 }
-/** Barred, at war with your commission, or hostile standing — their merchants, corsairs, and patrols may attack on sight. */
+/** Barred, state war against an ensign you are flying, or bad personal standing — not automatic war from commission alone without faction colors. */
 function factionHostileToPlayer(fid) {
   const f = (fid | 0) % FACTION_COUNT;
   if (playerBannedFromFactionPort(f)) return true;
   ensurePolitics();
-  if (G.politics.joinedFaction != null && factionsConsideredAtWar(f, G.politics.joinedFaction)) return true;
+  const mastFac = playerMastFactionEnsignIndex();
+  if (mastFac != null && factionsConsideredAtWar(f, mastFac)) return true;
   return playerFactionRelation(f) <= -30;
 }
 function randomChoosableFlagRng(rng) {
@@ -8446,6 +8447,15 @@ function getEffectivePlayerFlagAssetId(player) {
 /** Hoisted catalog jack sent to the server / save file: only if unlocked; otherwise null (custom jack only). */
 function getNetworkFlagAssetId(player) {
   return getPlayerMastCatalogFlagId(player);
+}
+/** If the equipped mast jack is one of the five faction ensigns, return that faction index; else null (custom jack / blank). */
+function playerMastFactionEnsignIndex(playerOpt) {
+  const fid = getPlayerMastCatalogFlagId(playerOpt);
+  if (fid == null) return null;
+  for (let fi = 0; fi < FACTION_COUNT; fi++) {
+    if (FACTION_FLAG_PNG_IDS[fi] === fid) return fi;
+  }
+  return null;
 }
 /** One client sends authoritative sink loot/swimmer_net messages so N players do not each broadcast the same drops. */
 function isLowestConnectedPlayerIdForFx() {
@@ -16761,8 +16771,6 @@ function updateNPCs(dt) {
         const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
         ensurePolitics();
         const mPfid = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
-        const mRel = playerFactionRelation(mPfid);
-        const mWarJ = G.politics.joinedFaction != null && factionsConsideredAtWar(mPfid, G.politics.joinedFaction);
         if (!npc.aggro && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
           if (factionHostileToPlayer(mPfid) || (npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0)) {
             npc.aggro = true;
@@ -20038,7 +20046,7 @@ const keys = {};
 /** Hold W (or ↑) alone ~3s to engage; A/D/S or arrow keys cancel; touch steering disables. */
 let autoSailActive = false, autoSailWTimer = 0, joyAutoSailAcc = 0;
 let middleDown = false, lastMX = 0, lastMY = 0;
-/** PC: after middle-mouse up, arm a short window for second middle-click (double-click) to force Chase + snap behind ship. */
+/** PC: after middle-mouse up, arm a short window for second middle-click (double-click) to toggle chase/free camera. */
 let mmbChaseSnapTimer = null;
 let mmbDoubleGestureArmed = false;
 /** Mobile chase mode: snap behind ship shortly after orbit finger lifts. */
@@ -21047,14 +21055,16 @@ window.addEventListener('mousedown', e => {
         clearTimeout(mmbChaseSnapTimer);
         mmbChaseSnapTimer = null;
       }
-      G.sailingCameraMode = 'chase';
+      const next = G.sailingCameraMode === 'chase' ? 'free' : 'chase';
+      G.sailingCameraMode = next;
       try {
-        localStorage.setItem('pirates_sailing_camera_mode', 'chase');
-        localStorage.setItem('pirates_mobile_camera_mode', 'chase');
+        localStorage.setItem('pirates_sailing_camera_mode', next);
+        localStorage.setItem('pirates_mobile_camera_mode', next);
       } catch (err) {}
       const camSel = document.getElementById('settings-sailing-camera-select');
-      if (camSel) camSel.value = 'chase';
-      snapChaseYawBehindShipPreservePitch();
+      if (camSel) camSel.value = next;
+      if (next === 'chase') snapChaseYawBehindShipPreservePitch();
+      else G.camera.pcOrbitFree = true;
     }
     middleDown = true;
     lastMX = e.clientX;
@@ -25614,10 +25624,11 @@ function updateWorldPanel() {
     const r = playerFactionRelation(fi);
     const col = r <= BANNED_FROM_PORT_RELATION ? '#cc8888' : r >= 24 ? '#88c8a8' : '#c9a878';
     const barred = playerBannedFromFactionPort(fi);
-    const atWarJoin = G.politics.joinedFaction != null && factionsConsideredAtWar(fi, G.politics.joinedFaction);
+    const mastF = playerMastFactionEnsignIndex();
+    const atWarEnsign = mastF != null && factionsConsideredAtWar(fi, mastF);
     const extra = barred
       ? ` <span style="color:#c07070;font-size:9px;">(barred — no entry)</span>`
-      : (atWarJoin ? ` <span style="color:#b89888;font-size:9px;">(at war w/ your flag)</span>` : '');
+      : (atWarEnsign ? ` <span style="color:#b89888;font-size:9px;">(state war vs. your ensign)</span>` : '');
     return `<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(80,60,40,0.12);"><span style="display:inline-flex;align-items:center;gap:7px;color:${FACTION_TRADE_COLORS[fi]};min-width:0;">${worldPanelFactionFlagThumb(fi, 20, 15)}<span>${escapeDebugHtml(snm)}</span></span><span style="color:${col};flex-shrink:0;text-align:right;max-width:52%;line-height:1.35;">${r > 0 ? '+' : ''}${r}${extra}</span></div>`;
   }).join('');
   let dipTable = '<table style="width:100%;border-collapse:collapse;font-size:10px;margin-top:4px;"><thead><tr><th scope="col"></th>';
