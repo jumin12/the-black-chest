@@ -4036,6 +4036,7 @@ wss.on('connection', (ws, req) => {
         case 'tavern_sync_room':
         case 'tavern_dice_next_round':
         case 'tavern_poker_action':
+        case 'tavern_chat':
         case 'tavern_cash_out': {
           tavernGames.handle(ws, msg, id);
           break;

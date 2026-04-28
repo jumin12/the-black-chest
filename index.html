@@ -5166,9 +5166,24 @@ function buildTavernTableSvgMarkup(room) {
       const bx = cx0 - (brd.length * 52) / 2 + i * 52;
       centerExtra += `<g transform="translate(${bx},${cy0 - 58})"><rect width="46" height="64" rx="5" fill="#fdfcf8" stroke="#333"/><text x="6" y="40" fill="${red}" font-size="18" font-family="Georgia,serif">${rk}${su}</text></g>`;
     });
-    centerExtra += `<text x="${cx0}" y="${cy0 + 96}" text-anchor="middle" fill="#d4e4ff" font-size="11" font-family="Georgia,serif">Pot ${pot}g · ${escapeDebugHtml(String(room.poker.msg || ''))}</text>`;
+    centerExtra += `<text x="${cx0}" y="${cy0 + 92}" text-anchor="middle" fill="#d4e4ff" font-size="11" font-family="Georgia,serif">Pot ${pot}g · ${escapeDebugHtml(String(room.poker.msg || ''))}</text>`;
+    if (room.poker.sidePotBrief) {
+      centerExtra += `<text x="${cx0}" y="${cy0 + 110}" text-anchor="middle" fill="#9ab0c8" font-size="9" font-family="Georgia,serif">${escapeDebugHtml(String(room.poker.sidePotBrief).slice(0, 120))}${String(room.poker.sidePotBrief).length > 120 ? '…' : ''}</text>`;
+    }
   }
   return `<div style="width:100%;overflow:auto;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 320" width="100%" height="auto" preserveAspectRatio="xMidYMid meet" style="max-height:360px;display:block;background:radial-gradient(ellipse at center,#2a4860 0%,#162430 72%);border-radius:14px;border:1px solid rgba(200,170,110,0.25);">${seatG}<ellipse cx="${cx0}" cy="${cy0}" rx="152" ry="92" fill="#4a3828" stroke="#a08060" stroke-width="3" opacity="0.98"/>${centerExtra}</svg></div>`;
+}
+function buildTavernRoomChatHtml(room) {
+  const arr = room && Array.isArray(room.chat) ? room.chat : [];
+  if (!arr.length) return '<div style="color:#6a7580;font-style:italic;text-align:center;">No chatter yet.</div>';
+  let h = '';
+  for (let i = 0; i < arr.length; i++) {
+    const ent = arr[i];
+    const nm = escapeDebugHtml(String(ent && ent.name != null ? ent.name : '?'));
+    const tx = escapeDebugHtml(String(ent && ent.text != null ? ent.text : ''));
+    h += `<div style="margin-bottom:8px;word-break:break-word;"><span style="color:#c8b080;font-weight:600;">${nm}</span><span style="color:#8a929c;">:</span> ${tx}</div>`;
+  }
+  return h;
 }
 function refreshTavernPanelIfOpen() {
   const pp = document.getElementById('port-panel');
@@ -26602,20 +26617,53 @@ function showPortTab(tab, opts) {
         });
         content.appendChild(sit);
       }
-      wrap.style.cssText = 'color:#cfd8e0;font-size:11px;line-height:1.45;';
+      wrap.style.cssText = 'width:100%;display:flex;flex-direction:column;align-items:center;color:#cfd8e0;font-size:11px;line-height:1.45;';
       if (!rm || (rm.id | 0) !== (opts.roomId | 0)) {
         wrap.textContent = 'Syncing room state… reopen if this hangs.';
       } else {
         const isHostPlayer = (rm.hostPlayerId | 0) === (G.myId | 0);
-        wrap.innerHTML = buildTavernTableSvgMarkup(rm) + `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;">
-          ${isHostPlayer && rm.phase === 'lobby'
+        const stackCol = document.createElement('div');
+        stackCol.style.cssText = 'width:100%;display:flex;flex-direction:column;align-items:center;';
+        const mainFlex = document.createElement('div');
+        mainFlex.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:20px;width:100%;max-width:940px;margin:0 auto;';
+        const tableCol = document.createElement('div');
+        tableCol.style.cssText = 'flex:1 1 320px;display:flex;flex-direction:column;align-items:center;max-width:100%;';
+        tableCol.innerHTML = buildTavernTableSvgMarkup(rm);
+        const chatCol = document.createElement('div');
+        chatCol.style.cssText =
+          'flex:1 1 230px;display:flex;flex-direction:column;align-items:center;min-width:200px;width:296px;max-width:100%;';
+        chatCol.innerHTML =
+          `<div style="font-size:10px;color:#b8cad8;text-align:center;margin-bottom:6px;width:100%;letter-spacing:0.04em;text-transform:uppercase;">Room — ${escapeDebugHtml(String(rm.name || 'Table')).slice(
+            0,
+            32
+          )}</div>
+<div id="tavern-room-chat-log" style="width:100%;text-align:left;max-height:220px;overflow-y:auto;padding:10px 12px;background:rgba(8,14,26,0.5);border:1px solid rgba(140,170,230,0.32);border-radius:10px;font-size:10px;line-height:1.45;color:#dfe4f0;margin-bottom:8px;">
+${buildTavernRoomChatHtml(rm)}
+</div>
+<input id="tavern-room-chat-input" type="text" maxlength="240" autocomplete="off" placeholder="Speak to this table..." style="width:100%;box-sizing:border-box;padding:8px 10px;background:rgba(0,0,0,0.28);border:1px solid rgba(140,170,230,0.38);border-radius:8px;color:#e8e8e8;font-size:11px;font-family:Georgia,serif;"/>`;
+        const chin = chatCol.querySelector('#tavern-room-chat-input');
+        chin?.addEventListener('keydown', ev => {
+          if (ev.key !== 'Enter') return;
+          ev.preventDefault();
+          const txt = String(chin.value || '').trim();
+          if (!txt) return;
+          tavernWsSend({ type: 'tavern_chat', roomId: rm.id, text: txt });
+          chin.value = '';
+        });
+        mainFlex.appendChild(tableCol);
+        mainFlex.appendChild(chatCol);
+        stackCol.appendChild(mainFlex);
+        const buttonsSlot = document.createElement('div');
+        buttonsSlot.style.cssText = 'margin-top:10px;display:flex;flex-wrap:wrap;justify-content:center;gap:8px;width:100%;';
+        buttonsSlot.innerHTML = `${isHostPlayer && rm.phase === 'lobby'
           ? `<button type="button" id="tavern-fill-npc" style="padding:8px 12px;background:rgba(80,100,140,0.4);border:1px solid rgba(140,170,210,0.45);color:#d8e4ff;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Fill empties with locals</button>
              <button type="button" id="tavern-start" style="padding:8px 12px;background:rgba(100,140,100,0.4);border:1px solid rgba(160,220,160,0.45);color:#e0ffe8;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Start game</button>`
           : ''}
           <button type="button" id="tavern-leave" style="padding:8px 12px;background:rgba(140,70,70,0.35);border:1px solid rgba(220,140,140,0.45);color:#ffd8d8;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Leave table</button>
           ${seatedMe ? `<button type="button" id="tavern-cash" style="padding:8px 12px;background:rgba(180,150,70,0.35);border:1px solid rgba(230,210,140,0.45);color:#fff6d8;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Cash out winnings</button>` : ''}
-          ${isHostPlayer && rm.game === 'dice' && rm.phase === 'playing' ? `<button type="button" id="tavern-dice-next" style="padding:8px 12px;background:rgba(140,140,210,0.35);border:1px solid rgba(180,180,255,0.45);color:#e8e8ff;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Roll another round</button>` : ''}
-        </div>`;
+          ${isHostPlayer && rm.game === 'dice' && rm.phase === 'playing' ? `<button type="button" id="tavern-dice-next" style="padding:8px 12px;background:rgba(140,140,210,0.35);border:1px solid rgba(180,180,255,0.45);color:#e8e8ff;border-radius:6px;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Roll another round</button>` : ''}`;
+        stackCol.appendChild(buttonsSlot);
+        wrap.appendChild(stackCol);
         const hostId = rm.hostPlayerId | 0;
         const seats = rm.seats || [];
         wrap.querySelector('#tavern-fill-npc')?.addEventListener('click', () => {

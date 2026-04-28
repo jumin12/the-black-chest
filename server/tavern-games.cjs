@@ -231,7 +231,15 @@ function sanitizeRoomPublic(room, viewerPid) {
     seats,
     phase: room.phase,
     dice: room.dice ? { ...room.dice } : null,
-    poker: room.poker ? sanitizePokerPublic(room.poker, room.seats) : null
+    poker: room.poker ? sanitizePokerPublic(room.poker, room.seats) : null,
+    chat: Array.isArray(room.chat)
+      ? room.chat.slice(-48).map(e => ({
+          t: e.t,
+          from: e.from,
+          name: typeof e.name === 'string' ? e.name.slice(0, 28) : '',
+          text: typeof e.text === 'string' ? e.text.slice(0, 240) : ''
+        }))
+      : []
   };
 }
 
@@ -244,13 +252,15 @@ function sanitizePokerPublic(poker, seats) {
     toAct: poker.toAct | 0,
     facingBet: poker.facingBet | 0,
     minRaise: poker.minRaise | 0,
+    lastRaiseAmt: poker.lastRaiseAmt != null ? poker.lastRaiseAmt | 0 : 0,
     dealer: poker.dealer | 0,
     sbSeat: poker.sbSeat | 0,
     bbSeat: poker.bbSeat | 0,
     winners: poker.winners ? poker.winners.slice() : null,
     msg: poker.msg || '',
     sbAmt: poker.sbAmt | 0,
-    bbAmt: poker.bbAmt | 0
+    bbAmt: poker.bbAmt | 0,
+    sidePotBrief: poker.sidePotBrief ? String(poker.sidePotBrief).slice(0, 380) : ''
   };
 }
 
@@ -319,6 +329,7 @@ function createTavernGames(deps) {
       folded: false,
       hole: null,
       contribStreet: 0,
+      contribHand: 0,
       allIn: false,
       connected: true,
       isHost: false,
@@ -349,6 +360,7 @@ function createTavernGames(deps) {
       stack: 0,
       folded: false,
       contribStreet: 0,
+      contribHand: 0,
       allIn: false
     };
     playerRoom.delete(pid);
@@ -442,8 +454,14 @@ function createTavernGames(deps) {
     return out;
   }
 
-  function aliveBetting(room) {
-    return seatsInHand(room).filter(i => !room.seats[i].folded && !room.seats[i].allIn);
+  function anyoneCanStillBet(room) {
+    for (let i = 0; i < room.seats.length; i++) {
+      const s = room.seats[i];
+      if (!s || s.kind === 'empty' || s.folded) continue;
+      if (s.allIn) continue;
+      if ((s.stack | 0) > 0) return true;
+    }
+    return false;
   }
 
   function resetStreetContribs(room) {
@@ -453,19 +471,17 @@ function createTavernGames(deps) {
     }
   }
 
-  function maxContrib(room) {
-    let m = 0;
-    for (const i of aliveBetting(room)) m = Math.max(m, room.seats[i].contribStreet | 0);
-    return m;
+  function clearStreetActs(pk0) {
+    pk0.actedStreet = [];
   }
 
-  function bettingResolved(room) {
-    const mx = maxContrib(room);
-    const ix = aliveBetting(room);
-    return ix.every(si => {
-      const s = room.seats[si];
-      return (s.contribStreet | 0) >= mx || (s.stack | 0) === 0;
-    });
+  function markStreetActed(pk0, seatIdx) {
+    if (!pk0.actedStreet) pk0.actedStreet = [];
+    pk0.actedStreet[seatIdx] = true;
+  }
+
+  function hasActedStreet(pk0, seatIdx) {
+    return !!(pk0.actedStreet && pk0.actedStreet[seatIdx]);
   }
 
   function pushChips(room, seatIdx, addToPot) {
@@ -474,10 +490,38 @@ function createTavernGames(deps) {
     const actual = Math.min(pay, s.stack | 0);
     s.stack -= actual;
     s.contribStreet = (s.contribStreet | 0) + actual;
+    s.contribHand = (s.contribHand | 0) + actual;
     const pk0 = pkGet(room);
-    pk0.pot += actual;
+    pk0.pot = (pk0.pot | 0) + actual;
     if ((s.stack | 0) === 0) s.allIn = true;
     return actual;
+  }
+
+  function refreshFacingBet(room) {
+    const pk0 = pkGet(room);
+    let m = 0;
+    for (const i of seatsInHand(room)) m = Math.max(m, room.seats[i].contribStreet | 0);
+    pk0.facingBet = m;
+  }
+
+  function needsAttention(room, seatIdx) {
+    const pk0 = pkGet(room);
+    if (!pk0 || pk0.phase !== 'betting') return false;
+    const s = room.seats[seatIdx];
+    if (!s || s.kind === 'empty' || s.folded) return false;
+    if (s.allIn) return false;
+    const c = s.contribStreet | 0;
+    const f = pk0.facingBet | 0;
+    if (c < f) return true;
+    if (!hasActedStreet(pk0, seatIdx)) return true;
+    return false;
+  }
+
+  function bettingStreetClosed(room) {
+    for (let i = 0; i < room.seats.length; i++) {
+      if (needsAttention(room, i)) return false;
+    }
+    return true;
   }
 
   function rotateDealer(room) {
@@ -495,10 +539,27 @@ function createTavernGames(deps) {
     pk0.dealer = occupied[ix];
   }
 
-  function needGap(room, seatIdx) {
+  function firstOccupiedAfter(room, startIdx) {
+    const n = room.seats.length;
+    for (let step = 1; step <= n; step++) {
+      const i = (startIdx + step) % n;
+      const s = room.seats[i];
+      if (s && s.kind !== 'empty' && !s.folded && Array.isArray(s.hole)) return i;
+    }
+    return (startIdx + 1) % n;
+  }
+
+  function bumpToNextActor(room, afterSeat) {
     const pk0 = pkGet(room);
-    const s = room.seats[seatIdx];
-    return Math.max(0, pk0.facingBet - (s.contribStreet | 0)) > 0;
+    const n = room.seats.length;
+    for (let step = 1; step <= n; step++) {
+      const idx = (afterSeat + step) % n;
+      if (needsAttention(room, idx)) {
+        pk0.toAct = idx;
+        return true;
+      }
+    }
+    return false;
   }
 
   function dealNewHand(room) {
@@ -508,20 +569,28 @@ function createTavernGames(deps) {
     pk0.pot = 0;
     pk0.winners = null;
     pk0.msg = '';
+    pk0.sidePotBrief = '';
     pk0.deck = shuffleDeck(makeDeck(), mulberry32(((room.id | 0) ^ Date.now()) >>> 0));
     pk0.deckIdx = 0;
     resetStreetContribs(room);
+    clearStreetActs(pk0);
     rotateDealer(room);
     const sbAmt = Math.max(1, Math.floor(Number(room.stakes.pokerSb) || DEFAULT_POKER_SB));
     const bbAmt = Math.max(sbAmt + 1, Math.floor(Number(room.stakes.pokerBb) || DEFAULT_POKER_BB));
     pk0.sbAmt = sbAmt;
     pk0.bbAmt = bbAmt;
     pk0.minRaise = bbAmt;
+    pk0.lastRaiseAmt = bbAmt;
+
+    for (const s of room.seats) {
+      if (!s || s.kind === 'empty') continue;
+      s.contribHand = 0;
+    }
 
     const occupied = [];
     for (let i = 0; i < room.seats.length; i++) {
       const s = room.seats[i];
-      if (s && s.kind !== 'empty' && (s.stack | 0) > 1) occupied.push(i);
+      if (s && s.kind !== 'empty' && (s.stack | 0) > 0) occupied.push(i);
     }
     if (occupied.length < 2) {
       pk0.phase = 'idle';
@@ -531,9 +600,9 @@ function createTavernGames(deps) {
 
     let di = pk0.dealer | 0;
     if (!occupied.includes(di)) di = occupied[0];
-    const ix = occupied.indexOf(di);
-    const sbSeat = occupied[(ix + 1) % occupied.length];
-    const bbSeat = occupied[(ix + 2) % occupied.length];
+    const dix = occupied.indexOf(di);
+    const sbSeat = occupied[(dix + 1) % occupied.length];
+    const bbSeat = occupied[(dix + 2) % occupied.length];
     pk0.sbSeat = sbSeat;
     pk0.bbSeat = bbSeat;
 
@@ -547,19 +616,22 @@ function createTavernGames(deps) {
 
     pushChips(room, sbSeat, sbAmt);
     pushChips(room, bbSeat, bbAmt);
-    pk0.facingBet = bbAmt;
+    refreshFacingBet(room);
     pk0.street = 'preflop';
-
-    pk0.toAct = occupied[(occupied.indexOf(bbSeat) + 1) % occupied.length];
+    pk0.toAct = firstOccupiedAfter(room, bbSeat);
     pk0.actionSeq = (pk0.actionSeq | 0) + 1;
 
     resolveNpcActions(room);
   }
 
-  function advanceStreet(room) {
+  function advanceCommunityStreet(room) {
     const pk0 = pkGet(room);
     resetStreetContribs(room);
+    clearStreetActs(pk0);
     pk0.facingBet = 0;
+    pk0.lastRaiseAmt = pk0.bbAmt | 0;
+    pk0.minRaise = pk0.bbAmt | 0;
+
     let idx = pk0.deckIdx;
     const deck = pk0.deck;
     if (pk0.street === 'preflop') {
@@ -576,61 +648,193 @@ function createTavernGames(deps) {
       pk0.street = 'river';
     }
     pk0.deckIdx = idx;
-    const active = seatsInHand(room).filter(i => !room.seats[i].folded);
-    pk0.toAct = active[0] != null ? active[0] : 0;
+    refreshFacingBet(room);
+    pk0.toAct = firstOccupiedAfter(room, pk0.dealer);
     pk0.actionSeq++;
+    broadcastRoom(room, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(room, pid) }));
     resolveNpcActions(room);
   }
 
-  function showdown(room) {
+  function burnAndRevealToRiver(room) {
     const pk0 = pkGet(room);
-    pk0.phase = 'showdown';
-    const contenders = seatsInHand(room).filter(i => !room.seats[i].folded);
-    if (contenders.length <= 1) {
-      awardPot(room, contenders);
-      return;
-    }
-    let bestIdx = contenders[0];
-    let bestSeven = room.seats[bestIdx].hole.concat(pk0.board);
-    for (const i of contenders) {
-      const seven = room.seats[i].hole.concat(pk0.board);
-      if (cmpHands7(seven, bestSeven) > 0) {
-        bestIdx = i;
-        bestSeven = seven;
-      }
-    }
-    const winners = contenders.filter(i => cmpHands7(room.seats[i].hole.concat(pk0.board), bestSeven) === 0);
-    awardPot(room, winners);
+    while (pk0.street !== 'river') advanceCommunityStreet(room);
   }
 
-  function awardPot(room, winnerSeats) {
+  function computeSidePotLayers(room) {
+    const arr = [];
+    for (let i = 0; i < room.seats.length; i++) {
+      const s = room.seats[i];
+      if (!s || s.kind === 'empty') continue;
+      const c = s.contribHand | 0;
+      if (c > 0) arr.push({ i, c });
+    }
+    arr.sort((a, b) => (a.c !== b.c ? a.c - b.c : a.i - b.i));
+    const caps = [...new Set(arr.map(x => x.c))].sort((a, b) => a - b);
+    const out = [];
+    let prev = 0;
+    for (const cap of caps) {
+      const delta = cap - prev;
+      const members = arr.filter(x => x.c >= cap).map(x => x.i);
+      out.push({ amount: delta * members.length, members });
+      prev = cap;
+    }
+    return out;
+  }
+
+  function payWinner(room, seatIdx, amt) {
+    amt = Math.max(0, Math.floor(Number(amt) || 0));
+    if (amt <= 0) return;
+    const s = room.seats[seatIdx];
+    s.stack += amt;
+    if (s.kind === 'player' && s.playerId != null) sendGold(s.playerId, amt, 'poker_win');
+  }
+
+  function awardFoldWinner(room) {
     const pk0 = pkGet(room);
+    const alive = seatsInHand(room).filter(i => !room.seats[i].folded);
+    if (alive.length !== 1) return;
+    const w = alive[0];
     const pot = pk0.pot | 0;
     pk0.phase = 'complete';
-    pk0.winners = winnerSeats.slice().sort((a, b) => a - b);
-    const ws = pk0.winners.slice();
-    const share = ws.length ? Math.floor(pot / ws.length) : 0;
-    let rem = pot - share * ws.length;
-    pk0.msg = ws.length ? `${room.seats[ws[0]].name} wins ${pot}g.` : '';
-    for (const si of ws) {
-      let pay = share + (rem > 0 ? 1 : 0);
-      if (rem > 0) rem--;
-      room.seats[si].stack += pay;
-      const pid = room.seats[si].playerId;
-      if (room.seats[si].kind === 'player' && pid != null) sendGold(pid, pay, 'poker_win');
-    }
+    payWinner(room, w, pot);
     pk0.pot = 0;
+    pk0.winners = [w];
+    pk0.msg = `${room.seats[w].name} wins ${pot}g (uncontested).`;
+    pk0.sidePotBrief = '';
+    finishHandTimer(room);
+  }
+
+  function showdownAward(room) {
+    const pk0 = pkGet(room);
+    pk0.phase = 'complete';
+
+    const layers = computeSidePotLayers(room);
+    const brief = [];
+    const allWinners = new Set();
+
+    for (const lay of layers) {
+      const elig = lay.members.filter(i => !room.seats[i].folded);
+      if (lay.amount <= 0 || !elig.length) continue;
+
+      let bestSeven = room.seats[elig[0]].hole.concat(pk0.board);
+      for (let k = 1; k < elig.length; k++) {
+        const seven = room.seats[elig[k]].hole.concat(pk0.board);
+        if (cmpHands7(seven, bestSeven) > 0) bestSeven = seven;
+      }
+      const winners = elig.filter(i => cmpHands7(room.seats[i].hole.concat(pk0.board), bestSeven) === 0);
+      const share = Math.floor(lay.amount / winners.length);
+      let rem = lay.amount - share * winners.length;
+      winners.sort((a, b) => a - b);
+      for (const si of winners) {
+        let pay = share + (rem > 0 ? 1 : 0);
+        if (rem > 0) rem--;
+        payWinner(room, si, pay);
+        allWinners.add(si);
+        brief.push(`${room.seats[si].name} +${pay}g`);
+      }
+      pk0.winners = Array.from(allWinners).sort((a, b) => a - b);
+    }
+
+    pk0.pot = 0;
+    pk0.msg =
+      pk0.winners && pk0.winners.length ? `${pk0.winners.map(i => room.seats[i].name).join(' · ')} take the pots.` : 'Pot resolved.';
+    pk0.sidePotBrief = brief.join(' · ').slice(0, 380);
+    finishHandTimer(room);
+  }
+
+  function finishHandTimer(room) {
     broadcastRoom(room, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(room, pid) }));
     clearTimeout(room._pokerDoneTimer);
     room._pokerDoneTimer = setTimeout(() => {
       const rr = rooms.get(room.id);
       if (!rr || rr.phase !== 'playing') return;
-      pkGet(rr).phase = 'idle';
-      pkGet(rr).msg = '';
-      pkGet(rr).winners = null;
-      pkGet(rr).board = [];
+      const rp = pkGet(rr);
+      if (!rp) return;
+      rp.phase = 'idle';
+      rp.msg = '';
+      rp.winners = null;
+      rp.board = [];
+      rp.sidePotBrief = '';
       broadcastRoom(rr, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(rr, pid) }));
     }, 3800);
+  }
+
+  function progressAfterBettingStreet(room) {
+    const pk0 = pkGet(room);
+    pk0.actionSeq++;
+
+    const contenders = seatsInHand(room).filter(i => !room.seats[i].folded);
+
+    if (contenders.length <= 1) {
+      awardFoldWinner(room);
+      return;
+    }
+
+    if (!anyoneCanStillBet(room)) {
+      burnAndRevealToRiver(room);
+      showdownAward(room);
+      return;
+    }
+
+    if (pk0.street === 'river') {
+      showdownAward(room);
+      return;
+    }
+
+    advanceCommunityStreet(room);
+  }
+
+  function tryApplyFold(room, seatIdx) {
+    const pk0 = pkGet(room);
+    room.seats[seatIdx].folded = true;
+    markStreetActed(pk0, seatIdx);
+  }
+
+  function tryApplyCheck(room, seatIdx) {
+    const s = room.seats[seatIdx];
+    const pk0 = pkGet(room);
+    const need = Math.max(0, pk0.facingBet - (s.contribStreet | 0));
+    if (need > 0) return 'You cannot check.';
+    markStreetActed(pk0, seatIdx);
+    return '';
+  }
+
+  function tryApplyCall(room, seatIdx) {
+    const pk0 = pkGet(room);
+    const s = room.seats[seatIdx];
+    const need = Math.max(0, pk0.facingBet - (s.contribStreet | 0));
+    pushChips(room, seatIdx, need);
+    refreshFacingBet(room);
+    markStreetActed(pk0, seatIdx);
+    return '';
+  }
+
+  function tryRaise(room, seatIdx, raiseTotal) {
+    const pk0 = pkGet(room);
+    const s = room.seats[seatIdx];
+    const oldFacing = pk0.facingBet | 0;
+    let tgt = Math.floor(Number(raiseTotal) || 0);
+    const cs = s.contribStreet | 0;
+    const stk = s.stack | 0;
+    const maxTotal = cs + stk;
+    if (tgt > maxTotal) tgt = maxTotal;
+    if (tgt <= cs) return 'Raise invalid.';
+
+    const minFullRaise = oldFacing + (pk0.minRaise | 0);
+    if (tgt < minFullRaise && tgt < maxTotal) return 'Raise too small.';
+
+    clearStreetActs(pk0);
+    const add = tgt - cs;
+    pushChips(room, seatIdx, add);
+    refreshFacingBet(room);
+    const newFacing = pk0.facingBet | 0;
+    const increment = newFacing - oldFacing;
+    if (increment > 0) {
+      pk0.lastRaiseAmt = increment;
+      pk0.minRaise = Math.max(pk0.bbAmt | 0, increment);
+    }
+    markStreetActed(pk0, seatIdx);
+    return '';
   }
 
   function npcDecision(room, seatIdx) {
@@ -642,106 +846,100 @@ function createTavernGames(deps) {
     const strength = hr / 24;
     const need = Math.max(0, pk0.facingBet - (s.contribStreet | 0));
     const stack = s.stack | 0;
+    const cs = s.contribStreet | 0;
     if (need === 0) {
       if (rnd() < 0.66 || strength > 0.45) return { type: 'check' };
-      const raiseAmt = pk0.minRaise + Math.floor(rnd() * Math.min(stack, pk0.bbAmt * 3));
-      return { type: 'raise_total', total: (s.contribStreet | 0) + raiseAmt };
+      const raiseAmt = (pk0.minRaise | 0) + Math.floor(rnd() * Math.min(stack, (pk0.bbAmt | 0) * 3));
+      return { type: 'raise_total', total: cs + raiseAmt };
     }
     if (need >= stack) {
       return rnd() < 0.35 && strength < 0.42 ? { type: 'fold' } : { type: 'call' };
     }
-    if (rnd() < 0.12 && strength < 0.35 && need > pk0.bbAmt) return { type: 'fold' };
+    if (rnd() < 0.12 && strength < 0.35 && need > (pk0.bbAmt | 0)) return { type: 'fold' };
     if (rnd() < 0.2 && strength > 0.55) {
-      const bump = pk0.minRaise + Math.floor(rnd() * stack * 0.25);
-      return { type: 'raise_total', total: Math.min((s.contribStreet | 0) + need + bump, (s.contribStreet | 0) + stack) };
+      const bump = (pk0.minRaise | 0) + Math.floor(rnd() * stack * 0.25);
+      return { type: 'raise_total', total: Math.min(cs + need + bump, cs + stack) };
     }
     return { type: 'call' };
   }
 
-  function applyPlayerAction(room, seatIdx, action, raiseTotal) {
-    const pk0 = pkGet(room);
-    const s = room.seats[seatIdx];
-    const need = Math.max(0, pk0.facingBet - (s.contribStreet | 0));
-    if (action === 'fold') {
-      s.folded = true;
-      return true;
-    }
-    if (action === 'call' || action === 'check') {
-      pushChips(room, seatIdx, need);
-      return true;
-    }
-    if (action === 'raise_total') {
-      let tgt = Math.floor(Number(raiseTotal) || 0);
-      tgt = Math.max((s.contribStreet | 0) + need, tgt);
-      const add = tgt - (s.contribStreet | 0);
-      pushChips(room, seatIdx, add);
-      if ((s.contribStreet | 0) > (pk0.facingBet | 0)) {
-        pk0.facingBet = s.contribStreet | 0;
-      }
-      return true;
-    }
-    return false;
-  }
-
-  function rotateTurn(room) {
-    const pk0 = pkGet(room);
-    const order = aliveBetting(room);
-    if (!order.length) return;
-    const ti = pk0.toAct | 0;
-    const ix = Math.max(0, order.indexOf(ti));
-    pk0.toAct = order[(ix + 1) % order.length];
-  }
-
-  function advanceIfNeeded(room) {
-    const pk0 = pkGet(room);
-    if (!bettingResolved(room)) return false;
-    const contenders = seatsInHand(room).filter(i => !room.seats[i].folded);
-    if (contenders.length <= 1) {
-      awardPot(room, contenders);
-      return true;
-    }
-    if (pk0.street === 'river') {
-      showdown(room);
-      return true;
-    }
-    advanceStreet(room);
-    broadcastRoom(room, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(room, pid) }));
-    return true;
-  }
-
-  function resolveNpcActions(room) {
+  function runNpcPump(room) {
     clearTimeout(room._npcLoopTimer);
     const pk0 = pkGet(room);
     if (!pk0 || pk0.phase !== 'betting') return;
     const ti = pk0.toAct | 0;
     const s = room.seats[ti];
     if (s && s.kind === 'player') return;
+    room._npcLoopTimer = setTimeout(() => {
+      stepNpc(room);
+    }, 160);
+  }
 
-    const step = () => {
-      const pk1 = pkGet(room);
-      if (!pk1 || pk1.phase !== 'betting') return;
-      const t2 = pk1.toAct | 0;
-      const sx = room.seats[t2];
-      if (!sx || sx.kind === 'empty' || sx.folded || sx.allIn) {
-        rotateTurn(room);
-        advanceIfNeeded(room);
-        resolveNpcActions(room);
-        return;
-      }
-      if (sx.kind === 'npc') {
-        const dec = npcDecision(room, t2);
-        if (dec.type === 'fold') applyPlayerAction(room, t2, 'fold');
-        else if (dec.type === 'check') applyPlayerAction(room, t2, needGap(room, t2) ? 'call' : 'check');
-        else if (dec.type === 'call') applyPlayerAction(room, t2, 'call');
-        else if (dec.type === 'raise_total') applyPlayerAction(room, t2, 'raise_total', dec.total);
-        rotateTurn(room);
-        broadcastRoom(room, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(room, pid) }));
-        advanceIfNeeded(room);
-        resolveNpcActions(room);
-        return;
-      }
-    };
-    room._npcLoopTimer = setTimeout(step, 160);
+  function stepNpc(room) {
+    const pk1 = pkGet(room);
+    if (!pk1 || pk1.phase !== 'betting') return;
+
+    let aliveFold = seatsInHand(room).filter(i => !room.seats[i].folded);
+    if (aliveFold.length <= 1) {
+      awardFoldWinner(room);
+      return;
+    }
+
+    if (bettingStreetClosed(room)) {
+      progressAfterBettingStreet(room);
+      resolveNpcActions(room);
+      return;
+    }
+
+    const t2 = pk1.toAct | 0;
+    const sx = room.seats[t2];
+    if (!sx || sx.kind === 'empty' || sx.folded || sx.allIn) {
+      if (!bumpToNextActor(room, t2)) progressAfterBettingStreet(room);
+      broadcastRoom(room, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(room, pid) }));
+      resolveNpcActions(room);
+      return;
+    }
+    if (sx.kind !== 'npc') return;
+
+    const dec = npcDecision(room, t2);
+    if (dec.type === 'fold') tryApplyFold(room, t2);
+    else if (dec.type === 'check') {
+      const err = tryApplyCheck(room, t2);
+      if (err) tryApplyCall(room, t2);
+    } else if (dec.type === 'call') tryApplyCall(room, t2);
+    else if (dec.type === 'raise_total') {
+      const err = tryRaise(room, t2, dec.total);
+      if (err) tryApplyCall(room, t2);
+    }
+
+    aliveFold = seatsInHand(room).filter(i => !room.seats[i].folded);
+    if (aliveFold.length <= 1) {
+      awardFoldWinner(room);
+      return;
+    }
+
+    if (bettingStreetClosed(room)) progressAfterBettingStreet(room);
+    else bumpToNextActor(room, t2);
+    broadcastRoom(room, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(room, pid) }));
+    resolveNpcActions(room);
+  }
+
+  function resolveNpcActions(room) {
+    runNpcPump(room);
+  }
+
+  function pushChat(room, fromPid, raw) {
+    const pl = players.get(fromPid);
+    const nm = String((pl && pl.name) || 'Captain').slice(0, 28);
+    const t = String(raw || '')
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ')
+      .trim()
+      .slice(0, 240);
+    if (!t) return;
+    if (!room.chat) room.chat = [];
+    room.chat.push({ t: Date.now(), from: fromPid, name: nm, text: t });
+    if (room.chat.length > 80) room.chat.splice(0, room.chat.length - 48);
+    broadcastRoom(room, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(room, pid) }));
   }
 
   /** ---------- Incoming messages ---------- */
@@ -795,6 +993,7 @@ function createTavernGames(deps) {
         phase: 'lobby',
         dice: null,
         poker: null,
+        chat: [],
         _npcSeedCounter: (playerId | 0) * 997
       };
       rooms.set(roomId, room);
@@ -826,6 +1025,7 @@ function createTavernGames(deps) {
       seat.folded = false;
       seat.hole = null;
       seat.contribStreet = 0;
+      seat.contribHand = 0;
       seat.allIn = false;
       playerRoom.set(playerId, roomId);
       sendGold(playerId, -bring, 'tavern_buy_in');
@@ -887,15 +1087,18 @@ function createTavernGames(deps) {
           deckIdx: 0,
           facingBet: 0,
           minRaise: 0,
+          lastRaiseAmt: 0,
           dealer: room.seats.findIndex(s => s && s.kind !== 'empty'),
           sbSeat: 0,
           bbSeat: 0,
           toAct: 0,
           winners: null,
           msg: '',
+          sidePotBrief: '',
           sbAmt: 0,
           bbAmt: 0,
-          actionSeq: 0
+          actionSeq: 0,
+          actedStreet: []
         };
         dealNewHand(room);
       }
@@ -927,14 +1130,38 @@ function createTavernGames(deps) {
       const pk0 = pkGet(room);
       if (pk0.phase !== 'betting' || pk0.toAct !== seatIdx) return send(playerId, { type: 'tavern_error', error: 'Not your turn.' });
       const action = String(msg.action || '');
-      if (action === 'fold') applyPlayerAction(room, seatIdx, 'fold');
-      else if (action === 'call') applyPlayerAction(room, seatIdx, 'call');
-      else if (action === 'check') applyPlayerAction(room, seatIdx, needGap(room, seatIdx) ? 'call' : 'check');
-      else if (action === 'raise_total') applyPlayerAction(room, seatIdx, 'raise_total', msg.raiseTo);
-      rotateTurn(room);
+      if (action === 'fold') tryApplyFold(room, seatIdx);
+      else if (action === 'check') {
+        const err = tryApplyCheck(room, seatIdx);
+        if (err) return send(playerId, { type: 'tavern_error', error: err });
+      } else if (action === 'call') tryApplyCall(room, seatIdx);
+      else if (action === 'raise_total') {
+        const err = tryRaise(room, seatIdx, msg.raiseTo);
+        if (err) return send(playerId, { type: 'tavern_error', error: err });
+      } else return send(playerId, { type: 'tavern_error', error: 'Unknown action.' });
+
+      let alive = seatsInHand(room).filter(i => !room.seats[i].folded);
+      if (alive.length <= 1) {
+        awardFoldWinner(room);
+        resolveNpcActions(room);
+        return;
+      }
+
+      if (bettingStreetClosed(room)) progressAfterBettingStreet(room);
+      else bumpToNextActor(room, seatIdx);
+
       broadcastRoom(room, pid => ({ type: 'tavern_state', room: sanitizeRoomPublic(room, pid) }));
-      advanceIfNeeded(room);
       resolveNpcActions(room);
+      return;
+    }
+
+    if (type === 'tavern_chat') {
+      if (!okDock(msg)) return send(playerId, { type: 'tavern_error', error: 'Dock at this harbor.' });
+      const rid = Math.floor(Number(msg.roomId));
+      const rm = rooms.get(rid);
+      if (!rm) return send(playerId, { type: 'tavern_error', error: 'Room gone.' });
+      if ((playerRoom.get(playerId) | 0) !== rid) return send(playerId, { type: 'tavern_error', error: 'Not in this room.' });
+      pushChat(rm, playerId, msg.text);
       return;
     }
 
