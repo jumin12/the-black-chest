@@ -3517,7 +3517,11 @@ function getCannonballKillerPlayerId(b) {
 function ensureNpcHullHealthInitialized(npc) {
   if (!npc || npc.sinking) return 0;
   const h = npc.health;
-  if (h != null && Number.isFinite(Number(h)) && Number(h) > 0) return Number(h);
+  if (h != null && Number.isFinite(Number(h))) {
+    if (Number(h) > 0) return Number(h);
+    /* Explicit 0 / negative = destroyed hull; never overwrite with a fresh max (that revived “dead” ships and blocked sinking/boarding). */
+    return 0;
+  }
   const specN = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const init = Math.max(12, Math.round(18 + (specN.hullH || 1.3) * 6));
   npc.health = init;
@@ -19622,8 +19626,10 @@ function applyNpcSyncMessage(msg) {
         applyRiggingVisualToGroup(npc.mesh, rhNet);
       }
     }
-    if (G.npcSimFromServer && nd.sinking) applyAuthoritativeNpcSinkWorldFx(npc);
-    if (nd.sinking && !npc.sinking) {
+    const netHullDead = npc.health != null && npc.health <= 0;
+    const sinkFromSync = !!nd.sinking || netHullDead;
+    if (G.npcSimFromServer && sinkFromSync) applyAuthoritativeNpcSinkWorldFx(npc);
+    if (sinkFromSync && !npc.sinking) {
       npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
       npc._sinkSkipSurfaceDebris = true;
       if (npc.mesh) removeCrewMeshesFromShipGroup(npc.mesh);
