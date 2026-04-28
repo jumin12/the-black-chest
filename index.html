@@ -1608,6 +1608,11 @@ body > a[href="https://vibej.am/"][target="_blank"]{
   background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;
 }
 .game-help-footer button:hover{filter:brightness(1.06);}
+#game-help-skip-tutorial-hud{
+  background:linear-gradient(180deg,#483828,#282018);
+  color:#bba890;border-color:rgba(120,95,62,0.45);font-size:12px;margin-right:auto;
+}
+#game-help-skip-tutorial-hud:hover{filter:brightness(1.05);}
 .help-for-mobile{display:none;}
 #game-help-modal.game-help--mobile .help-for-pc{display:none;}
 #game-help-modal.game-help--mobile .help-for-mobile{display:block;}
@@ -2828,6 +2833,7 @@ body.game-help-mobile-minimal #game-help-panel{
         </div>
       </div>
       <div class="game-help-footer">
+        <button type="button" id="game-help-skip-tutorial-hud" class="game-help-muted-skip">Skip HUD tour — play raid intro</button>
         <button type="button" id="game-help-close-btn">Close</button>
       </div>
     </div>
@@ -29612,8 +29618,10 @@ function update(dt) {
     const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
 
     const deckWalkBlocksHelm = !!(G.captainWalk && G.captainWalk.active);
-    const raidHelmHold = !!(G.tutorialRaidCutscene && G.tutorialRaidCutscene.lockHelmEnd
-      && (typeof performance !== 'undefined' ? performance.now() : Date.now()) < G.tutorialRaidCutscene.lockHelmEnd);
+    const trRaid = G.tutorialRaidCutscene;
+    const raidCinematicTravel = !!(trRaid && trRaid.cameraActive && trRaid.scriptingActive);
+    const raidHelmHold = !!(trRaid && trRaid.lockHelmEnd
+      && (typeof performance !== 'undefined' ? performance.now() : Date.now()) < trRaid.lockHelmEnd);
     let forward = 0, turn = 0;
     if (deckWalkBlocksHelm) {
       if (autoSailActive) {
@@ -29688,9 +29696,14 @@ function update(dt) {
     }
 
     if (raidHelmHold && !deckWalkBlocksHelm) {
-      forward = 0;
-      turn = 0;
-      G.player.speed *= (1 - Math.min(1, 5.2 * dt));
+      if (raidCinematicTravel) {
+        forward = Math.max(0.28, Math.min(1, 0.42 + windDot * 0.32));
+        turn = 0;
+      } else {
+        forward = 0;
+        turn = 0;
+        G.player.speed *= (1 - Math.min(1, 5.2 * dt));
+      }
     }
 
     if (forward > 0.1) {
@@ -29946,7 +29959,9 @@ function update(dt) {
   }
 
   const hasGuns = G.player.shipParts.cannon && G.player.shipParts.cannon !== 'none';
-  const showArcs = hasGuns && G.showFiringArches && !G.captainWalk.active;
+  const trHud = G.tutorialRaidCutscene;
+  const hideRaidHudArcs = !!(trHud && trHud.cameraActive && trHud.scriptingActive);
+  const showArcs = hasGuns && G.showFiringArches && !G.captainWalk.active && !hideRaidHudArcs;
   arcLeft.visible = showArcs;
   arcRight.visible = showArcs;
   if (showArcs) {
@@ -32506,6 +32521,7 @@ function openGameHelpModal(opts = {}) {
 
 function closeGameHelpModal(options = {}) {
   const runPending = options.runPendingTutorial !== false;
+  const skipHudStartRaid = !!options.skipTutorialHudStartRaidAfterClose;
   const root = document.getElementById('game-help-modal');
   if (!root || root.style.display !== 'flex') return;
   root.style.display = 'none';
@@ -32513,9 +32529,13 @@ function closeGameHelpModal(options = {}) {
   document.body.classList.remove('game-help-mobile-minimal');
   document.getElementById('btn-help')?.classList.remove('help-welcome-pulse');
   document.getElementById('btn-help')?.classList.remove('active');
-  const runTut = runPending && _pendingTutorialAfterHelp;
+  const hadPending = _pendingTutorialAfterHelp;
   _pendingTutorialAfterHelp = false;
+  const runTut = runPending && hadPending && !skipHudStartRaid;
   if (runTut) startTutorialAfterNewCrew();
+  else if (skipHudStartRaid && hadPending && G.mode === 'playing') {
+    requestAnimationFrame(() => requestAnimationFrame(() => tryBeginTutorialRaidFromUi()));
+  }
 }
 
 function dismissGameHelpForMainMenu() {
@@ -32539,6 +32559,7 @@ function dismissGameHelpForMainMenu() {
   document.getElementById('game-help-close-btn')?.addEventListener('click', () => closeGameHelpModal());
   document.getElementById('game-help-close-x')?.addEventListener('click', () => closeGameHelpModal());
   document.getElementById('game-help-backdrop')?.addEventListener('click', () => closeGameHelpModal());
+  document.getElementById('game-help-skip-tutorial-hud')?.addEventListener('click', () => closeGameHelpModal({ runPendingTutorial: false, skipTutorialHudStartRaidAfterClose: true }));
 })();
 
 function positionTutorialHighlight(sel) {
@@ -32625,7 +32646,7 @@ function tutorialRaidRevealCombatPhase() {
     /* Match cruising merchant hull speed (spawnTrade npc.targetCruise band), not pirate chase multipliers. */
     const maxF = npcMaxForwardSpeed(npc);
     const u = ((((TUTORIAL_RAID_NPC_SYNC * 1664525 + 1013904223) ^ (G.worldSeed | 0)) >>> 0) % 4096) / 4096;
-    npc._tutorialRaidCruiseCeil = maxF * (0.72 + u * 0.22);
+    npc._tutorialRaidCruiseCeil = maxF * (0.72 + u * 0.22) * 0.5;
   }
   const past = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1;
   tr.lockHelmEnd = past;
@@ -32780,12 +32801,13 @@ function tryBeginTutorialRaidFromUi() {
   if (!G.tutorialRaidPending || G.tutorialRaidConsumed || G.mode !== 'playing') return;
   const sq = G.storyQuest;
   if (!sq || sq.phase !== 'intro') return;
-  G.tutorialRaidPending = false;
   startTutorialRaidEncounter();
 }
 
 function startTutorialRaidEncounter() {
   if (G.tutorialRaidConsumed || G.mode !== 'playing') return;
+  if (!G.tutorialRaidPending) return;
+  G.tutorialRaidPending = false;
   const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const multiplayerCrewmate = !!(ws && ws.readyState === 1 && G.otherPlayers && G.otherPlayers.size > 0);
   if (multiplayerCrewmate) {
@@ -32828,7 +32850,7 @@ function tutorialRaidNpcSailSpeedTarget(npc, fracOfHullMax) {
   const sm = playerSpeedMultFromShipParts();
   const playerScalarCeil = 12 * sm * PLAYER_BASE_SPEED_MULT;
   const f = fracOfHullMax != null ? fracOfHullMax : 0.22;
-  return Math.max(0.05, Math.min(nmax * f, playerScalarCeil * 0.91));
+  return Math.max(0.026, Math.min(nmax * f, playerScalarCeil * 0.91) * 0.5);
 }
 
 function tickTutorialRaidCutscene(dt) {
