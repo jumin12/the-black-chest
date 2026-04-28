@@ -3541,24 +3541,28 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
   else if (at === 'chain') dh = 8;
   if (!fxOnly) {
     npc.health -= dh;
+    npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
+    const humanKiller = killerPlayerId != null && Number.isFinite(Number(killerPlayerId));
+    if (humanKiller) {
+      const kid = Math.floor(Number(killerPlayerId));
+      npc._humanAttackerId = kid;
+      npc.aggro = true;
+      npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
+      const vf = npcFactionIdForPolitics(npc);
+      if (vf != null) {
+        const now = typeof G.time === 'number' ? G.time : 0;
+        if (npc._facProvokeNextT == null || now >= npc._facProvokeNextT) {
+          npc._facProvokeNextT = now + 3.4;
+          adjustPlayerFactionRelation(vf, -2);
+        }
+      }
+    }
   }
   {
     const specN = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
     const hN = specN.hullH || 1.3;
     const ny = npc.mesh?.position?.y ?? worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
     playShipDamageSound(isPellet ? 0.52 : 0.88, npc.x, ny + hN * 0.42, npc.z);
-  }
-  if (!fxOnly) {
-    npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
-    const fromPlayerShot = !!opts.fromPlayerCaptainShot;
-    const localPlayerBlame = fromPlayerShot && (
-      (G.myId != null && killerPlayerId != null && Number.isFinite(Number(killerPlayerId)) && Number(killerPlayerId) === Number(G.myId))
-      || (G.myId == null && killerPlayerId == null)
-    );
-    if (localPlayerBlame) {
-      npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
-      npc.aggro = true;
-    }
   }
   let popMsg = `−${dh} hull`;
   if (at === 'chain') popMsg = `Chain · −${dh} hull · sails`;
@@ -12116,6 +12120,9 @@ function checkHuntQuestOnNpcSink(npc) {
     appendCompletedMission({ kind: 'side', title: 'Hunt complete', detail: q.desc, reward: q.reward });
     G.quests.splice(i, 1);
     notify(`Hunt complete — ${npc.name}: +${q.reward}g`);
+    if (q.issuerFaction != null && Number.isFinite(Number(q.issuerFaction))) {
+      adjustPlayerFactionRelation(Number(q.issuerFaction), 6);
+    }
     reconcileSlotsWithInventory();
     updateMissionsPanel();
     updateStoryBriefHud();
@@ -12138,6 +12145,9 @@ function checkPortQuestProgress() {
       appendCompletedMission({ kind: 'side', title: 'Escort fee collected', detail: q.desc, reward: q.reward });
       G.quests.splice(i, 1);
       notify(`Escort payment: +${q.reward}g`);
+      if (q.issuerFaction != null && Number.isFinite(Number(q.issuerFaction))) {
+        adjustPlayerFactionRelation(Number(q.issuerFaction), 7);
+      }
       reconcileSlotsWithInventory();
       updateMissionsPanel();
       updateStoryBriefHud();
@@ -12158,6 +12168,9 @@ function checkPortQuestProgress() {
     appendCompletedMission({ kind: 'side', title: 'Delivery complete', detail: q.desc, reward: q.reward });
     G.quests.splice(i, 1);
     notify(`Delivery complete — ${q.destTown || 'port'}: +${q.reward}g`);
+    if (q.issuerFaction != null && Number.isFinite(Number(q.issuerFaction))) {
+      adjustPlayerFactionRelation(Number(q.issuerFaction), 5);
+    }
     bumpNotoriety({ gold: q.reward });
     updateMissionsPanel();
     updateStoryBriefHud();
@@ -12460,8 +12473,11 @@ function boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) {
   return Math.max(0, d - (pr + nr) * 0.5);
 }
 function boardingGapMaxForShips(pShipType, eShipType) {
-  const base = Math.max(48, BROADSIDE_RANGE * 1.2);
-  const bonus = Math.min(36, (shipHullRadius(pShipType) + shipHullRadius(eShipType)) * 0.72);
+  /* Practical grapple distance (was BROADSIDE_RANGE/3 ≈13m — too tight; Board rarely appeared). */
+  const pr = shipHullRadius(pShipType || 'sloop');
+  const er = shipHullRadius(eShipType || 'sloop');
+  const base = 58;
+  const bonus = Math.min(32, (pr + er) * 0.48);
   return base + bonus;
 }
 function isBoardingRangeToTarget(px, pz, ex, ez, pShipType, eShipType) {
@@ -14812,7 +14828,7 @@ function updateBoardingUiOverlay() {
   const btn = document.getElementById('board-prompt-btn');
   if (!btn) return;
   clearStaleNpcBoardingHostLocks();
-  if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.boarding || isBoardingPromptObscuredByMenus()) {
+  if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.boarding || !isFloatingNametagVisibleNow() || isBoardingPromptObscuredByMenus()) {
     btn.style.display = 'none';
     return;
   }
@@ -15713,6 +15729,17 @@ function pushPlayerOutOfShipOverlaps() {
               if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
             }
             showCombatPopupWorld(npc.x, npc.z, `Ram · −${Math.round(stN.dmg)} hull`, { life: 1.35 });
+            ensurePolitics();
+            const vf = npcFactionIdForPolitics(npc);
+            if (vf != null) {
+              const now = typeof G.time === 'number' ? G.time : 0;
+              if (npc._facRamNextT == null || now >= npc._facRamNextT) {
+                npc._facRamNextT = now + 4;
+                adjustPlayerFactionRelation(vf, -3);
+              }
+            }
+            npc._humanAttackerId = G.myId != null ? Math.floor(Number(G.myId)) : null;
+            npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 10);
             if (npc.health <= 0 && !npc.sinking) runNpcSinkOutcome(npc, G.myId);
           } else if (!applyNpcRam && stN.dmg > 0 && ws?.readyState === 1) {
             try {
@@ -16323,19 +16350,50 @@ function getPlayerVelocityForLead() {
   const effectiveSpeed = Math.abs(G.player.speed * computePlayerSpeedModifiers(windDot));
   return { vx: Math.sin(G.player.rotation) * effectiveSpeed, vz: Math.cos(G.player.rotation) * effectiveSpeed };
 }
+/** Which ship coordinates an AI hull should lead when returning fire on a human. */
+function resolveNpcHumanGrudgeAim(npc) {
+  const hid = npc._humanAttackerId != null && Number.isFinite(Number(npc._humanAttackerId))
+    ? Math.floor(Number(npc._humanAttackerId)) : null;
+  let bx = G.player.x, bz = G.player.z;
+  let pvx, pvz;
+  if (hid != null && G.myId != null && hid === Number(G.myId)) {
+    const v = getPlayerVelocityForLead();
+    pvx = v.vx;
+    pvz = v.vz;
+  } else if (hid != null) {
+    const op = G.otherPlayers.get(hid);
+    if (op && Number.isFinite(op.x) && Number.isFinite(op.z)) {
+      bx = op.x;
+      bz = op.z;
+      const yaw = op.rotation != null ? op.rotation : 0;
+      const sp = Math.abs(op.speed || 0);
+      pvx = Math.sin(yaw) * sp;
+      pvz = Math.cos(yaw) * sp;
+    } else {
+      const v = getPlayerVelocityForLead();
+      pvx = v.vx;
+      pvz = v.vz;
+    }
+  } else {
+    const v = getPlayerVelocityForLead();
+    pvx = v.vx;
+    pvz = v.vz;
+  }
+  return { bx, bz, pvx, pvz };
+}
 function npcFireBroadsideAtPlayer(npc) {
   const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const cc = npcEffectiveCannonSlots(npc);
   if (cc <= 0) return;
   const perSide = Math.ceil(cc / 2);
-  const { vx: pvx, vz: pvz } = getPlayerVelocityForLead();
-  let px = G.player.x, pz = G.player.z;
+  const { bx: pAx, bz: pAz, pvx, pvz } = resolveNpcHumanGrudgeAim(npc);
+  let px = pAx, pz = pAz;
   for (let iter = 0; iter < 4; iter++) {
     const dx = px - npc.x, dz = pz - npc.z;
     const dist = Math.hypot(dx, dz);
     const t = dist / CANNONBALL_XY_SPEED;
-    px = G.player.x + pvx * t;
-    pz = G.player.z + pvz * t;
+    px = pAx + pvx * t;
+    pz = pAz + pvz * t;
   }
   const dx = px - npc.x, dz = pz - npc.z;
   const dist = Math.hypot(dx, dz);
@@ -16638,6 +16696,7 @@ function updateNPCs(dt) {
         npc.fireCooldown -= dt;
         if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
         if (npc.underPlayerFireTimer > 0) npc.underPlayerFireTimer -= dt;
+        if (npc.underPlayerFireTimer <= 0) npc._humanAttackerId = null;
         updateMerchantThreatScan(npc, dt);
         let atkShip = npc.returnFireSyncId != null ? G.npcs.find(n => n.syncId === npc.returnFireSyncId && !n.sinking && (n.health == null || n.health > 0)) : null;
         if (atkShip) {
@@ -16651,6 +16710,7 @@ function updateNPCs(dt) {
         ensurePolitics();
         const mPfid = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
         const mRel = playerFactionRelation(mPfid);
+        const mWarJ = G.politics.joinedFaction != null && factionsConsideredAtWar(mPfid, G.politics.joinedFaction);
         if (!npc.aggro && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
           if (factionHostileToPlayer(mPfid) || (npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0)) {
             npc.aggro = true;
@@ -16851,6 +16911,7 @@ function updateNPCs(dt) {
       npc.fireCooldown -= dt;
       if (npc.underFireTimer > 0) npc.underFireTimer -= dt;
       if (npc.underPlayerFireTimer > 0) npc.underPlayerFireTimer -= dt;
+      if (npc.underPlayerFireTimer <= 0) npc._humanAttackerId = null;
       if (npc.isFactionPatrol) updatePatrolWorldHuntAi(npc, dt);
       else updatePirateWorldHuntAi(npc, dt);
 
@@ -26688,6 +26749,7 @@ function makeHuntSideQuestAtPort(dock, rnd, salt) {
     reward: 35 + Math.floor(rnd() * 30),
     target,
     huntTargetFaction: enemyF,
+    issuerFaction: (townFaction(dock) | 0) % FACTION_COUNT,
     accepted: false
   };
 }
@@ -26738,6 +26800,7 @@ function pushRandomSideQuestForPort(dock, rnd) {
       cargoUnits,
       cargoShipName: `Merchant (${cargoUnits} ${inm.name})`,
       attackerCount,
+      issuerFaction: (townFaction(origin) | 0) % FACTION_COUNT,
       accepted: false,
       pendingReward: false,
       escortCargoSyncId: null,
@@ -26774,6 +26837,7 @@ function pushRandomSideQuestForPort(dock, rnd) {
     destCx: dest.cx, destCz: dest.cz,
     destTown: dNm2,
     destDockX: dest.dockX, destDockZ: dest.dockZ,
+    issuerFaction: (townFaction(origin) | 0) % FACTION_COUNT,
     accepted: false
   });
   return true;
@@ -26875,6 +26939,10 @@ window.reportStoryBountyTurnIn = function() {
   const gi = G.player.inventory.find(x => x.id === 'gold');
   if (gi) gi.count += reward;
   bumpNotoriety({ gold: reward });
+  if (G.nearDock && G.nearDock.hasTown) {
+    ensurePolitics();
+    adjustPlayerFactionRelation(townFaction(G.nearDock), 6);
+  }
   const siTurn = sq.step;
   const stTurn = STORY_SHIP_ORDER[siTurn];
   const capTurn = pickStoryBountyCaptainName(stTurn, G.myId || 0, siTurn);
@@ -29075,7 +29143,7 @@ function update(dt) {
             }
           }
           const killerPid = b.owner === 'player' ? (G.myId != null ? G.myId : null) : null;
-          applyAuthorizedNpcDamageFromPlayerShot(npc, killerPid, at, isPellet, b.x, b.y, b.z, { fromPlayerCaptainShot: b.owner === 'player' });
+          applyAuthorizedNpcDamageFromPlayerShot(npc, killerPid, at, isPellet, b.x, b.y, b.z);
         } else {
           spawnDamageChunks(b.x, b.y, b.z);
           if (predictLocalNpcHitFx && ws?.readyState === 1) {
