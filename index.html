@@ -1215,8 +1215,15 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 #touch-zoom.touch-zoom-above-tutorial{z-index:92!important;}
 #tutorial-next{background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;border:none;padding:12px 28px;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-weight:bold;width:100%;}
 #tutorial-skip{background:none;border:1px solid rgba(140,100,40,0.4);color:#8a7a60;padding:8px;margin-top:10px;width:100%;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-size:12px;}
-#tutorial-raid-cinematic{display:none;position:fixed;left:50%;bottom:18%;transform:translateX(-50%);z-index:74;max-width:min(560px,92vw);pointer-events:none;text-align:center;padding:0 14px;box-sizing:border-box;}
-#tutorial-raid-line{font-family:Georgia,serif;font-size:clamp(15px,3.6vw,19px);color:#f2e6c8;line-height:1.45;text-shadow:0 2px 14px rgba(0,0,0,0.75),0 0 28px rgba(0,0,0,0.5);margin:0;}
+#tutorial-raid-cutscene-root{display:none;position:fixed;inset:0;z-index:73;pointer-events:none;flex-direction:column;justify-content:space-between;align-items:stretch;}
+#tutorial-raid-cutscene-root.tutorial-raid-cutscene-on{display:flex!important;}
+.tutorial-raid-letterbox{flex:0 0 min(13vh,120px);background:linear-gradient(180deg,#0a0608 0%,transparent 42%),#050405;opacity:0.92;pointer-events:none;box-shadow:0 22px 40px rgba(0,0,0,0.55);}
+.tutorial-raid-letterbox.lb-top{border-bottom:1px solid rgba(212,168,72,0.25);}
+.tutorial-raid-letterbox.lb-bottom{border-top:1px solid rgba(212,168,72,0.25);flex-direction:column-reverse;background:linear-gradient(0deg,#0a0608 0%,transparent 42%),#050405;}
+#tutorial-raid-cutscene-mid{display:flex;flex:1 1 auto;min-height:92px;align-items:flex-end;justify-content:center;padding:0 14px calc(14vh + env(safe-area-inset-bottom));box-sizing:border-box;position:relative;}
+#tutorial-raid-cutscene-backdrop{position:absolute;inset:0;background:radial-gradient(ellipse 92% 88% at 50% 55%,transparent 55%,rgba(0,0,0,0.55) 100%);pointer-events:none;}
+#tutorial-raid-cinematic{position:relative;display:none;z-index:1;max-width:min(580px,92vw);pointer-events:none;text-align:center;padding:14px 22px 18px;border-radius:12px;background:linear-gradient(165deg,rgba(36,26,14,0.94),rgba(12,9,6,0.97));border:1px solid rgba(212,168,72,0.38);box-shadow:0 12px 48px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,230,160,0.08);}
+#tutorial-raid-line{font-family:Georgia,serif;font-size:clamp(15px,3.7vw,20px);color:#f8eed8;line-height:1.48;text-shadow:0 2px 16px rgba(0,0,0,0.85),0 0 34px rgba(0,0,0,0.55);margin:0;letter-spacing:0.015em;}
 #tutorial-raid-world-target{position:fixed;display:none;border:3px solid rgba(180,92,238,0.95);border-radius:50%;pointer-events:none;z-index:75;box-shadow:0 0 22px rgba(140,62,205,0.55), inset 0 0 14px rgba(255,222,140,0.18);transition:opacity 0.2s;}
 @media(max-width:768px){
   #tutorial-overlay{justify-content:center;align-items:stretch;padding:12px;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right));padding-bottom:max(16px,env(safe-area-inset-bottom));padding-top:max(12px,env(safe-area-inset-top));min-height:100dvh;box-sizing:border-box;}
@@ -2900,8 +2907,15 @@ body.game-help-mobile-minimal #game-help-panel{
   </div>
 </div>
 
-<div id="tutorial-raid-cinematic" aria-hidden="true" style="display:none;">
-  <p id="tutorial-raid-line"></p>
+<div id="tutorial-raid-cutscene-root" aria-hidden="true">
+  <div class="tutorial-raid-letterbox lb-top" aria-hidden="true"></div>
+  <div id="tutorial-raid-cutscene-mid">
+    <div id="tutorial-raid-cutscene-backdrop" aria-hidden="true"></div>
+    <div id="tutorial-raid-cinematic" aria-hidden="true" style="display:none;">
+      <p id="tutorial-raid-line"></p>
+    </div>
+  </div>
+  <div class="tutorial-raid-letterbox lb-bottom" aria-hidden="true"></div>
 </div>
 <div id="tutorial-raid-world-target" aria-hidden="true"></div>
 
@@ -3360,6 +3374,8 @@ const G = {
   /** After helm tour optional raid; `cutscene` object while the 3D intro runs (host pirates only). */
   tutorialRaidPending: false,
   tutorialRaidConsumed: false,
+  /** True while solo client drives the intro training raider (server ghosts sync id 90190). */
+  localTutorialRaidNpcSurrogate: false,
   tutorialRaidCutscene: null,
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
@@ -8430,13 +8446,10 @@ function factionsConsideredAtWar(a, b) {
 function playerBannedFromFactionPort(fid) {
   return playerFactionRelation(fid) <= BANNED_FROM_PORT_RELATION;
 }
-/** Barred, state war against an ensign you are flying, or bad personal standing — not automatic war from commission alone without faction colors. */
+/** Barred by harbors/pardon, bad personal standing, or crimes — mast ensign alone does not create hostility. */
 function factionHostileToPlayer(fid) {
   const f = (fid | 0) % FACTION_COUNT;
   if (playerBannedFromFactionPort(f)) return true;
-  ensurePolitics();
-  const mastFac = playerMastFactionEnsignIndex();
-  if (mastFac != null && factionsConsideredAtWar(f, mastFac)) return true;
   return playerFactionRelation(f) <= -30;
 }
 function randomChoosableFlagRng(rng) {
@@ -17078,7 +17091,10 @@ function updatePirateWorldHuntAi(npc, dt) {
 function updateNPCs(dt) {
   const host = isMultiplayerHost();
   G.npcs.forEach((npc, npcIdx) => {
-    if (host) {
+    const localTutorialRaid =
+      !!(G.localTutorialRaidNpcSurrogate && npc.syncId === TUTORIAL_RAID_NPC_SYNC);
+    const stepping = host || localTutorialRaid;
+    if (stepping) {
       if (npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive && !npc.sinking) {
         tickTutorialRaidNpcHost(dt, npc);
       } else if (npc._boardingHostLock && !npc.sinking) {
@@ -17490,7 +17506,9 @@ function updateNPCs(dt) {
       npc.sinkTimer = (npc.sinkTimer || 0) + dt;
       if (npc.mesh) {
         if (!npc._sinkSkipSurfaceDebris && (npc._sinkExtraLootN | 0) < 12 && npc.sinkTimer < 3.85) {
-          const spawnSinkSurfaceDebris = isMultiplayerHost() || !ws || ws.readyState !== 1;
+          const spawnSinkSurfaceDebris =
+            isMultiplayerHost() || !ws || ws.readyState !== 1
+            || !!(G.localTutorialRaidNpcSurrogate && npc.syncId === TUTORIAL_RAID_NPC_SYNC);
           if (spawnSinkSurfaceDebris) {
             npc._sinkDebrisAcc = (npc._sinkDebrisAcc || 0) + dt;
             const lootTypes = ['wood', 'iron', 'gunpowder', 'food', 'cannonballs'];
@@ -17524,7 +17542,7 @@ function updateNPCs(dt) {
       npc.mesh.rotation.z = npc._visWaveRoll;
       {
         const rhF = getNpcRiggingHealth(npc);
-        if (!host) {
+        if (!host && !localTutorialRaid) {
           const rhKey = Math.round(rhF);
           if (npc._rigVisRh !== rhKey) {
             npc._rigVisRh = rhKey;
@@ -17536,7 +17554,7 @@ function updateNPCs(dt) {
       }
       const wakeKey = npc.syncId != null ? `npc${npc.syncId}` : `npci${npcIdx}`;
       let effWakeSpd = npc.speed != null ? npc.speed : 0;
-      if (!host) {
+      if (!host && !localTutorialRaid) {
         const px = npc._wakePrevX, pz = npc._wakePrevZ;
         if (px != null && pz != null) effWakeSpd = Math.hypot(npc.x - px, npc.z - pz) / Math.max(dt, 1e-4);
         else effWakeSpd = 0;
@@ -17545,12 +17563,18 @@ function updateNPCs(dt) {
       npc._wakePrevZ = npc.z;
       tickShipWakeSpawner(wakeKey, npc.x, npc.z, npc.rotation, effWakeSpd, dt);
     }
-    if (host && !npc.sinking && (npc.health == null || npc.health > 0)
+    if (stepping && !npc.sinking && (npc.health == null || npc.health > 0)
       && !(npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive)) steerNpcAvoidCloseShips(npc, dt);
     clampNpcIntoWorldBounds(npc);
   });
   if (host) {
     G.npcs = G.npcs.filter(n => {
+      const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
+      return h > -900;
+    });
+  } else {
+    G.npcs = G.npcs.filter(n => {
+      if (!(n.syncId === TUTORIAL_RAID_NPC_SYNC && n.tutorialRaidHull)) return true;
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       return h > -900;
     });
@@ -20102,6 +20126,7 @@ function applyNpcSyncMessage(msg) {
     if (!nd) return;
     const nid = netNpcSyncId(nd.id);
     if (nid == null) return;
+    if (G.localTutorialRaidNpcSurrogate && nid === TUTORIAL_RAID_NPC_SYNC) return;
     seen.add(nid);
     let npc = npcBySyncId.get(nid);
     const sbMeta = parseStoryBountyFromSyncId(nid);
@@ -20243,7 +20268,8 @@ function applyNpcSyncMessage(msg) {
   for (let j = G.npcs.length - 1; j >= 0; j--) {
     const npc = G.npcs[j];
     const sid = netNpcSyncId(npc.syncId);
-    if (sid == null || !seen.has(sid)) {
+    const keepLocalRaid = !!(G.localTutorialRaidNpcSurrogate && sid === TUTORIAL_RAID_NPC_SYNC && npc.tutorialRaidHull);
+    if ((sid == null || !seen.has(sid)) && !keepLocalRaid) {
       if (npc.mesh) { scene.remove(npc.mesh); npc.mesh = null; }
       G.npcs.splice(j, 1);
     }
@@ -32307,11 +32333,6 @@ function buildTutorialStepsDesktop() {
     title: 'Settings',
     body: 'Adjust sound here.'
   });
-  steps.push({
-    sel: null,
-    title: 'Then — practice battle',
-    body: 'When you tap **Done**, this tour closes and the training voyage begins immediately: an enemy hull closes from ahead, snaps a broadside, then spills wind and runs away. Chase her inside broadside arcs and **sink her** using **Z** (starboard) and **X** (port); the compass purple needle stays on her until she goes down.'
-  });
   return steps;
 }
 
@@ -32385,11 +32406,6 @@ function buildTutorialStepsMobile() {
     sel: '#btn-settings',
     title: 'Settings',
     body: 'Sound and your helm layout live here.'
-  });
-  steps.push({
-    sel: null,
-    title: 'Practice raid after',
-    body: 'Tap **Done** — the wheel tour ends and a training raider attacks, then breaks off. Sink her with your broadside buttons; the purple needle tracks her until she founders.'
   });
   return steps;
 }
@@ -32514,15 +32530,26 @@ function showTutorialStep() {
 }
 
 function tutorialRaidSetBanner(text) {
+  const root = document.getElementById('tutorial-raid-cutscene-root');
   const ban = document.getElementById('tutorial-raid-cinematic');
   if (!ban) return;
   const line = document.getElementById('tutorial-raid-line');
   if (!line) return;
   if (text && String(text).trim()) {
+    if (root) {
+      root.style.display = 'flex';
+      root.classList.add('tutorial-raid-cutscene-on');
+      root.setAttribute('aria-hidden', 'false');
+    }
     ban.style.display = 'block';
     ban.setAttribute('aria-hidden', 'false');
     line.textContent = text;
   } else {
+    if (root) {
+      root.style.display = 'none';
+      root.classList.remove('tutorial-raid-cutscene-on');
+      root.setAttribute('aria-hidden', 'true');
+    }
     ban.style.display = 'none';
     ban.setAttribute('aria-hidden', 'true');
     line.textContent = '';
@@ -32531,6 +32558,7 @@ function tutorialRaidSetBanner(text) {
 
 function disposeTutorialRaidCutscene() {
   tutorialRaidSetBanner('');
+  G.localTutorialRaidNpcSurrogate = false;
   const ring = document.getElementById('tutorial-raid-world-target');
   if (ring) {
     ring.style.display = 'none';
@@ -32578,13 +32606,13 @@ function spawnTutorialRaidPirateNearPlayer() {
   const sinR = Math.sin(rot), cosR = Math.cos(rot);
   const sideX = Math.cos(rot), sideZ = -Math.sin(rot);
   const st = G.player.shipType || 'cutter';
-  let bx = px + sinR * 52 + sideX * 11;
-  let bz = pz + cosR * 52 + sideZ * 11;
+  let bx = px + sinR * 38 + sideX * 11;
+  let bz = pz + cosR * 38 + sideZ * 11;
   let found = false;
-  for (let a = 0; a < 18; a++) {
-    const dist = 44 + (a % 9) * 2.2;
-    const bxOff = sideX * (9 + (a % 5) * 1.85);
-    const bzOff = sideZ * (9 + (a % 5) * 1.85);
+  for (let a = 0; a < 22; a++) {
+    const dist = 26 + (a % 11) * 2.05;
+    const bxOff = sideX * (6 + (a % 5) * 1.72);
+    const bzOff = sideZ * (6 + (a % 5) * 1.72);
     const tx = px + sinR * dist + bxOff;
     const tz = pz + cosR * dist + bzOff;
     if (!isSeaObstructed(tx, tz) && isWorldPositionFreeForNpcSpawn(tx, tz, st)) {
@@ -32595,8 +32623,8 @@ function spawnTutorialRaidPirateNearPlayer() {
     }
   }
   if (!found && !(!isSeaObstructed(bx, bz) && isWorldPositionFreeForNpcSpawn(bx, bz, st))) {
-    bx = px + sinR * 50 + sideX * 10;
-    bz = pz + cosR * 50 + sideZ * 10;
+    bx = px + sinR * 34 + sideX * 9;
+    bz = pz + cosR * 34 + sideZ * 9;
   }
   const chunkX = Math.floor(bx / CHUNK_SIZE), chunkZ = Math.floor(bz / CHUNK_SIZE);
   const pirateFaction = ((chunkX * 31 + chunkZ * 17 + TUTORIAL_RAID_NPC_SYNC) & 0x7fffffff) % FACTION_COUNT;
@@ -32653,14 +32681,17 @@ function tryBeginTutorialRaidFromUi() {
 function startTutorialRaidEncounter() {
   if (G.tutorialRaidConsumed || G.mode !== 'playing') return;
   const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  if (!isMultiplayerHost() || G.npcSimFromServer) {
+  const multiplayerCrewmate = !!(ws && ws.readyState === 1 && G.otherPlayers && G.otherPlayers.size > 0);
+  if (multiplayerCrewmate) {
     G.tutorialRaidConsumed = true;
-    notify('A hostile sail may cross your bows — chase it down when you spy one. Use starboard Z and port X to unleash broadsides.', 7400);
+    notify('Training raids run on solo voyages — find action on the compass when sailing with allies.', 5200);
     return;
   }
+  G.localTutorialRaidNpcSurrogate = true;
   G.tutorialRaidConsumed = true;
   const npc = spawnTutorialRaidPirateNearPlayer();
   if (!npc) {
+    G.localTutorialRaidNpcSurrogate = false;
     notify('Keep a weather eye — you will meet pirates soon enough. Broadsides: Z starboard, X port.', 6200);
     return;
   }
@@ -32707,7 +32738,7 @@ function tickTutorialRaidCutscene(dt) {
     tr.bannerPhase = 1;
     tutorialRaidSetBanner('Guns! She fires a broadside — brace!');
   }
-  if (tr.age >= 4.15 && !tr._volleyTriggered && isMultiplayerHost()) {
+  if (tr.age >= 4.15 && !tr._volleyTriggered) {
     tr._volleyTriggered = true;
     tr.noPlayerHullDamageUntil = Math.max(nowMs + 5200, (tr.noPlayerHullDamageUntil || 0));
     npcFireBroadsideAtPlayer(npc);
@@ -32774,7 +32805,7 @@ function endTutorial() {
   positionTutorialHighlight(null);
   document.getElementById('touch-zoom')?.classList.remove('tutorial-zoom-emphasis');
   syncTouchZoomLayer();
-  tryBeginTutorialRaidFromUi();
+  requestAnimationFrame(() => requestAnimationFrame(() => tryBeginTutorialRaidFromUi()));
 }
 
 function startTutorialAfterNewCrew() {
@@ -32813,6 +32844,7 @@ function beginVoyageAfterCharacter() {
   void ensureWaGunshotBuffer().catch(() => {});
   G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
   G.tutorialRaidConsumed = false;
+  G.localTutorialRaidNpcSurrogate = false;
   G.tutorialRaidPending = true;
   G.tutorialRaidCutscene = null;
   G.quests = [];
