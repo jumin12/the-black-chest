@@ -908,7 +908,8 @@ function ensureTavernGames() {
       players,
       sendToPlayerId,
       normalizeCaptainKey,
-      findWsByPlayerId
+      findWsByPlayerId,
+      getLeaderboardRank: getLeaderboardRankForPlayer
     });
   }
   return tavernGames;
@@ -948,6 +949,15 @@ function normalizeLbEntry(e) {
     if (ck) captainKey = ck;
   }
   return { name, gold, sinksAi, sinksPlayer, ransoms, deaths, boardings, playerId, captainKey, shipName, partyTag };
+}
+
+function getLeaderboardRankForPlayer(playerId) {
+  if (playerId == null || !Number.isFinite(Number(playerId))) return null;
+  const pid = Number(playerId);
+  for (let i = 0; i < leaderboardHistory.length; i++) {
+    if (normalizeLbEntry(leaderboardHistory[i]).playerId === pid) return i + 1;
+  }
+  return null;
 }
 
 /**

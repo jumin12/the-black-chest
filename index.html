@@ -2407,7 +2407,7 @@ body.game-help-mobile-minimal #game-help-panel{
     <div id="log-tabs" style="display:flex;gap:0;margin-bottom:10px;border-bottom:2px solid rgba(180,140,60,0.3);">
       <div class="log-tab active" data-tab="ship" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#d4a848;border-bottom:2px solid #d4a848;margin-bottom:-2px;transition:all 0.2s;">Ship</div>
       <div class="log-tab" data-tab="inv" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Cargo</div>
-      <div class="log-tab" data-tab="crew" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Crew</div>
+      <div class="log-tab log-tab--crew-badge" data-tab="crew" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px;min-height:52px;"><span id="log-tab-crew-mini" aria-hidden="true" style="display:flex;justify-content:center;gap:1px;line-height:0;margin-bottom:1px;"></span><span>Crew</span></div>
       <div class="log-tab" data-tab="missions" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Missions</div>
       <div class="log-tab" data-tab="pirates" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">Pirates</div>
       <div class="log-tab" data-tab="world" style="flex:1;text-align:center;padding:8px 2px;cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#8a7a60;margin-bottom:-2px;transition:all 0.2s;">World</div>
@@ -18920,6 +18920,14 @@ async function connectToServer() {
         if (typeof G.tavern.refresh === 'function') G.tavern.refresh(msg);
         break;
       }
+      case 'tavern_list':
+        if (!G.tavern) G.tavern = {};
+        G.tavern.lastLobbyList = {
+          poker: Array.isArray(msg.poker) ? msg.poker : [],
+          dice: Array.isArray(msg.dice) ? msg.dice : []
+        };
+        if (typeof G.tavern.refreshLobbyBrowser === 'function') G.tavern.refreshLobbyBrowser();
+        break;
       case 'tavern_wallet':
         if (msg.gold != null) tavernApplyServerGold(msg.gold);
         break;
@@ -25185,7 +25193,36 @@ function updateCrewPanel() {
   });
   _crewPanelRefreshSig = getCrewPanelRefreshSig();
   queueRefreshCrewPortraits();
+  refreshLogTabCrewMiniFaces();
   requestAnimationFrame(() => syncCrewRosterScrollbarThumb());
+}
+
+function refreshLogTabCrewMiniFaces() {
+  const host = document.getElementById('log-tab-crew-mini');
+  if (!host || !Array.isArray(G.player.crew)) return;
+  host.innerHTML = '';
+  const sailors = G.player.crew.filter(c => c && c.role !== 'prisoner');
+  const sel = sailors.slice(0, 4);
+  if (!sel.length) {
+    const sp = document.createElement('span');
+    sp.style.cssText = 'font-size:15px;line-height:1;opacity:0.75';
+    sp.textContent = '\u2693';
+    host.appendChild(sp);
+    return;
+  }
+  sel.forEach(m => {
+    const mi = G.player.crew.indexOf(m);
+    if (mi < 0) return;
+    const cvs = document.createElement('canvas');
+    cvs.width = 22;
+    cvs.height = 22;
+    cvs.style.cssText = 'width:18px;height:18px;border-radius:4px;display:block;border:1px solid rgba(120,90,55,0.45);vertical-align:middle;background:#1a1510';
+    cvs.className = 'crew-card-portrait';
+    cvs.dataset.crewIdx = String(mi);
+    cvs.title = m.name || 'Crew';
+    host.appendChild(cvs);
+  });
+  queueRefreshCrewPortraits();
 }
 
 function lbRowGold(e) {
@@ -26245,6 +26282,7 @@ function disposeTavernDiceThree() {
 }
 
 function disposeTavernMiniGames() {
+  disposeTavernGameOverlay();
   disposeTavernDiceThree();
   G.tavern.refresh = null;
   G.tavern.snapshot = null;
@@ -26294,6 +26332,53 @@ function tavernPokerCardSvg(code, w, h) {
   </svg>`;
 }
 
+function disposeTavernGameOverlay() {
+  try {
+    if (G.tavern && G.tavern.gameOverlayEl && G.tavern.gameOverlayEl.parentNode) {
+      G.tavern.gameOverlayEl.parentNode.removeChild(G.tavern.gameOverlayEl);
+    }
+  } catch (e) {}
+  if (G.tavern) G.tavern.gameOverlayEl = null;
+}
+
+function mountTavernGameOverlay(inner) {
+  if (!G.tavern) G.tavern = {};
+  disposeTavernGameOverlay();
+  const overlay = document.createElement('div');
+  overlay.className = 'tavern-game-fullscreen-overlay';
+  overlay.style.cssText =
+    'position:fixed;inset:0;z-index:9350;display:flex;align-items:center;justify-content:center;background:rgba(6,5,4,0.9);backdrop-filter:blur(6px);padding:max(10px,2vh);box-sizing:border-box;';
+  const panel = document.createElement('div');
+  panel.style.cssText =
+    'max-width:min(760px,96vw);max-height:min(92vh,940px);overflow:auto;width:100%;border-radius:16px;border:2px solid rgba(180,140,80,0.45);background:linear-gradient(178deg,#261c16 0%,#100c0a 100%);box-shadow:0 26px 72px rgba(0,0,0,0.78);padding:14px 16px 18px;box-sizing:border-box;';
+  panel.appendChild(inner);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  G.tavern.gameOverlayEl = overlay;
+  return overlay;
+}
+
+function tavernSeatNametagHtml(s) {
+  if (!s || s.kind === 'empty') return '';
+  if (s.kind === 'npc') return '<span style="color:#beb8a8;">NPC</span>';
+  let fk = String(s.flagColor || '#6a5840').trim();
+  if (!/^#[0-9A-Fa-f]{6}$/.test(fk)) fk = '#6a5840';
+  const rk = s.lbRank != null ? `<span style="color:#8a7a60;font-size:10px;"> \u00b7 #${s.lbRank}</span>` : '';
+  const nm = escapeHtml(String(s.displayName || s.name || 'Captain'));
+  return `<span title="Ensign" style="display:inline-block;width:14px;height:10px;border-radius:2px;background:${fk};border:1px solid rgba(0,0,0,0.35);vertical-align:middle;margin-right:6px;"></span><span style="color:#e8dcc8;">${nm}</span>${rk}`;
+}
+
+function tavernRenderSeatRowInnerHTML(snap) {
+  if (!snap || !snap.seats || !snap.seats.length) return '';
+  return snap.seats
+    .map((s, i) => {
+      if (s.kind === 'empty') return `<div style="font-size:10px;color:#6a5a48;">${i + 1}. \u2014 vacant</div>`;
+      const st = (s.stack | 0) + 'g';
+      return `<div style="font-size:11px;margin-bottom:3px;line-height:1.35;"><strong style="color:#d4a848;">${i + 1}.</strong> ${tavernSeatNametagHtml(s)} · <span style="color:#b8a890;">${st}</span></div>`;
+    })
+    .join('');
+}
+
 function ensureTavernDiceThree(containerEl, diceBySeat, seatMeta) {
   disposeTavernDiceThree();
   const canvas = document.createElement('canvas');
@@ -26330,18 +26415,22 @@ function ensureTavernDiceThree(containerEl, diceBySeat, seatMeta) {
     new THREE.MeshStandardMaterial({ color: 0x8a6a4a }),
     new THREE.MeshStandardMaterial({ color: 0x6a7a90 }),
     new THREE.MeshStandardMaterial({ color: 0x7a6a88 }),
-    new THREE.MeshStandardMaterial({ color: 0x6a8a72 })
+    new THREE.MeshStandardMaterial({ color: 0x6a8a72 }),
+    new THREE.MeshStandardMaterial({ color: 0x7a7860 })
   ];
-  const seats = (seatMeta || []).slice(0, 4);
-  for (let i = 0; i < seats.length; i++) {
-    const ang = (i / 4) * Math.PI * 2 + Math.PI / 8;
+  const sm = (seatMeta || []).slice(0, 5);
+  const seated = sm.filter(s => s && s.kind !== 'empty');
+  const nSeat = seated.length || 1;
+  let ring = 0;
+  seated.forEach((st, ix) => {
+    const ang = (ring++ / nSeat) * Math.PI * 2 + Math.PI / 10;
     const px = Math.sin(ang) * 5.1;
     const pz = Math.cos(ang) * 5.1;
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.42, 1.1, 14), npcMat[i % npcMat.length]);
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.42, 1.1, 14), npcMat[(st.seatIndex != null ? st.seatIndex : ix) % npcMat.length]);
     body.position.set(px, 0.85, pz);
     body.lookAt(0, 0.8, 0);
     scene.add(body);
-  }
+  });
 
   const pipMat = new THREE.MeshStandardMaterial({ color: 0xf5f0e6, roughness: 0.35 });
   const diceMeshes = [];
@@ -26359,11 +26448,10 @@ function ensureTavernDiceThree(containerEl, diceBySeat, seatMeta) {
   };
 
   if (Array.isArray(diceBySeat) && seatMeta) {
-    seatMeta.forEach((st, idx) => {
-      if (st.kind === 'empty') return;
+    seated.forEach((st, ix) => {
       const roll = diceBySeat[st.seatIndex];
       if (!roll || roll.length < 2) return;
-      const ang = (idx / 4) * Math.PI * 2;
+      const ang = (ix / nSeat) * Math.PI * 2;
       const vx = Math.sin(ang) * 1.5;
       const vz = Math.cos(ang) * 1.1;
       makeDie(vx - 0.45, vz + 0.12, roll[0], roll[1]);
@@ -26411,7 +26499,7 @@ function renderTavernMainLobby(container) {
   grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px;';
   const tiles = [
     { key: 'recruit', title: 'Crew recruitment', blurb: 'Hire hands for your ship.', img: null, emoji: '⚓' },
-    { key: 'dice', title: 'Seelow dice', blurb: 'Up to 4 seats · naval dice-offs.', img: ITEM_PNG.dice },
+    { key: 'dice', title: 'Seelow dice', blurb: 'Five seats · high roll wins the ante pot.', img: ITEM_PNG.dice },
     { key: 'poker', title: 'Texas Hold\'em', blurb: 'Up to 5 seats · blinds & showdown.', img: ITEM_PNG.poker }
   ];
   for (const t of tiles) {
@@ -26473,14 +26561,18 @@ function renderTavernDiceGame(container) {
   const ctrls = document.createElement('div');
   ctrls.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;';
   ctrls.innerHTML =
-    `<button type="button" id="tavern-dice-create" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(140,180,140,0.45);background:rgba(30,55,35,0.55);color:#b8e8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Create table</button>
+    `<div style="width:100%;font-size:10px;color:#9a8a78;margin:-2px 0 4px;">Open tables in this port (refresh after creating)</div>
+    <div id="tavern-dice-town-list" style="width:100%;margin-bottom:6px;"></div>
+    <button type="button" id="tavern-dice-refresh-list" style="padding:6px 10px;border-radius:6px;border:1px solid rgba(140,120,160,0.45);background:rgba(35,32,52,0.55);color:#d8cce8;cursor:pointer;font-size:10px;font-family:Georgia,serif;">Refresh list</button>
+    <label style="font-size:10px;color:#b8a890;">Table name<input type="text" id="tavern-dice-lobby-name" maxlength="32" placeholder="e.g. Wharf rollers" style="margin-left:6px;width:140px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/></label>
+    <button type="button" id="tavern-dice-create" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(140,180,140,0.45);background:rgba(30,55,35,0.55);color:#b8e8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Create table</button>
     <input type="text" id="tavern-dice-join-id" placeholder="Lobby id" style="width:120px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/>
     <button type="button" id="tavern-dice-join" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(120,140,180,0.45);background:rgba(30,38,55,0.55);color:#c8d8f8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>`;
   wrap.appendChild(ctrls);
 
   const lobbyPanel = document.createElement('div');
   lobbyPanel.id = 'tavern-dice-lobby';
-  lobbyPanel.style.cssText = 'font-size:11px;color:#c8b8a0;line-height:1.45;';
+  lobbyPanel.style.cssText = 'font-size:11px;color:#c8b8a0;line-height:1.45;border-top:1px solid rgba(100,70,45,0.25);padding-top:10px;';
   wrap.appendChild(lobbyPanel);
 
   const diceAct = document.createElement('div');
@@ -26488,7 +26580,35 @@ function renderTavernDiceGame(container) {
   diceAct.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;';
   wrap.appendChild(diceAct);
 
-  container.appendChild(wrap);
+  container.innerHTML = '';
+  mountTavernGameOverlay(wrap);
+
+  function renderDiceTownList() {
+    const el = document.getElementById('tavern-dice-town-list');
+    if (!el) return;
+    const L = G.tavern && G.tavern.lastLobbyList ? G.tavern.lastLobbyList.dice : [];
+    if (!L.length) {
+      el.innerHTML =
+        '<div style="color:#7a7060;font-size:10px;">No open Seelow dice at this harbor — dock here and create one, or refresh.</div>';
+      return;
+    }
+    el.innerHTML = L.map(
+      r =>
+        `<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;padding:8px;background:rgba(0,0,0,0.22);border-radius:8px;margin-bottom:6px;font-size:11px;"><span style="color:#ddd6c8;"><strong style="color:#d4a848">${escapeHtml(
+          r.name || 'Table'
+        )}</strong> · host ${escapeHtml(r.hostName || '')} · ${r.phase === 'playing' ? 'playing' : 'lobby'} · ${r.seatsTaken}/${r.seatsMax}</span>` +
+          `<button type="button" class="tavern-dice-join-listed" data-lid="${escapeHtml(r.id)}" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(140,170,210,0.35);background:rgba(30,40,62,0.55);color:#c8dbf8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button></div>`
+    ).join('');
+    el.querySelectorAll('.tavern-dice-join-listed').forEach(btn => {
+      btn.addEventListener('click', () => {
+        tavernNetSend('join', { lobbyId: btn.getAttribute('data-lid') });
+      });
+    });
+  }
+
+  G.tavern.refreshLobbyBrowser = () => {
+    renderDiceTownList();
+  };
 
   function refreshFromSnapshot() {
     const snap = G.tavern.snapshot;
@@ -26497,7 +26617,13 @@ function renderTavernDiceGame(container) {
     const act = document.getElementById('tavern-dice-actions');
     if (act) act.replaceChildren();
     if (!snap || !snap.game || snap.gameType !== 'dice') {
-      if (div) div.textContent = snap ? `Lobby ${snap.id} — host fills seats with NPCs, everyone buys chips (min 20g), then Start.` : '';
+      if (div) {
+        if (snap && snap.id)
+          div.innerHTML = `<div style="margin-bottom:8px;"><strong style="color:#d4a848;">${escapeHtml(snap.name || 'Table')}</strong> <span style="color:#6a6058;font-size:10px;font-family:ui-monospace,monospace">${escapeHtml(snap.id)}</span></div>
+            <div style="margin-bottom:8px;padding:8px;background:rgba(0,0,0,0.22);border-radius:8px;border:1px solid rgba(140,100,40,0.2);">${tavernRenderSeatRowInnerHTML(snap)}</div>
+            <div style="color:#8a7a60;font-size:10px;">Five seats (you + four locals). Buy at least 20g chips, then the host starts · each round antes a pot and highest roll takes it.</div>`;
+        else div.textContent = '';
+      }
       ensureTavernDiceThree(host, null, snap ? snap.seats : []);
       if (act && snap && snap.id) {
         const amt = 100;
@@ -26515,20 +26641,21 @@ function renderTavernDiceGame(container) {
         mk(`Buy ${amt}g chips`, () => tavernNetSend('buy_chips', { lobbyId: snap.id, amount: amt, holdGold: getInvCount('gold') }));
         mk('Cash out', () => tavernNetSend('cash_out', { lobbyId: snap.id }));
         if (isHost) {
-          mk('Fill NPC seat', () => tavernNetSend('add_npc', { lobbyId: snap.id }));
-          mk('Start / next roll', () =>
-            tavernNetSend(snap.phase === 'playing' ? 'dice_next' : 'start', { lobbyId: snap.id }));
+          mk('Start dice', () => tavernNetSend('start', { lobbyId: snap.id }));
         }
       }
       return;
     }
     const g = snap.game;
-    let txt = `Pot last round: ${g.message || ''}`;
+    let txt = `<div style="margin-bottom:6px;padding:8px;background:rgba(0,0,0,0.2);border-radius:8px;"><strong style="color:#d4a848;">${escapeHtml(snap.name || 'Table')}</strong> ${escapeHtml(snap.id)}<br/>${tavernRenderSeatRowInnerHTML(snap)}</div>`;
+    txt += `<div style="color:#c8b090;">${escapeHtml(g.message || '')}</div>`;
     if (g.dice) {
-      txt += '<br/>Throws:<br/>';
+      txt += '<div style="margin-top:8px;font-weight:600;color:#d4a848;">Throws</div>';
       snap.seats.forEach(s => {
         const d = g.dice[s.seatIndex];
-        if (d) txt += `${s.name}: ${d[0]} + ${d[1]}<br/>`;
+        if (!d) return;
+        const who = s.kind === 'npc' ? '<span style="color:#a89888;">NPC</span>' : tavernSeatNametagHtml(s);
+        txt += `<div style="margin-top:4px;">${who}: <strong>${d[0]} + ${d[1]}</strong></div>`;
       });
     }
     if (div) div.innerHTML = txt;
@@ -26555,7 +26682,13 @@ function renderTavernDiceGame(container) {
 
   G.tavern.refresh = () => refreshFromSnapshot();
 
-  document.getElementById('tavern-dice-create').onclick = () => tavernNetSend('create', { gameType: 'dice' });
+  document.getElementById('tavern-dice-create').onclick = () => {
+    const nm = document.getElementById('tavern-dice-lobby-name');
+    const lobbyName = nm ? nm.value.trim() : '';
+    tavernNetSend('create', { gameType: 'dice', lobbyName });
+  };
+  const br = document.getElementById('tavern-dice-refresh-list');
+  if (br) br.onclick = () => tavernNetSend('list');
   document.getElementById('tavern-dice-join').onclick = () => {
     const id = document.getElementById('tavern-dice-join-id').value.trim();
     if (!id) return;
@@ -26563,6 +26696,7 @@ function renderTavernDiceGame(container) {
   };
 
   refreshFromSnapshot();
+  tavernNetSend('list');
 }
 
 function renderTavernPokerGame(container) {
@@ -26584,9 +26718,53 @@ function renderTavernPokerGame(container) {
   });
   wrap.appendChild(backBtn);
 
+  const ctrlDiv = document.createElement('div');
+  ctrlDiv.style.cssText =
+    'margin-bottom:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-bottom:1px solid rgba(100,75,48,0.35);padding-bottom:10px;';
+  ctrlDiv.innerHTML =
+    `<div style="width:100%;font-size:10px;color:#9a8a78;">Texas Hold'em tables in this harbor</div>
+    <div id="tavern-poker-town-list" style="width:100%;margin-bottom:6px;"></div>
+    <button type="button" id="tavern-poker-refresh-list" style="padding:6px 10px;border-radius:6px;border:1px solid rgba(140,120,160,0.45);background:rgba(35,32,52,0.55);color:#d8cce8;cursor:pointer;font-size:10px;font-family:Georgia,serif;">Refresh list</button>
+    <label style="font-size:10px;color:#b8a890;display:flex;align-items:center;gap:6px;">Table name<input type="text" id="tavern-poker-lobby-name" maxlength="32" placeholder="Golden grogs" style="width:148px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/></label>
+    <button type="button" id="tavern-poker-create" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(140,180,140,0.45);background:rgba(30,55,35,0.55);color:#b8e8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Create table</button>
+    <input type="text" id="tavern-poker-join-id" placeholder="Lobby id" style="width:120px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/>
+    <button type="button" id="tavern-poker-join" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(120,140,180,0.45);background:rgba(30,38,55,0.55);color:#c8d8f8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>`;
+  wrap.appendChild(ctrlDiv);
+
+  function renderPokerTownList() {
+    const el = document.getElementById('tavern-poker-town-list');
+    if (!el) return;
+    const L = G.tavern && G.tavern.lastLobbyList ? G.tavern.lastLobbyList.poker : [];
+    if (!L.length) {
+      el.innerHTML =
+        '<div style="color:#7a7060;font-size:10px;">No poker tables anchored here yet — refresh after someone creates one.</div>';
+      return;
+    }
+    el.innerHTML = L.map(
+      r =>
+        `<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;padding:8px;background:rgba(0,0,0,0.22);border-radius:8px;margin-bottom:6px;font-size:11px;"><span style="color:#ddd6c8;"><strong style="color:#d4a848">${escapeHtml(
+          r.name || 'Table'
+        )}</strong> · host ${escapeHtml(r.hostName || '')} · ${r.phase === 'playing' ? 'playing' : 'lobby'} · ${r.seatsTaken}/${r.seatsMax}</span>` +
+          `<button type="button" class="tavern-poker-join-listed" data-lid="${escapeHtml(r.id)}" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(140,170,210,0.35);background:rgba(30,40,62,0.55);color:#c8dbf8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button></div>`
+    ).join('');
+    el.querySelectorAll('.tavern-poker-join-listed').forEach(btn => {
+      btn.addEventListener('click', () => {
+        tavernNetSend('join', { lobbyId: btn.getAttribute('data-lid') });
+      });
+    });
+  }
+
+  G.tavern.refreshLobbyBrowser = () => renderPokerTownList();
+
   const felt = document.createElement('div');
   felt.style.cssText =
     'position:relative;padding:14px;border-radius:14px;background:radial-gradient(ellipse at center,#1a6a4a 0%,#0f3d2c 70%);border:2px solid rgba(220,190,120,0.35);box-shadow:inset 0 0 40px rgba(0,0,0,0.45);min-height:180px;';
+
+  const seatsRow = document.createElement('div');
+  seatsRow.id = 'tavern-poker-seat-row';
+  seatsRow.style.cssText =
+    'margin-bottom:10px;font-size:10px;line-height:1.35;color:#d8d0c0;padding:10px;background:rgba(0,0,0,0.25);border-radius:10px;border:1px solid rgba(210,185,125,0.15);';
+  felt.appendChild(seatsRow);
 
   const coins = document.createElement('div');
   coins.id = 'tavern-poker-coins';
@@ -26600,18 +26778,10 @@ function renderTavernPokerGame(container) {
 
   const holeDiv = document.createElement('div');
   holeDiv.id = 'tavern-poker-hole';
-  holeDiv.style.cssText = 'margin-top:8px;font-size:11px;color:#e8dcc8;';
+  holeDiv.style.cssText = 'margin-top:10px;font-size:12px;color:#e8dcc8;min-height:78px;padding:10px;background:rgba(0,0,0,0.18);border-radius:10px;border:1px solid rgba(212,168,72,0.12);';
   felt.appendChild(holeDiv);
 
-  const ctrlDiv = document.createElement('div');
-  ctrlDiv.style.cssText = 'margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
-  ctrlDiv.innerHTML =
-    `<button type="button" id="tavern-poker-create" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(140,180,140,0.45);background:rgba(30,55,35,0.55);color:#b8e8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Create table</button>
-    <input type="text" id="tavern-poker-join-id" placeholder="Lobby id" style="width:120px;padding:5px 8px;border-radius:6px;border:1px solid rgba(140,100,40,0.35);background:rgba(20,14,10,0.6);color:#e8dcc8;font-size:11px;"/>
-    <button type="button" id="tavern-poker-join" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(120,140,180,0.45);background:rgba(30,38,55,0.55);color:#c8d8f8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Join</button>
-    <button type="button" id="tavern-poker-npc" style="padding:6px 12px;border-radius:6px;border:1px solid rgba(180,160,80,0.45);background:rgba(55,48,28,0.65);color:#f0e0b8;cursor:pointer;font-size:11px;font-family:Georgia,serif;">Fill NPC seat</button>`;
   wrap.appendChild(felt);
-  wrap.appendChild(ctrlDiv);
 
   const info = document.createElement('div');
   info.id = 'tavern-poker-info';
@@ -26623,7 +26793,8 @@ function renderTavernPokerGame(container) {
   actions.style.cssText = 'margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;';
   wrap.appendChild(actions);
 
-  container.appendChild(wrap);
+  container.innerHTML = '';
+  mountTavernGameOverlay(wrap);
 
   function rebuildCoins(pot) {
     coins.replaceChildren();
@@ -26639,8 +26810,27 @@ function renderTavernPokerGame(container) {
   function refreshPokerUi() {
     const snap = G.tavern.snapshot;
     rebuildCoins(snap && snap.game && snap.game.pot ? snap.game.pot : 0);
+
+    const sr = document.getElementById('tavern-poker-seat-row');
+    if (sr && snap && snap.seats) {
+      const title = escapeHtml(snap.name || 'Table');
+      sr.innerHTML = `<div style="margin-bottom:6px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px;align-items:baseline;"><span style="font-size:11px;font-weight:600;color:#e8dcb8;"><strong>${title}</strong> <span style="font-family:ui-monospace,monospace;color:#7a7060;font-weight:400;font-size:10px;">${escapeHtml(snap.id)}</span></span></div>${tavernRenderSeatRowInnerHTML(snap)}`;
+    } else if (sr) sr.textContent = '';
+
     board.replaceChildren();
-    if (snap && snap.game && snap.game.community) {
+    let streetLabel = '—';
+    if (snap && snap.game && snap.game.street === 'preflop') {
+      streetLabel = 'Preflop (hole cards)';
+    } else if (snap && snap.game && snap.game.street === 'flop') streetLabel = 'Flop';
+    else if (snap && snap.game && snap.game.street === 'turn') streetLabel = 'Turn';
+    else if (snap && snap.game && snap.game.street === 'river') streetLabel = 'River';
+    else if (snap && snap.game && snap.game.street === 'showdown') streetLabel = 'Showdown';
+
+    if (snap && snap.game && snap.game.community && snap.game.community.length) {
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'width:100%;text-align:center;font-size:10px;color:#a8e8c8;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.1em;';
+      lbl.textContent = streetLabel;
+      board.appendChild(lbl);
       snap.game.community.forEach(c => {
         const el = document.createElement('span');
         el.innerHTML = tavernPokerCardSvg(c, 54, 76);
@@ -26649,18 +26839,27 @@ function renderTavernPokerGame(container) {
     }
     const holeEl = document.getElementById('tavern-poker-hole');
     if (holeEl) {
-      if (snap && snap.yourHole && snap.yourHole.length) {
+      if (snap && snap.yourHole && snap.yourHole.length === 2) {
+        const sd = snap.game && snap.game.street === 'showdown';
+        holeEl.innerHTML = sd
+          ? `<div style="margin-bottom:6px;color:#92c8b0;font-size:10px;">Showdown — your cards</div>` +
+              snap.yourHole.map(c => tavernPokerCardSvg(c, 56, 78)).join(' ')
+          : `<div style="margin-bottom:6px;color:#92c8b0;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;">Your hole cards</div><div>` +
+              snap.yourHole.map(c => tavernPokerCardSvg(c, 56, 78)).join(' ') +
+              '</div>';
+      } else if (snap && snap.phase === 'playing' && snap.seats && snap.seats.some(x => x.playerId === G.myId)) {
         holeEl.innerHTML =
-          '<span style="color:#d4a848;">Your cards:</span> ' +
-          snap.yourHole.map(c => tavernPokerCardSvg(c, 48, 68)).join(' ');
-      } else holeEl.textContent = '';
+          '<span style="color:#988a78;">Shuffling and dealing — hole cards appear here for your eyes only.</span>';
+      } else {
+        holeEl.textContent = '';
+      }
     }
 
     const inf = document.getElementById('tavern-poker-info');
     if (inf && snap) {
       inf.innerHTML =
-        `<strong>Lobby</strong> ${snap.id} · street ${snap.game ? snap.game.street : '—'} · pot ${snap.game ? snap.game.pot : 0}g` +
-        (snap.game && snap.game.message ? `<br/>${snap.game.message}` : '');
+        `<strong>Street</strong> ${escapeHtml(String(streetLabel))} · pot <strong style="color:#d4a848;">${snap.game ? snap.game.pot | 0 : 0}</strong>g` +
+        (snap.game && snap.game.message ? `<br/><span style="color:#dfd4c8;">${escapeHtml(snap.game.message)}</span>` : '');
     }
 
     const act = document.getElementById('tavern-poker-actions');
@@ -26683,58 +26882,70 @@ function renderTavernPokerGame(container) {
       'padding:6px 12px;border-radius:6px;border:1px solid rgba(180,120,120,0.45);background:rgba(55,35,35,0.65);color:#f8c8c8;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
     cash.onclick = () => tavernNetSend('cash_out', { lobbyId: snap.id });
     act.appendChild(cash);
-    if (isHost) {
-      const st = document.createElement('button');
-      st.type = 'button';
-      st.textContent = snap.phase === 'playing' ? 'Deal next hand' : 'Start Hold\'em';
-      st.style.cssText = buy.style.cssText;
-      st.onclick = () => tavernNetSend('start', { lobbyId: snap.id });
-      act.appendChild(st);
-      const nh = document.createElement('button');
-      nh.type = 'button';
-      nh.textContent = 'Next hand';
-      nh.style.cssText = buy.style.cssText;
-      nh.onclick = () => tavernNetSend('poker_next_hand', { lobbyId: snap.id });
-      act.appendChild(nh);
-    }
 
     const g = snap.game;
-    if (g && g.actorSeat != null && snap.seats) {
+    if (isHost) {
+      if (snap.phase !== 'playing') {
+        const st = document.createElement('button');
+        st.type = 'button';
+        st.textContent = 'Start Hold\'em';
+        st.style.cssText = buy.style.cssText;
+        st.onclick = () => tavernNetSend('start', { lobbyId: snap.id });
+        act.appendChild(st);
+      } else if (g && g.street === 'showdown') {
+        const nh = document.createElement('button');
+        nh.type = 'button';
+        nh.textContent = 'Deal next hand';
+        nh.style.cssText = buy.style.cssText;
+        nh.onclick = () => tavernNetSend('poker_next_hand', { lobbyId: snap.id });
+        act.appendChild(nh);
+      }
+    }
+
+    if (g && g.actorSeat != null && g.street !== 'showdown' && snap.seats) {
       const seat = snap.seats.find(s => s.playerId === pid);
       if (seat && seat.seatIndex === g.actorSeat) {
-        ['fold', 'check', 'call', 'raise'].forEach(a => {
+        const sc = (g.streetCommitted || [])[seat.seatIndex] | 0;
+        const need = Math.max(0, (g.facingBet | 0) - sc);
+        const btnStyle =
+          'padding:6px 10px;border-radius:6px;border:1px solid rgba(140,160,220,0.45);background:rgba(35,40,70,0.65);color:#d8e0ff;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+        const addAct = (label, pokerAct) => {
           const b = document.createElement('button');
           b.type = 'button';
-          b.textContent = a;
-          b.style.cssText =
-            'padding:6px 10px;border-radius:6px;border:1px solid rgba(140,160,220,0.45);background:rgba(35,40,70,0.65);color:#d8e0ff;cursor:pointer;font-size:11px;font-family:Georgia,serif;';
+          b.textContent = label;
+          b.style.cssText = btnStyle;
           b.onclick = () =>
             tavernNetSend('poker_action', {
               lobbyId: snap.id,
-              action: a === 'raise' ? 'raise' : a,
-              raiseBy: g.bb
+              action: pokerAct === 'raise' ? 'raise' : pokerAct,
+              raiseBy: g.bb | 0
             });
           act.appendChild(b);
-        });
+        };
+        addAct('Fold', 'fold');
+        if (need === 0) addAct('Check', 'check');
+        if (need > 0) addAct(need >= (seat.stack | 0) ? 'All-in' : `Call ${need}g`, 'call');
+        if ((seat.stack | 0) > need) addAct(`Raise (+${g.bb | 0}g)`, 'raise');
       }
     }
   }
 
   G.tavern.refresh = () => refreshPokerUi();
 
-  document.getElementById('tavern-poker-create').onclick = () => tavernNetSend('create', { gameType: 'poker' });
+  document.getElementById('tavern-poker-create').onclick = () => {
+    const nm = document.getElementById('tavern-poker-lobby-name');
+    const lobbyName = nm ? nm.value.trim() : '';
+    tavernNetSend('create', { gameType: 'poker', lobbyName });
+  };
+  document.getElementById('tavern-poker-refresh-list').onclick = () => tavernNetSend('list');
   document.getElementById('tavern-poker-join').onclick = () => {
     const id = document.getElementById('tavern-poker-join-id').value.trim();
     if (!id) return;
     tavernNetSend('join', { lobbyId: id });
   };
-  document.getElementById('tavern-poker-npc').onclick = () => {
-    const snap = G.tavern.snapshot;
-    if (!snap || !snap.id) return notify('Join or create a lobby first.');
-    tavernNetSend('add_npc', { lobbyId: snap.id });
-  };
 
   refreshPokerUi();
+  tavernNetSend('list');
 }
 
 function showPortTab(tab, opts) {

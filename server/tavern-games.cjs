@@ -4,8 +4,9 @@ const crypto = require('crypto');
 
 const MAX_SYNC_GOLD = 999999;
 const MIN_BUY_IN = 20;
-const DICE_MAX_SEATS = 4;
+const DICE_MAX_SEATS = 5;
 const POKER_MAX_SEATS = 5;
+const PORT_JOIN_RADIUS = 28;
 const NPC_NAMES = ['Long Tom', 'Silver Mac', 'Anne Bonny', 'Calico Jack', 'One-Eyed Ned'];
 
 function randInt(max) {
@@ -139,6 +140,8 @@ function createTavernGames(deps) {
   const sendToPlayerId = deps.sendToPlayerId;
   const normalizeCaptainKey = deps.normalizeCaptainKey;
   const findWsByPlayerId = deps.findWsByPlayerId;
+  const getLeaderboardRank =
+    deps.getLeaderboardRank && typeof deps.getLeaderboardRank === 'function' ? deps.getLeaderboardRank : () => null;
 
   const anchorGold = new Map();
   const playerLobby = new Map();
@@ -158,19 +161,63 @@ function createTavernGames(deps) {
     anchorGold.set(normalizeCaptainKey(ck), Math.max(0, Math.min(MAX_SYNC_GOLD, Math.floor(g))));
   }
 
+  function portNear(lobby, p) {
+    if (!lobby || !p) return false;
+    if (lobby.portDockX == null || lobby.portDockZ == null) return true;
+    if (p.dockX == null || p.dockZ == null) return false;
+    const dx = lobby.portDockX - p.dockX;
+    const dz = lobby.portDockZ - p.dockZ;
+    return Math.hypot(dx, dz) <= PORT_JOIN_RADIUS;
+  }
+
+  function augmentSeat(seat) {
+    const out = {
+      kind: seat.kind,
+      seatIndex: seat.seatIndex,
+      name: seat.name || '',
+      playerId: seat.playerId != null ? seat.playerId : null,
+      stack: seat.stack | 0
+    };
+    if (seat.kind === 'npc') {
+      out.isNpc = true;
+      out.label = 'NPC';
+      out.npcFaceSeed = seat.npcFaceSeed != null ? seat.npcFaceSeed | 0 : 0;
+    }
+    if (seat.kind === 'player' && seat.playerId != null) {
+      const pl = players.get(seat.playerId);
+      out.displayName =
+        pl && (pl.name || pl.shipName)
+          ? String(pl.name || pl.shipName).slice(0, 28)
+          : String(seat.name || 'Captain').slice(0, 28);
+      out.flagColor = pl && pl.flagColor ? String(pl.flagColor) : '#6a5840';
+      const fk = pl && pl.shipParts && pl.shipParts.flag != null ? String(pl.shipParts.flag) : 'mast';
+      out.flagKey = fk;
+      const rk = getLeaderboardRank(seat.playerId);
+      out.lbRank = rk != null ? rk : null;
+    }
+    return out;
+  }
+
+  function fillRemainingSeatsWithNpcs(lobby) {
+    for (let i = 1; i < lobby.seats.length; i++) {
+      const s = lobby.seats[i];
+      if (s.kind !== 'empty') continue;
+      s.kind = 'npc';
+      s.name = NPC_NAMES[randInt(NPC_NAMES.length)];
+      s.playerId = null;
+      s.stack = 0;
+      s.npcFaceSeed = randInt(0x7fffffff);
+    }
+  }
+
   function serializeLobby(lobby, forPlayerId) {
     const o = {
       id: lobby.id,
+      name: lobby.name || 'Table',
       gameType: lobby.gameType,
       hostPlayerId: lobby.hostPlayerId,
       phase: lobby.phase,
-      seats: lobby.seats.map(s => ({
-        kind: s.kind,
-        seatIndex: s.seatIndex,
-        name: s.name || '',
-        playerId: s.playerId != null ? s.playerId : null,
-        stack: s.stack | 0
-      }))
+      seats: lobby.seats.map(s => augmentSeat(s))
     };
     if (lobby.game) {
       if (lobby.gameType === 'dice') {
@@ -607,6 +654,36 @@ function createTavernGames(deps) {
       return;
     }
 
+    if (cmd === 'list') {
+      if (!ensureDocked(playerId)) {
+        sendToPlayerId(playerId, { type: 'tavern_list', poker: [], dice: [] });
+        return;
+      }
+      const p = players.get(playerId);
+      const pokerRows = [];
+      const diceRows = [];
+      if (p && p.dockX != null && p.dockZ != null) {
+        for (const lobby of lobbies.values()) {
+          if (!portNear(lobby, p)) continue;
+          const occ = lobby.seats.filter(s => s.kind !== 'empty').length;
+          const hs = lobby.seats.find(st => st.playerId === lobby.hostPlayerId && st.kind === 'player');
+          const row = {
+            id: lobby.id,
+            name: lobby.name || 'Table',
+            gameType: lobby.gameType,
+            phase: lobby.phase,
+            seatsTaken: occ,
+            seatsMax: lobby.seats.length,
+            hostName: hs ? hs.name || '' : ''
+          };
+          if (lobby.gameType === 'poker') pokerRows.push(row);
+          else diceRows.push(row);
+        }
+      }
+      sendToPlayerId(playerId, { type: 'tavern_list', poker: pokerRows, dice: diceRows });
+      return;
+    }
+
     if (cmd === 'create') {
       if (!ensureDocked(playerId)) {
         sendToPlayerId(playerId, { type: 'tavern_err', error: 'Dock first.' });
@@ -617,13 +694,27 @@ function createTavernGames(deps) {
       const id = genLobbyId();
       const seats = [];
       for (let i = 0; i < maxSeats; i++) seats.push({ kind: 'empty', seatIndex: i, name: '', playerId: null, stack: 0 });
-      const lobby = { id, gameType, hostPlayerId: playerId, phase: 'lobby', seats, game: null };
-      lobbies.set(id, lobby);
+      const rawName = msg.lobbyName != null ? String(msg.lobbyName) : msg.name != null ? String(msg.name) : '';
+      let lobbyName = rawName.trim().slice(0, 32);
+      if (!lobbyName) lobbyName = 'Table';
       const p0 = players.get(playerId);
+      const lobby = {
+        id,
+        name: lobbyName,
+        gameType,
+        hostPlayerId: playerId,
+        phase: 'lobby',
+        seats,
+        game: null,
+        portDockX: p0 && p0.dockX != null ? p0.dockX : null,
+        portDockZ: p0 && p0.dockZ != null ? p0.dockZ : null
+      };
+      lobbies.set(id, lobby);
       const capName = (p0 && (p0.name || p0.shipName)) ? String(p0.name || p0.shipName).slice(0, 28) : 'Captain';
       lobby.seats[0].kind = 'player';
       lobby.seats[0].playerId = playerId;
       lobby.seats[0].name = capName;
+      fillRemainingSeatsWithNpcs(lobby);
       playerLobby.set(playerId, id);
       sendToPlayerId(playerId, { type: 'tavern_push', lobby: serializeLobby(lobby, playerId) });
       return;
@@ -635,20 +726,27 @@ function createTavernGames(deps) {
         sendToPlayerId(playerId, { type: 'tavern_err', error: 'Lobby not found.' });
         return;
       }
+      const joiner = players.get(playerId);
+      if (!portNear(lobby, joiner)) {
+        sendToPlayerId(playerId, { type: 'tavern_err', error: 'That table was started in another harbor.' });
+        return;
+      }
       if (playerLobby.has(playerId)) {
         sendToPlayerId(playerId, { type: 'tavern_err', error: 'Already seated.' });
         return;
       }
-      const emptyIdx = lobby.seats.findIndex(s => s.kind === 'empty');
-      if (emptyIdx < 0) {
+      let seatIdx = lobby.seats.findIndex((s, idx) => idx > 0 && s.kind === 'empty');
+      if (seatIdx < 0) seatIdx = lobby.seats.findIndex((s, idx) => idx > 0 && s.kind === 'npc');
+      if (seatIdx < 0) {
         sendToPlayerId(playerId, { type: 'tavern_err', error: 'Full.' });
         return;
       }
       const p = players.get(playerId);
       const name = (p && (p.name || p.shipName)) ? String(p.name || p.shipName).slice(0, 28) : 'Captain';
-      lobby.seats[emptyIdx].kind = 'player';
-      lobby.seats[emptyIdx].playerId = playerId;
-      lobby.seats[emptyIdx].name = name;
+      lobby.seats[seatIdx].kind = 'player';
+      lobby.seats[seatIdx].playerId = playerId;
+      lobby.seats[seatIdx].name = name;
+      lobby.seats[seatIdx].npcFaceSeed = null;
       playerLobby.set(playerId, lobby.id);
       broadcastLobby(lobby);
       return;
@@ -727,6 +825,13 @@ function createTavernGames(deps) {
     if (cmd === 'start') {
       const lobby = lobbies.get(String(msg.lobbyId || ''));
       if (!lobby || lobby.hostPlayerId !== playerId) return;
+      if (lobby.phase === 'playing') {
+        sendToPlayerId(playerId, {
+          type: 'tavern_err',
+          error: 'A round is in progress — use Next roll / Next hand after the showdown.'
+        });
+        return;
+      }
       const ready = lobby.seats.filter(s => s.kind !== 'empty' && (s.stack | 0) > 0).length;
       if (ready < 2) {
         sendToPlayerId(playerId, { type: 'tavern_err', error: 'Need two stacks with chips.' });
@@ -752,7 +857,7 @@ function createTavernGames(deps) {
 
     if (cmd === 'dice_next') {
       const lobby = lobbies.get(String(msg.lobbyId || ''));
-      if (!lobby || lobby.gameType !== 'dice') return;
+      if (!lobby || lobby.gameType !== 'dice' || lobby.hostPlayerId !== playerId) return;
       startDiceRound(lobby);
       return;
     }
@@ -773,6 +878,11 @@ function createTavernGames(deps) {
     if (cmd === 'poker_next_hand') {
       const lobby = lobbies.get(String(msg.lobbyId || ''));
       if (!lobby || lobby.hostPlayerId !== playerId || lobby.gameType !== 'poker') return;
+      const g0 = lobby.game;
+      if (g0 && g0.type === 'poker' && g0.street && g0.street !== 'showdown') {
+        sendToPlayerId(playerId, { type: 'tavern_err', error: 'Wait for showdown before dealing the next hand.' });
+        return;
+      }
       const gh = initPokerHand(lobby);
       if (!gh) return;
       lobby.game = gh;
