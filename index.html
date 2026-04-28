@@ -2906,7 +2906,6 @@ body.game-help-mobile-minimal #game-help-panel{
 </script>
 <script type="module">
 import * as THREE from 'three';
-import * as TavernMG from './assets/tavern-minigames.mjs';
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const _deviceMem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : null;
@@ -18651,32 +18650,6 @@ async function connectToServer() {
           try { addChatMessage('Realm', String(msg.text).slice(0, 600), null, 'global', '', ''); } catch (e) {}
         }
         break;
-      case 'gamble_relay': {
-        try {
-          TavernMG.handleGambleRelay(msg);
-        } catch (e) {}
-        break;
-      }
-      case 'gamble_settle': {
-        try {
-          applyGambleSettleFromServer(msg);
-        } catch (e) {}
-        try {
-          TavernMG.pipeServerGambleMessage(msg);
-        } catch (e) {}
-        break;
-      }
-      case 'gamble_commit_ack':
-      case 'gamble_created':
-      case 'gamble_room':
-      case 'gamble_state':
-      case 'gamble_poker_showdown':
-      case 'gamble_error': {
-        try {
-          TavernMG.pipeServerGambleMessage(msg);
-        } catch (e) {}
-        break;
-      }
       case 'server_full':
         wsSuppressReconnect = true;
         if (wsReconnectTimer) {
@@ -25973,75 +25946,6 @@ function leavePort() {
   updateStoryBriefHud();
 }
 
-function applyGambleSettleFromServer(msg) {
-  if (!msg || msg.type !== 'gamble_settle' || !msg.payouts || G.myId == null) return;
-  const raw = msg.payouts[G.myId] != null ? msg.payouts[G.myId] : msg.payouts[String(G.myId)];
-  const add = Math.floor(Number(raw) || 0);
-  if (!add) return;
-  let row = G.player.inventory.find(i => i.id === 'gold');
-  if (!row) {
-    const m = getItemMeta('gold');
-    row = { id: 'gold', name: m.name, icon: m.icon || '', count: 0 };
-    G.player.inventory.push(row);
-  }
-  row.count += add;
-  reconcileSlotsWithInventory();
-  if (add > 0) notify(`Realm gambling: +${add} gold`, 4200);
-}
-
-function makeTavernMinigameCtx() {
-  const cap = getCaptainDisplayCrew();
-  return {
-    THREE,
-    getGold: () => getInvCount('gold'),
-    trySpendGold: n => {
-      const k = Math.max(0, Math.floor(Number(n) || 0));
-      if (k <= 0) return true;
-      const row = G.player.inventory.find(i => i.id === 'gold');
-      if (!row || row.count < k) return false;
-      row.count -= k;
-      reconcileSlotsWithInventory();
-      return true;
-    },
-    addGold: n => {
-      const k = Math.max(0, Math.floor(Number(n) || 0));
-      if (k <= 0) return;
-      let row = G.player.inventory.find(i => i.id === 'gold');
-      if (!row) {
-        const m = getItemMeta('gold');
-        row = { id: 'gold', name: m.name, icon: m.icon || '', count: 0 };
-        G.player.inventory.push(row);
-      }
-      row.count += k;
-      reconcileSlotsWithInventory();
-    },
-    notify,
-    myId: G.myId,
-    captainName: cap && cap.name ? String(cap.name).slice(0, 28) : 'Captain',
-    sendRelay: relay => {
-      if (ws?.readyState !== 1) return;
-      try {
-        ws.send(
-          JSON.stringify({
-            type: 'gamble_relay',
-            roomId: relay.roomId,
-            game: relay.game || '',
-            payload: relay.payload || {}
-          })
-        );
-      } catch (e) {}
-    },
-    isDocked: () => !!G.docked,
-    authoritative: !!(typeof ws !== 'undefined' && ws && ws.readyState === 1),
-    sendGamble: o => {
-      if (ws?.readyState !== 1) return;
-      try {
-        ws.send(JSON.stringify(o));
-      } catch (e) {}
-    }
-  };
-}
-
 function showPortTab(tab, opts) {
   opts = opts || {};
   document.querySelectorAll('.port-tab').forEach(t => { t.classList.remove('active'); });
@@ -26162,14 +26066,12 @@ function showPortTab(tab, opts) {
     } else {
       const intro = document.createElement('div');
       intro.style.cssText = 'color:#8a7a60;font-size:11px;line-height:1.45;margin-bottom:12px;';
-      intro.textContent = 'The tavernkeep sweeps sawdust from the planks — sailors for hire, dice, and cards all find a home here.';
+      intro.textContent = 'The tavernkeep sweeps sawdust from the planks — sailors for hire find a berth here.';
       content.appendChild(intro);
       const grid = document.createElement('div');
       grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px;';
       const tiles = [
-        { key: 'recruit', title: 'Recruitment', blurb: 'Hire hands for your crew.', icon: null },
-        { key: 'dice', title: 'Seelow dice', blurb: 'Ship, Captain & Crew — 3D table.', img: 'assets/items/dice.png' },
-        { key: 'poker', title: 'Texas Hold\'em', blurb: 'Gold on the felt, SVG cards.', img: 'assets/items/poker.png' }
+        { key: 'recruit', title: 'Recruitment', blurb: 'Hire hands for your crew.', icon: null }
       ];
       for (const t of tiles) {
         const cell = document.createElement('div');
@@ -26183,8 +26085,6 @@ function showPortTab(tab, opts) {
         cell.innerHTML = `${vis}<div style="color:#e0c890;font-size:13px;font-weight:600;margin-bottom:4px;">${t.title}</div><div style="color:#9a8a78;font-size:10px;line-height:1.35;">${t.blurb}</div>`;
         const open = () => {
           if (t.key === 'recruit') showPortTab('tavern', { sub: 'recruit' });
-          else if (t.key === 'dice') TavernMG.openSeelowDiceTable(makeTavernMinigameCtx());
-          else if (t.key === 'poker') TavernMG.openTexasHoldemPoker(makeTavernMinigameCtx());
         };
         cell.addEventListener('click', open);
         cell.addEventListener('keydown', ev => {
