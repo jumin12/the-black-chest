@@ -4899,10 +4899,10 @@ function ramRiggingLossFromBowDot(bowDot, closing) {
 function cannonballStrikeHitRadius(shipType, ammoType, isPellet) {
   const hull = shipHullRadius(shipType || 'sloop');
   const at = ammoType || 'ball';
-  if (isPellet) return Math.max(1.5, Math.min(7, hull * 0.42 + 0.5));
-  if (at === 'grape') return Math.max(2.8, Math.min(11, hull * 0.78 + 1.15));
-  if (at === 'chain') return Math.max(2.6, Math.min(10, hull * 0.68 + 1.05));
-  return Math.max(2.5, Math.min(9.5, hull * 0.62 + 1.0));
+  if (isPellet) return Math.max(1.35, Math.min(6.2, hull * 0.38 + 0.45));
+  if (at === 'grape') return Math.max(2.45, Math.min(9.8, hull * 0.7 + 1.0));
+  if (at === 'chain') return Math.max(2.35, Math.min(9.2, hull * 0.61 + 0.95));
+  return Math.max(2.2, Math.min(8.6, hull * 0.56 + 0.92));
 }
 
 /** Closest distance from segment (x0,z0)-(x1,z1) to point (px,pz) — avoids tunneling past hulls at high speed. */
@@ -4919,14 +4919,15 @@ function distSegmentToPointXZ(x0, z0, x1, z1, px, pz) {
 /** Half-beam / half-length along ship-local X (starboard) and Z (bow), tuned to extruded hull mesh + bow style + hull part. */
 function shipHullObbHalfExtents(shipType, hullPartId) {
   const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
-  let hw = spec.hullW * 0.5 * 1.04;
-  let hl = spec.hullLen * 0.5 * 1.03;
+  /* Tighter beam/length vs mesh so cannon hits hug the planks (was wide on the rails). */
+  let hw = spec.hullW * 0.5 * 0.92;
+  let hl = spec.hullLen * 0.5 * 0.968;
   const bs = spec.bowStyle;
-  if (bs === 'blunt') hl *= 1.03;
-  else if (bs === 'wide') { hw *= 1.025; hl *= 1.012; }
-  else if (bs === 'pointed') { hl *= 1.018; hw *= 0.995; }
-  if (hullPartId === 'reinforced') { hw *= 1.04; hl *= 1.02; }
-  else if (hullPartId === 'darkwood') { hw *= 1.02; hl *= 1.015; }
+  if (bs === 'blunt') hl *= 1.02;
+  else if (bs === 'wide') { hw *= 1.015; hl *= 1.008; }
+  else if (bs === 'pointed') { hl *= 1.014; hw *= 0.992; }
+  if (hullPartId === 'reinforced') { hw *= 1.03; hl *= 1.018; }
+  else if (hullPartId === 'darkwood') { hw *= 1.015; hl *= 1.012; }
   return { hw, hl };
 }
 /** Unsigned distance from (px,pz) to ship hull oriented box (0 inside). */
@@ -11095,11 +11096,8 @@ const BROADSIDE_ANGLE = Math.PI * 0.22;
 const BROADSIDE_RANGE = 40;
 /** Half of HUD red-arc reach: max hull-to-hull gap for boarding UI / grapple. */
 const BROADSIDE_ENGAGE_HALF_RANGE = BROADSIDE_RANGE * 0.5;
-/**
- * Min hull surface gap along the broadside wedge before a volley is allowed (shorter than boarding max so you can shoot in closer duels).
- * Cannonballs still travel full arc time; hits earlier still deal damage.
- */
-const BROADSIDE_VOLLEY_MIN_SURFACE_GAP = BROADSIDE_ENGAGE_HALF_RANGE * 0.5;
+/** Round/grape/chain shots stay airborne until they have crossed at least half the broadside reach (unless they strike a hull sooner). Also gates sea splash expiry. */
+const CANNONBALL_MIN_AIR_TRAVEL_BEFORE_EXPIRE = BROADSIDE_ENGAGE_HALF_RANGE;
 
 /** World Y for broadside spawn, smoke/flash, and deck firing-arc placement (gun-port height, below old 0.6·hullH). */
 function cannonWorldMuzzleYFromShip(shipWorldY, spec) {
@@ -12851,7 +12849,8 @@ function boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) {
   return Math.max(0, d - (pr + nr) * 0.5);
 }
 function boardingGapMaxForShips(_pShipType, _eShipType) {
-  return BROADSIDE_ENGAGE_HALF_RANGE;
+  /* Hull radii vary by class; widen cap slightly so large hulls beside you still qualify when geometry is awkward. */
+  return BROADSIDE_ENGAGE_HALF_RANGE + 14;
 }
 function isBoardingRangeToTarget(px, pz, ex, ez, pShipType, eShipType) {
   return boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) <= boardingGapMaxForShips(pShipType, eShipType);
@@ -15219,8 +15218,9 @@ function updateBoardingUiOverlay() {
   for (const n of G.npcs) {
     if (!canNpcBeBoarded(n)) continue;
     if (!n.sinking && (n.health == null || n.health > 0)) {
-      const g = boardingSurfaceGapMeters(G.player.x, G.player.z, n.x, n.z, pSt, n.type);
-      const brn = boardingGapMaxForShips(pSt, n.type);
+      const nt = npcCollisionShipType(n);
+      const g = boardingSurfaceGapMeters(G.player.x, G.player.z, n.x, n.z, pSt, nt);
+      const brn = boardingGapMaxForShips(pSt, nt);
       if (g <= brn && g < bestGapN) { bestGapN = g; npcT = n; }
     }
   }
@@ -15244,7 +15244,7 @@ function updateBoardingUiOverlay() {
   } else if (npcT) {
     btn.style.display = 'block';
     if (camera) {
-      const spec = SHIP_TYPES[npcT.type] || SHIP_TYPES.sloop;
+      const spec = SHIP_TYPES[npcCollisionShipType(npcT)] || SHIP_TYPES.sloop;
       const mastY = (spec.hullH || 1.3) + spec.hullLen * 0.7 + 2 + 0.55;
       let v;
       if (npcT.mesh) {
@@ -17637,6 +17637,7 @@ function fireCannonball(x, z, dx, dz, spawnY, owner, sourcePlayerId, ammoType, s
     dz: dz * 35,
     dy: dy0,
     life: life0,
+    xzTravel: 0,
     owner: owner || 'player',
     sourcePlayerId: sourcePlayerId != null ? sourcePlayerId : null,
     ammoType: at,
@@ -22585,42 +22586,27 @@ function updateCombatFireEdgesUI() {
 }
 
 /* ============================== ACTIONS =================================== */
-function closestEnemySurfaceGapInPlayerBroadsideWedge(fireSide) {
-  const rot = G.player.rotation;
-  const broadsideAngle = rot + fireSide * Math.PI / 2;
-  const half = getPlayerBroadsideHudHalfAngle();
-  const pSt = G.player.shipType || 'sloop';
-  let best = Infinity;
-  const inWedge = (wx, wz) => {
-    const dx = wx - G.player.x, dz = wz - G.player.z;
-    if (dx * dx + dz * dz < 0.04) return false;
-    const ang = Math.atan2(dx, dz);
-    let da = ang - broadsideAngle;
-    while (da > Math.PI) da -= Math.PI * 2;
-    while (da < -Math.PI) da += Math.PI * 2;
-    return Math.abs(da) <= half * 1.02;
+function resolveBroadsideAmmoForVolley(perSide, preferredKind) {
+  const order =
+    preferredKind === 'chain' ? ['chain', 'ball', 'grape'] :
+    preferredKind === 'grape' ? ['grape', 'ball', 'chain'] :
+    ['ball', 'grape', 'chain'];
+  const ids = {
+    ball: { kind: 'ball', invId: 'cannonballs' },
+    grape: { kind: 'grape', invId: 'grapeshot' },
+    chain: { kind: 'chain', invId: 'chainshot' }
   };
-  for (const n of G.npcs) {
-    if (!n || n.sinking || (n.health != null && n.health <= 0)) continue;
-    if (!inWedge(n.x, n.z)) continue;
-    const g = boardingSurfaceGapMeters(G.player.x, G.player.z, n.x, n.z, pSt, n.type);
-    if (g < best) best = g;
+  for (const key of order) {
+    const def = ids[key];
+    const ammoRow = G.player.inventory.find(i => i.id === def.invId);
+    const n = ammoRow ? ammoRow.count | 0 : 0;
+    if (ammoRow && n >= perSide) return { ammoKind: def.kind, invId: def.invId, ammoRow };
   }
-  if (G.otherPlayers && G.otherPlayers.size) {
-    G.otherPlayers.forEach(op => {
-      if (!op || op.docked) return;
-      if (op.health != null && op.health <= 0) return;
-      if (!inWedge(op.x, op.z)) return;
-      const g = boardingSurfaceGapMeters(G.player.x, G.player.z, op.x, op.z, pSt, op.shipType || 'sloop');
-      if (g < best) best = g;
-    });
-  }
-  return best;
-}
-function playerBroadsideBlockedByStandoffRange(fireSide) {
-  const gap = closestEnemySurfaceGapInPlayerBroadsideWedge(fireSide);
-  if (!Number.isFinite(gap) || gap >= 1e8) return false;
-  return gap < BROADSIDE_VOLLEY_MIN_SURFACE_GAP - 0.35;
+  const meta = ids[preferredKind] || ids.ball;
+  const rowTry = G.player.inventory.find(i => i.id === meta.invId);
+  const ammoCount = rowTry ? rowTry.count | 0 : 0;
+  const ammoName = getItemMeta(meta.invId).name;
+  return { failInvId: meta.invId, ammoName, ammoCount };
 }
 function broadsideReadyInfo(fireSide, silent) {
   if (G.spectate) return null;
@@ -22639,19 +22625,13 @@ function broadsideReadyInfo(fireSide, silent) {
   if (fireSide === -1 && G.portCooldown > 0) return null;
   const cc = spec.cannonSlots || 2;
   const perSide = Math.ceil(cc / 2);
-  const ammoKind = G.selectedAmmoType === 'grape' || G.selectedAmmoType === 'chain' ? G.selectedAmmoType : 'ball';
-  const invId = ammoKind === 'grape' ? 'grapeshot' : ammoKind === 'chain' ? 'chainshot' : 'cannonballs';
-  const ammoRow = G.player.inventory.find(i => i.id === invId);
-  const ammo = ammoRow ? ammoRow.count : 0;
-  const ammoName = getItemMeta(invId).name;
-  if (ammo < perSide || !ammoRow) {
-    if (!silent) notify(`Need ${perSide} ${ammoName} to fire (${ammo} in hold)`);
+  const sel = G.selectedAmmoType === 'chain' ? 'chain' : G.selectedAmmoType === 'grape' ? 'grape' : 'ball';
+  const ammoPack = resolveBroadsideAmmoForVolley(perSide, sel);
+  if (!ammoPack.ammoRow) {
+    if (!silent) notify(`Need ${perSide} cannonballs, grapeshot, or chain shot to fire a broadside.`);
     return null;
   }
-  if (playerBroadsideBlockedByStandoffRange(fireSide)) {
-    if (!silent) notify('Too close for a clean broadside — open the range.');
-    return null;
-  }
+  const { ammoKind, invId, ammoRow } = ammoPack;
   return { fireSide, spec, perSide, ammoKind, invId, ammoRow, cp };
 }
 
@@ -27935,6 +27915,32 @@ document.getElementById('btn-help').onclick = () => {
 };
 
 /* ============================== COMPASS ================================== */
+/** World target for main story quest (bounty ship or report dock) — for purple compass needle. */
+function getMainQuestCompassWaypointXZ() {
+  const sq = G.storyQuest;
+  if (!sq) return null;
+  if (sq.phase === 'active') {
+    if (G.myId != null) {
+      const wantSid = storyBountySyncId(G.myId, sq.step | 0);
+      for (const n of G.npcs) {
+        if (!n || n.sinking) continue;
+        if (n.health != null && n.health <= 0) continue;
+        if (!n.isStoryBounty) continue;
+        if (n.missionOwnerPlayerId != null && Number(n.missionOwnerPlayerId) !== Number(G.myId)) continue;
+        if (Number(n.syncId) !== wantSid) continue;
+        return { x: n.x, z: n.z };
+      }
+    }
+    if (Number.isFinite(sq.bountyX) && Number.isFinite(sq.bountyZ))
+      return { x: sq.bountyX, z: sq.bountyZ };
+  }
+  if (sq.phase === 'report' && sq.turnInCx != null && sq.turnInCz != null) {
+    const meta = getProceduralIslandMeta(sq.turnInCx | 0, sq.turnInCz | 0);
+    if (meta && Number.isFinite(meta.dockX) && Number.isFinite(meta.dockZ))
+      return { x: meta.dockX, z: meta.dockZ };
+  }
+  return null;
+}
 const compCanvas = document.getElementById('compass-canvas');
 const compCtx = compCanvas.getContext('2d');
 
@@ -28050,6 +28056,29 @@ function drawCompassOnCtx(ctx, outSize) {
   ctx.fillStyle = 'rgba(50,130,200,0.88)'; ctx.fill();
   ctx.strokeStyle = 'rgba(80,160,230,0.95)'; ctx.lineWidth = 1; ctx.stroke();
   ctx.restore();
+
+  const mqWp = getMainQuestCompassWaypointXZ();
+  if (mqWp && Number.isFinite(G.player.x) && Number.isFinite(G.player.z)) {
+    const qdx = mqWp.x - G.player.x;
+    const qdz = mqWp.z - G.player.z;
+    if (qdx * qdx + qdz * qdz > 9) {
+      const qang = Math.atan2(qdx, qdz);
+      const pr = r - 3.5;
+      ctx.save(); ctx.rotate(-qang);
+      ctx.beginPath();
+      ctx.moveTo(0, -pr);
+      ctx.lineTo(-7.8, pr * 0.2);
+      ctx.lineTo(0, -pr + 13);
+      ctx.lineTo(7.8, pr * 0.2);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(150,70,205,0.92)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(92,38,148,0.96)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
 
   const hr = r * 0.5;
   ctx.save(); ctx.rotate(-G.player.rotation);
@@ -30072,7 +30101,12 @@ function update(dt) {
 
   for (let i = G.cannonballs.length - 1; i >= 0; i--) {
     const b = G.cannonballs[i];
-    b.x += b.dx * dt; b.z += b.dz * dt; b.dy -= 6 * dt; b.y += b.dy * dt; b.life -= dt;
+    b.x += b.dx * dt; b.z += b.dz * dt; b.dy -= 6 * dt; b.y += b.dy * dt;
+    const xzStep = Math.hypot((b.dx || 0) * dt, (b.dz || 0) * dt);
+    if (b.xzTravel == null || !Number.isFinite(b.xzTravel)) b.xzTravel = 0;
+    b.xzTravel += xzStep;
+    const minAirOk = (b.xzTravel || 0) >= CANNONBALL_MIN_AIR_TRAVEL_BEFORE_EXPIRE;
+    if (minAirOk) b.life -= dt;
     if (cannonballMeshes[i]) {
       const cm = cannonballMeshes[i];
       cm.position.set(b.x, b.y, b.z);
@@ -30099,17 +30133,17 @@ function update(dt) {
         if (npc.sinking || (npc.health != null && npc.health <= 0)) return;
         if (b.owner === 'npc' && b.sourceNpcSyncId === npc.syncId) return;
         const ntHit = npcCollisionShipType(npc);
-        const coarseR = Math.max(102, shipHullRadius(ntHit) * 2.35);
+        const coarseR = Math.max(102, shipHullRadius(ntHit) * 2.05);
         const adx = b.x - npc.x, adz = b.z - npc.z;
         if (adx * adx + adz * adz > coarseR * coarseR) return;
         const at = b.ammoType || 'ball';
         const isPellet = !!b.isPellet;
         let hitR = cannonballStrikeHitRadius(ntHit, at, isPellet);
-        if (at === 'ball' && !isPellet) hitR *= 1.15;
+        if (at === 'ball' && !isPellet) hitR *= 1.08;
         const nYaw = npc.rotation != null ? npc.rotation : 0;
         const nHullPart = npcCollisionHullPart(npc);
         const distHit = distSegmentToShipHullOBB(px, pz, b.x, b.z, npc.x, npc.z, nYaw, ntHit, nHullPart);
-        if (distHit >= hitR * 1.1 || b.y < SEA_LEVEL - 4) return;
+        if (distHit >= hitR * 1.04 || b.y < SEA_LEVEL - 4) return;
         if (hitNpcsAsHost) {
           if (b.owner === 'npc' && b.sourceNpcSyncId != null) {
             const shooter = G.npcs.find(n => n.syncId === b.sourceNpcSyncId);
@@ -30152,7 +30186,7 @@ function update(dt) {
       const pHull = G.player.shipParts && G.player.shipParts.hull;
       const distP = distSegmentToShipHullOBB(ppx, ppz, b.x, b.z, G.player.x, G.player.z, plYaw, G.player.shipType, pHull);
       let hitR = cannonballStrikeHitRadius(G.player.shipType, at, isPellet);
-      if (at === 'ball' && !isPellet) hitR *= 1.12;
+      if (at === 'ball' && !isPellet) hitR *= 1.08;
       let skipPvpHarbor = false;
       if (b.owner === 'other_player' && b.sourcePlayerId != null && G.otherPlayers.has(b.sourcePlayerId)) {
         const shooter = G.otherPlayers.get(b.sourcePlayerId);
@@ -30238,7 +30272,13 @@ function update(dt) {
     const strikeTop = onIsl ? cannonballIslandStrikeTopY(b.x, b.z) : ty;
     const seaH = worldSeaSurfaceY(b.x, b.z);
     const hitLand = onIsl && b.y <= strikeTop + 0.25;
-    const hitWater = !onIsl && b.y <= seaH + CANNONBALL_SEA_CLIP_EPS;
+    const hitWaterSurf = !onIsl && b.y <= seaH + CANNONBALL_SEA_CLIP_EPS;
+    const minAirOk = (b.xzTravel || 0) >= CANNONBALL_MIN_AIR_TRAVEL_BEFORE_EXPIRE;
+    if (hitWaterSurf && !minAirOk) {
+      b.y = seaH + 0.26 + Math.min(0.08, (b.xzTravel || 0) / CANNONBALL_MIN_AIR_TRAVEL_BEFORE_EXPIRE * 0.08);
+      b.dy = Math.max(b.dy, 0.55);
+    }
+    const hitWater = hitWaterSurf && minAirOk;
     const expired = b.life <= 0;
     if (hitLand || hitWater || expired) {
       if (hitLand) {
@@ -32208,7 +32248,12 @@ function buildTutorialStepsDesktop() {
   steps.push({
     sel: '#compass',
     title: 'Compass and wind',
-    body: 'North, east, south, and west stay fixed on the card. The gold needle shows your ship\'s heading; the blue arrow is the wind. The green arc and numbers at the bottom are your speed over ground (knots) and the breeze strength. On the full chart (M), a matching compass sits in the chart frame\'s top-left — it does not drift when you pan the map.'
+    body: 'North, east, south, and west stay fixed on the card. The gold needle shows your ship\'s heading; the blue arrow is the wind; a purple arrow on the rim points toward your main voyage objective (tracked bounty ship or port to report). The green arc and numbers at the bottom are your speed over ground (knots) and the breeze strength. On the full chart (M), a matching compass sits in the chart frame\'s top-left — it does not drift when you pan the map.'
+  });
+  steps.push({
+    sel: '#quest-toggle-btn',
+    title: 'Quest panel toggle',
+    body: 'The Quest button next to the compass shows or hides the voyage briefing beside it so you can keep the HUD clear during a chase.'
   });
   steps.push({
     sel: '#minimap',
@@ -32263,7 +32308,12 @@ function buildTutorialStepsMobile() {
   steps.push({
     sel: '#compass',
     title: 'Compass and wind',
-    body: 'Heading, wind arrow, and speed readout — same ideas as PC, compact for the top corner.'
+    body: 'Heading, wind arrow, and speed readout — purple rim arrow points toward the main voyage target; same compact layout as desktop.'
+  });
+  steps.push({
+    sel: '#quest-toggle-btn',
+    title: 'Quest button',
+    body: 'Taps beside the compass to fold the voyage briefing open or closed.'
   });
   steps.push({
     sel: '#minimap',
