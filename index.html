@@ -45,6 +45,20 @@ canvas{display:block;touch-action:none;width:100%;height:100%;-webkit-touch-call
 input,textarea{-webkit-user-select:text;user-select:text;}
 #ui-layer{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:14;display:none;}
 #ui-layer>*{pointer-events:auto;}
+#mp-connecting-overlay{
+  display:none;position:absolute;inset:0;z-index:12000;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  padding:24px;box-sizing:border-box;text-align:center;touch-action:manipulation;
+  background:linear-gradient(180deg, rgba(10,14,22,0.88), rgba(6,8,14,0.92));
+  color:var(--parchment);font-family:Georgia,serif;font-size:15px;line-height:1.45;
+  pointer-events:auto;
+}
+#mp-connecting-overlay .mp-connecting-spinner{
+  width:44px;height:44px;border-radius:50%;border:3px solid rgba(201,162,74,0.25);border-top-color:var(--brass);
+  animation:mp-connecting-spin 0.85s linear infinite;
+}
+@keyframes mp-connecting-spin{ to { transform:rotate(360deg); } }
+#mp-connecting-overlay .mp-connecting-title{font-size:18px;color:var(--brass);letter-spacing:0.04em;text-transform:uppercase;}
+#mp-connecting-overlay .mp-connecting-sub{max-width:280px;opacity:0.88;font-size:13px;}
 #hud-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:95vw;}
 .hud-box{
   background:linear-gradient(180deg,rgba(55,38,24,0.92),rgba(32,22,14,0.94)),
@@ -2182,6 +2196,11 @@ body.game-help-mobile-minimal #game-help-panel{
 </div>
 
 <div id="ui-layer">
+  <div id="mp-connecting-overlay" aria-live="polite" aria-hidden="true" role="status">
+    <div class="mp-connecting-spinner" aria-hidden="true"></div>
+    <div class="mp-connecting-title">Connecting</div>
+    <div class="mp-connecting-sub">Syncing with the realm&hellip; your ship will steady once the line is ready.</div>
+  </div>
   <button type="button" id="board-prompt-btn" style="display:none;">Board</button>
   <div id="boarding-tw-wrap" aria-hidden="true">
     <div id="boarding-tw-inner">
@@ -3999,6 +4018,39 @@ function applyNpcBoardingScuttleSinkVisualLocal(npc) {
   npc._sinkSkipSurfaceDebris = false;
   detachNpcCrewAndSpawnBailSwimmers(npc, {});
   reconcileSlotsWithInventory();
+}
+
+/**
+ * Dedicated-server NPC sim: hulls enter `sinking` via `npc_sync` without ever calling `runNpcSinkOutcome` locally.
+ * Spawn one-shot loot + swimmers (via server broadcast) without duplicating gold/story awards (`npc_kill_award`).
+ */
+function applyAuthoritativeNpcSinkWorldFx(npc) {
+  if (!npc || !G.npcSimFromServer || npc._authSinkFxApplied) return;
+  npc._authSinkFxApplied = true;
+  const wasEscortContractShip = !!npc.isEscortCargo;
+  const missionOwner = npc.missionOwnerPlayerId != null ? npc.missionOwnerPlayerId : (npc.isStoryBounty ? G.myId : null);
+  const storyMission = !!(npc.isStoryBounty && missionOwner != null);
+  const goldLoot = storyMission ? 0 : (wasEscortContractShip ? 0 : 30);
+  const lootTypes = goldLoot > 0
+    ? ['wood', 'iron', 'gunpowder', 'food', 'cannonballs']
+    : ['wood', 'iron', 'gold', 'gunpowder', 'food', 'cannonballs'];
+  if (!wasEscortContractShip) {
+    for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
+      const t = lootTypes[Math.floor(Math.random() * lootTypes.length)];
+      const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
+      const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
+      spawnWorldLootAt(lx, lz, t, c, 0.5);
+    }
+  }
+  detachNpcCrewAndSpawnBailSwimmers(npc, {});
+}
+
+function setMultiplayerConnectingOverlay(show) {
+  const el = document.getElementById('mp-connecting-overlay');
+  if (!el) return;
+  const on = !!show;
+  el.style.display = on ? 'flex' : 'none';
+  el.setAttribute('aria-hidden', on ? 'false' : 'true');
 }
 
 function detachNpcCrewAndSpawnBailSwimmers(npc, sinkOpts) {
@@ -18269,18 +18321,18 @@ async function connectToServer() {
       ws.onclose = null;
       ws.close();
     } catch (err) {}
-  ws = null;
-  if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
-    for (const sg of G.prizeHullDecoySinks) {
-      try { disposeObject3DSubtree(sg); } catch (e) {}
-      try { scene.remove(sg); } catch (e2) {}
+    ws = null;
+    if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
+      for (const sg of G.prizeHullDecoySinks) {
+        try { disposeObject3DSubtree(sg); } catch (e) {}
+        try { scene.remove(sg); } catch (e2) {}
+      }
+      G.prizeHullDecoySinks.length = 0;
     }
-    G.prizeHullDecoySinks.length = 0;
+    for (const opid of Array.from(G.otherPlayers.keys())) {
+      removeRemotePeer(opid);
+    }
   }
-  for (const opid of Array.from(G.otherPlayers.keys())) {
-    removeRemotePeer(opid);
-  }
-}
   G.myId = null;
   G._lastNetStateWT = null;
   G._lastNetStateSrvTick = null;
@@ -18290,8 +18342,14 @@ async function connectToServer() {
   G.npcSimDelegatedByServer = false;
   G.iAmMultiplayerNpcStepper = false;
   try { stopMultiplayerRttLoop(); } catch (e) {}
+  if (G.mode === 'playing') setMultiplayerConnectingOverlay(true);
   let socket;
-  try { socket = new WebSocket(url); } catch (e) { return; }
+  try {
+    socket = new WebSocket(url);
+  } catch (e) {
+    setMultiplayerConnectingOverlay(false);
+    return;
+  }
   ws = socket;
   ws.onopen = () => {
     G._wsOpenedAt = Date.now();
@@ -18463,6 +18521,7 @@ async function connectToServer() {
           }
         }
         try { if (G.mode === 'playing' && G.myId != null) startMultiplayerRttLoop(); } catch (e) {}
+        setMultiplayerConnectingOverlay(false);
         break;
       case 'server_pop':
         applyServerPop(msg);
@@ -19267,12 +19326,14 @@ async function connectToServer() {
     } catch (err) {}
    };
   ws.onerror = () => {
+    setMultiplayerConnectingOverlay(false);
     if (!wsConnectErrorNotified) {
       wsConnectErrorNotified = true;
       notify('Multiplayer: could not reach the game server. If the page is on static hosting (e.g. Vercel), set assets/multiplayer-server.json to your Node server wss URL, or use ?server=wss://your-host or localStorage pirates_server_wss.');
     }
   };
   ws.onclose = () => {
+    setMultiplayerConnectingOverlay(false);
     if (wsUserBanned) return;
     if (wsSuppressReconnect) {
       wsSuppressReconnect = false;
@@ -19504,6 +19565,7 @@ function applyNpcSyncMessage(msg) {
         applyRiggingVisualToGroup(npc.mesh, rhNet);
       }
     }
+    if (G.npcSimFromServer && nd.sinking) applyAuthoritativeNpcSinkWorldFx(npc);
     if (nd.sinking && !npc.sinking) {
       npc.sinking = true; npc.sinkTimer = npc.sinkTimer || 0; npc.speed = 0;
       npc._sinkSkipSurfaceDebris = true;
