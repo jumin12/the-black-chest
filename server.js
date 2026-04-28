@@ -7,7 +7,6 @@ const { createGameSimulation, createAntiCheatGate } = require('./simulation-laye
 const { createServerNpcWorld } = require('./server/npc-authoritative.cjs');
 const { createWorldPoliticsStore, sanitizePlayerPoliticsPatch } = require('./server/world-politics.cjs');
 const { createTerrainContext, sampleOffshoreSpawn } = require('./server/terrain-context.cjs');
-const { createGambleManager } = require('./server/gamble-authoritative.cjs');
 
 const PORT = process.env.PORT || 3000;
 /** Realm identity for server browsers and the in-game HUD (env-tunable). */
@@ -2390,8 +2389,6 @@ function collectAdminPlayerList() {
   return out;
 }
 
-const gambleManager = createGambleManager({ players, sendToPlayerId });
-
 wss.on('connection', (ws, req) => {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -3118,46 +3115,6 @@ wss.on('connection', (ws, req) => {
         }
         case 'loot_collect': {
           if (msg.id != null) broadcastAll({ type: 'loot_collect', id: msg.id });
-          break;
-        }
-        case 'gamble_relay': {
-          if (!msg || typeof msg !== 'object') break;
-          const roomId = msg.roomId != null ? String(msg.roomId).slice(0, 72) : '';
-          if (!roomId) break;
-          const game = msg.game != null ? String(msg.game).slice(0, 24) : '';
-          let payload = {};
-          try {
-            if (msg.payload != null && typeof msg.payload === 'object') {
-              payload = JSON.parse(JSON.stringify(msg.payload));
-            }
-          } catch (e) {
-            payload = {};
-          }
-          try {
-            const sz = JSON.stringify(payload);
-            if (sz.length > 14000) break;
-          } catch (e) {
-            break;
-          }
-          broadcastAll({
-            type: 'gamble_relay',
-            roomId,
-            fromId: id,
-            game,
-            payload
-          });
-          break;
-        }
-        case 'gamble_create':
-        case 'gamble_join':
-        case 'gamble_leave':
-        case 'gamble_commit':
-        case 'gamble_start':
-        case 'gamble_poker_action':
-        case 'gamble_poker_next_hand': {
-          try {
-            gambleManager.handle(id, msg);
-          } catch (e) {}
           break;
         }
         case 'swimmer_spawn': {
@@ -4093,7 +4050,6 @@ wss.on('connection', (ws, req) => {
         worldPresenceDirty = false;
       } catch (e) {}
     }
-    try { gambleManager.disconnect(id); } catch (e) {}
     players.delete(id);
     broadcast({ type: 'player_leave', id });
     broadcastServerPopulation();
