@@ -1215,6 +1215,8 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 #touch-zoom.touch-zoom-above-tutorial{z-index:92!important;}
 #tutorial-next{background:linear-gradient(180deg,#a07818,#604008);color:#f0e0b0;border:none;padding:12px 28px;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-weight:bold;width:100%;}
 #tutorial-skip{background:none;border:1px solid rgba(140,100,40,0.4);color:#8a7a60;padding:8px;margin-top:10px;width:100%;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-size:12px;}
+#tutorial-raid-cinematic{display:none;position:fixed;left:50%;bottom:18%;transform:translateX(-50%);z-index:74;max-width:min(560px,92vw);pointer-events:none;text-align:center;padding:0 14px;box-sizing:border-box;}
+#tutorial-raid-line{font-family:Georgia,serif;font-size:clamp(15px,3.6vw,19px);color:#f2e6c8;line-height:1.45;text-shadow:0 2px 14px rgba(0,0,0,0.75),0 0 28px rgba(0,0,0,0.5);margin:0;}
 @media(max-width:768px){
   #tutorial-overlay{justify-content:center;align-items:stretch;padding:12px;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right));padding-bottom:max(16px,env(safe-area-inset-bottom));padding-top:max(12px,env(safe-area-inset-top));min-height:100dvh;box-sizing:border-box;}
   #tutorial-card{max-width:100%;width:100%;padding:16px 14px;margin:0 auto;max-height:min(78vh,520px);overflow-y:auto;-webkit-overflow-scrolling:touch;box-sizing:border-box;}
@@ -2897,6 +2899,10 @@ body.game-help-mobile-minimal #game-help-panel{
   </div>
 </div>
 
+<div id="tutorial-raid-cinematic" aria-hidden="true" style="display:none;">
+  <p id="tutorial-raid-line"></p>
+</div>
+
 <div id="touch-broadsides-layer">
   <div id="combat-fire-edges"><div id="combat-edge-left" class="combat-edge-flash"></div><div id="combat-edge-right" class="combat-edge-flash"></div></div>
   <div id="touch-edge-left" class="touch-fire-edge"></div>
@@ -3349,6 +3355,10 @@ const G = {
   /** @type {Map<string, { id: number, x: number, z: number }[]>} Other clan members' pins, keyed by captainKey. */
   chartMarkersParty: new Map(),
   storyQuest: { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null },
+  /** After helm tour optional raid; `cutscene` object while the 3D intro runs (host pirates only). */
+  tutorialRaidPending: false,
+  tutorialRaidConsumed: false,
+  tutorialRaidCutscene: null,
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
     angle: CAM_ANGLE_CHASE_DEFAULT, targetAngle: CAM_ANGLE_CHASE_DEFAULT, yaw: Math.PI, targetYaw: Math.PI,
@@ -12869,7 +12879,7 @@ function clearStaleNpcBoardingHostLocks() {
 function canNpcBeBoarded(npc) {
   if (!npc || npc.sinking) return false;
   if (npc.health != null && npc.health <= 0) return false;
-  if (npc.isTradeShip && npc.tradePhase === 'loading_home') return false;
+  /* Merchant "loading_home" sits off the pier — still allow grapple if alongside in boarding range (was hidden for some docks). */
   if (npc._boardingHostLock) {
     const enc = boardingEncodedNpcSid(npc.syncId);
     let foreign = false;
@@ -17067,7 +17077,9 @@ function updateNPCs(dt) {
   const host = isMultiplayerHost();
   G.npcs.forEach((npc, npcIdx) => {
     if (host) {
-      if (npc._boardingHostLock && !npc.sinking) {
+      if (npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive && !npc.sinking) {
+        tickTutorialRaidNpcHost(dt, npc);
+      } else if (npc._boardingHostLock && !npc.sinking) {
         /* Hull held for player boarding — x/z/rotation driven in tickBoardingEngagement. */
       } else if (npc.sinking) {
         /* Host skips movement/AI while sinking; mesh sink is applied later in this loop. */
@@ -17431,14 +17443,14 @@ function updateNPCs(dt) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
       const vNet = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
-      const vsmK = 1 - Math.exp(-22 * dt);
+      const vsmK = 1 - Math.exp(-38 * dt);
       if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
         npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
         npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
       }
       if (Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ)) {
         const vm = Math.hypot(npc._npcVelSmX, npc._npcVelSmZ);
-        const cap = 48;
+        const cap = 78;
         const sc = vm > cap ? cap / vm : 1;
         npc.x += npc._npcVelSmX * sc * dt;
         npc.z += npc._npcVelSmZ * sc * dt;
@@ -17446,13 +17458,22 @@ function updateNPCs(dt) {
         npc.x += Math.sin(authR) * vNet * dt * 0.98;
         npc.z += Math.cos(authR) * vNet * dt * 0.98;
       }
-      const ex = npc.syncX - npc.x, ez = npc.syncZ - npc.z;
+      let leadX = npc.syncX, leadZ = npc.syncZ;
+      if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed)) && npc.syncR != null) {
+        const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const el = Math.min(0.18, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
+        const sp = Number(npc.speed);
+        const au = Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
+        leadX += Math.sin(au) * sp * el;
+        leadZ += Math.cos(au) * sp * el;
+      }
+      const ex = leadX - npc.x, ez = leadZ - npc.z;
       const err = Math.hypot(ex, ez);
       if (err > 215) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
       } else {
-        const posK = 1 - Math.exp(-(err > 90 ? 5.5 : err > 35 ? 3.2 : err > 12 ? 2.4 : err > 4 ? 1.5 : 6) * dt);
+        const posK = 1 - Math.exp(-(err > 90 ? 8.5 : err > 35 ? 5.0 : err > 12 ? 3.8 : err > 4 ? 2.4 : 9.5) * dt);
         npc.x += ex * posK;
         npc.z += ez * posK;
       }
@@ -17522,7 +17543,8 @@ function updateNPCs(dt) {
       npc._wakePrevZ = npc.z;
       tickShipWakeSpawner(wakeKey, npc.x, npc.z, npc.rotation, effWakeSpd, dt);
     }
-    if (host && !npc.sinking && (npc.health == null || npc.health > 0)) steerNpcAvoidCloseShips(npc, dt);
+    if (host && !npc.sinking && (npc.health == null || npc.health > 0)
+      && !(npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive)) steerNpcAvoidCloseShips(npc, dt);
     clampNpcIntoWorldBounds(npc);
   });
   if (host) {
@@ -20186,6 +20208,7 @@ function applyNpcSyncMessage(msg) {
       }
       if (syncSrvTick != null && Number.isFinite(syncSrvTick)) npc._lastNpcSrvTick = syncSrvTick;
       npc._npcSyncWallT = (typeof performance !== 'undefined' && performance.now) ? performance.now() * 0.001 : Date.now() * 0.001;
+      npc._npcSnapRecvPerfMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     }
     npc.syncX = nd.x; npc.syncZ = nd.z; npc.syncR = nd.r;
     if (nd.h != null && Number.isFinite(Number(nd.h))) npc.health = Math.round(Number(nd.h));
@@ -29293,9 +29316,12 @@ const NET_SYNC_HZ = 45;
 /**
  * Slower than NET_SYNC_HZ on purpose. The host sends the full world NPC list each tick; 45Hz JSON + applying
  * several `npc_sync` in one `ws.onmessage` chain used to hitch the main thread — we now coalesce to one apply
- * per frame in `update()` (`applyNpcSyncMessage`). Non-hosts interpolate from syncX/syncR; 12Hz is enough for ship-scale motion.
+ * per frame in `update()` (`applyNpcSyncMessage`). Non-hosts interpolate from sync — ~20Hz + extrapolation stays smooth vs faster AI hulls.
  */
-const NPC_NET_SYNC_HZ = 12;
+/* Was 12Hz — faster hulls stepped larger between snaps; slightly higher cadence smooths interpolation on clients without full 45Hz JSON. */
+const NPC_NET_SYNC_HZ = 20;
+/** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
+const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
 /** Throttle roster-heavy crew payloads on the periodic net tick (explicit sendUpdate() still sends full crew). */
 function shouldIncludeCrewOnPeriodicNetTick() {
@@ -29461,6 +29487,8 @@ function update(dt) {
     const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
 
     const deckWalkBlocksHelm = !!(G.captainWalk && G.captainWalk.active);
+    const raidHelmHold = !!(G.tutorialRaidCutscene && G.tutorialRaidCutscene.lockHelmEnd
+      && (typeof performance !== 'undefined' ? performance.now() : Date.now()) < G.tutorialRaidCutscene.lockHelmEnd);
     let forward = 0, turn = 0;
     if (deckWalkBlocksHelm) {
       if (autoSailActive) {
@@ -29532,6 +29560,12 @@ function update(dt) {
     } else if (!deckWalkBlocksHelm) {
       autoSailWTimer = 0;
       joyAutoSailAcc = 0;
+    }
+
+    if (raidHelmHold && !deckWalkBlocksHelm) {
+      forward = 0;
+      turn = 0;
+      G.player.speed *= (1 - Math.min(1, 5.2 * dt));
     }
 
     if (forward > 0.1) {
@@ -29647,6 +29681,7 @@ function update(dt) {
   if (!G.docked && !G.playerSinking) updateCrewDeckAnimations(dt);
 
   updateChunks();
+  tickTutorialRaidCutscene(dt);
   updateNPCs(dt);
   tickEscortAbandonment(dt);
   G.npcs.forEach(npc => {
@@ -30125,8 +30160,14 @@ function update(dt) {
           skipPvpHarbor = harborPvpTruceBetween(G.player.x, G.player.z, G.player.shipType, shooter.x, shooter.z, shooter.shipType || 'sloop');
         }
       }
+      const nowT = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const trRaid = G.tutorialRaidCutscene;
+      const npcTutorialSkip = !!(b.owner === 'npc' && trRaid && trRaid.noPlayerHullDamageUntil && nowT < trRaid.noPlayerHullDamageUntil
+        && b.sourceNpcSyncId === TUTORIAL_RAID_NPC_SYNC);
       if (distP < hitR && b.y > SEA_LEVEL - 1 && !skipPvpHarbor) {
-        if (b.owner === 'other_player') {
+        if (npcTutorialSkip) {
+          b.life = 0;
+        } else if (b.owner === 'other_player') {
           G.lastAttackerId = b.sourcePlayerId != null ? b.sourcePlayerId : null;
           G.lastKillerNpcX = null;
           G.lastKillerNpcZ = null;
@@ -30159,8 +30200,10 @@ function update(dt) {
             G.lastKillerNpcZ = null;
           }
         }
-        applyAmmoHitToLocalPlayer(at, b.sourcePlayerId, b.x, b.z, isPellet);
-        triggerCombatFireHint();
+        if (!npcTutorialSkip) {
+          applyAmmoHitToLocalPlayer(at, b.sourcePlayerId, b.x, b.z, isPellet);
+          triggerCombatFireHint();
+        }
         b.life = 0;
       }
     }
@@ -30615,6 +30658,30 @@ function update(dt) {
   if (G.captainWalk.active) {
     updateCaptainWalk(dt);
   } else {
+    let tutorialRaidCam = false;
+    const ra = G.tutorialRaidCutscene;
+    if (ra && ra.cameraActive && G.mode === 'playing' && !G.spectate && !fullmapOpen) {
+      const npcRaid = G.npcs.find(n => n.syncId === TUTORIAL_RAID_NPC_SYNC);
+      if (npcRaid && npcRaid.mesh) {
+        tutorialRaidCam = true;
+        const px = G.player.x, pz = G.player.z;
+        const nx = npcRaid.x, nz = npcRaid.z;
+        const midX = (px + nx) * 0.5, midZ = (pz + nz) * 0.5;
+        const dx = nx - px, dz = nz - pz;
+        const dist = Math.hypot(dx, dz) || 1;
+        const sideX = -dz / dist, sideZ = dx / dist;
+        const fwdX = dx / dist, fwdZ = dz / dist;
+        const swoop = Math.min(3.8, Math.max(0, ra.age || 0) * 0.28);
+        const pull = 36 + swoop * 6;
+        const camY = 24 + swoop * 2.8;
+        const cx = midX + sideX * pull + fwdX * 14;
+        const cz = midZ + sideZ * pull + fwdZ * 14;
+        const lookY = worldSeaSurfaceY(midX, midZ) + SHIP_FREEBOARD + 4.2;
+        camera.position.set(cx, camY, cz);
+        camera.lookAt(midX, lookY, midZ);
+      }
+    }
+    if (!tutorialRaidCam) {
     const orbitFree = G.spectate || (G.mode === 'playing' && G.sailingCameraMode === 'free')
       || (isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree || middleDown;
     if (!orbitFree) {
@@ -30632,6 +30699,7 @@ function update(dt) {
     );
     const look = chaseCameraLookAtXYZ(camX, camZ, cDist);
     camera.lookAt(look.x, look.y, look.z);
+    }
   }
 
   syncAudioListenerToCamera();
@@ -32378,12 +32446,199 @@ function showTutorialStep() {
   document.getElementById('tutorial-next').textContent = last ? 'Done' : 'Next';
 }
 
+function tutorialRaidSetBanner(text) {
+  const ban = document.getElementById('tutorial-raid-cinematic');
+  if (!ban) return;
+  const line = document.getElementById('tutorial-raid-line');
+  if (!line) return;
+  if (text && String(text).trim()) {
+    ban.style.display = 'block';
+    ban.setAttribute('aria-hidden', 'false');
+    line.textContent = text;
+  } else {
+    ban.style.display = 'none';
+    ban.setAttribute('aria-hidden', 'true');
+    line.textContent = '';
+  }
+}
+
+function disposeTutorialRaidCutscene() {
+  tutorialRaidSetBanner('');
+  G.tutorialRaidCutscene = null;
+}
+
+function spawnTutorialRaidPirateNearPlayer() {
+  if (G.npcs.some(n => n.syncId === TUTORIAL_RAID_NPC_SYNC)) return null;
+  const px = G.player.x, pz = G.player.z;
+  let bx = px + 84, bz = pz;
+  let found = false;
+  for (let a = 0; a < 16; a++) {
+    const ang = (a / 16) * Math.PI * 2 + ((G.worldSeed | 0) % 997) * 0.001;
+    const dist = 80 + (a % 4) * 3.5;
+    const tx = px + Math.sin(ang) * dist;
+    const tz = pz + Math.cos(ang) * dist;
+    if (!isSeaObstructed(tx, tz) && isWorldPositionFreeForNpcSpawn(tx, tz, 'sloop')) {
+      bx = tx;
+      bz = tz;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    bx = px + Math.sin(1.17) * 82;
+    bz = pz + Math.cos(1.17) * 82;
+  }
+  const chunkX = Math.floor(bx / CHUNK_SIZE), chunkZ = Math.floor(bz / CHUNK_SIZE);
+  const pirateFaction = ((chunkX * 31 + chunkZ * 17 + TUTORIAL_RAID_NPC_SYNC) & 0x7fffffff) % FACTION_COUNT;
+  const npcFlagColor = FACTION_TRADE_COLORS[pirateFaction] || '#5a0808';
+  const npc = {
+    syncId: TUTORIAL_RAID_NPC_SYNC,
+    x: bx, z: bz,
+    rotation: Math.atan2(px - bx, pz - bz),
+    speed: 0,
+    health: 52 + (TUTORIAL_RAID_NPC_SYNC % 18),
+    type: 'cutter',
+    name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, (TUTORIAL_RAID_NPC_SYNC ^ (G.worldSeed | 0)) % 997),
+    wanderAngle: 0, wanderTimer: 9,
+    underFireTimer: 0, fireJitter: 0,
+    riggingHealth: 100,
+    flagPosition: 'mast',
+    aggro: false,
+    sinking: false,
+    factionId: pirateFaction,
+    flagColor: npcFlagColor,
+    sailBonus: 0.08,
+    tutorialRaidHull: true
+  };
+  npc.flagAssetId = randomChoosableFlagRng(() => ((TUTORIAL_RAID_NPC_SYNC * 997) >>> 0) / 4294967296);
+  npc.pirateCannon = tradeShipCannonForType(npc.type);
+  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: npc.pirateCannon, figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
+  npc.crewData = ambientPirateCrewData((TUTORIAL_RAID_NPC_SYNC * 997) >>> 0, npc.type);
+  buildCrewMeshes(mesh, npc.crewData, npc.type);
+  npc.mesh = mesh;
+  scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  G.npcs.push(npc);
+  return npc;
+}
+
+function tryBeginTutorialRaidFromUi() {
+  if (!G.tutorialRaidPending || G.tutorialRaidConsumed || G.mode !== 'playing') return;
+  const sq = G.storyQuest;
+  if (!sq || sq.phase !== 'intro') return;
+  G.tutorialRaidPending = false;
+  startTutorialRaidEncounter();
+}
+
+function startTutorialRaidEncounter() {
+  if (G.tutorialRaidConsumed || G.mode !== 'playing') return;
+  const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  if (!isMultiplayerHost() || G.npcSimFromServer) {
+    G.tutorialRaidConsumed = true;
+    notify('A hostile sail may cross your bows — chase it down when you spy one. Use starboard Z and port X to unleash broadsides.', 7400);
+    return;
+  }
+  G.tutorialRaidConsumed = true;
+  const npc = spawnTutorialRaidPirateNearPlayer();
+  if (!npc) {
+    notify('Keep a weather eye — you will meet pirates soon enough. Broadsides: Z starboard, X port.', 6200);
+    return;
+  }
+  npc.speed = npcMaxForwardSpeed(npc) * 0.35;
+  G.tutorialRaidCutscene = {
+    active: true,
+    scriptingActive: true,
+    npcSyncId: TUTORIAL_RAID_NPC_SYNC,
+    age: 0,
+    cameraActive: true,
+    bannerPhase: -1,
+    lockHelmEnd: nowMs + 5400,
+    noPlayerHullDamageUntil: nowMs + 500,
+    _volleyTriggered: false,
+    _released: false
+  };
+  tutorialRaidSetBanner('Hull on the horizon — she turns to rake you!');
+  notify('Raiders!', 2600);
+}
+
+function tickTutorialRaidCutscene(dt) {
+  const tr = G.tutorialRaidCutscene;
+  if (!tr || !tr.active) return;
+  tr.age += dt;
+  const npc = G.npcs.find(n => n.syncId === TUTORIAL_RAID_NPC_SYNC);
+  const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+  if (!npc || npc.sinking) {
+    tutorialRaidSetBanner('');
+    tr.scriptingActive = false;
+    tr.cameraActive = false;
+    disposeTutorialRaidCutscene();
+    return;
+  }
+  if (tr.age >= 2.8 && tr.bannerPhase < 0) {
+    tr.bannerPhase = 0;
+    tutorialRaidSetBanner('She pours a broadside — brace!');
+  }
+  if (tr.age >= 3 && !tr._volleyTriggered && isMultiplayerHost()) {
+    tr._volleyTriggered = true;
+    tr.noPlayerHullDamageUntil = Math.max(nowMs + 4600, (tr.noPlayerHullDamageUntil || 0));
+    npcFireBroadsideAtPlayer(npc);
+  }
+  if (tr.age >= 3.4 && tr.bannerPhase === 0) {
+    tr.bannerPhase = 1;
+    tutorialRaidSetBanner('She wears away — chase or she escapes!');
+  }
+  if (!tr._released && tr.age >= 8.9) {
+    tr._released = true;
+    tr.scriptingActive = false;
+    npc.aggro = true;
+    tutorialRaidSetBanner('Your turn — chase and sink her! (Starboard Z · Port X)');
+    notify('Fight: close to broadside range, then Z (starboard) and X (port). Chain and grape are in your shot locker.', 8800);
+  }
+  if (tr.age >= 12) tr.cameraActive = false;
+  if (!tr.cameraActive && tr.age >= 16 && tr._released) disposeTutorialRaidCutscene();
+}
+
+function tickTutorialRaidNpcHost(dt, npc) {
+  const tr = G.tutorialRaidCutscene;
+  if (!tr || npc.syncId !== TUTORIAL_RAID_NPC_SYNC) return;
+  const px = G.player.x, pz = G.player.z;
+  const dx = px - npc.x, dz = pz - npc.z;
+  const distToP = Math.hypot(dx, dz);
+  const sharp = 2.32;
+  if (tr.age < 3.1) {
+    const toP = Math.atan2(dx, dz);
+    let dTurn = toP - npc.rotation;
+    while (dTurn > Math.PI) dTurn -= Math.PI * 2;
+    while (dTurn < -Math.PI) dTurn += Math.PI * 2;
+    npc.rotation += dTurn * Math.min(1, 2.95 * dt) * npcSailingTurnFactor(npc);
+    const tgt = distToP > 70 ? npcMaxForwardSpeed(npc) * 0.52 : npcMaxForwardSpeed(npc) * 0.08;
+    accelerateNpcToward(npc, dt, tgt);
+    steerNpcClearanceAhead(npc, dt, sharp);
+    applyNpcMoveWithIslandEscape(npc, dt, sharp);
+  } else if (tr.age < 8.95) {
+    const rdx = npc.x - px, rdz = npc.z - pz;
+    const toAway = Math.atan2(rdx || 0.001, rdz || 0.001);
+    let dTurn = toAway - npc.rotation;
+    while (dTurn > Math.PI) dTurn -= Math.PI * 2;
+    while (dTurn < -Math.PI) dTurn += Math.PI * 2;
+    npc.rotation += dTurn * Math.min(1, 3.05 * dt) * npcSailingTurnFactor(npc);
+    accelerateNpcToward(npc, dt, npcMaxForwardSpeed(npc) * 0.9);
+    steerNpcClearanceAhead(npc, dt, sharp);
+    applyNpcMoveWithIslandEscape(npc, dt, sharp);
+  } else {
+    npc.speed = npcMaxForwardSpeed(npc) * 0.42;
+    checkNpcSeaReefWreck(npc);
+  }
+}
+
 function endTutorial() {
   const ov = document.getElementById('tutorial-overlay');
   if (ov) ov.style.display = 'none';
   positionTutorialHighlight(null);
   document.getElementById('touch-zoom')?.classList.remove('tutorial-zoom-emphasis');
   syncTouchZoomLayer();
+  tryBeginTutorialRaidFromUi();
 }
 
 function startTutorialAfterNewCrew() {
@@ -32421,6 +32676,9 @@ function beginVoyageAfterCharacter() {
   bootstrapGameAudioOnUserGesture();
   void ensureWaGunshotBuffer().catch(() => {});
   G.storyQuest = { phase: 'intro', step: 0, turnInCx: null, turnInCz: null, turnInTown: null, bountyX: null, bountyZ: null, bountyRot: null };
+  G.tutorialRaidConsumed = false;
+  G.tutorialRaidPending = true;
+  G.tutorialRaidCutscene = null;
   G.quests = [];
   G.completedMissionLog = [];
   G.chartMarkers = [];
@@ -32477,6 +32735,9 @@ function beginVoyageAfterCharacter() {
     applyWebAudioSfxMasterGain();
     syncMusicAndTravelVolume();
     openGameHelpModal({ welcomePulse: !isMobile, thenTutorial: true });
+    window.setTimeout(() => {
+      try { tryBeginTutorialRaidFromUi(); } catch (e) {}
+    }, 18000);
   });
 }
 

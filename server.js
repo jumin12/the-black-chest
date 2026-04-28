@@ -4130,7 +4130,7 @@ setInterval(() => {
     ensureWorldPolitics().tickEconomy(1 / TICK_RATE);
   } catch (e) {}
   npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
-  if (serverStateTickSeq % 4 === 0) {
+  if (serverStateTickSeq % 3 === 0) {
     try {
       broadcastAll({
         type: 'npc_sync',
