@@ -3117,6 +3117,34 @@ wss.on('connection', (ws, req) => {
           if (msg.id != null) broadcastAll({ type: 'loot_collect', id: msg.id });
           break;
         }
+        case 'gamble_relay': {
+          if (!msg || typeof msg !== 'object') break;
+          const roomId = msg.roomId != null ? String(msg.roomId).slice(0, 72) : '';
+          if (!roomId) break;
+          const game = msg.game != null ? String(msg.game).slice(0, 24) : '';
+          let payload = {};
+          try {
+            if (msg.payload != null && typeof msg.payload === 'object') {
+              payload = JSON.parse(JSON.stringify(msg.payload));
+            }
+          } catch (e) {
+            payload = {};
+          }
+          try {
+            const sz = JSON.stringify(payload);
+            if (sz.length > 14000) break;
+          } catch (e) {
+            break;
+          }
+          broadcastAll({
+            type: 'gamble_relay',
+            roomId,
+            fromId: id,
+            game,
+            payload
+          });
+          break;
+        }
         case 'swimmer_spawn': {
           if (msg.swimmers && Array.isArray(msg.swimmers)) {
             const spawnAt = Date.now();
