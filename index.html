@@ -3279,7 +3279,7 @@ const G = {
   selectedAmmoType: 'ball',
   playerSinking: false, playerSinkTimer: 0, lastAttacker: '', lastAttackerId: null,
   lastKillerNpcX: null, lastKillerNpcZ: null,
-  deathSpawnX: null, deathSpawnZ: null, lastBroadsideSide: 1,
+  deathSpawnX: null, deathSpawnZ: null, deathThreatX: null, deathThreatZ: null, lastBroadsideSide: 1,
   nearDock: null, docked: false,
   dockingAnim: null,
   undockingAnim: null,
@@ -15460,12 +15460,46 @@ function getNpcRiggingHealth(npc) {
   if (npc.riggingMult != null) return Math.max(0, Math.min(100, Number(npc.riggingMult) * 100));
   return 100;
 }
+/** Average combat-relevant crew skills (non-prisoner) — AI speed, turning, reload, aim jitter. */
+function npcCrewSkillAverages(npc) {
+  let g = 0, sa = 0, co = 0, n = 0;
+  const arr = npc && Array.isArray(npc.crewData) ? npc.crewData : [];
+  for (const c of arr) {
+    if (!c || c.role === 'prisoner') continue;
+    const sk = c.skills;
+    const gv = sk && sk.gunning != null ? clampSkillLv(sk.gunning) : 2;
+    const sv = sk && sk.sailing != null ? clampSkillLv(sk.sailing) : 2;
+    const cv = sk && sk.commanding != null ? clampSkillLv(sk.commanding) : 2;
+    g += gv; sa += sv; co += cv;
+    n++;
+  }
+  if (!n) return { gunning: 2.2, sailing: 2.2, commanding: 2.2 };
+  return { gunning: g / n, sailing: sa / n, commanding: co / n };
+}
+function npcCrewSpeedMult(npc) {
+  const { sailing, commanding } = npcCrewSkillAverages(npc);
+  return 0.9 + sailing * 0.032 + commanding * 0.016;
+}
+function npcCrewTurnMult(npc) {
+  const { sailing, commanding } = npcCrewSkillAverages(npc);
+  return 0.94 + sailing * 0.024 + commanding * 0.02;
+}
+function npcCrewGunneryMult(npc) {
+  const { gunning, commanding } = npcCrewSkillAverages(npc);
+  return 0.88 + gunning * 0.036 + commanding * 0.014;
+}
+
+function npcBroadsideCooldownScale(npc) {
+  const g = npcCrewGunneryMult(npc);
+  return Math.max(0.74, Math.min(1.06, 1.08 - (g - 0.95) * 0.42));
+}
+
 /** AI max forward speed (class + rigging; independent of the player’s PLAYER_BASE_SPEED_MULT). */
 function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
   const rigF = Math.max(0.26, Math.pow(rm, 1.32));
-  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.14;
+  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.14 * npcCrewSpeedMult(npc);
 }
 function npcWindEffect(npc) {
   const w = getWindAt(npc.x, npc.z);
@@ -15481,7 +15515,7 @@ function npcEffectiveForwardSpeed(npc) {
 function npcSailingTurnFactor(npc) {
   const v = npcEffectiveForwardSpeed(npc);
   const t = Math.min(1, Math.max(0, (v - 0.06) / 5.4));
-  return 0.11 + 0.89 * t * t;
+  return (0.11 + 0.89 * t * t) * npcCrewTurnMult(npc);
 }
 function accelerateNpcToward(npc, dt, target) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
@@ -16345,6 +16379,10 @@ const PLAYER_DEATH_SINK_SEC = 5.2;
 const PLAYER_RESPAWN_DELAY_SEC = 5;
 const PLAYER_RESPAWN_MIN_DIST = 135;
 const PLAYER_RESPAWN_TARGET_DIST = 230;
+/** Death respawn: band from death site (stay inside typical chunk load ring, clear of killer). */
+const PLAYER_RESPAWN_DEATH_RING_MIN = 292;
+const PLAYER_RESPAWN_DEATH_RING_MAX = Math.min(748, CHUNK_SIZE * 2.77);
+const PLAYER_RESPAWN_THREAT_CLEAR = 282;
 function getPlayerVelocityForLead() {
   const windDot = Math.cos(G.wind.angle - G.player.rotation);
   const effectiveSpeed = Math.abs(G.player.speed * computePlayerSpeedModifiers(windDot));
@@ -16382,10 +16420,13 @@ function resolveNpcHumanGrudgeAim(npc) {
   return { bx, bz, pvx, pvz };
 }
 function npcFireBroadsideAtPlayer(npc) {
+  if (G.playerSinking || !G.player || G.player.health <= 0) return;
   const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const cc = npcEffectiveCannonSlots(npc);
   if (cc <= 0) return;
   const perSide = Math.ceil(cc / 2);
+  const gm = npcCrewGunneryMult(npc);
+  const aimJit = Math.max(0.38, 1.12 - gm * 0.11);
   const { bx: pAx, bz: pAz, pvx, pvz } = resolveNpcHumanGrudgeAim(npc);
   let px = pAx, pz = pAz;
   for (let iter = 0; iter < 4; iter++) {
@@ -16418,8 +16459,8 @@ function npcFireBroadsideAtPlayer(npc) {
   const shots = [];
   for (let g = 0; g < perSide; g++) {
     if (Math.random() < 0.14) continue;
-    const jitter = (Math.random() - 0.5) * 0.62;
-    const wide = (Math.random() - 0.5) * (0.38 + Math.random() * 0.35);
+    const jitter = (Math.random() - 0.5) * 0.62 * aimJit;
+    const wide = (Math.random() - 0.5) * (0.38 + Math.random() * 0.35) * aimJit;
     const ang = jitter + wide;
     const c = Math.cos(ang), s = Math.sin(ang);
     let dirX = baseDirX * c - baseDirZ * s;
@@ -16444,7 +16485,7 @@ function npcFireBroadsideAtPlayer(npc) {
   shots.forEach((shot, idx) => {
     window.setTimeout(() => {
       if (G.mode !== 'playing') return;
-      if (!npc.mesh || npc.sinking || npc.health <= 0) return;
+      if (!npc.mesh || npc.sinking || npc.health <= 0 || G.playerSinking || !G.player || G.player.health <= 0) return;
       kickShipBroadsideCannon(npc.mesh, shot.side, shot.g);
       const nVel = (!npc.anchored && Math.abs(npc.speed || 0) > 0.04) ? npcShipVelocityXZ(npc) : { vx: 0, vz: 0 };
       spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ, nVel);
@@ -16465,6 +16506,8 @@ function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
   const cc = npcEffectiveCannonSlots(npc);
   if (cc <= 0) return;
   const perSide = Math.ceil(cc / 2);
+  const gm = npcCrewGunneryMult(npc);
+  const aimJit = Math.max(0.38, 1.12 - gm * 0.11);
   const tv = npcShipVelocityXZ(targetNpc);
   let px = targetNpc.x, pz = targetNpc.z;
   for (let iter = 0; iter < 4; iter++) {
@@ -16494,8 +16537,8 @@ function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
   const shots = [];
   for (let g = 0; g < perSide; g++) {
     if (Math.random() < 0.14) continue;
-    const jitter = (Math.random() - 0.5) * 0.62;
-    const wide = (Math.random() - 0.5) * (0.38 + Math.random() * 0.35);
+    const jitter = (Math.random() - 0.5) * 0.62 * aimJit;
+    const wide = (Math.random() - 0.5) * (0.38 + Math.random() * 0.35) * aimJit;
     const ang = jitter + wide;
     const c = Math.cos(ang), s = Math.sin(ang);
     let dirX = baseDirX * c - baseDirZ * s;
@@ -16519,7 +16562,7 @@ function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
   shots.forEach((shot, idx) => {
     window.setTimeout(() => {
       if (G.mode !== 'playing') return;
-      if (!npc.mesh || npc.sinking || npc.health <= 0 || !targetNpc || targetNpc.sinking) return;
+      if (!npc.mesh || npc.sinking || npc.health <= 0 || !targetNpc || targetNpc.sinking || (targetNpc.health != null && targetNpc.health <= 0)) return;
       kickShipBroadsideCannon(npc.mesh, shot.side, shot.g);
       const nVel = (!npc.anchored && Math.abs(npc.speed || 0) > 0.04) ? npcShipVelocityXZ(npc) : { vx: 0, vz: 0 };
       spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ, nVel);
@@ -16737,11 +16780,13 @@ function updateNPCs(dt) {
             while (diff > Math.PI) diff -= Math.PI * 2;
             while (diff < -Math.PI) diff += Math.PI * 2;
             const turnMul = npc.underFireTimer > 0 ? 1.85 : 1.32;
-            npc.rotation += diff * turnMul * dt * npcSailingTurnFactor(npc);
+            const brgMis = Math.min(dStar, dPort);
+            const angleBoost = 1 + Math.min(0.92, brgMis / (Math.PI * 0.4)) * 0.58;
+            npc.rotation += diff * turnMul * angleBoost * dt * npcSailingTurnFactor(npc);
             const distAtk = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z);
             if (npc.fireCooldown <= 0 && distAtk < 74) {
               npcFireBroadsideAtNpcTarget(npc, atkShip);
-              npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+              npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * npcBroadsideCooldownScale(npc);
             }
           }
           steerNpcClearanceAhead(npc, dt, sharp);
@@ -16766,10 +16811,12 @@ function updateNPCs(dt) {
             while (diff > Math.PI) diff -= Math.PI * 2;
             while (diff < -Math.PI) diff += Math.PI * 2;
             const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.35;
-            npc.rotation += diff * turnMul * dt * npcSailingTurnFactor(npc);
+            const brgMis = Math.min(dStar, dPort);
+            const angleBoost = 1 + Math.min(0.92, brgMis / (Math.PI * 0.4)) * 0.58;
+            npc.rotation += diff * turnMul * angleBoost * dt * npcSailingTurnFactor(npc);
             if (npc.fireCooldown <= 0 && distToPlayer < 102) {
               npcFireBroadsideAtPlayer(npc);
-              npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * 0.92;
+              npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * 0.92 * npcBroadsideCooldownScale(npc);
             }
           }
           steerNpcClearanceAhead(npc, dt, sharp);
@@ -16970,10 +17017,12 @@ function updateNPCs(dt) {
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
           const turnMul = npc.underFireTimer > 0 ? 1.95 : 1.35;
-          npc.rotation += diff * turnMul * dt * npcSailingTurnFactor(npc);
+          const brgMis = Math.min(dStar, dPort);
+          const angleBoost = 1 + Math.min(0.95, brgMis / (Math.PI * 0.38)) * 0.62;
+          npc.rotation += diff * turnMul * angleBoost * dt * npcSailingTurnFactor(npc);
           if (npc.fireCooldown <= 0 && distToTarget < 74) {
             npcFireBroadsideAtNpcTarget(npc, focus);
-            npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
+            npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * npcBroadsideCooldownScale(npc);
           }
         } else if (npc.aggro && distToPlayer < 148) {
           const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
@@ -16987,11 +17036,13 @@ function updateNPCs(dt) {
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
           const turnMul = npc.underFireTimer > 0 ? 2.12 : 1.48;
-          npc.rotation += diff * turnMul * dt * npcSailingTurnFactor(npc);
+          const brgMis = Math.min(dStar, dPort);
+          const angleBoost = 1 + Math.min(0.95, brgMis / (Math.PI * 0.38)) * 0.62;
+          npc.rotation += diff * turnMul * angleBoost * dt * npcSailingTurnFactor(npc);
 
           if (npc.fireCooldown <= 0 && distToPlayer < 100) {
             npcFireBroadsideAtPlayer(npc);
-            npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * 0.9;
+            npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * 0.9 * npcBroadsideCooldownScale(npc);
           }
         } else {
           npc.wanderTimer -= dt;
@@ -29226,6 +29277,9 @@ function update(dt) {
       const isPellet = !!b.isPellet;
       G.otherPlayers.forEach((op, opId) => {
         if (op.docked) return;
+        if (op.health != null && op.health <= 0) return;
+        const opNet = opId != null ? netPlayerId(opId) : null;
+        if (opNet != null && G.pendingRemoteShipSink.has(opNet)) return;
         if (harborPvpTruceBetween(G.player.x, G.player.z, G.player.shipType, op.x, op.z, op.shipType || 'sloop')) return;
         const hitR = cannonballStrikeHitRadius(op.shipType || 'sloop', at, isPellet);
         const opx0 = b.x - b.dx * dt, opz0 = b.z - b.dz * dt;
@@ -29448,6 +29502,26 @@ function update(dt) {
     }
     G.deathSpawnX = G.player.x;
     G.deathSpawnZ = G.player.z;
+    {
+      const aid = G.lastAttackerId != null && Number.isFinite(Number(G.lastAttackerId)) ? Number(G.lastAttackerId) : null;
+      let tx = null, tz = null;
+      if (aid != null && G.otherPlayers.has(aid)) {
+        const op = G.otherPlayers.get(aid);
+        if (op && Number.isFinite(op.x) && Number.isFinite(op.z)) {
+          tx = op.x;
+          tz = op.z;
+        }
+      }
+      if (tx == null || tz == null) {
+        const kx = G.lastKillerNpcX, kz = G.lastKillerNpcZ;
+        if (kx != null && kz != null && Number.isFinite(Number(kx)) && Number.isFinite(Number(kz))) {
+          tx = Number(kx);
+          tz = Number(kz);
+        }
+      }
+      G.deathThreatX = tx;
+      G.deathThreatZ = tz;
+    }
     G.playerSinking = true; G.playerSinkTimer = 0;
     G.playerSinkY = playerShipGroup.position.y;
     G.dockingAnim = null;
@@ -29504,24 +29578,38 @@ function update(dt) {
       syncAnchorStatusHud();
       const dx = G.deathSpawnX != null ? G.deathSpawnX : G.player.x;
       const dz = G.deathSpawnZ != null ? G.deathSpawnZ : G.player.z;
+      let tx = G.deathThreatX, tz = G.deathThreatZ;
+      if (!(tx != null && tz != null && Number.isFinite(Number(tx)) && Number.isFinite(Number(tz)))) {
+        const kx = G.lastKillerNpcX, kz = G.lastKillerNpcZ;
+        if (kx != null && kz != null && Number.isFinite(Number(kx)) && Number.isFinite(Number(kz))) {
+          tx = Number(kx);
+          tz = Number(kz);
+        } else {
+          tx = null;
+          tz = null;
+        }
+      }
+      const hasThreat = tx != null && tz != null;
       let nx = G.player.x, nz = G.player.z;
-      const kx = G.lastKillerNpcX;
-      const kz = G.lastKillerNpcZ;
-      const avoidNpc = kx != null && kz != null && Number.isFinite(Number(kx)) && Number.isFinite(Number(kz));
-      const minFromDeath = Math.max(PLAYER_RESPAWN_MIN_DIST, 125);
-      for (let tries = 0; tries < (avoidNpc ? 56 : 40); tries++) {
+      const ringLo = PLAYER_RESPAWN_DEATH_RING_MIN;
+      const ringHi = PLAYER_RESPAWN_DEATH_RING_MAX;
+      const clearR = PLAYER_RESPAWN_THREAT_CLEAR;
+      const ringSpan = Math.max(12, ringHi - ringLo);
+      for (let tries = 0; tries < 78; tries++) {
         const ang = Math.random() * Math.PI * 2;
-        const dist = PLAYER_RESPAWN_TARGET_DIST + Math.random() * (avoidNpc ? 130 : 95);
+        const dist = ringLo + Math.random() * ringSpan;
         nx = dx + Math.sin(ang) * dist;
         nz = dz + Math.cos(ang) * dist;
-        if (Math.hypot(nx - dx, nz - dz) < minFromDeath) continue;
-        if (avoidNpc && Math.hypot(nx - kx, nz - kz) < 218) continue;
+        if (Math.hypot(nx - dx, nz - dz) < ringLo - 2) continue;
+        if (hasThreat && Math.hypot(nx - Number(tx), nz - Number(tz)) < clearR) continue;
         break;
       }
       G.player.x = nx;
       G.player.z = nz;
       G.deathSpawnX = null;
       G.deathSpawnZ = null;
+      G.deathThreatX = null;
+      G.deathThreatZ = null;
       ensurePlayerInOpenOcean({ skipCustomMapSpawn: true });
       nudgePlayerSpawnClearOfShips();
       G.player.speed = 1;
