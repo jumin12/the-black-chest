@@ -16809,6 +16809,24 @@ function resolveNpcHumanGrudgeAim(npc) {
   }
   return { bx, bz, pvx, pvz };
 }
+/** Scripted raid skips steerNpcAvoidCloseShips — bias hull away from player so the pass crosses clear ahead. */
+function tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer) {
+  if (!npc || !G.player) return;
+  const pType = G.player.shipType || 'sloop';
+  const nt = npcCollisionShipType(npc);
+  const hullGap = shipHullRadius(pType) + shipHullRadius(nt) + 18;
+  if (dPlayer >= hullGap + 38) return;
+  /* Weight pushes harder as we penetrate the comfort band (tangential avoidance, not chasing). */
+  const t = Math.max(0, Math.min(1, 1 - (dPlayer - hullGap) / 46));
+  if (t <= 1e-4) return;
+  const rax = npc.x - px, raz = npc.z - pz;
+  const away = Math.atan2(rax || 1e-4, raz || 1e-4);
+  let diff = away - npc.rotation;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  npc.rotation += diff * Math.min(1, (0.38 + t * 0.62) * 2.85 * dt) * npcSailingTurnFactor(npc);
+}
+
 /** Broadside yaw toward player's COM for tutorial pass (helps one clean volley). */
 function tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, weight) {
   const dx = px - npc.x, dz = pz - npc.z;
@@ -17483,7 +17501,10 @@ function updateNPCs(dt) {
       steerNpcClearanceAhead(npc, dt, sharp);
       if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
       const maxF = npcMaxForwardSpeed(npc);
-      const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF * 0.94 : maxF * 0.78;
+      let tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF * 0.94 : maxF * 0.78;
+      if (npc.tutorialRaidHull && npc._tutorialRaidCruiseCeil != null && Number.isFinite(npc._tutorialRaidCruiseCeil)) {
+        tgtSpd = Math.min(tgtSpd, npc._tutorialRaidCruiseCeil);
+      }
       accelerateNpcToward(npc, dt, tgtSpd);
       applyNpcMoveWithIslandEscape(npc, dt, sharp);
       updateNpcEscapeMode(npc, dt);
@@ -32599,7 +32620,13 @@ function tutorialRaidRevealCombatPhase() {
   tr.scriptingActive = false;
   tr._showSinkDirective = true;
   tr._released = true;
-  if (npc) npc.aggro = true;
+  if (npc) {
+    npc.aggro = true;
+    /* Match cruising merchant hull speed (spawnTrade npc.targetCruise band), not pirate chase multipliers. */
+    const maxF = npcMaxForwardSpeed(npc);
+    const u = ((((TUTORIAL_RAID_NPC_SYNC * 1664525 + 1013904223) ^ (G.worldSeed | 0)) >>> 0) % 4096) / 4096;
+    npc._tutorialRaidCruiseCeil = maxF * (0.72 + u * 0.22);
+  }
   const past = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1;
   tr.lockHelmEnd = past;
   tutorialRaidSetBanner('');
@@ -32869,9 +32896,12 @@ function tickTutorialRaidNpcHost(dt, npc) {
   /** Wind trims requested sail — same effective curve as normal NPC sail (movement multiplies npcWindEffect). */
   const wEff = npcWindEffect(npc);
   if (!tr._volleyTriggered) {
-    /* Wide beam crossing ahead of player, then turning for one broadside arc */
-    const tx = px + sinR * 32 + sideX * 92;
-    const tz = pz + cosR * 32 + sideZ * 92;
+    /* Wide beam crossing ahead — lateral offset scales up when closing so we pass around, not through, the player. */
+    const sideMag =
+      108 + Math.max(0, 155 - dPlayer) * 0.72 + (dPlayer < 88 ? 36 : 0) + Math.max(0, 72 - dPlayer) * 0.58;
+    const fwdMag = 36 + Math.min(40, Math.max(0, 142 - dPlayer) * 0.38);
+    const tx = px + sinR * fwdMag + sideX * sideMag;
+    const tz = pz + cosR * fwdMag + sideZ * sideMag;
     if (dPlayer >= 52 && dPlayer <= 168) tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, 0.54);
     const dx = tx - nx, dz = tz - nz;
     const distT = Math.hypot(dx, dz);
@@ -32880,6 +32910,7 @@ function tickTutorialRaidNpcHost(dt, npc) {
     while (dTurn > Math.PI) dTurn -= Math.PI * 2;
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
     npc.rotation += dTurn * Math.min(1, 1.15 * dt) * npcSailingTurnFactor(npc);
+    tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
     let frac = distT > 95 ? 0.19 : 0.13;
     frac *= Math.max(0.62, Math.min(1.06, wEff));
     let tgt = tutorialRaidNpcSailSpeedTarget(npc, frac);
@@ -32899,6 +32930,7 @@ function tickTutorialRaidNpcHost(dt, npc) {
     while (dTurn > Math.PI) dTurn -= Math.PI * 2;
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
     npc.rotation += dTurn * Math.min(1, 1.45 * dt) * npcSailingTurnFactor(npc);
+    tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
     const tgtFlee = tutorialRaidNpcSailSpeedTarget(npc, 0.2 * Math.max(0.68, Math.min(1.04, wEff)));
     accelerateNpcToward(npc, dt, tgtFlee);
     steerNpcClearanceAhead(npc, dt, sharp);
