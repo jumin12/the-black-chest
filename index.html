@@ -12892,6 +12892,7 @@ function clearStaleNpcBoardingHostLocks() {
 }
 function canNpcBeBoarded(npc) {
   if (!npc || npc.sinking) return false;
+  if (npc.tutorialRaidHull) return false;
   if (npc.health != null && npc.health <= 0) return false;
   /* Merchant "loading_home" sits off the pier — still allow grapple if alongside in boarding range (was hidden for some docks). */
   if (npc._boardingHostLock) {
@@ -32773,8 +32774,7 @@ function startTutorialRaidEncounter() {
     notify('Keep a weather eye — you will meet pirates soon enough. Broadsides: Z starboard, X port.', 6200);
     return;
   }
-  const nMax0 = npcMaxForwardSpeed(npc);
-  npc.speed = nMax0 * 0.28;
+  npc.speed = tutorialRaidNpcSailSpeedTarget(npc, 0.11);
   G.tutorialRaidCutscene = {
     active: true,
     cinematicUi: true,
@@ -32784,7 +32784,7 @@ function startTutorialRaidEncounter() {
     age: 0,
     cameraActive: true,
     bannerPhase: -1,
-    lockHelmEnd: nowMs + 120000,
+    lockHelmEnd: nowMs + 9800,
     noPlayerHullDamageUntil: nowMs + 780,
     _volleyTriggered: false,
     _volleyAtAge: null,
@@ -32793,6 +32793,15 @@ function startTutorialRaidEncounter() {
   };
   tutorialRaidUiSetSuppressed(true);
   tutorialRaidSetBanner('Sail ho — raider bears down toward your bow!');
+}
+
+/** Tutorial raider stays slightly under player top scalar speed (same order as npc.speed); wind limits travel via npcEffectiveForwardSpeed. */
+function tutorialRaidNpcSailSpeedTarget(npc, fracOfHullMax) {
+  const nmax = npcMaxForwardSpeed(npc);
+  const sm = playerSpeedMultFromShipParts();
+  const playerScalarCeil = 12 * sm * PLAYER_BASE_SPEED_MULT;
+  const f = fracOfHullMax != null ? fracOfHullMax : 0.22;
+  return Math.max(0.05, Math.min(nmax * f, playerScalarCeil * 0.91));
 }
 
 function tickTutorialRaidCutscene(dt) {
@@ -32830,6 +32839,7 @@ function tickTutorialRaidCutscene(dt) {
         tr._volleyAtAge = tr.age;
         tr.bannerPhase = 1;
         tr.noPlayerHullDamageUntil = Math.max(nowMs + 5200, (tr.noPlayerHullDamageUntil || 0));
+        tr.lockHelmEnd = nowMs - 1;
         tutorialRaidSetBanner('Guns — she fires!');
       }
     }
@@ -32854,30 +32864,33 @@ function tickTutorialRaidNpcHost(dt, npc) {
   /** Starboard lateral from forward (sin,cos). */
   const sideX = Math.cos(G.player.rotation), sideZ = -Math.sin(G.player.rotation);
   const nx = npc.x, nz = npc.z;
-  const sharp = 2.32;
-  const nmax = npcMaxForwardSpeed(npc);
+  const sharp = 2.05;
   const dPlayer = Math.hypot(nx - px, nz - pz);
+  /** Wind trims requested sail — same effective curve as normal NPC sail (movement multiplies npcWindEffect). */
+  const wEff = npcWindEffect(npc);
   if (!tr._volleyTriggered) {
-    /* Wide crossing lane — avoids ramming orbit around the player's hull */
-    const tx = px + sinR * 18 + sideX * 76;
-    const tz = pz + cosR * 18 + sideZ * 76;
-    if (dPlayer >= 46 && dPlayer <= 148) tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, 0.74);
+    /* Wide beam crossing ahead of player, then turning for one broadside arc */
+    const tx = px + sinR * 32 + sideX * 92;
+    const tz = pz + cosR * 32 + sideZ * 92;
+    if (dPlayer >= 52 && dPlayer <= 168) tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, 0.54);
     const dx = tx - nx, dz = tz - nz;
     const distT = Math.hypot(dx, dz);
     const toT = Math.atan2(dx, dz);
     let dTurn = toT - npc.rotation;
     while (dTurn > Math.PI) dTurn -= Math.PI * 2;
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
-    npc.rotation += dTurn * Math.min(1, 1.92 * dt) * npcSailingTurnFactor(npc);
-    let tgt = distT > 80 ? nmax * 0.4 : Math.max(nmax * 0.14, npc.speed * 0.92);
-    if (dPlayer < 62) tgt = Math.min(tgt, nmax * 0.2);
-    if (dPlayer < 44) tgt = Math.min(tgt, nmax * 0.11);
+    npc.rotation += dTurn * Math.min(1, 1.15 * dt) * npcSailingTurnFactor(npc);
+    let frac = distT > 95 ? 0.19 : 0.13;
+    frac *= Math.max(0.62, Math.min(1.06, wEff));
+    let tgt = tutorialRaidNpcSailSpeedTarget(npc, frac);
+    if (dPlayer < 72) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.1));
+    if (dPlayer < 48) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.068));
     accelerateNpcToward(npc, dt, tgt);
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
   } else {
     const rax = nx - px, raz = nz - pz;
-    const fleeAng = Math.atan2(-rax || 1e-4, -raz || 1e-4) + Math.sin(tr.age * 1.06) * 0.42;
+    const fleeAng = Math.atan2(-rax || 1e-4, -raz || 1e-4) + Math.sin(tr.age * 0.85) * 0.26;
     const fx = nx + Math.sin(fleeAng) * 220;
     const fz = nz + Math.cos(fleeAng) * 220;
     const rdx = fx - nx, rdz = fz - nz;
@@ -32885,8 +32898,9 @@ function tickTutorialRaidNpcHost(dt, npc) {
     let dTurn = toAway - npc.rotation;
     while (dTurn > Math.PI) dTurn -= Math.PI * 2;
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
-    npc.rotation += dTurn * Math.min(1, 2.68 * dt) * npcSailingTurnFactor(npc);
-    accelerateNpcToward(npc, dt, Math.min(nmax * 0.58, npc.speed + 0.015));
+    npc.rotation += dTurn * Math.min(1, 1.45 * dt) * npcSailingTurnFactor(npc);
+    const tgtFlee = tutorialRaidNpcSailSpeedTarget(npc, 0.2 * Math.max(0.68, Math.min(1.04, wEff)));
+    accelerateNpcToward(npc, dt, tgtFlee);
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
   }
