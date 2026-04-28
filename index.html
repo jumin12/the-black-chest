@@ -10722,6 +10722,8 @@ const otherShipGroups = new Map();
 
 const BROADSIDE_ANGLE = Math.PI * 0.22;
 const BROADSIDE_RANGE = 40;
+/** Half of HUD red-arc reach: max hull-to-hull gap for boarding UI / grapple, and min gap before broadsides in-arc. */
+const BROADSIDE_ENGAGE_HALF_RANGE = BROADSIDE_RANGE * 0.5;
 
 /** World Y for broadside spawn, smoke/flash, and deck firing-arc placement (gun-port height, below old 0.6·hullH). */
 function cannonWorldMuzzleYFromShip(shipWorldY, spec) {
@@ -12472,13 +12474,8 @@ function boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) {
   const nr = shipHullRadius(eShipType || 'sloop');
   return Math.max(0, d - (pr + nr) * 0.5);
 }
-function boardingGapMaxForShips(pShipType, eShipType) {
-  /* Practical grapple distance (was BROADSIDE_RANGE/3 ≈13m — too tight; Board rarely appeared). */
-  const pr = shipHullRadius(pShipType || 'sloop');
-  const er = shipHullRadius(eShipType || 'sloop');
-  const base = 58;
-  const bonus = Math.min(32, (pr + er) * 0.48);
-  return base + bonus;
+function boardingGapMaxForShips(_pShipType, _eShipType) {
+  return BROADSIDE_ENGAGE_HALF_RANGE;
 }
 function isBoardingRangeToTarget(px, pz, ex, ez, pShipType, eShipType) {
   return boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) <= boardingGapMaxForShips(pShipType, eShipType);
@@ -19364,6 +19361,7 @@ async function connectToServer() {
         if (msg.name && msg.captainToken) rememberCaptainToken(msg.name, msg.captainToken);
         if (msg.captainKey && msg.captainToken) rememberCaptainToken(String(msg.captainKey), msg.captainToken);
         if (msg.captainKey) G.myCaptainKey = String(msg.captainKey);
+        if (G.mode === 'playing') saveProgressDebounced();
         break;
       case 'name_rejected':
         notify(msg.error || 'Captain name not allowed on this server.');
@@ -22092,6 +22090,43 @@ function updateCombatFireEdgesUI() {
 }
 
 /* ============================== ACTIONS =================================== */
+function closestEnemySurfaceGapInPlayerBroadsideWedge(fireSide) {
+  const rot = G.player.rotation;
+  const broadsideAngle = rot + fireSide * Math.PI / 2;
+  const half = getPlayerBroadsideHudHalfAngle();
+  const pSt = G.player.shipType || 'sloop';
+  let best = Infinity;
+  const inWedge = (wx, wz) => {
+    const dx = wx - G.player.x, dz = wz - G.player.z;
+    if (dx * dx + dz * dz < 0.04) return false;
+    const ang = Math.atan2(dx, dz);
+    let da = ang - broadsideAngle;
+    while (da > Math.PI) da -= Math.PI * 2;
+    while (da < -Math.PI) da += Math.PI * 2;
+    return Math.abs(da) <= half * 1.02;
+  };
+  for (const n of G.npcs) {
+    if (!n || n.sinking || (n.health != null && n.health <= 0)) continue;
+    if (!inWedge(n.x, n.z)) continue;
+    const g = boardingSurfaceGapMeters(G.player.x, G.player.z, n.x, n.z, pSt, n.type);
+    if (g < best) best = g;
+  }
+  if (G.otherPlayers && G.otherPlayers.size) {
+    G.otherPlayers.forEach(op => {
+      if (!op || op.docked) return;
+      if (op.health != null && op.health <= 0) return;
+      if (!inWedge(op.x, op.z)) return;
+      const g = boardingSurfaceGapMeters(G.player.x, G.player.z, op.x, op.z, pSt, op.shipType || 'sloop');
+      if (g < best) best = g;
+    });
+  }
+  return best;
+}
+function playerBroadsideBlockedByStandoffRange(fireSide) {
+  const gap = closestEnemySurfaceGapInPlayerBroadsideWedge(fireSide);
+  if (!Number.isFinite(gap) || gap >= 1e8) return false;
+  return gap < BROADSIDE_ENGAGE_HALF_RANGE - 0.35;
+}
 function broadsideReadyInfo(fireSide, silent) {
   if (G.spectate) return null;
   if (G.playerSinking || G.player.health <= 0) return null;
@@ -22116,6 +22151,10 @@ function broadsideReadyInfo(fireSide, silent) {
   const ammoName = getItemMeta(invId).name;
   if (ammo < perSide || !ammoRow) {
     if (!silent) notify(`Need ${perSide} ${ammoName} to fire (${ammo} in hold)`);
+    return null;
+  }
+  if (playerBroadsideBlockedByStandoffRange(fireSide)) {
+    if (!silent) notify('Too close for a clean broadside — open the range.');
     return null;
   }
   return { fireSide, spec, perSide, ammoKind, invId, ammoRow, cp };
@@ -31947,8 +31986,8 @@ function dedupeCrewDisplayIdentities() {
   const used = new Set();
   let seed = (Date.now() ^ (Math.imul(G.player.crew.length + 1, 2654435761) >>> 0)) >>> 0;
   const normKey = (n) => String(n || '').trim().toLowerCase();
-  for (const c of G.player.crew) {
-    if (!c || c.role === 'prisoner') continue;
+  const processOne = (c) => {
+    if (!c || c.role === 'prisoner') return;
     let nk = normKey(c.name);
     if (!nk) {
       const pack = ambientPirateCrewData(++seed);
@@ -31969,6 +32008,12 @@ function dedupeCrewDisplayIdentities() {
       nk = normKey(c.name);
     }
     used.add(nk);
+  };
+  const cap = G.player.crew.find(x => x && x.role === 'captain');
+  if (cap) processOne(cap);
+  for (const c of G.player.crew) {
+    if (!c || c.role === 'prisoner' || c === cap) continue;
+    processOne(c);
   }
 }
 function applyDefaultStartingLoadout(opts) {
@@ -32133,7 +32178,8 @@ function saveProgress() {
       sailBanner: (() => {
         const s = G.player.sailBanner && typeof G.player.sailBanner === 'object' ? sanitizeBannerDesignClient(G.player.sailBanner) : null;
         return s || null;
-      })()
+      })(),
+      serverCaptainKey: (G.myCaptainKey != null && String(G.myCaptainKey).trim()) ? String(G.myCaptainKey).trim() : null
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     if (G.mode === 'playing') maybeSendWorldCheckpointAfterSave(false);
@@ -32169,6 +32215,11 @@ function loadProgress() {
       G.player.crew = data.crew;
     } else if (Array.isArray(data.crew) && data.crew.length === 0) {
       G.player.crew = rollFreshPlayerCrewFromPools().map(c => ({ ...c }));
+    }
+    if (data.serverCaptainKey != null && String(data.serverCaptainKey).trim()) {
+      G.myCaptainKey = String(data.serverCaptainKey).trim();
+    } else if (data.clanSnap && data.clanSnap.captainKey != null && String(data.clanSnap.captainKey).trim()) {
+      G.myCaptainKey = String(data.clanSnap.captainKey).trim();
     }
     if (data.quests) G.quests = data.quests.filter(q => q && q.type !== 'explore');
     if (data.completedMissionLog && Array.isArray(data.completedMissionLog)) G.completedMissionLog = data.completedMissionLog.slice(0, 40);
