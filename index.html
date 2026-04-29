@@ -16156,12 +16156,24 @@ function npcBroadsideCooldownScale(npc) {
   return Math.max(0.74, Math.min(1.06, 1.08 - (g - 0.95) * 0.42));
 }
 
+/** Upper bound for stored hull speed scalar (before wind/rig/morale multipliers on movement) — matches accelerate cap in `update()`. */
+function playerHullSpeedScalarCeilForNpcBalance() {
+  try {
+    if (G.player && typeof playerSpeedMultFromShipParts === 'function') {
+      return 12 * playerSpeedMultFromShipParts() * PLAYER_BASE_SPEED_MULT;
+    }
+  } catch (e) {}
+  return 12 * PLAYER_BASE_SPEED_MULT;
+}
+
 /** AI max forward speed (class + rigging; independent of the player’s PLAYER_BASE_SPEED_MULT). */
 function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
   const rigF = Math.max(0.26, Math.pow(rm, 1.32));
-  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.14 * npcCrewSpeedMult(npc) * 1.5;
+  const raw = 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.14 * npcCrewSpeedMult(npc) * 1.5;
+  const cap = playerHullSpeedScalarCeilForNpcBalance() * (1.06 + (spec.speed - SHIP_TYPES.sloop.speed) * 0.035);
+  return Math.min(raw, Math.max(0.4, cap));
 }
 function npcWindEffect(npc) {
   const w = getWindAt(npc.x, npc.z);
@@ -16647,8 +16659,10 @@ function relaxHostNpcNpcCircleOverlaps(list) {
 
 function relaxHostNpcNpcOverlaps() {
   const list = G.npcs.filter(n => !n.sinking && n.health > 0);
+  const nList = list.length;
+  const overlapPasses = Math.max(4, Math.min(7, 7 - Math.floor(nList / 15)));
   const margin = 1.02;
-  for (let pass = 0; pass < 7; pass++) {
+  for (let pass = 0; pass < overlapPasses; pass++) {
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const a = list[i], b = list[j];
@@ -18981,6 +18995,7 @@ function ensureGameNumericComputeWorkers() {
 }
 /** Periodically evaluates swaths of analytic sea heights off-thread (keeps pool warm during large NPC fleets). */
 function scheduleOceanSurfaceBatchBurstOffMain() {
+  if (G.offlineMode) return;
   if (G.mode !== 'playing') return;
   const pool = ensureGameNumericComputeWorkers();
   if (!pool || !pool.length) return;
@@ -33029,8 +33044,11 @@ function gameLoop(time) {
         else if ((_gameLoopFrame & 1) === 0) drawFullmap();
       }
     } else {
-      if ((_gameLoopFrame & 1) === 0) drawMinimap();
-      if (fullmapOpen) drawFullmap();
+      const mmStride = G.offlineMode ? 3 : 2;
+      if ((_gameLoopFrame % mmStride) === 0) drawMinimap();
+      if (fullmapOpen) {
+        if (!G.offlineMode || (_gameLoopFrame & 1) === 0) drawFullmap();
+      }
     }
     if (Math.floor(G.time * 4) !== Math.floor((G.time - dt) * 4)) updateHUD();
     syncHudToastAnchors();
