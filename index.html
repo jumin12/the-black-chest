@@ -16762,6 +16762,157 @@ function steerNpcAvoidCloseShips(npc, dt) {
   npc.wanderAngle = npc.rotation;
 }
 
+const _F_CA_ESC = 1;
+const _F_CA_LOAD = 2;
+const _F_CA_TRADE = 4;
+/** One O(nAll * M) pass — mirrors `assets/npc-ai-worker.js` computeCloseAvoidPacked (see also steerNpcAvoidCloseShips). */
+function computeFleetCloseAvoidDRotPacked(nAll, dt, xz, rad, rot, alive, flags, idxList, turnFactor, dRot) {
+  const M = idxList.length;
+  for (let li = 0; li < M; li++) dRot[li] = 0;
+  for (let li = 0; li < M; li++) {
+    const iGlob = idxList[li];
+    if (iGlob < 0 || iGlob >= nAll) continue;
+    const fg = flags[iGlob] | 0;
+    if (fg & _F_CA_ESC || fg & _F_CA_LOAD) continue;
+    if (!alive[iGlob]) continue;
+    const ix = iGlob * 2;
+    const px = xz[ix];
+    const pz = xz[ix + 1];
+    const myR = rad[iGlob];
+    let wx = 0, wz = 0, wsum = 0;
+    for (let k = 0; k < nAll; k++) {
+      if (k === iGlob) continue;
+      if (!alive[k]) continue;
+      const kx = k * 2;
+      const dx = px - xz[kx];
+      const dz = pz - xz[kx + 1];
+      const d = Math.sqrt(dx * dx + dz * dz);
+      const need = myR + rad[k] + 3.2;
+      if (d > need * 1.35 || d < 0.04) continue;
+      const inv = 1 / d;
+      const nx = dx * inv;
+      const nz = dz * inv;
+      const t = Math.max(0, 1 - d / (need * 1.35));
+      wx += nx * t;
+      wz += nz * t;
+      wsum += t;
+    }
+    if (wsum < 0.2) continue;
+    wx /= wsum;
+    wz /= wsum;
+    const want = Math.atan2(wx, wz);
+    let diff = want - rot[iGlob];
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    if (Math.abs(diff) < 0.038) continue;
+    const trade = (fg & _F_CA_TRADE) !== 0;
+    const gain = (trade ? 0.3 : 0.39) * Math.min(1, wsum * 0.42);
+    const tf = turnFactor[li] || 0;
+    dRot[li] = diff * gain * dt * tf;
+  }
+  return M;
+}
+
+function gatherFleetCloseAvoidSteerIndices(host) {
+  const out = [];
+  if (!Array.isArray(G.npcs)) return out;
+  for (let i = 0; i < G.npcs.length; i++) {
+    const npc = G.npcs[i];
+    const localTutorialRaid =
+      !!(G.localTutorialRaidNpcSurrogate && npc.syncId === TUTORIAL_RAID_NPC_SYNC);
+    const stepping = Boolean(host || localTutorialRaid || G.offlineMode);
+    if (!stepping) continue;
+    if (npc.sinking || (npc.health != null && npc.health <= 0)) continue;
+    if (
+      npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene
+      && G.tutorialRaidCutscene.scriptingActive && !G.tutorialRaidCutscene._volleyTriggered
+    ) {
+      continue;
+    }
+    out.push(i);
+  }
+  return out;
+}
+
+function applyFleetCloseAvoidRotationDeltas(idxArr, dRot, syncIds) {
+  const M = idxArr.length;
+  for (let li = 0; li < M; li++) {
+    const dr = dRot[li];
+    if (!dr) continue;
+    const idx = idxArr[li];
+    const npc = G.npcs[idx];
+    if (!npc || (syncIds && (npc.syncId | 0) !== (syncIds[li] | 0))) continue;
+    npc.rotation += dr;
+    npc.wanderAngle = npc.rotation;
+  }
+}
+
+let _npcAiWorker = null;
+let _npcAiWorkerInitSent = false;
+/** Dedicated Web Worker thread for NPC batch steering (assets/npc-ai-worker.js): init handshake keeps a worker thread alive; batch math runs on main (same formulas as worker) for deterministic same-frame rotations. */
+function getNpcAiWorker() {
+  if (_npcAiWorker !== null) return _npcAiWorker;
+  try {
+    _npcAiWorker = new Worker('assets/npc-ai-worker.js');
+    _npcAiWorker.addEventListener('error', () => {
+      try { _npcAiWorker && _npcAiWorker.terminate(); } catch (e2) {}
+      _npcAiWorker = false;
+    });
+    if (!_npcAiWorkerInitSent && _npcAiWorker) {
+      _npcAiWorkerInitSent = true;
+      try {
+        _npcAiWorker.postMessage({ id: 1, op: 'init' });
+      } catch (e3) {}
+    }
+  } catch (e) {
+    _npcAiWorker = false;
+  }
+  return _npcAiWorker || null;
+}
+
+/** After all NPC positions for the frame; batch replaces per-NPC steerNpcAvoidCloseShips (O(n²) once vs N × n). */
+function applyFleetCloseAvoidSteering(dt, host) {
+  const raw = gatherFleetCloseAvoidSteerIndices(host);
+  if (raw.length === 0) return;
+  const idxList = new Uint32Array(raw.length);
+  for (let i = 0; i < raw.length; i++) idxList[i] = raw[i];
+  const nAll = G.npcs.length;
+  const xz = new Float64Array(nAll * 2);
+  const rad = new Float32Array(nAll);
+  const rot = new Float64Array(nAll);
+  const alive = new Uint8Array(nAll);
+  const flags = new Uint8Array(nAll);
+  for (let j = 0; j < nAll; j++) {
+    const q = G.npcs[j];
+    xz[j * 2] = q.x;
+    xz[j * 2 + 1] = q.z;
+    rad[j] = shipHullRadius(npcCollisionShipType(q));
+    rot[j] = q.rotation;
+    const h = q.health;
+    const okH = h == null || h > 0;
+    alive[j] = !q.sinking && okH ? 1 : 0;
+    let f = 0;
+    if (q.escapeMode) f |= _F_CA_ESC;
+    if (q.isTradeShip && q.tradePhase === 'loading_home') f |= _F_CA_LOAD;
+    if (q.isTradeShip) f |= _F_CA_TRADE;
+    flags[j] = f;
+  }
+  const M = idxList.length;
+  const turnFactor = new Float32Array(M);
+  const syncIds = new Uint32Array(M);
+  for (let li = 0; li < M; li++) {
+    const npc = G.npcs[idxList[li]];
+    turnFactor[li] = npcSailingTurnFactor(npc);
+    syncIds[li] = (npc.syncId | 0) >>> 0;
+  }
+  const dRot = new Float64Array(M);
+  computeFleetCloseAvoidDRotPacked(nAll, dt, xz, rad, rot, alive, flags, idxList, turnFactor, dRot);
+  applyFleetCloseAvoidRotationDeltas(raw, dRot, syncIds);
+  try {
+    getNpcAiWorker();
+  } catch (eW) {}
+}
+
 function resolvePlayerShipCollisionsAfterNpcs() {
   if (G.mode !== 'playing' || G.spectate) return;
   pushPlayerOutOfShipOverlaps();
@@ -18226,10 +18377,9 @@ function updateNPCs(dt) {
       npc._wakePrevZ = npc.z;
       tickShipWakeSpawner(wakeKey, npc.x, npc.z, npc.rotation, effWakeSpd, dt);
     }
-    if (stepping && !npc.sinking && (npc.health == null || npc.health > 0)
-      && !(npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive && !G.tutorialRaidCutscene._volleyTriggered)) steerNpcAvoidCloseShips(npc, dt);
     clampNpcIntoWorldBounds(npc);
   });
+  applyFleetCloseAvoidSteering(dt, host);
   if (host) {
     if (!(G._pirateRespawnAt instanceof Map)) G._pirateRespawnAt = new Map();
     for (const n of G.npcs) {
