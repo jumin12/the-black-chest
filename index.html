@@ -11266,6 +11266,13 @@ function pruneDistantIslandChunks(wx, wz) {
   }
 }
 
+/** True when `generateIsland` will build sizable terrain meshes (ocean-only procedural chunks are cheap). Used to stagger loads and reduce movement hitches. */
+function chunkIslandMeshIsHeavy(cx, cz) {
+  if (!isChunkInWorld(cx, cz)) return false;
+  if (G.customMap && G.customMap.heights && G.customMap.gridN) return true;
+  return !!getProceduralIslandMeta(cx, cz);
+}
+
 function updateChunks() {
   let wx = G.player.x, wz = G.player.z;
   if (G.spectate) {
@@ -11273,9 +11280,17 @@ function updateChunks() {
     if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) { wx = t.x; wz = t.z; }
   }
   const pcx = Math.floor(wx / CHUNK_SIZE), pcz = Math.floor(wz / CHUNK_SIZE);
+  /* Building several island/custom-map meshes in one frame causes visible hitches — spread heavy work across frames (empty procedural ocean chunks stay cheap). */
+  const heavyChunkBudget = isLowEndMobile ? 1 : isMobile ? 1 : 2;
+  let heavyRemain = heavyChunkBudget;
   for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++) {
     for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++) {
       const cx = pcx + dx, cz = pcz + dz;
+      const key = `${cx},${cz}`;
+      if (!G.chunks.has(key) && chunkIslandMeshIsHeavy(cx, cz)) {
+        if (heavyRemain <= 0) continue;
+        heavyRemain--;
+      }
       generateIsland(cx, cz);
       ensureCanonicalWildlifeForChunk(cx, cz);
     }
