@@ -3466,6 +3466,12 @@ const G = {
   _netInterpJitterEwma: null,
   /** `performance.now()` at last `state` arrival (real wall time, not synthetic batch time). */
   _netStatePrevArrivalAt: null,
+  /** Last spacing (ms) between `state` packets — instant widen when deliveries bunch up or stall. */
+  _netLastStateGapMs: null,
+  /** Smoothed remote playback delay ms (ease toward target — widens faster than narrows). */
+  _netInterpDelaySmoothed: null,
+  /** Main-thread hitch accumulator (heavy frames mimic “network lag” visually). */
+  _netFrameStallMs: null,
   _pvpNearby: false,
   townFlagMeshes: [],
   /** Per-port `{ cx,cz }` key → `{ goodId: count }` — trade stockpiles & debug display */
@@ -17892,9 +17898,20 @@ function updateNPCs(dt) {
       const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, getEffectiveRemoteInterpDelayMs()) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
-        npc.x = ipNpc.x;
-        npc.z = ipNpc.z;
-        npc.rotation = ipNpc.ry;
+        const jn = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
+        if (jn > 45) {
+          const tn = Math.min(1, 13 * dt);
+          npc.x += (ipNpc.x - npc.x) * tn;
+          npc.z += (ipNpc.z - npc.z) * tn;
+          let drn = ipNpc.ry - npc.rotation;
+          while (drn > Math.PI) drn -= Math.PI * 2;
+          while (drn < -Math.PI) drn += Math.PI * 2;
+          npc.rotation += drn * tn;
+        } else {
+          npc.x = ipNpc.x;
+          npc.z = ipNpc.z;
+          npc.rotation = ipNpc.ry;
+        }
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -19455,6 +19472,9 @@ async function connectToServer() {
   G._pendingNpcSyncQueue = [];
   G._netInterpJitterEwma = null;
   G._netStatePrevArrivalAt = null;
+  G._netLastStateGapMs = null;
+  G._netInterpDelaySmoothed = null;
+  G._netFrameStallMs = null;
   G._netStateDrainQueue = [];
   try { G.netPeerStaleSince = null; } catch (e) {}
   G.multiplayerNpcAuthorityId = null;
@@ -19779,6 +19799,7 @@ async function connectToServer() {
           const nom = 1000 / NET_SYNC_HZ;
           if (G._netStatePrevArrivalAt != null && G._netStatePrevArrivalAt > 0) {
             const gap = nowA - G._netStatePrevArrivalAt;
+            G._netLastStateGapMs = gap;
             let jitter = Math.abs(gap - nom);
             /** Loss / long stalls: widen buffer even if the next packet is “on time”. */
             if (gap > nom * 2.85) jitter = Math.max(jitter, Math.min(420, (gap - nom) * 0.45));
@@ -30115,25 +30136,64 @@ function interpYawShortest(a, b, u) {
   return v;
 }
 
-/** Center of adaptive playback buffer — RTT + packet-spacing jitter widen it in `getEffectiveRemoteInterpDelayMs`. */
-const REMOTE_HULL_INTERP_DELAY_BASE_MS = 72;
-const REMOTE_HULL_INTERP_DELAY_MIN_MS = 56;
-const REMOTE_HULL_INTERP_DELAY_MAX_MS = 230;
+/** Center of adaptive playback buffer — RTT + packet-spacing jitter widen it in `computeTargetRemoteInterpDelayMs`. */
+const REMOTE_HULL_INTERP_DELAY_BASE_MS = 66;
+const REMOTE_HULL_INTERP_DELAY_MIN_MS = 52;
+const REMOTE_HULL_INTERP_DELAY_MAX_MS = 288;
 
 /**
- * Adaptive delay behind realtime: compensates latency (RTT), irregular batch delivery (EMA jitter), and short loss runs.
+ * Raw target delay (ms) from RTT + jitter EMA + recent packet gap + main-thread hitches.
  */
-function getEffectiveRemoteInterpDelayMs() {
+function computeTargetRemoteInterpDelayMs() {
+  const nom = 1000 / NET_SYNC_HZ;
   const rtt =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
-      ? Math.min(700, Math.max(0, Number(G.clientServerRttMs)))
+      ? Math.min(720, Math.max(0, Number(G.clientServerRttMs)))
       : 0;
   const j =
     G._netInterpJitterEwma != null && Number.isFinite(G._netInterpJitterEwma)
-      ? Math.min(350, Math.max(0, G._netInterpJitterEwma))
+      ? Math.min(400, Math.max(0, G._netInterpJitterEwma))
       : 0;
-  const d = REMOTE_HULL_INTERP_DELAY_BASE_MS + 0.32 * rtt + 1.12 * j;
+  let stall = 0;
+  if (G._netFrameStallMs != null && Number.isFinite(G._netFrameStallMs)) {
+    stall = Math.min(92, Math.max(0, G._netFrameStallMs) * 0.1);
+  }
+  let gapBoost = 0;
+  if (G._netLastStateGapMs != null && Number.isFinite(G._netLastStateGapMs)) {
+    const g = G._netLastStateGapMs;
+    if (g > nom * 1.62) gapBoost = Math.min(115, (g - nom * 1.62) * 0.27);
+  }
+  const d =
+    REMOTE_HULL_INTERP_DELAY_BASE_MS +
+    0.38 * rtt +
+    1.3 * j +
+    stall +
+    gapBoost;
   return Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, d));
+}
+
+/**
+ * Eased delay: **widen quickly** when things go bad, **tighten slowly** when calm — reduces visible pops.
+ */
+function tickNetInterpDelaySmoother(dt) {
+  const tgt = computeTargetRemoteInterpDelayMs();
+  if (G._netInterpDelaySmoothed == null) G._netInterpDelaySmoothed = tgt;
+  let s = G._netInterpDelaySmoothed;
+  const diff = tgt - s;
+  const dtn = Math.min(Math.max(Number(dt) || 0, 1e-5), 0.09);
+  const alphaUp = Math.min(1, 5.4 * dtn + 0.1);
+  const alphaDn = Math.min(1, 0.7 * dtn + 0.014);
+  s += diff * (diff >= 0 ? alphaUp : alphaDn);
+  G._netInterpDelaySmoothed = Math.max(
+    REMOTE_HULL_INTERP_DELAY_MIN_MS * 0.78,
+    Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, s)
+  );
+}
+
+function getEffectiveRemoteInterpDelayMs() {
+  return G._netInterpDelaySmoothed != null
+    ? G._netInterpDelaySmoothed
+    : computeTargetRemoteInterpDelayMs();
 }
 
 /**
@@ -30143,7 +30203,7 @@ function getEffectiveRemoteInterpDelayMs() {
 function interpolateHullHistory(hist, nowMs, delayMs) {
   if (!hist || hist.length < 2) return null;
   const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
-  if (!(la > 2)) return null;
+  if (!(la > 0.05)) return null;
   const tgt = nowMs - delayMs;
   const h0 = hist[0];
   if (tgt <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
@@ -30157,10 +30217,11 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
     const vx = (last.x - prev.x) / dtm;
     const vz = (last.z - prev.z) / dtm;
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
-    const extrapMax = Math.min(190, Math.max(70, delayMs * 0.52 + 42));
+    const extrapMax = Math.min(210, Math.max(74, delayMs * 0.55 + 46));
     const over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
     let uex = 1 + over / dtm;
-    if (uex > 2.2) uex = 2.2;
+    const ueCap = delayMs >= 128 ? 2.55 : 2.22;
+    if (uex > ueCap) uex = ueCap;
     return {
       x: last.x + vx * over,
       z: last.z + vz * over,
@@ -30169,7 +30230,7 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
   }
   const a = hist[i - 1], b = hist[i];
   const t0 = a.recvMs, t1 = b.recvMs;
-  if (!(t1 > t0 + 0.35)) return null;
+  if (!(t1 > t0 + 0.22)) return null;
   let u = (tgt - t0) / (t1 - t0);
   if (u < 0) u = 0;
   if (u > 1) u = 1;
@@ -30214,9 +30275,20 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const delayMsPlay = getEffectiveRemoteInterpDelayMs();
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    ns.x = ip.x;
-    ns.z = ip.z;
-    ns.ry = ip.ry;
+    const jmp = Math.hypot(ip.x - ns.x, ip.z - ns.z);
+    if (jmp > 38) {
+      const tl = Math.min(1, 14 * dt);
+      ns.x += (ip.x - ns.x) * tl;
+      ns.z += (ip.z - ns.z) * tl;
+      let dry = ip.ry - ns.ry;
+      while (dry > Math.PI) dry -= Math.PI * 2;
+      while (dry < -Math.PI) dry += Math.PI * 2;
+      ns.ry += dry * tl;
+    } else {
+      ns.x = ip.x;
+      ns.z = ip.z;
+      ns.ry = ip.ry;
+    }
     return ns;
   }
   smoothRemotePlayerNetVelocity(p, dt);
@@ -30288,8 +30360,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 }
 
 /* ============================== GAME LOOP ================================ */
-/** ~230ms sliding window @ ~60Hz for NPC + peer interp. */
-const REMOTE_SNAP_HIST_MAX = 14;
+/** ~360ms sliding window @ ~60Hz for NPC + peer interp. */
+const REMOTE_SNAP_HIST_MAX = 22;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
@@ -30351,6 +30423,16 @@ function update(dt) {
     return;
   }
   G.time += dt; G.dt = dt;
+  /* Client hitches widen playback buffer briefly (GC / shader compile / tab wake). */
+  const dtw = Number(dt) || 0;
+  if (dtw > 0.088) {
+    G._netFrameStallMs = (G._netFrameStallMs || 0) * 0.52 + Math.min(380, (dtw - 0.018) * 1350);
+  } else if (dtw > 1e-4) {
+    G._netFrameStallMs = (G._netFrameStallMs || 0) * 0.9;
+    if (G._netFrameStallMs !== null && G._netFrameStallMs < 0.85) G._netFrameStallMs = null;
+  }
+  tickNetInterpDelaySmoother(dt);
+
   updatePvpProximityFlag();
   if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
     for (let i = G.prizeHullDecoySinks.length - 1; i >= 0; i--) {
