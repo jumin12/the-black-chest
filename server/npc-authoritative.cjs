@@ -1673,7 +1673,8 @@ function createServerNpcWorld(opts) {
     steerNpcClearanceAhead(npc, dt, sharp, windAt, dryLand);
     nudgeNpcOffIsland(npc, dryLand, edgeClamp);
     const maxF = npcMaxForwardSpeed(npc);
-    const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 110) ? maxF * 0.88 : maxF * 0.8;
+    /** Align cruise/aggression caps with browser AI (`updateNpcs`) so DS pirates don’t sail visibly slower. */
+    const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 110) ? maxF * 0.94 : maxF * 0.88;
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }

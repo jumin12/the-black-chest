@@ -17937,12 +17937,12 @@ function updateNPCs(dt) {
     } else if (!npc.sinking) {
       const useNetInterpNpc = G.npcSimFromServer || (!host && ws && ws.readyState === 1);
       const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      const delayNpc = getEffectiveRemoteInterpDelayMs();
+      const delayNpc = G.npcSimFromServer ? getEffectiveNpcInterpDelayMs() : getEffectiveRemoteInterpDelayMs();
       const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
         const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-        const nt = delayNpc < 58 ? 40 : delayNpc < 108 ? 30 : delayNpc < 165 ? 20 : 15;
-        const nb = ej > 40 ? (delayNpc < 58 ? 16 : 9) : ej > 8 ? (delayNpc < 58 ? 24 : 16) : 10;
+        const nt = delayNpc < 58 ? 54 : delayNpc < 108 ? 41 : delayNpc < 165 ? 29 : 21;
+        const nb = ej > 40 ? (delayNpc < 58 ? 21 : 12) : ej > 8 ? (delayNpc < 58 ? 31 : 21) : 13;
         const an = Math.min(1, 1 - Math.exp(-(nt + nb) * dt));
         npc.x += (ipNpc.x - npc.x) * an;
         npc.z += (ipNpc.z - npc.z) * an;
@@ -19506,6 +19506,37 @@ function enqueueNetStateMessage(msg) {
   if (G._netStateDrainQueue.length > maxQ) G._netStateDrainQueue.splice(0, G._netStateDrainQueue.length - maxQ);
 }
 
+/** Dedicated-server NPC roster (`npc_sync`) — mirrors WebSocket handling (queue → drain in `update`). */
+function enqueueNpcSyncMessage(msg) {
+  if (!msg || msg.type !== 'npc_sync') return;
+  if (isMultiplayerHost()) return;
+  if (G.myId == null) return;
+  if (!Array.isArray(msg.npcs)) return;
+  if (!G._pendingNpcSyncQueue) G._pendingNpcSyncQueue = [];
+  G._pendingNpcSyncQueue.push(msg);
+  const maxNpcQ = 28;
+  if (G._pendingNpcSyncQueue.length > maxNpcQ) {
+    G._pendingNpcSyncQueue.splice(0, G._pendingNpcSyncQueue.length - maxNpcQ);
+  }
+}
+
+/** Single RTC DataChannel multiplexes gameplay JSON (`state`, `npc_sync`, …). */
+function ingestGameplayWireFromRtc(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return;
+  }
+  if (!parsed || typeof parsed !== 'object') return;
+  const t = parsed.type;
+  if (t === 'state') {
+    enqueueNetStateMessage(parsed);
+    return;
+  }
+  if (t === 'npc_sync') enqueueNpcSyncMessage(parsed);
+}
+
 function stopRtcGameChannel() {
   try {
     if (G._rtcPc) {
@@ -19540,9 +19571,7 @@ async function tryStartGameRtcChannel() {
         else if (ev.data instanceof ArrayBuffer) text = new TextDecoder().decode(ev.data);
         else return;
       } catch (e) { return; }
-      let parsed;
-      try { parsed = JSON.parse(text); } catch (e2) { return; }
-      enqueueNetStateMessage(parsed);
+      ingestGameplayWireFromRtc(text);
     };
     pc.onicecandidate = (ev) => {
       if (!ws || ws.readyState !== 1) return;
@@ -20593,18 +20622,9 @@ async function connectToServer() {
         if (msg.pg && typeof msg.pg === 'object') G.politics.portGarrison = { ...msg.pg };
         break;
       }
-      case 'npc_sync': {
-        if (isMultiplayerHost()) break;
-        if (G.myId == null) break;
-        if (!Array.isArray(msg.npcs)) break;
-        if (!G._pendingNpcSyncQueue) G._pendingNpcSyncQueue = [];
-        G._pendingNpcSyncQueue.push(msg);
-        const maxNpcQ = 16;
-        if (G._pendingNpcSyncQueue.length > maxNpcQ) {
-          G._pendingNpcSyncQueue.splice(0, G._pendingNpcSyncQueue.length - maxNpcQ);
-        }
+      case 'npc_sync':
+        enqueueNpcSyncMessage(msg);
         break;
-      }
       case 'npc_cannon':
         fireCannonball(msg.x, msg.z, msg.dx, msg.dz, msg.y, 'npc');
         break;
@@ -21004,8 +21024,8 @@ function applyNpcSyncMessage(msg, opts) {
         npc._npcVelTZ = rdz / dtn;
         const dq = rdx * rdx + rdz * rdz;
         if (dq < 0.0144) {
-          npc._npcVelTX *= 0.82;
-          npc._npcVelTZ *= 0.82;
+          npc._npcVelTX *= 0.92;
+          npc._npcVelTZ *= 0.92;
         }
         const vm = Math.hypot(npc._npcVelTX, npc._npcVelTZ);
         const vcap = 88;
@@ -30274,6 +30294,16 @@ function getEffectiveRemoteInterpDelayMs() {
       : 75;
   const d = 50 + r * 0.52;
   return Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, d));
+}
+
+/** Tighter buffer than player hulls — DS NPC snapshots already authoritative at TICK_RATE; lower delay reads “alive”. */
+function getEffectiveNpcInterpDelayMs() {
+  const r =
+    G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
+      ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
+      : 75;
+  const d = 30 + r * 0.36;
+  return Math.max(22, Math.min(82, d));
 }
 
 /**

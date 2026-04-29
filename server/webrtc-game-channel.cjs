@@ -51,7 +51,7 @@ function createGameRtcBridge(opts) {
       disposeCaptainRtc() {},
       attachCaptainChannel() {},
       handleSignalingMessage() {},
-      sendGameStatePayload() {
+      sendGameplayPayload() {
         return { sentDc: false };
       }
     };
@@ -163,7 +163,7 @@ function createGameRtcBridge(opts) {
     }
   }
 
-  function sendGameStatePayload(ws, jsonUtf8String) {
+  function sendGameplayPayload(ws, jsonUtf8String) {
     const dc = ws._rtcGameDc;
     if (!dc) return { sentDc: false };
     try {
@@ -182,7 +182,7 @@ function createGameRtcBridge(opts) {
     disposeCaptainRtc,
     attachCaptainChannel,
     handleSignalingMessage,
-    sendGameStatePayload
+    sendGameplayPayload
   };
 }
 

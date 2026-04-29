@@ -2175,6 +2175,32 @@ function broadcastAll(data) {
   });
 }
 
+/** Same payload to every captain; prefers WebRTC DataChannel when negotiated (same envelope as WebSocket JSON). */
+function broadcastGameplayJsonGlobal(payloadObj) {
+  const jsonStr = JSON.stringify(payloadObj);
+  if (!gameRtc.enabled) {
+    wss.clients.forEach(client => {
+      if (client.readyState === 1) {
+        try {
+          client.send(jsonStr);
+        } catch (e) {}
+      }
+    });
+    return;
+  }
+  const dual = gameRtc.dualStack;
+  for (const client of wss.clients) {
+    if (client.readyState !== 1) continue;
+    let sentDc = false;
+    sentDc = !!gameRtc.sendGameplayPayload(client, jsonStr).sentDc;
+    if (!sentDc || dual) {
+      try {
+        client.send(jsonStr);
+      } catch (e) {}
+    }
+  }
+}
+
 /** Legacy no-op: NPC simulation runs on the server (`server/npc-authoritative.cjs`). */
 function sendNpcSimulationDelegates() {}
 
@@ -4187,7 +4213,7 @@ setInterval(() => {
   } catch (e) {}
   npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
   try {
-    broadcastAll({
+    broadcastGameplayJsonGlobal({
       type: 'npc_sync',
       npcs: npcWorld.buildSyncRows(),
       wind: npcWorld.getWindSample(),
@@ -4230,7 +4256,7 @@ setInterval(() => {
       });
       let sentDc = false;
       if (gameRtc.enabled) {
-        sentDc = !!gameRtc.sendGameStatePayload(client, payloadStr).sentDc;
+        sentDc = !!gameRtc.sendGameplayPayload(client, payloadStr).sentDc;
       }
       if (!sentDc || gameRtc.dualStack) {
         client.send(payloadStr);
@@ -4264,7 +4290,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`[playground] realm: «${rc.name}» (${rc.id}) — REALM_NAME / REALM_ID env`);
   console.log(`[playground] multiplayer AOI radius (world units): ${STATE_AOI_RADIUS} — set STATE_AOI_RADIUS env to tune; per-client state lists only nearby captains (+ boarding partners).`);
   if (gameRtc.enabled) {
-    console.log(`[playground] WebRTC game DataChannel: ON (signaling on WebSocket). Dual-stack WS \`state\`: ${gameRtc.dualStack ? 'ON' : 'OFF'} — set RTC_STATE_DUAL_STACK=1 to compare. ICE: ${(gameRtc.publicIceServers || []).join(', ')}`);
+    console.log(`[playground] WebRTC game DataChannel: ON — multiplexed JSON (\`state\`, \`npc_sync\`, …). Dual-stack WS copies: ${gameRtc.dualStack ? 'ON' : 'OFF'}. ICE: ${(gameRtc.publicIceServers || []).join(', ')}`);
   }
   if (MAX_CONCURRENT_CAPTAINS > 0) console.log(`[playground] concurrent captain cap: ${MAX_CONCURRENT_CAPTAINS} (MAX_CONCURRENT_CAPTAINS)`);
   const navMsg = NAVIGATOR_ADMIN_PASSWORD
