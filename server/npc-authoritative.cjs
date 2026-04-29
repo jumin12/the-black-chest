@@ -282,13 +282,32 @@ function accelerateNpcToward(npc, dt, target) {
   npc.speed = Math.max(-maxF * 0.2, Math.min(maxF, spd));
 }
 
+function npcShouldUseOffshoreRoutingServer(npc) {
+  if (!npc) return true;
+  if (!npc.isTradeShip) return true;
+  const ph = npc.tradePhase || 'to_dest';
+  return ph !== 'dock_dest' && ph !== 'dock_home' && ph !== 'loading_home';
+}
+
+function npcLooseCoastalRoom(x, z, dryLand) {
+  if (dryLand(x, z)) return false;
+  let ok = 0;
+  for (let i = 0; i < 8; i++) {
+    const ang = (i / 8) * Math.PI * 2;
+    if (!dryLand(x + Math.cos(ang) * 34, z + Math.sin(ang) * 34)) ok++;
+  }
+  return ok >= 5;
+}
+
 function npcForwardRayClear(npc, dist, segments, dryLand) {
   const n = Math.max(2, segments | 0);
   const step = dist / n;
+  const offshore = npcShouldUseOffshoreRoutingServer(npc);
   for (let s = 1; s <= n; s++) {
     const x = npc.x + Math.sin(npc.rotation) * step * s;
     const z = npc.z + Math.cos(npc.rotation) * step * s;
     if (dryLand(x, z)) return false;
+    if (offshore && s >= 2 && (s & 1) === 0 && !npcLooseCoastalRoom(x, z, dryLand)) return false;
   }
   return true;
 }
@@ -296,23 +315,26 @@ function npcForwardRayClear(npc, dist, segments, dryLand) {
 function steerNpcClearanceAhead(npc, dt, turnSharp, windAt, dryLand) {
   if (npc.escapeMode) return;
   if (dryLand(npc.x, npc.z)) return;
-  const look = npc.isTradeShip ? 76 : 56;
-  if (npcForwardRayClear(npc, look, npc.isTradeShip ? 14 : 12, dryLand)) return;
+  const look = npc.isTradeShip ? 76 : 80;
+  if (npcForwardRayClear(npc, look, npc.isTradeShip ? 14 : 13, dryLand)) return;
   const turn = turnSharp != null ? turnSharp : 2.35;
-  const arc = npc.isTradeShip ? 1.38 : 1.22;
-  const turnMul = npc.isTradeShip ? 0.88 : 0.76;
+  const arc = npc.isTradeShip ? 1.38 : 1.34;
+  const turnMul = npc.isTradeShip ? 0.88 : 0.82;
+  const offshore = npcShouldUseOffshoreRoutingServer(npc);
+  const oceanW = offshore;
   let bestScore = -1;
   const cand = [];
   for (let i = -16; i <= 16; i++) {
     const a = npc.rotation + (i / 16) * arc;
     let score = 0;
-    const rayStep = npc.isTradeShip ? 10.2 : 9;
-    const rayLen = npc.isTradeShip ? 10 : 8;
+    const rayStep = npc.isTradeShip ? 10.2 : 9.6;
+    const rayLen = npc.isTradeShip ? 10 : 11;
     for (let s = 1; s <= rayLen; s++) {
       const x = npc.x + Math.sin(a) * rayStep * s;
       const z = npc.z + Math.cos(a) * rayStep * s;
-      if (!dryLand(x, z)) score++;
-      else break;
+      if (dryLand(x, z)) break;
+      if (oceanW && s >= 3 && (s === 5 || s === 9) && !npcLooseCoastalRoom(x, z, dryLand)) break;
+      score++;
     }
     if (score > bestScore) {
       bestScore = score;
@@ -322,7 +344,7 @@ function steerNpcClearanceAhead(npc, dt, turnSharp, windAt, dryLand) {
       cand.push(a);
     }
   }
-  const needScore = npc.isTradeShip ? 4 : 3;
+  const needScore = npc.isTradeShip ? 4 : offshore ? 3 : 2;
   if (bestScore < needScore || !cand.length) return;
   let bestAng = cand[0];
   if (cand.length > 1) {
@@ -380,6 +402,9 @@ function nudgeNpcOffIsland(npc, dryLand, edgeClamp) {
 }
 
 function applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp) {
+  if (npcShouldUseOffshoreRoutingServer(npc) && !npcLooseCoastalRoom(npc.x, npc.z, dryLand)) {
+    steerNpcClearanceAhead(npc, dt, sharp, windAt, dryLand);
+  }
   const eff = npcEffectiveForwardSpeed(npc, windAt);
   const nx = npc.x + Math.sin(npc.rotation) * eff * dt;
   const nz = npc.z + Math.cos(npc.rotation) * eff * dt;

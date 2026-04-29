@@ -15904,6 +15904,20 @@ function hasMinClearanceFromLand(wx, wz, clear) {
   }
   return open >= 6;
 }
+/** Prefer wide ocean lanes unless docking/final berth — keeps AI hulls off surf / beaches unless intended. */
+function npcShouldUseOffshoreRouting(npc) {
+  if (!npc) return true;
+  if (npc.isEscortCargo && npc.escortQuestActive) return false;
+  if (!npc.isTradeShip) return true;
+  const ph = npc.tradePhase || 'to_dest';
+  return ph !== 'dock_dest' && ph !== 'dock_home' && ph !== 'loading_home';
+}
+/** True enough open sea ring for nav (off island surf, not threading an inlet). */
+function npcComfortableOceanPoint(wx, wz, minClearOverride) {
+  const c = minClearOverride != null ? minClearOverride : 30;
+  if (npcNavWaterBlocked(wx, wz, 0.45)) return false;
+  return hasMinClearanceFromLand(wx, wz, c);
+}
 const DOCK_APPROACH_CONE_RAD = (56 * Math.PI) / 180;
 /** Merchant approach: stay in a wide seaward cone (apex at dock) so paths don’t graze island flanks. */
 function tradeApproachSteerTarget(npcX, npcZ, dockX, dockZ, islandWx, islandWZ) {
@@ -16075,11 +16089,14 @@ function accelerateNpcToward(npc, dt, target) {
 function npcForwardRayClear(npc, dist, segments) {
   const n = Math.max(2, segments | 0);
   const step = dist / n;
+  const offshore = npcShouldUseOffshoreRouting(npc);
+  const clearR = offshore ? 28 : 12;
   for (let s = 1; s <= n; s++) {
     const x = npc.x + Math.sin(npc.rotation) * step * s;
     const z = npc.z + Math.cos(npc.rotation) * step * s;
     if (isSeaObstructed(x, z)) return false;
     if (seaReefBlocksPoint(x, z, 0.82)) return false;
+    if (offshore && s >= 2 && ((s & 1) === 0) && !hasMinClearanceFromLand(x, z, clearR)) return false;
   }
   return true;
 }
@@ -16087,11 +16104,13 @@ function npcForwardRayClear(npc, dist, segments) {
 function steerNpcClearanceAhead(npc, dt, turnSharp) {
   if (npc.escapeMode) return;
   if (npcNavWaterBlocked(npc.x, npc.z, 0.55)) return;
-  const look = npc.isTradeShip ? 76 : 72;
+  const look = npc.isTradeShip ? 76 : 78;
   if (npcForwardRayClear(npc, look, npc.isTradeShip ? 14 : 13)) return;
   const turn = turnSharp != null ? turnSharp : 2.35;
-  const arc = npc.isTradeShip ? 1.38 : 1.3;
-  const turnMul = npc.isTradeShip ? 0.88 : 0.8;
+  const arc = npc.isTradeShip ? 1.38 : 1.34;
+  const turnMul = npc.isTradeShip ? 0.88 : 0.82;
+  const offshore = npcShouldUseOffshoreRouting(npc);
+  const oceanW = offshore ? 30 : -1;
   let bestScore = -1;
   const cand = [];
   for (let i = -16; i <= 16; i++) {
@@ -16102,8 +16121,9 @@ function steerNpcClearanceAhead(npc, dt, turnSharp) {
     for (let s = 1; s <= rayLen; s++) {
       const x = npc.x + Math.sin(a) * rayStep * s;
       const z = npc.z + Math.cos(a) * rayStep * s;
-      if (!npcNavWaterBlocked(x, z, 0.78)) score++;
-      else break;
+      if (npcNavWaterBlocked(x, z, offshore ? 0.95 : 0.78)) break;
+      if (oceanW > 0 && s >= 2 && (s === 4 || s === 8) && !hasMinClearanceFromLand(x, z, oceanW)) break;
+      score++;
     }
     if (score > bestScore) {
       bestScore = score;
@@ -16113,7 +16133,7 @@ function steerNpcClearanceAhead(npc, dt, turnSharp) {
       cand.push(a);
     }
   }
-  const needScore = npc.isTradeShip ? 4 : 2;
+  const needScore = npc.isTradeShip ? 4 : offshore ? 3 : 2;
   if (bestScore < needScore || !cand.length) return;
   let bestAng = cand[0];
   if (cand.length > 1) {
@@ -16175,6 +16195,18 @@ function updateNpcEscapeMode(npc, dt) {
 function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   const spd = npcEffectiveForwardSpeed(npc);
   const turn = turnSharp != null ? turnSharp : 2.35;
+  if (npcShouldUseOffshoreRouting(npc)) {
+    if (!npcComfortableOceanPoint(npc.x, npc.z, 24)) {
+      const op = findNpcOpenWaterHeading(npc, 40);
+      if (op != null) {
+        let diff = op - npc.rotation;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        npc.rotation += diff * turn * dt * npcSailingTurnFactor(npc);
+        npc.wanderAngle = npc.rotation;
+      }
+    }
+  }
   const nNewX = npc.x + Math.sin(npc.rotation) * spd * dt;
   const nNewZ = npc.z + Math.cos(npc.rotation) * spd * dt;
   if (spd < 0.02) {
@@ -17850,8 +17882,7 @@ function updateNPCs(dt) {
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
-      const vNet = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
-      const vsmK = 1 - Math.exp(-34 * dt);
+      const vsmK = 1 - Math.exp(-42 * dt);
       if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
         npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
         npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
@@ -17862,9 +17893,13 @@ function updateNPCs(dt) {
         const sc = vm > cap ? cap / vm : 1;
         npc.x += npc._npcVelSmX * sc * dt;
         npc.z += npc._npcVelSmZ * sc * dt;
-      } else if (Math.abs(vNet) > 0.006) {
-        npc.x += Math.sin(authR) * vNet * dt * 0.98;
-        npc.z += Math.cos(authR) * vNet * dt * 0.98;
+      }
+      const vFwd = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
+      const au = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
+      const blendHeading = (Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ)) ? 0.38 : 1;
+      if (Math.abs(vFwd) > 0.006) {
+        npc.x += Math.sin(au) * vFwd * dt * 0.985 * blendHeading;
+        npc.z += Math.cos(au) * vFwd * dt * 0.985 * blendHeading;
       }
       let leadX = npc.syncX, leadZ = npc.syncZ;
       if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed)) && npc.syncR != null) {
@@ -17883,7 +17918,7 @@ function updateNPCs(dt) {
         npc._npcHullSeaYVis = undefined;
       } else {
         /* Small err used 7.8 — over-correct vs prediction + net rounding → micro jitter. */
-        const pull = err > 90 ? 6.8 : err > 35 ? 3.9 : err > 12 ? 2.85 : err > 4 ? 1.82 : err > 1.1 ? 1.06 : err > 0.22 ? 0.58 : 0.22;
+        const pull = err > 90 ? 9.8 : err > 35 ? 5.5 : err > 12 ? 3.85 : err > 4 ? 2.45 : err > 1.1 ? 1.28 : err > 0.22 ? 0.72 : 0.3;
         const posK = 1 - Math.exp(-pull * dt);
         npc.x += ex * posK;
         npc.z += ez * posK;
@@ -17891,7 +17926,7 @@ function updateNPCs(dt) {
       let dr = authR - npc.rotation;
       while (dr > Math.PI) dr -= Math.PI * 2;
       while (dr < -Math.PI) dr += Math.PI * 2;
-      const kRot = 1 - Math.exp(-10.5 * dt);
+      const kRot = 1 - Math.exp(-13.5 * dt);
       npc.rotation += dr * Math.min(1, kRot);
     }
 
@@ -29987,7 +30022,7 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
     const near = dm < 160;
-    const a = 1 - Math.exp(-(near ? 30 : 17) * dt);
+    const a = 1 - Math.exp(-(near ? 40 : 23) * dt);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -30045,12 +30080,12 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.x += evx * s * dt;
     ns.z += evz * s * dt;
   } else if (Math.abs(v) > 0.006) {
-    const pred = nearPeer ? 0.9975 : 0.992;
+    const pred = nearPeer ? 0.9985 : 0.995;
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
   const pk = nearPeer ? 1.72 : 1;
-  let posErrK = err > 120 ? 3.95 : err > 55 ? 2.5 : err > 22 ? 1.52 : err > 8 ? 0.74 : 0.38;
+  let posErrK = err > 120 ? 5.2 : err > 55 ? 3.1 : err > 22 ? 1.88 : err > 8 ? 0.95 : 0.52;
   if (nearPeer) posErrK *= 1.06;
   const posK = 1 - Math.exp(-posErrK * pk * dt);
   ns.x += (ax - ns.x) * posK;
@@ -30058,7 +30093,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-(nearPeer ? 15.6 : 8.4) * dt);
+  const rotK = 1 - Math.exp(-(nearPeer ? 18.8 : 11.2) * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
@@ -33743,6 +33778,8 @@ function tickTutorialRaidCutscene(dt) {
 function tickTutorialRaidNpcHost(dt, npc) {
   const tr = G.tutorialRaidCutscene;
   if (!tr || npc.syncId !== TUTORIAL_RAID_NPC_SYNC || !tr.scriptingActive) return;
+  if (!npc.fireCooldown) npc.fireCooldown = 0;
+  npc.fireCooldown -= dt;
   const px = G.player.x, pz = G.player.z;
   const sinR = Math.sin(G.player.rotation), cosR = Math.cos(G.player.rotation);
   /** Starboard lateral from forward (sin,cos). */
@@ -33777,10 +33814,23 @@ function tickTutorialRaidNpcHost(dt, npc) {
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
   } else {
-    tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, tr.age);
+    tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, 1.08);
     tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
-    const tgtFlee = tutorialRaidNpcSailSpeedTarget(npc, 0.2 * Math.max(0.68, Math.min(1.04, wEff)));
-    accelerateNpcToward(npc, dt, tgtFlee);
+    const maxF = npcMaxForwardSpeed(npc);
+    let tgtSpd;
+    if (dPlayer < 102) {
+      tgtSpd = maxF * (0.1 + 0.18 * Math.min(1, dPlayer / 102));
+    } else if (dPlayer < 152) {
+      tgtSpd = maxF * 0.48;
+    } else {
+      tgtSpd = tutorialRaidNpcSailSpeedTarget(npc, 0.22 * Math.max(0.68, Math.min(1.04, wEff)));
+    }
+    accelerateNpcToward(npc, dt, tgtSpd);
+    if (npc.fireCooldown <= 0) {
+      let ok = npcFireBroadsideAtPlayer(npc);
+      if (!ok) ok = npcFireBroadsideAtPlayer(npc, { tutorialRaid: true });
+      if (ok) npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * 0.85 * npcBroadsideCooldownScale(npc);
+    }
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
   }
