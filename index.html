@@ -17884,47 +17884,53 @@ function updateNPCs(dt) {
     } else if (!npc.sinking) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
-      const vsmK = 1 - Math.exp(-42 * dt);
+      const vsmK = 1 - Math.exp(-26 * dt);
       if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
         npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
         npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
       }
-      const useNpcVelSm = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ);
-      if (useNpcVelSm) {
+      const haveVelSm = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ);
+      if (haveVelSm) {
         const vm = Math.hypot(npc._npcVelSmX, npc._npcVelSmZ);
-        const cap = 78;
+        const cap = 82;
         const sc = vm > cap ? cap / vm : 1;
         npc.x += npc._npcVelSmX * sc * dt;
         npc.z += npc._npcVelSmZ * sc * dt;
       }
       const vFwd = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
-      const au = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
-      /* Heading×speed duplicates net Δ-velocity smoothing — doing both snaps the hull back toward authority each tick. */
-      if (!useNpcVelSm && Math.abs(vFwd) > 0.006) {
-        npc.x += Math.sin(au) * vFwd * dt * 0.985;
-        npc.z += Math.cos(au) * vFwd * dt * 0.985;
+      const auHead = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
+      if (!haveVelSm && Math.abs(vFwd) > 0.006) {
+        npc.x += Math.sin(auHead) * vFwd * dt * 0.985;
+        npc.z += Math.cos(auHead) * vFwd * dt * 0.985;
       }
-      let leadX = npc.syncX, leadZ = npc.syncZ;
-      if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed)) && npc.syncR != null) {
+      let elapsedS = 0;
+      if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed))) {
         const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        const el = Math.min(0.36, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
-        const sp = Number(npc.speed);
-        const au = Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
-        leadX += Math.sin(au) * sp * el;
-        leadZ += Math.cos(au) * sp * el;
+        elapsedS = Math.min(0.32, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
       }
-      const ex = leadX - npc.x, ez = leadZ - npc.z;
+      let axT = npc.syncX, azT = npc.syncZ;
+      if (haveVelSm) {
+        const el = Math.min(elapsedS, 0.12);
+        axT += npc._npcVelSmX * el;
+        azT += npc._npcVelSmZ * el;
+      } else if (Math.abs(vFwd) > 0.006) {
+        const el = Math.min(elapsedS, 0.32);
+        const au = Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
+        axT += Math.sin(au) * vFwd * el;
+        azT += Math.cos(au) * vFwd * el;
+      }
+      const ex = axT - npc.x, ez = azT - npc.z;
       const err = Math.hypot(ex, ez);
-      if (err > 215) {
+      if (err > 220) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
         npc._npcHullSeaYVis = undefined;
-      } else {
-        /* Small err used 7.8 — over-correct vs prediction + net rounding → micro jitter. */
-        const velPull = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ) ? 0.78 : 1;
-        const pull =
-          (err > 90 ? 8.85 : err > 35 ? 5.25 : err > 12 ? 3.55 : err > 4 ? 2.18 : err > 1.1 ? 1.12 : err > 0.22 ? 0.66 : 0.26) * velPull;
-        const posK = 1 - Math.exp(-pull * dt);
+      } else if (err > 3.8) {
+        const soft = haveVelSm ? 0.82 : 1;
+        let pull = err > 95 ? 7.2 : err > 38 ? 4.1 : err > 14 ? 2.45 : err > 5.5 ? 1.15 : err > 1.25 ? 0.48 : 0.12;
+        pull *= soft;
+        if (err < 11) pull *= 0.55;
+        const posK = err < 4.2 ? (1 - Math.exp(-pull * 0.38 * dt)) : 1 - Math.exp(-pull * dt);
         npc.x += ex * posK;
         npc.z += ez * posK;
       }
@@ -19747,8 +19753,8 @@ async function connectToServer() {
       case 'state': {
         if (!G._netStateDrainQueue) G._netStateDrainQueue = [];
         G._netStateDrainQueue.push(msg);
-        /** Coalesce bursts — main thread starving one frame loses intermediate snaps; draining several per tick fixes velocity + peer continuity. */
-        const maxQ = 8;
+        /** Coalesce bursts — keep freshest rows; draining too many in one tick replays stale poses (rubber band). */
+        const maxQ = 11;
         if (G._netStateDrainQueue.length > maxQ) G._netStateDrainQueue.splice(0, G._netStateDrainQueue.length - maxQ);
         break;
       }
@@ -20603,8 +20609,8 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     finalizeNetDesyncProbe(selfRow);
     return;
   }
-  /* Near another captain: evasive arcs + cannon recoil differ from authoritative 45Hz snaps — widen the deadband. */
-  const deadFloor = pvpRelax ? 3.15 : 1.2;
+  /* Near another captain: evasive arcs + cannon recoil — never micro-correct on sub-meter drift. */
+  const deadFloor = pvpRelax ? 5.2 : 2.6;
   /* Wider dead zone + gentler pull: small server/client drift from wind integration was read as jitter. */
   if (d < deadFloor) {
     /* Rotation: soft-align heading to server (authoritative sim) so turns do not fight 45Hz snapshots. */
@@ -20619,11 +20625,10 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     finalizeNetDesyncProbe(selfRow);
     return;
   }
-  let cap = Math.min(0.32, 0.022 + d * 0.0068);
-  if (pvpRelax) cap *= 0.71;
-  /* After latency spikes, one large state delta used to yank the hull in a single frame — ease in over several frames. */
-  if (d > 52) cap *= 0.62;
-  if (d > 120) cap *= 0.5;
+  let cap = Math.min(0.275, 0.018 + d * 0.006);
+  if (pvpRelax) cap *= 0.68;
+  if (d > 52) cap *= 0.58;
+  if (d > 120) cap *= 0.52;
   G.player.x += dx * cap;
   G.player.z += dz * cap;
   if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
@@ -20919,7 +20924,7 @@ function applyNetStateMessage(msg, opts) {
         let vtx = (px1 - px0) / dtSnap;
         let vtz = (pz1 - pz0) / dtSnap;
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
-        const vcap1 = dNear < 168 ? 74 : 48;
+        const vcap1 = dNear < 168 ? 92 : 54;
         const vm0 = Math.hypot(vtx, vtz);
         if (vm0 > vcap1) {
           const s0 = vcap1 / vm0;
@@ -30016,8 +30021,8 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt, wakeCooldownOverrid
 }
 
 /**
- * Dead-reckon using the server’s speed + heading (45Hz), then soft-correct to x/z/rotation.
- * Avoids the old local-wind “prediction” that fought authority and made other ships skip on the host.
+ * Remote peers: extrapolate auth snapshot with the *same* smoothed Δ-velocity used to integrate the mesh,
+ * then softly correct (deadband + damped gain) so hull motion does not fight itself (rubber band).
  */
 /** Low-pass remote peer velocity so finite-difference noise does not fight the smoother each 45Hz tick. */
 function smoothRemotePlayerNetVelocity(p, dt) {
@@ -30027,7 +30032,7 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
     const near = dm < 160;
-    const a = 1 - Math.exp(-(near ? 40 : 23) * dt);
+    const a = 1 - Math.exp(-(near ? 30 : 18) * dt);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -30046,40 +30051,50 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.ry = authR;
     return ns;
   }
+  smoothRemotePlayerNetVelocity(p, dt);
   let ax = Number(p.x), az = Number(p.z);
   if (!Number.isFinite(ax) || !Number.isFinite(az)) {
     ax = ns.x;
     az = ns.z;
   }
-  if (Number.isFinite(ax) && Number.isFinite(az) && p._srvSnapPerfMs != null && Number.isFinite(Number(p.speed))) {
+  let evx = Number.isFinite(p._netVelSmX) ? p._netVelSmX : p._netVelX;
+  let evz = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ : p._netVelZ;
+  let velPred = Number.isFinite(evx) && Number.isFinite(evz) && (Math.abs(evx) > 1e-6 || Math.abs(evz) > 1e-6);
+
+  let elapsed = 0;
+  if (p._srvSnapPerfMs != null) {
     const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const elapsed = Math.min(0.36, Math.max(0, (nowP - p._srvSnapPerfMs) * 0.001));
+    elapsed = Math.min(0.28, Math.max(0, (nowP - p._srvSnapPerfMs) * 0.001));
+  }
+
+  if (velPred) {
+    const el = Math.min(elapsed, 0.1);
+    ax += evx * el;
+    az += evz * el;
+  } else if (Number.isFinite(Number(p.speed)) && Number.isFinite(ax) && Number.isFinite(az) && p._srvSnapPerfMs != null) {
     const sp = Number(p.speed);
     const au = authR;
-    ax += Math.sin(au) * sp * elapsed;
-    az += Math.cos(au) * sp * elapsed;
+    const el = Math.min(elapsed, 0.32);
+    ax += Math.sin(au) * sp * el;
+    az += Math.cos(au) * sp * el;
   }
+
   const err = Math.hypot(ax - ns.x, az - ns.z);
-  /* Only snap on extreme desync (e.g. AOI resume); mid-range errors blend over a few frames. */
   if (err > 420) {
     ns.x = ax;
     ns.z = az;
     ns.ry = authR;
     return ns;
   }
-  smoothRemotePlayerNetVelocity(p, dt);
+
   const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
   const th = authR;
-  let evx = Number.isFinite(p._netVelSmX) ? p._netVelSmX : p._netVelX;
-  let evz = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ : p._netVelZ;
-  let velPred =
-    Number.isFinite(evx) && Number.isFinite(evz) && (Math.abs(evx) > 1e-6 || Math.abs(evz) > 1e-6);
   const px = G.player && Number.isFinite(Number(G.player.x)) ? Number(G.player.x) : 0;
   const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : 0;
   const dPeerCam = Math.hypot(ns.x - px, ns.z - pz);
-  const nearPeer = dPeerCam < 165;
+  const nearPeer = dPeerCam < 175;
   if (velPred) {
-    const vcap = nearPeer ? 84 : 52;
+    const vcap = nearPeer ? 88 : 60;
     const vm = Math.hypot(evx, evz);
     const s = vm > vcap ? vcap / vm : 1;
     ns.x += evx * s * dt;
@@ -30089,16 +30104,17 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
-  const pk = nearPeer ? 1.72 : 1;
-  let posErrK = err > 120 ? 5.12 : err > 55 ? 3.12 : err > 22 ? 1.9 : err > 8 ? 0.98 : 0.53;
-  if (nearPeer) posErrK *= 1.1;
-  const posK = 1 - Math.exp(-posErrK * pk * dt);
+
+  const pk = nearPeer ? 1.38 : 0.88;
+  let posErrK = err > 130 ? 2.75 : err > 62 ? 1.65 : err > 24 ? 0.92 : err > 9 ? 0.44 : err > 2.4 ? (nearPeer ? 0.22 : 0.15) : 0;
+  if (nearPeer) posErrK *= 0.86;
+  const posK = err < 1.15 ? 0 : 1 - Math.exp(-posErrK * pk * dt);
   ns.x += (ax - ns.x) * posK;
   ns.z += (az - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-(nearPeer ? 18.8 : 11.2) * dt);
+  const rotK = 1 - Math.exp(-(nearPeer ? 15.5 : 9.6) * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
@@ -30125,8 +30141,8 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 function update(dt) {
   if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
     /* Drop backlog so we apply recent AOI snapshots instead of replaying stale poses (hull lag behind cannon FX). */
-    while (G._netStateDrainQueue.length > 9) G._netStateDrainQueue.shift();
-    const burst = Math.min(G._netStateDrainQueue.length, 8);
+    while (G._netStateDrainQueue.length > 12) G._netStateDrainQueue.shift();
+    const burst = Math.min(G._netStateDrainQueue.length, 5);
     const batch = [];
     for (let _qi = 0; _qi < burst; _qi++) batch.push(G._netStateDrainQueue.shift());
     for (let _bi = 0; _bi < batch.length; _bi++) {
