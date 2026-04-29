@@ -20659,7 +20659,7 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     finalizeNetDesyncProbe(selfRow);
     return;
   }
-  let cap = Math.min(0.275, 0.018 + d * 0.006);
+  let cap = Math.min(0.22, 0.015 + d * 0.005);
   if (pvpRelax) cap *= 0.68;
   if (d > 52) cap *= 0.58;
   if (d > 120) cap *= 0.52;
@@ -20722,7 +20722,6 @@ function applyNpcSyncMessage(msg) {
   if (G.myId == null) return;
   if (!Array.isArray(msg.npcs)) return;
   const syncSrvTick = msg.srvTick != null ? Number(msg.srvTick) : null;
-  if (syncSrvTick != null && Number.isFinite(syncSrvTick)) refreshNetInterpolationClock(syncSrvTick);
   const seen = new Set();
   const npcBySyncId = new Map();
   for (let _ni = 0; _ni < G.npcs.length; _ni++) {
@@ -30045,10 +30044,8 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt, wakeCooldownOverrid
  * (~100–140 ms behind) reconstructs pose between server ticks instead of rubber-band blending. */
 const NET_SYNC_HZ = 45;
 const NET_SIM_MS_PER_TICK = 1000 / NET_SYNC_HZ;
-const NET_INTERP_DELAY_MS = 132;
+const NET_INTERP_DELAY_MS = 118;
 const NET_INTERP_MAX_RING = 96;
-/** Max sim-time to extrapolate past the newest ring sample (avoids runaway motion when starved). */
-const NET_INTERP_EXTRA_MAX_MS = NET_SIM_MS_PER_TICK * 5;
 
 function refreshNetInterpolationClock(srvTick) {
   if (srvTick == null || !Number.isFinite(Number(srvTick))) return;
@@ -30064,7 +30061,7 @@ function refreshNetInterpolationClock(srvTick) {
   if (G._netInterpOffsetMs == null || !Number.isFinite(G._netInterpOffsetMs)) {
     G._netInterpOffsetMs = idealOff;
   } else {
-    G._netInterpOffsetMs += (idealOff - G._netInterpOffsetMs) * 0.2;
+    G._netInterpOffsetMs += (idealOff - G._netInterpOffsetMs) * 0.125;
   }
 }
 
@@ -30119,8 +30116,7 @@ function sampleInterpRingAt(ring, targetSimT) {
     const vz = (al.z - a2.z) / dts;
     const vt = angleDeltaToward(a2.r, al.r) / dts;
     const dsp = (al.sp - a2.sp) / dts;
-    const rawEx = targetSimT - al.simT;
-    const extrap = Math.min(Math.max(0, rawEx), NET_INTERP_EXTRA_MAX_MS);
+    const extrap = targetSimT - al.simT;
     return {
       x: al.x + vx * extrap,
       z: al.z + vz * extrap,
@@ -30215,6 +30211,7 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 }
 
 function update(dt) {
+  let _netClockSyncedFromState = false;
   if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
     /* Drop backlog so we apply recent AOI snapshots instead of replaying stale poses (hull lag behind cannon FX). */
     while (G._netStateDrainQueue.length > 12) G._netStateDrainQueue.shift();
@@ -30235,7 +30232,10 @@ function update(dt) {
       const lastSnap = batch[batch.length - 1];
       if (lastSnap && lastSnap.srvTick != null) {
         const st = Number(lastSnap.srvTick);
-        if (Number.isFinite(st)) refreshNetInterpolationClock(st);
+        if (Number.isFinite(st)) {
+          refreshNetInterpolationClock(st);
+          _netClockSyncedFromState = true;
+        }
       }
     } catch (e) {}
   }
@@ -30243,6 +30243,13 @@ function update(dt) {
     const npcSt = G._pendingNpcSync;
     G._pendingNpcSync = null;
     if (G.mode === 'playing') try { applyNpcSyncMessage(npcSt); } catch (e) {}
+    /* One clock update per frame — state batch above is canonical; otherwise NPC tick only. */
+    if (G.mode === 'playing' && !_netClockSyncedFromState && npcSt && npcSt.srvTick != null) {
+      try {
+        const stn = Number(npcSt.srvTick);
+        if (Number.isFinite(stn)) refreshNetInterpolationClock(stn);
+      } catch (e2) {}
+    }
   }
   if (G.mode !== 'playing') return;
   if (G.netDesyncFrozen) {
