@@ -17817,13 +17817,15 @@ function updateNPCs(dt) {
         if (factionHostileToPlayer(pirF) || (npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0)) {
           npc.aggro = true;
         } else if (!npc.aggro && distToPlayer < 152 && npcCombatPowerEstimate(npc) < playerCombatPowerEstimate() * 0.92) {
-          const dx = npc.x - G.player.x, dz = npc.z - G.player.z;
-          const away = Math.atan2(dx, dz);
-          let diff = away - npc.rotation;
-          while (diff > Math.PI) diff -= Math.PI * 2;
-          while (diff < -Math.PI) diff += Math.PI * 2;
-          npc.rotation += diff * 0.42 * dt * npcSailingTurnFactor(npc);
-          npc.wanderAngle = npc.rotation;
+          if (!(npc.tutorialRaidHull && G.tutorialRaidCutscene && G.tutorialRaidCutscene._combatPhase)) {
+            const dx = npc.x - G.player.x, dz = npc.z - G.player.z;
+            const away = Math.atan2(dx, dz);
+            let diff = away - npc.rotation;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            npc.rotation += diff * 0.42 * dt * npcSailingTurnFactor(npc);
+            npc.wanderAngle = npc.rotation;
+          }
         }
       }
       const sharp = (focus && distToTarget < 115) || (!focus && npc.aggro && distToPlayer < 110) ? 2.55 : 2.05;
@@ -17952,10 +17954,14 @@ function updateNPCs(dt) {
       }
       const ex = axT - npc.x, ez = azT - npc.z;
       const err = Math.hypot(ex, ez);
-      if (err > 220) {
+      if (err > 420) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
         npc._npcHullSeaYVis = undefined;
+      } else if (err > 260) {
+        const tsn = Math.min(1, Math.max(0.12, (err - 200) * 0.007));
+        npc.x += ex * tsn;
+        npc.z += ez * tsn;
       } else if (err > 3.8) {
         const soft = haveVelSm ? 0.82 : 1;
         let pull = err > 95 ? 7.2 : err > 38 ? 4.1 : err > 14 ? 2.45 : err > 5.5 ? 1.15 : err > 1.25 ? 0.48 : 0.12;
@@ -30217,10 +30223,10 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
     const vx = (last.x - prev.x) / dtm;
     const vz = (last.z - prev.z) / dtm;
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
-    const extrapMax = Math.min(210, Math.max(74, delayMs * 0.55 + 46));
+    const extrapMax = Math.min(175, Math.max(64, delayMs * 0.48 + 36));
     const over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
     let uex = 1 + over / dtm;
-    const ueCap = delayMs >= 128 ? 2.55 : 2.22;
+    const ueCap = delayMs >= 128 ? 2.28 : 2.05;
     if (uex > ueCap) uex = ueCap;
     return {
       x: last.x + vx * over,
@@ -30320,10 +30326,20 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
 
   const err = Math.hypot(ax - ns.x, az - ns.z);
-  if (err > 420) {
+  if (err > 560) {
     ns.x = ax;
     ns.z = az;
     ns.ry = authR;
+    return ns;
+  }
+  if (err > 240) {
+    const st = Math.min(1, (err > 380 ? 9.2 : 6.4) * dt);
+    ns.x += (ax - ns.x) * st;
+    ns.z += (az - ns.z) * st;
+    let drs = authR - ns.ry;
+    while (drs > Math.PI) drs -= Math.PI * 2;
+    while (drs < -Math.PI) drs += Math.PI * 2;
+    ns.ry += drs * Math.min(1, st * 1.15);
     return ns;
   }
 
@@ -33767,10 +33783,11 @@ function tutorialRaidRevealCombatPhase() {
   tr._released = true;
   if (npc) {
     npc.aggro = true;
-    /* Match cruising merchant hull speed (spawnTrade npc.targetCruise band), not pirate chase multipliers. */
+    npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 28);
+    /* Full pursuit — old low cruise cap read as “running away” and starved broadside duels. */
     const maxF = npcMaxForwardSpeed(npc);
-    const u = ((((TUTORIAL_RAID_NPC_SYNC * 1664525 + 1013904223) ^ (G.worldSeed | 0)) >>> 0) % 4096) / 4096;
-    npc._tutorialRaidCruiseCeil = maxF * (0.72 + u * 0.22) * 0.25;
+    npc._tutorialRaidCruiseCeil = maxF * 0.94;
+    tr._volleyTriggered = true;
   }
   const past = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1;
   tr.lockHelmEnd = past;
@@ -34066,6 +34083,7 @@ function tickTutorialRaidCutscene(dt) {
 function tickTutorialRaidNpcHost(dt, npc) {
   const tr = G.tutorialRaidCutscene;
   if (!tr || npc.syncId !== TUTORIAL_RAID_NPC_SYNC || !tr.scriptingActive) return;
+  if (npcNavWaterBlocked(npc.x, npc.z, 0.55)) nudgeNpcOffIsland(npc);
   if (!npc.fireCooldown) npc.fireCooldown = 0;
   npc.fireCooldown -= dt;
   const px = G.player.x, pz = G.player.z;
@@ -34093,6 +34111,9 @@ function tickTutorialRaidNpcHost(dt, npc) {
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
     npc.rotation += dTurn * Math.min(1, 1.15 * dt) * npcSailingTurnFactor(npc);
     tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
+    if (!npcForwardRayClear(npc, 66, 13)) {
+      tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, tr.age);
+    }
     let frac = distT > 95 ? 0.19 : 0.13;
     frac *= Math.max(0.62, Math.min(1.06, wEff));
     let tgt = tutorialRaidNpcSailSpeedTarget(npc, frac);
@@ -34101,9 +34122,12 @@ function tickTutorialRaidNpcHost(dt, npc) {
     accelerateNpcToward(npc, dt, tgt);
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
+    if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
   } else {
     tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, 1.08);
-    tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
+    if (!npcForwardRayClear(npc, 66, 13)) {
+      tutorialRaidFleeTowardOpenSea(npc, dt * 0.82, px, pz, tr.age + dPlayer * 0.004);
+    }
     const maxF = npcMaxForwardSpeed(npc);
     let tgtSpd;
     if (dPlayer < 102) {
@@ -34111,7 +34135,7 @@ function tickTutorialRaidNpcHost(dt, npc) {
     } else if (dPlayer < 152) {
       tgtSpd = maxF * 0.48;
     } else {
-      tgtSpd = tutorialRaidNpcSailSpeedTarget(npc, 0.22 * Math.max(0.68, Math.min(1.04, wEff)));
+      tgtSpd = maxF * 0.64;
     }
     accelerateNpcToward(npc, dt, tgtSpd);
     if (npc.fireCooldown <= 0) {
@@ -34121,6 +34145,7 @@ function tickTutorialRaidNpcHost(dt, npc) {
     }
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
+    if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
   }
   updateNpcEscapeMode(npc, dt);
   try { checkNpcSeaReefWreck(npc); } catch (e) {}
