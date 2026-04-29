@@ -173,6 +173,15 @@ function jsonSigDelta(v) {
     return '';
   }
 }
+/** Stable hash over heavyweight AOI fields — call once per cached row per tick. */
+function heavyHashRow(fr) {
+  let s = '';
+  for (let hi = 0; hi < STATE_DELTA_HEAVY.length; hi++) {
+    const hk = STATE_DELTA_HEAVY[hi];
+    s += '#' + hk + ':' + jsonSigDelta(fr[hk]);
+  }
+  return String(fr.id) + ',' + jsonSigDelta(fr.name) + s;
+}
 function valsEqDelta(a, b) {
   if (a === b) return true;
   if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
@@ -183,36 +192,32 @@ function valsEqDelta(a, b) {
     return jsonSigDelta(a) === jsonSigDelta(b);
   return false;
 }
-function cloneStateRowEcho(r) {
-  return JSON.parse(JSON.stringify(r));
+function snapshotEmittedRow(r) {
+  try {
+    return JSON.parse(JSON.stringify(r));
+  } catch (e) {
+    return {};
+  }
 }
 function pruneEmittedStateForAoI(ws, seenSet) {
   const m = ws._stateEmittedByPid;
-  if (!m || !seenSet || typeof seenSet.forEach !== 'function') return;
-  for (const k of [...m.keys()]) {
+  if (!m || !seenSet) return;
+  for (const k of m.keys()) {
     if (!seenSet.has(k)) m.delete(k);
   }
 }
-function buildClientStateDeltaRow(ws, fullRow) {
+function buildClientStateDeltaRow(ws, fullRow, heavyHashCached) {
   const pid = fullRow.id;
   if (!ws._stateEmittedByPid) ws._stateEmittedByPid = new Map();
   const mmap = ws._stateEmittedByPid;
-  const prev = mmap.get(pid);
-  let needFull = !prev;
-  if (!needFull) {
-    for (let hi = 0; hi < STATE_DELTA_HEAVY.length; hi++) {
-      const hk = STATE_DELTA_HEAVY[hi];
-      if (jsonSigDelta(prev[hk]) !== jsonSigDelta(fullRow[hk])) {
-        needFull = true;
-        break;
-      }
-    }
-  }
+  const hh = heavyHashCached != null ? heavyHashCached : heavyHashRow(fullRow);
+  const prevEnt = mmap.get(pid);
+  const prev = prevEnt && prevEnt.r;
+  const needFull = !prevEnt || hh !== prevEnt.h;
   if (needFull) {
-    const o = cloneStateRowEcho(fullRow);
-    o.df = 1;
-    mmap.set(pid, cloneStateRowEcho(fullRow));
-    return o;
+    const snap = snapshotEmittedRow(fullRow);
+    mmap.set(pid, { h: hh, r: snap });
+    return Object.assign({}, snap, { df: 1 });
   }
   const delta = { id: pid };
   for (const k of Object.keys(fullRow)) {
@@ -224,7 +229,7 @@ function buildClientStateDeltaRow(ws, fullRow) {
   delta.z = fullRow.z;
   delta.rotation = fullRow.rotation;
   delta.speed = fullRow.speed;
-  mmap.set(pid, cloneStateRowEcho(fullRow));
+  mmap.set(pid, { h: hh, r: snapshotEmittedRow(fullRow) });
   return delta;
 }
 /** Matches client `RESERVED_PLAYER_FLAG_IDS` — national / reserved hull-flag PNGs. */
@@ -4257,6 +4262,7 @@ setInterval(() => {
   const includeCrew = (serverStateTickSeq % 2 === 0);
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   const all = Array.from(players.values());
+  const tickStateRowsCache = new Map();
   const stateQueue = [];
   for (const client of wss.clients) {
     if (client.readyState !== 1 || client.playerId == null) continue;
@@ -4266,19 +4272,28 @@ setInterval(() => {
     const seenAoI = new Set();
     for (const p of all) {
       if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
-      const fr = buildStateRow(p, includeCrew || !!p.boarding);
-      seenAoI.add(fr.id);
-      snap.push(buildClientStateDeltaRow(client, fr));
+      let rr = tickStateRowsCache.get(p.id);
+      if (!rr) {
+        const fr = buildStateRow(p, includeCrew || !!p.boarding);
+        rr = { fr, hh: heavyHashRow(fr) };
+        tickStateRowsCache.set(p.id, rr);
+      }
+      seenAoI.add(rr.fr.id);
+      snap.push(buildClientStateDeltaRow(client, rr.fr, rr.hh));
     }
     pruneEmittedStateForAoI(client, seenAoI);
     stateQueue.push({ client, snap });
   }
   const tQueueBuilt = Date.now();
+  const pfBase = {
+    w: Math.max(0, tQueueBuilt - tickStateBeg),
+    rc: Math.max(0, stateQueue.length | 0),
+    b: 0
+  };
   let sumBodies = 0;
-  const rows = [];
   for (let qi = 0; qi < stateQueue.length; qi++) {
-    const sq = stateQueue[qi];
     try {
+      const sq = stateQueue[qi];
       const preWire = JSON.stringify({
         type: 'state',
         players: sq.snap,
@@ -4289,25 +4304,21 @@ setInterval(() => {
         serverNowMs: srvNowEmitTick
       });
       sumBodies += Buffer.byteLength(preWire, 'utf8');
-      rows.push(sq);
     } catch (ePre) {}
   }
-  const pf = {
-    w: Math.max(0, tQueueBuilt - tickStateBeg),
-    b: Math.max(0, sumBodies + rows.length * 76),
-    rc: Math.max(0, rows.length | 0)
-  };
-  for (let ri = 0; ri < rows.length; ri++) {
+  pfBase.b = Math.max(0, sumBodies + pfBase.rc * 76);
+  for (let qi = 0; qi < stateQueue.length; qi++) {
     try {
-      rows[ri].client.send(JSON.stringify({
+      const sq = stateQueue[qi];
+      sq.client.send(JSON.stringify({
         type: 'state',
-        players: rows[ri].snap,
+        players: sq.snap,
         worldT: tickWorldT,
         wildlifeWorldT: tickWorldT,
         srvTick: serverStateTickSeq,
         aoiR: STATE_AOI_RADIUS,
         serverNowMs: srvNowEmitTick,
-        serverPerf: pf
+        serverPerf: pfBase
       }));
     } catch (eSn) {}
   }
