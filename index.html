@@ -17882,94 +17882,71 @@ function updateNPCs(dt) {
       checkNpcSeaReefWreck(npc);
       }
     } else if (!npc.sinking) {
-      const off = G._netInterpOffsetMs;
-      const perf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      let sm = null;
-      if (off != null && npc._interpRing && npc._interpRing.length >= 2) {
-        sm = sampleInterpRingAt(npc._interpRing, perf - off - NET_INTERP_DELAY_MS);
-      } else if (off != null && npc._interpRing && npc._interpRing.length === 1) {
-        const o0 = npc._interpRing[0];
-        sm = { x: o0.x, z: o0.z, r: o0.r, sp: o0.sp };
-      }
-      if (sm && Number.isFinite(sm.x) && Number.isFinite(sm.z)) {
-        let tgtX = sm.x, tgtZ = sm.z, tgtR = sm.r;
-        if (!npc._npcNetSmooth || !Number.isFinite(npc._npcNetSmooth.x)) {
-          npc._npcNetSmooth = { x: npc.x, z: npc.z, ry: tgtR };
-        }
-        const errp = Math.hypot(tgtX - npc._npcNetSmooth.x, tgtZ - npc._npcNetSmooth.z);
-        if (errp > 430) {
-          npc._npcNetSmooth.x = tgtX;
-          npc._npcNetSmooth.z = tgtZ;
-          npc._npcNetSmooth.ry = tgtR;
-        } else {
-          const pk = 1 - Math.exp(-38 * dt);
-          npc._npcNetSmooth.x += (tgtX - npc._npcNetSmooth.x) * pk;
-          npc._npcNetSmooth.z += (tgtZ - npc._npcNetSmooth.z) * pk;
-          const dYawShip = angleDeltaToward(npc._npcNetSmooth.ry, tgtR);
-          npc._npcNetSmooth.ry += dYawShip * Math.min(1, 1 - Math.exp(-22 * dt));
-        }
-        npc.x = npc._npcNetSmooth.x;
-        npc.z = npc._npcNetSmooth.z;
-        npc.rotation = npc._npcNetSmooth.ry;
-        if (sm.sp != null && Number.isFinite(sm.sp)) npc.speed = sm.sp;
+      const useNetInterpNpc = G.npcSimFromServer || (!host && ws && ws.readyState === 1);
+      const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, REMOTE_HULL_INTERP_DELAY_MS) : null;
+      if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
+        npc.x = ipNpc.x;
+        npc.z = ipNpc.z;
+        npc.rotation = ipNpc.ry;
       } else {
-        if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
-        const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
-        const vsmK = 1 - Math.exp(-26 * dt);
-        if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
-          npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
-          npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
-        }
-        const haveVelSm = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ);
-        if (haveVelSm) {
-          const vm = Math.hypot(npc._npcVelSmX, npc._npcVelSmZ);
-          const cap = 82;
-          const sc = vm > cap ? cap / vm : 1;
-          npc.x += npc._npcVelSmX * sc * dt;
-          npc.z += npc._npcVelSmZ * sc * dt;
-        }
-        const vFwd = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
-        const auHead = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
-        if (!haveVelSm && Math.abs(vFwd) > 0.006) {
-          npc.x += Math.sin(auHead) * vFwd * dt * 0.985;
-          npc.z += Math.cos(auHead) * vFwd * dt * 0.985;
-        }
-        let elapsedS = 0;
-        if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed))) {
-          const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
-          elapsedS = Math.min(0.32, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
-        }
-        let axT = npc.syncX, azT = npc.syncZ;
-        if (haveVelSm) {
-          const el = Math.min(elapsedS, 0.12);
-          axT += npc._npcVelSmX * el;
-          azT += npc._npcVelSmZ * el;
-        } else if (Math.abs(vFwd) > 0.006) {
-          const el = Math.min(elapsedS, 0.32);
-          const au = Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
-          axT += Math.sin(au) * vFwd * el;
-          azT += Math.cos(au) * vFwd * el;
-        }
-        const ex = axT - npc.x, ez = azT - npc.z;
-        const err = Math.hypot(ex, ez);
-        if (err > 220) {
-          npc.x = npc.syncX;
-          npc.z = npc.syncZ;
-          npc._npcHullSeaYVis = undefined;
-        } else if (err > 3.8) {
-          const soft = haveVelSm ? 0.82 : 1;
-          let pull = err > 95 ? 7.2 : err > 38 ? 4.1 : err > 14 ? 2.45 : err > 5.5 ? 1.15 : err > 1.25 ? 0.48 : 0.12;
-          pull *= soft;
-          if (err < 11) pull *= 0.55;
-          const posK = err < 4.2 ? (1 - Math.exp(-pull * 0.38 * dt)) : 1 - Math.exp(-pull * dt);
-          npc.x += ex * posK;
-          npc.z += ez * posK;
-        }
-        let dr = authR - npc.rotation;
-        while (dr > Math.PI) dr -= Math.PI * 2;
-        while (dr < -Math.PI) dr += Math.PI * 2;
-        const kRot = 1 - Math.exp(-13.5 * dt);
-        npc.rotation += dr * Math.min(1, kRot);
+      if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
+      const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
+      const vsmK = 1 - Math.exp(-26 * dt);
+      if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
+        npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
+        npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
+      }
+      const haveVelSm = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ);
+      if (haveVelSm) {
+        const vm = Math.hypot(npc._npcVelSmX, npc._npcVelSmZ);
+        const cap = 82;
+        const sc = vm > cap ? cap / vm : 1;
+        npc.x += npc._npcVelSmX * sc * dt;
+        npc.z += npc._npcVelSmZ * sc * dt;
+      }
+      const vFwd = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
+      const auHead = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
+      if (!haveVelSm && Math.abs(vFwd) > 0.006) {
+        npc.x += Math.sin(auHead) * vFwd * dt * 0.985;
+        npc.z += Math.cos(auHead) * vFwd * dt * 0.985;
+      }
+      let elapsedS = 0;
+      if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed))) {
+        const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        elapsedS = Math.min(0.32, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
+      }
+      let axT = npc.syncX, azT = npc.syncZ;
+      if (haveVelSm) {
+        const el = Math.min(elapsedS, 0.12);
+        axT += npc._npcVelSmX * el;
+        azT += npc._npcVelSmZ * el;
+      } else if (Math.abs(vFwd) > 0.006) {
+        const el = Math.min(elapsedS, 0.32);
+        const au = Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
+        axT += Math.sin(au) * vFwd * el;
+        azT += Math.cos(au) * vFwd * el;
+      }
+      const ex = axT - npc.x, ez = azT - npc.z;
+      const err = Math.hypot(ex, ez);
+      if (err > 220) {
+        npc.x = npc.syncX;
+        npc.z = npc.syncZ;
+        npc._npcHullSeaYVis = undefined;
+      } else if (err > 3.8) {
+        const soft = haveVelSm ? 0.82 : 1;
+        let pull = err > 95 ? 7.2 : err > 38 ? 4.1 : err > 14 ? 2.45 : err > 5.5 ? 1.15 : err > 1.25 ? 0.48 : 0.12;
+        pull *= soft;
+        if (err < 11) pull *= 0.55;
+        const posK = err < 4.2 ? (1 - Math.exp(-pull * 0.38 * dt)) : 1 - Math.exp(-pull * dt);
+        npc.x += ex * posK;
+        npc.z += ez * posK;
+      }
+      let dr = authR - npc.rotation;
+      while (dr > Math.PI) dr -= Math.PI * 2;
+      while (dr < -Math.PI) dr += Math.PI * 2;
+      const kRot = 1 - Math.exp(-13.5 * dt);
+      npc.rotation += dr * Math.min(1, kRot);
       }
     }
 
@@ -19425,6 +19402,10 @@ function removeRemotePeer(lid) {
   disposeRemoteDockRopes(lidN);
   G.pendingRemoteShipSink.delete(lidN);
   G.remotePlayerStories.delete(lidN);
+  try {
+    const op = G.otherPlayers.get(lidN);
+    if (op) op._snapHist = null;
+  } catch (e) {}
   G.otherPlayers.delete(lidN);
   if (otherShipGroups.has(lidN)) {
     const og = otherShipGroups.get(lidN);
@@ -19465,8 +19446,6 @@ async function connectToServer() {
   G.myId = null;
   G._lastNetStateWT = null;
   G._lastNetStateSrvTick = null;
-  G._netInterpOffsetMs = null;
-  G._interpClockSrvTick = null;
   G._pendingNpcSync = null;
   G._netStateDrainQueue = [];
   try { G.netPeerStaleSince = null; } catch (e) {}
@@ -20659,7 +20638,7 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     finalizeNetDesyncProbe(selfRow);
     return;
   }
-  let cap = Math.min(0.22, 0.015 + d * 0.005);
+  let cap = Math.min(0.275, 0.018 + d * 0.006);
   if (pvpRelax) cap *= 0.68;
   if (d > 52) cap *= 0.58;
   if (d > 120) cap *= 0.52;
@@ -20863,13 +20842,18 @@ function applyNpcSyncMessage(msg) {
       if (syncSrvTick != null && Number.isFinite(syncSrvTick)) npc._lastNpcSrvTick = syncSrvTick;
       npc._npcSyncWallT = (typeof performance !== 'undefined' && performance.now) ? performance.now() * 0.001 : Date.now() * 0.001;
       npc._npcSnapRecvPerfMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      {
+        const rMs = npc._npcSnapRecvPerfMs;
+        const rx = Number(nd.x), rz = Number(nd.z);
+        const rr = nd.r != null && Number.isFinite(Number(nd.r)) ? Number(nd.r) : (npc.rotation || 0);
+        if (Number.isFinite(rx) && Number.isFinite(rz) && rMs != null) {
+          if (!Array.isArray(npc._snapHist)) npc._snapHist = [];
+          npc._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: rMs });
+          while (npc._snapHist.length > REMOTE_SNAP_HIST_MAX) npc._snapHist.shift();
+        }
+      }
     }
     npc.syncX = nd.x; npc.syncZ = nd.z; npc.syncR = nd.r;
-    if (syncSrvTick != null && Number.isFinite(syncSrvTick) && Number.isFinite(nd.x) && Number.isFinite(nd.z)) {
-      const spRing = nd.sp != null && Number.isFinite(Number(nd.sp)) ? Number(nd.sp) : (npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0);
-      const rRing = nd.r != null && Number.isFinite(Number(nd.r)) ? Number(nd.r) : (npc.rotation != null ? Number(npc.rotation) : 0);
-      npc._interpRing = interpRingPush(npc._interpRing, syncSrvTick, { x: nd.x, z: nd.z, r: rRing, sp: spRing });
-    }
     const raidHullLocal = !!(nid === TUTORIAL_RAID_NPC_SYNC && npc.tutorialRaidHull && G.localTutorialRaidNpcSurrogate);
     if (!raidHullLocal && nd.h != null && Number.isFinite(Number(nd.h))) npc.health = Math.round(Number(nd.h));
     npc.aggro = !!nd.aggro;
@@ -20928,7 +20912,18 @@ function applyNetStateMessage(msg, opts) {
   /** When the self-row is omitted (ordering bug or one bad tick), still merge AOI peers — old early-return stalled everyone. */
   const selfSnapPresent = msg.players.some(p => netPlayerId(p.id) === myIdForState);
   const wtNum = Number(wT);
+  /* Fallback matches server TICK_RATE (45Hz). Prefer srvTick delta when present — stable vs clock jitter. */
+  let dtSnap = 1 / 45;
+  if (G._lastNetStateWT != null && Number.isFinite(wtNum) && Number.isFinite(G._lastNetStateWT)) {
+    dtSnap = Math.max(1 / 90, Math.min(0.48, wtNum - G._lastNetStateWT));
+  }
   const stNum = msg.srvTick != null ? Number(msg.srvTick) : null;
+  if (stNum != null && Number.isFinite(stNum) && G._lastNetStateSrvTick != null && Number.isFinite(G._lastNetStateSrvTick)) {
+    const dTick = stNum - G._lastNetStateSrvTick;
+    if (dTick > 0 && dTick <= 96) {
+      dtSnap = Math.max(1 / 90, Math.min(0.48, dTick / 45));
+    }
+  }
   if (Number.isFinite(wtNum)) G._lastNetStateWT = wtNum;
   if (stNum != null && Number.isFinite(stNum)) G._lastNetStateSrvTick = stNum;
   let selfRow = null;
@@ -20946,24 +20941,54 @@ function applyNetStateMessage(msg, opts) {
     const patch = { ...p, id: pid };
     if (!Array.isArray(patch.crewData)) delete patch.crewData;
     if (ex) {
+      const px0 = Number(ex.x), pz0 = Number(ex.z);
+      const px1 = Number(patch.x), pz1 = Number(patch.z);
+      if (Number.isFinite(px0) && Number.isFinite(pz0) && Number.isFinite(px1) && Number.isFinite(pz1) && dtSnap > 1e-4) {
+        let vtx = (px1 - px0) / dtSnap;
+        let vtz = (pz1 - pz0) / dtSnap;
+        const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
+        const vcap1 = dNear < 168 ? 92 : 54;
+        const vm0 = Math.hypot(vtx, vtz);
+        if (vm0 > vcap1) {
+          const s0 = vcap1 / vm0;
+          vtx *= s0;
+          vtz *= s0;
+        }
+        ex._netVelTargetX = vtx;
+        ex._netVelTargetZ = vtz;
+      }
       Object.assign(ex, patch);
       if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
       ex._srvSnapPerfMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      {
+        const recvMs = ex._srvSnapPerfMs;
+        const rx = Number(ex.x), rz = Number(ex.z);
+        const rr =
+          ex.rotation != null && Number.isFinite(Number(ex.rotation))
+            ? Number(ex.rotation)
+            : 0;
+        if (Number.isFinite(rx) && Number.isFinite(rz)) {
+          if (!Array.isArray(ex._snapHist)) ex._snapHist = [];
+          ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
+          while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
+        }
+      }
     } else {
       G.otherPlayers.set(pid, patch);
       const nw = G.otherPlayers.get(pid);
       if (nw) nw._srvSnapPerfMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      if (nw) {
+        const rx = Number(nw.x), rz = Number(nw.z);
+        const rr = nw.rotation != null && Number.isFinite(Number(nw.rotation)) ? Number(nw.rotation) : 0;
+        if (Number.isFinite(rx) && Number.isFinite(rz)) {
+          if (!Array.isArray(nw._snapHist)) nw._snapHist = [];
+          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: nw._srvSnapPerfMs });
+          while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
+        }
+      }
     }
     const row = G.otherPlayers.get(pid);
     if (row) refreshOtherPlayerShipCacheKey(row);
-    if (row && stNum != null && Number.isFinite(stNum)) {
-      const rx = Number(row.x), rz = Number(row.z);
-      if (Number.isFinite(rx) && Number.isFinite(rz)) {
-        const rr = row.rotation != null && Number.isFinite(Number(row.rotation)) ? Number(row.rotation) : 0;
-        const rsp = row.speed != null && Number.isFinite(Number(row.speed)) ? Number(row.speed) : 0;
-        row._interpRing = interpRingPush(row._interpRing, stNum, { x: rx, z: rz, r: rr, sp: rsp });
-      }
-    }
   });
   /** Delay removing peers omitted from AOI (packet loss edge or boundary flicker causes pop + hull rebuild churn). */
   if (!G.netPeerStaleSince) G.netPeerStaleSince = new Map();
@@ -30040,100 +30065,75 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt, wakeCooldownOverrid
   spawnShipWakePiece(x, z, rotation, speed, 1, 'stern');
 }
 
-/** Must match server.js TICK_RATE (authoritative sim + interest-managed state). Time-buffered interp
- * (~100–140 ms behind) reconstructs pose between server ticks instead of rubber-band blending. */
-const NET_SYNC_HZ = 45;
-const NET_SIM_MS_PER_TICK = 1000 / NET_SYNC_HZ;
-const NET_INTERP_DELAY_MS = 118;
-const NET_INTERP_MAX_RING = 96;
-
-function refreshNetInterpolationClock(srvTick) {
-  if (srvTick == null || !Number.isFinite(Number(srvTick))) return;
-  const t = Math.floor(Number(srvTick));
-  const perf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  const idealOff = perf - t * NET_SIM_MS_PER_TICK;
-  const prevCt = G._interpClockSrvTick;
-  if (prevCt != null && Number.isFinite(prevCt)) {
-    if (t < prevCt - 64) G._netInterpOffsetMs = null;
-    else if (t < prevCt - 3) return;
-  }
-  G._interpClockSrvTick = t;
-  if (G._netInterpOffsetMs == null || !Number.isFinite(G._netInterpOffsetMs)) {
-    G._netInterpOffsetMs = idealOff;
-  } else {
-    G._netInterpOffsetMs += (idealOff - G._netInterpOffsetMs) * 0.125;
-  }
+/**
+ * Remote peers: extrapolate auth snapshot with the *same* smoothed Δ-velocity used to integrate the mesh,
+ * then softly correct (deadband + damped gain) so hull motion does not fight itself (rubber band).
+ */
+/** Shortest-arc angle lerp/extrap (u may be >1 for forward prediction). */
+function interpYawShortest(a, b, u) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  let v = a + d * u;
+  while (v > Math.PI) v -= Math.PI * 2;
+  while (v < -Math.PI) v += Math.PI * 2;
+  return v;
 }
 
-function interpRingPush(ringRef, srvTick, o) {
-  if (srvTick == null || !Number.isFinite(Number(srvTick))) return ringRef;
-  const tick = Math.floor(Number(srvTick));
-  const simT = tick * NET_SIM_MS_PER_TICK;
-  const ring = ringRef || [];
-  let ix = -1;
-  for (let i = 0; i < ring.length; i++) {
-    if (ring[i].tick === tick) { ix = i; break; }
-  }
-  const pt = {
-    tick,
-    simT,
-    x: o.x,
-    z: o.z,
-    r: o.r != null && Number.isFinite(Number(o.r)) ? Number(o.r) : 0,
-    sp: o.sp != null && Number.isFinite(Number(o.sp)) ? Number(o.sp) : 0
-  };
-  if (ix >= 0) ring[ix] = pt;
-  else {
-    ring.push(pt);
-    ring.sort((a, b) => a.simT - b.simT);
-    while (ring.length > NET_INTERP_MAX_RING) ring.shift();
-  }
-  return ring;
-}
-
-/** @returns {{x:number,z:number,r:number,sp:number}|null} */
-function sampleInterpRingAt(ring, targetSimT) {
-  if (!ring || ring.length === 0) return null;
-  const keepFloor = targetSimT - 2600;
-  while (ring.length > 1 && ring[0].simT < keepFloor) ring.shift();
-  const a0 = ring[0];
-  if (targetSimT <= a0.simT) return { x: a0.x, z: a0.z, r: a0.r, sp: a0.sp };
-
-  let i = 0;
-  for (; i < ring.length - 1; i++) {
-    if (ring[i + 1].simT >= targetSimT) break;
-  }
-  const a = ring[i];
-  const b = ring[i + 1];
-  if (!b) {
-    const al = ring[ring.length - 1];
-    const a2 = ring.length >= 2 ? ring[ring.length - 2] : null;
-    if (!a2 || Math.abs(al.simT - a2.simT) < 1e-4) {
-      return { x: al.x, z: al.z, r: al.r, sp: al.sp };
-    }
-    const dts = al.simT - a2.simT;
-    const vx = (al.x - a2.x) / dts;
-    const vz = (al.z - a2.z) / dts;
-    const vt = angleDeltaToward(a2.r, al.r) / dts;
-    const dsp = (al.sp - a2.sp) / dts;
-    const extrap = targetSimT - al.simT;
+/**
+ * Playback from a short receive-time ring buffer at (now - delay) so motion is sampled between two real
+ * server snapshots instead of guessing with conflicting velocity + positional pulls (major rubber-band source).
+ */
+function interpolateHullHistory(hist, nowMs, delayMs) {
+  if (!hist || hist.length < 2) return null;
+  const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
+  if (!(la > 2)) return null;
+  const tgt = nowMs - delayMs;
+  const h0 = hist[0];
+  if (tgt <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
+  let i = 1;
+  while (i < hist.length && hist[i].recvMs < tgt) i++;
+  const last = hist[hist.length - 1];
+  if (i >= hist.length || tgt >= last.recvMs) {
+    if (hist.length < 2) return { x: last.x, z: last.z, ry: last.ry };
+    const prev = hist[hist.length - 2];
+    const dtm = Math.max(4.5, last.recvMs - prev.recvMs);
+    const vx = (last.x - prev.x) / dtm;
+    const vz = (last.z - prev.z) / dtm;
+    const over = Math.min(Math.max(0, tgt - last.recvMs), 115);
+    let uex = 1 + over / dtm;
+    if (uex > 2.2) uex = 2.2;
     return {
-      x: al.x + vx * extrap,
-      z: al.z + vz * extrap,
-      r: al.r + vt * extrap,
-      sp: al.sp + dsp * extrap
+      x: last.x + vx * over,
+      z: last.z + vz * over,
+      ry: interpYawShortest(prev.ry, last.ry, uex)
     };
   }
-
-  const denom = b.simT - a.simT;
-  const u = denom > 1e-6 ? (targetSimT - a.simT) / denom : 0;
-  const dYaw = angleDeltaToward(a.r, b.r);
+  const a = hist[i - 1], b = hist[i];
+  const t0 = a.recvMs, t1 = b.recvMs;
+  if (!(t1 > t0 + 0.4)) return null;
+  let u = (tgt - t0) / (t1 - t0);
+  if (u < 0) u = 0;
+  if (u > 1) u = 1;
   return {
     x: a.x + (b.x - a.x) * u,
     z: a.z + (b.z - a.z) * u,
-    r: a.r + dYaw * u,
-    sp: a.sp + (b.sp - a.sp) * u
+    ry: interpYawShortest(a.ry, b.ry, u)
   };
+}
+
+/** Low-pass remote peer velocity so finite-difference noise does not fight the smoother each 45Hz tick. */
+function smoothRemotePlayerNetVelocity(p, dt) {
+  const tx = p._netVelTargetX, tz = p._netVelTargetZ;
+  if (Number.isFinite(tx) && Number.isFinite(tz)) {
+    const px = G.player && Number.isFinite(Number(G.player.x)) ? Number(G.player.x) : null;
+    const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
+    const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
+    const near = dm < 160;
+    const a = 1 - Math.exp(-(near ? 30 : 18) * dt);
+    p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
+    p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
+  }
 }
 
 function advanceRemoteShipNetSmooth(sg, p, dt) {
@@ -30149,51 +30149,90 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.ry = authR;
     return ns;
   }
+  const nowWall =
+    typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+  const ip = interpolateHullHistory(p._snapHist, nowWall, REMOTE_HULL_INTERP_DELAY_MS);
+  if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
+    ns.x = ip.x;
+    ns.z = ip.z;
+    ns.ry = ip.ry;
+    return ns;
+  }
+  smoothRemotePlayerNetVelocity(p, dt);
+  let ax = Number(p.x), az = Number(p.z);
+  if (!Number.isFinite(ax) || !Number.isFinite(az)) {
+    ax = ns.x;
+    az = ns.z;
+  }
+  let evx = Number.isFinite(p._netVelSmX) ? p._netVelSmX : p._netVelX;
+  let evz = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ : p._netVelZ;
+  let velPred = Number.isFinite(evx) && Number.isFinite(evz) && (Math.abs(evx) > 1e-6 || Math.abs(evz) > 1e-6);
 
-  let tgtX = Number(p.x);
-  let tgtZ = Number(p.z);
-  let tgtR = authR;
-
-  const off = G._netInterpOffsetMs;
-  const perf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  if (off != null && p._interpRing && p._interpRing.length >= 2) {
-    const simNow = perf - off;
-    const tgtSimT = simNow - NET_INTERP_DELAY_MS;
-    const sm = sampleInterpRingAt(p._interpRing, tgtSimT);
-    if (sm) {
-      tgtX = sm.x;
-      tgtZ = sm.z;
-      tgtR = sm.r;
-    }
-  } else if (off != null && p._interpRing && p._interpRing.length === 1) {
-    const o0 = p._interpRing[0];
-    tgtX = o0.x;
-    tgtZ = o0.z;
-    tgtR = o0.r;
+  let elapsed = 0;
+  if (p._srvSnapPerfMs != null) {
+    const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    elapsed = Math.min(0.28, Math.max(0, (nowP - p._srvSnapPerfMs) * 0.001));
   }
 
-  if (!Number.isFinite(tgtX) || !Number.isFinite(tgtZ)) {
-    tgtX = Number(p.x);
-    tgtZ = Number(p.z);
+  if (velPred) {
+    const el = Math.min(elapsed, 0.1);
+    ax += evx * el;
+    az += evz * el;
+  } else if (Number.isFinite(Number(p.speed)) && Number.isFinite(ax) && Number.isFinite(az) && p._srvSnapPerfMs != null) {
+    const sp = Number(p.speed);
+    const au = authR;
+    const el = Math.min(elapsed, 0.32);
+    ax += Math.sin(au) * sp * el;
+    az += Math.cos(au) * sp * el;
   }
 
-  const errp = Math.hypot(tgtX - ns.x, tgtZ - ns.z);
-  if (errp > 430) {
-    ns.x = tgtX;
-    ns.z = tgtZ;
-    ns.ry = tgtR;
+  const err = Math.hypot(ax - ns.x, az - ns.z);
+  if (err > 420) {
+    ns.x = ax;
+    ns.z = az;
+    ns.ry = authR;
     return ns;
   }
 
-  const pk = 1 - Math.exp(-38 * dt);
-  ns.x += (tgtX - ns.x) * pk;
-  ns.z += (tgtZ - ns.z) * pk;
-  const dYawShip = angleDeltaToward(ns.ry, tgtR);
-  ns.ry += dYawShip * Math.min(1, 1 - Math.exp(-22 * dt));
+  const v = p.speed != null && Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
+  const th = authR;
+  const px = G.player && Number.isFinite(Number(G.player.x)) ? Number(G.player.x) : 0;
+  const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : 0;
+  const dPeerCam = Math.hypot(ns.x - px, ns.z - pz);
+  const nearPeer = dPeerCam < 175;
+  if (velPred) {
+    const vcap = nearPeer ? 88 : 60;
+    const vm = Math.hypot(evx, evz);
+    const s = vm > vcap ? vcap / vm : 1;
+    ns.x += evx * s * dt;
+    ns.z += evz * s * dt;
+  } else if (Math.abs(v) > 0.006) {
+    const pred = nearPeer ? 0.9985 : 0.995;
+    ns.x += Math.sin(th) * v * dt * pred;
+    ns.z += Math.cos(th) * v * dt * pred;
+  }
+
+  const pk = nearPeer ? 1.38 : 0.88;
+  let posErrK = err > 130 ? 2.75 : err > 62 ? 1.65 : err > 24 ? 0.92 : err > 9 ? 0.44 : err > 2.4 ? (nearPeer ? 0.22 : 0.15) : 0;
+  if (nearPeer) posErrK *= 0.86;
+  const posK = err < 1.15 ? 0 : 1 - Math.exp(-posErrK * pk * dt);
+  ns.x += (ax - ns.x) * posK;
+  ns.z += (az - ns.z) * posK;
+  let dYaw = authR - ns.ry;
+  while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+  while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+  const rotK = 1 - Math.exp(-(nearPeer ? 15.5 : 9.6) * dt);
+  ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
 
 /* ============================== GAME LOOP ================================ */
+/** Must match server.js TICK_RATE (authoritative sim + interest-managed state). */
+const NET_SYNC_HZ = 45;
+/** Render remote hulls (~2 ticks) behind realtime so buffered snapshots always bracket playback (Source-style). */
+const REMOTE_HULL_INTERP_DELAY_MS = 92;
+/** ~200ms sliding window @ 45Hz for NPC + peer interp. */
+const REMOTE_SNAP_HIST_MAX = 14;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
@@ -30211,7 +30250,6 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 }
 
 function update(dt) {
-  let _netClockSyncedFromState = false;
   if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
     /* Drop backlog so we apply recent AOI snapshots instead of replaying stale poses (hull lag behind cannon FX). */
     while (G._netStateDrainQueue.length > 12) G._netStateDrainQueue.shift();
@@ -30228,28 +30266,11 @@ function update(dt) {
         });
       } catch (e) {}
     }
-    try {
-      const lastSnap = batch[batch.length - 1];
-      if (lastSnap && lastSnap.srvTick != null) {
-        const st = Number(lastSnap.srvTick);
-        if (Number.isFinite(st)) {
-          refreshNetInterpolationClock(st);
-          _netClockSyncedFromState = true;
-        }
-      }
-    } catch (e) {}
   }
   if (G._pendingNpcSync) {
     const npcSt = G._pendingNpcSync;
     G._pendingNpcSync = null;
     if (G.mode === 'playing') try { applyNpcSyncMessage(npcSt); } catch (e) {}
-    /* One clock update per frame — state batch above is canonical; otherwise NPC tick only. */
-    if (G.mode === 'playing' && !_netClockSyncedFromState && npcSt && npcSt.srvTick != null) {
-      try {
-        const stn = Number(npcSt.srvTick);
-        if (Number.isFinite(stn)) refreshNetInterpolationClock(stn);
-      } catch (e2) {}
-    }
   }
   if (G.mode !== 'playing') return;
   if (G.netDesyncFrozen) {
@@ -30941,7 +30962,8 @@ function update(dt) {
       let dVisYaw = ns.ry - sg.userData.visYaw;
       while (dVisYaw > Math.PI) dVisYaw -= Math.PI * 2;
       while (dVisYaw < -Math.PI) dVisYaw += Math.PI * 2;
-      const yawVisK = 1 - Math.exp(-9.5 * dt);
+      const interpYawReady = !!(p._snapHist && p._snapHist.length >= 4);
+      const yawVisK = 1 - Math.exp(-(interpYawReady ? 15.8 : 9.5) * dt);
       sg.userData.visYaw += dVisYaw * Math.min(1, yawVisK);
       const tiltK = 1 - Math.exp(-4.2 * dt);
       if (sg.userData.visWavePitch == null) sg.userData.visWavePitch = wd.wavePitch;
