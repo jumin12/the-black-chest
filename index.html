@@ -3459,6 +3459,7 @@ const G = {
   clientServerRttMs: null,
   lastServerPerf: null,
   lastSelfNetStateRow: null,
+  _netSmoothedInterpDelayMs: null,
   /** Monotonic counter for `update.seq` (server acks via `state` / authoritative self row). */
   netSendSeq: 0,
   /** Multiplayer: hull no longer matches realm — block play until reload / reconnect. */
@@ -19552,6 +19553,7 @@ async function connectToServer() {
     G.lastSelfNetStateRow = null;
     G._recvHistSrvAnchorMs = null;
     G._recvHistPerfAnchorMs = null;
+    G._netSmoothedInterpDelayMs = null;
     knownServerWorldMapRev = 0;
     serverWorldMapFetchToken++;
     notify('Connected to server');
@@ -20713,8 +20715,7 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   const dz0 = sz - G.player.z;
   const d0 = Math.hypot(dx0, dz0);
   const pvpRelax = !!G._pvpNearby;
-  /* Hard snap on gross divergence. */
-  if (d0 > 280) {
+  if (d0 > 320) {
     if (voyageSaveExistsInStorage() && G._wsOpenedAt && (Date.now() - G._wsOpenedAt) < 5000) return;
     G.player.x = sx;
     G.player.z = sz;
@@ -20725,8 +20726,8 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     return;
   }
   /* One light nudge per `state` (~1×/frame), capped — in cannon range widen dead zone slightly so helm isn’t tugged mid-broadside. */
-  const reconcileLo = pvpRelax ? 34 : 14;
-  if (d0 > reconcileLo && d0 <= 280) {
+  const reconcileLo = pvpRelax ? 38 : 22;
+  if (d0 > reconcileLo && d0 <= 320) {
     let t = Math.min(0.02, 0.004 + d0 * 0.000095);
     if (pvpRelax) t *= 0.52;
     t = Math.min(t, pvpRelax ? 0.013 : 0.017);
@@ -30227,11 +30228,13 @@ const REMOTE_INTERP_BACK_MS_MAX = 168;
 const REMOTE_MAX_EXTRAP_MS = 180;
 /** Max extrapolation speed (world units/s), aligned with near-peer velocity caps elsewhere. */
 const REMOTE_MAX_EXTRAP_SPEED = 94;
-/** Secondary smoothing toward sampled hull target (exponential coefficients. */
-const REMOTE_VISUAL_POS_SMOOTH = 12;
-const REMOTE_VISUAL_ROT_SMOOTH = 14;
+/** Secondary smoothing toward sampled hull target (exp toward buffered sample; higher = snappier chase). */
+const REMOTE_VISUAL_POS_SMOOTH = 16;
+const REMOTE_VISUAL_ROT_SMOOTH = 18;
 /** Above this gap (world units) snap visuals to interp target — alt-tab / real teleports. */
 const REMOTE_VISUAL_HARD_SNAP_DIST = 92;
+/** Max hull correction speed (world units/s) toward interpolated target per frame (FPS-style catch-up cap). */
+const REMOTE_CATCHUP_MAX_UNITS_PER_S = 172;
 
 function getEffectiveRemoteInterpDelayMs() {
   let d = REMOTE_INTERP_BACK_MS_BASE;
@@ -30246,7 +30249,15 @@ function getEffectiveRemoteInterpDelayMs() {
       ? Number(G._netInterpJitterEwma)
       : 0;
   if (jEw > 10) d += Math.min(32, (jEw - 10) * 1.22);
-  return Math.max(REMOTE_INTERP_BACK_MS_MIN, Math.min(REMOTE_INTERP_BACK_MS_MAX, d));
+  let raw = Math.max(REMOTE_INTERP_BACK_MS_MIN, Math.min(REMOTE_INTERP_BACK_MS_MAX, d));
+  if (!(Number.isFinite(G._netSmoothedInterpDelayMs))) G._netSmoothedInterpDelayMs = raw;
+  const sm0 = G._netSmoothedInterpDelayMs;
+  const maxDv = Math.min(12, Math.max(6, raw * 0.07 + 3));
+  let dv = raw - sm0;
+  if (dv > maxDv) dv = maxDv;
+  if (dv < -maxDv) dv = -maxDv;
+  G._netSmoothedInterpDelayMs = Math.max(REMOTE_INTERP_BACK_MS_MIN, Math.min(REMOTE_INTERP_BACK_MS_MAX, sm0 + dv));
+  return G._netSmoothedInterpDelayMs;
 }
 
 /**
@@ -30278,10 +30289,11 @@ function interpolateHullHistory(hist, nowMs, delayMs, velOpt) {
     let u = (renderMs - t0) / span;
     if (u < 0) u = 0;
     if (u > 1) u = 1;
+    const su = u * u * (3 - 2 * u);
     return {
-      x: a.x + (b.x - a.x) * u,
-      z: a.z + (b.z - a.z) * u,
-      ry: interpYawShortest(a.ry, b.ry, u)
+      x: a.x + (b.x - a.x) * su,
+      z: a.z + (b.z - a.z) * su,
+      ry: interpYawShortest(a.ry, b.ry, su)
     };
   }
 
@@ -30318,7 +30330,7 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
     const near = dm < 160;
-    const a = 1 - Math.exp(-(near ? 26 : 17) * dc);
+    const a = 1 - Math.exp(-(near ? 32 : 21) * dc);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -30358,8 +30370,17 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
       ns.ry = ip.ry;
     } else if (dist > 0.03) {
       const posLerp = 1 - Math.exp(-REMOTE_VISUAL_POS_SMOOTH * dt);
-      ns.x += dx * posLerp;
-      ns.z += dz * posLerp;
+      let mx = dx * posLerp;
+      let mz = dz * posLerp;
+      const mv = Math.max(1e-4, REMOTE_CATCHUP_MAX_UNITS_PER_S * dt);
+      const mh = Math.hypot(mx, mz);
+      if (mh > mv) {
+        const s = mv / mh;
+        mx *= s;
+        mz *= s;
+      }
+      ns.x += mx;
+      ns.z += mz;
     } else {
       ns.x = ip.x;
       ns.z = ip.z;
