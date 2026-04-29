@@ -8730,12 +8730,14 @@ function applySailBannerDesignToGroup(g, design, honor) {
   if (!honor) return;
   const d = design && typeof design === 'object' ? sanitizeBannerDesignClient(design) : null;
   if (!d) return;
+  const gen0 = g.userData.bannerComposeGen;
   g.traverse(ch => {
     if (!ch.isMesh || !ch.userData || !ch.userData.isSail) return;
     const opac = ch.material && ch.material.opacity != null ? ch.material.opacity : 1;
     const oldMat = ch.material;
-    /* Keep cloth tint until composed canvas map arrives — pure white reads as a flash (cargo preview rebuilds, etc.). */
+    /* Keep cloth tint until composed canvas map arrives — pure white reads as a flash (rebuild after textured sails, etc.). */
     const sailTint = oldMat && oldMat.color ? oldMat.color.clone() : new THREE.Color(0xf2ead8);
+    if (sailTint.r > 0.94 && sailTint.g > 0.94 && sailTint.b > 0.94) sailTint.setHex(0xf2ead8);
     const nm = new THREE.MeshLambertMaterial({
       color: sailTint,
       side: THREE.DoubleSide,
@@ -8748,9 +8750,8 @@ function applySailBannerDesignToGroup(g, design, honor) {
     if (oldMat && oldMat.dispose) try { oldMat.dispose(); } catch (e) {}
     ch.material = nm;
     const sailGen = (ch.userData._sailBannerTexGen = (ch.userData._sailBannerTexGen | 0) + 1);
-    const expectedShipGen = g.userData.bannerComposeGen;
     composeBannerTexture(d, 384, 512, { isSail: true }).then(tex => {
-      if (expectedShipGen != null && g.userData.bannerComposeGen !== expectedShipGen) return;
+      if (g.userData.bannerComposeGen !== gen0) return;
       if (ch.userData._sailBannerTexGen !== sailGen || !ch.material) return;
       if (tex) {
         ch.material.map = tex;
@@ -11234,6 +11235,9 @@ function refreshOtherPlayerShipCacheKey(p) {
   p._netShipCacheKey = otherPlayerShipCacheKey(p);
 }
 
+/** Monotonic id so async banner/flag compositors drop results from disposed or superseded ship builds (stops white-flash races). */
+let shipBannerComposeNonce = 0;
+
 /** Hull flag: pole + hinge; `flagPlace` mast | side | stern. Optional `bannerDesign` = composed jack (Bannerlord-style). */
 function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAssetIdOpt, bannerDesignOpt) {
   const hasCustomJack = !!(bannerDesignOpt && typeof bannerDesignOpt === 'object' && sanitizeBannerDesignClient(bannerDesignOpt));
@@ -11274,12 +11278,13 @@ function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAsse
     fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78), mat);
     fmesh.userData.hullFlagCustom = true;
     const hullGen = (fmesh.userData._hullBannerTexGen = (fmesh.userData._hullBannerTexGen | 0) + 1);
-    const expectedShipGen = g.userData.bannerComposeGen;
+    const genAtCompose = g.userData.bannerComposeGen;
     composeBannerTexture(bannerDesignOpt, 256, 178, { isSail: false }).then(tex => {
-      if (expectedShipGen != null && g.userData.bannerComposeGen !== expectedShipGen) return;
+      if (g.userData.bannerComposeGen !== genAtCompose) return;
       if (fmesh.userData._hullBannerTexGen !== hullGen || !fmesh.material) return;
       if (tex) {
         fmesh.material.map = tex;
+        fmesh.material.color.setHex(0xffffff);
         fmesh.material.needsUpdate = true;
       }
     });
@@ -11291,8 +11296,21 @@ function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAsse
     if (renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy) {
       ftex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     }
-    fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78),
-      new THREE.MeshBasicMaterial({ map: ftex, side: THREE.DoubleSide }));
+    const mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, alphaTest: 0.06, depthWrite: true });
+    const applyPngFlag = () => {
+      mat.map = ftex;
+      mat.color.setHex(0xffffff);
+      mat.needsUpdate = true;
+    };
+    const im = ftex && ftex.image;
+    if (im && im.complete && im.naturalWidth) {
+      applyPngFlag();
+    } else {
+      mat.color.setHex(0xc4b8a8);
+      mat.map = ftex;
+      if (im && im.addEventListener) im.addEventListener('load', applyPngFlag, { once: true });
+    }
+    fmesh = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 0.78), mat);
   }
   fmesh.position.set(0.56, 0, 0);
   flagHinge.add(fmesh);
@@ -11325,7 +11343,7 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   }
   if (cannonTier !== 'none' && slotCap <= 0) cannonTier = 'none';
   const g = new THREE.Group();
-  if (meshOpts.bannerComposeGen != null) g.userData.bannerComposeGen = meshOpts.bannerComposeGen;
+  g.userData.bannerComposeGen = meshOpts.bannerComposeGen != null ? meshOpts.bannerComposeGen : ++shipBannerComposeNonce;
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
   else if (parts.hull === 'darkwood') hc = 0x2a1a0a;
@@ -17783,6 +17801,7 @@ function updateNPCs(dt) {
       if (err > 215) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
+        npc._npcHullSeaYVis = undefined;
       } else {
         /* Small err used 7.8 — over-correct vs prediction + net rounding → micro jitter. */
         const pull = err > 90 ? 6.8 : err > 35 ? 3.9 : err > 12 ? 2.85 : err > 4 ? 1.82 : err > 1.1 ? 1.06 : err > 0.22 ? 0.58 : 0.22;
@@ -17826,12 +17845,17 @@ function updateNPCs(dt) {
     } else if (npc.mesh) {
       const nw = playerShipWaveAt(npc.x, npc.z, npc.rotation);
       const nt = dampShipWaveTilt(nw.wavePitch, nw.waveRoll);
-      const tiltK2 = 1 - Math.exp(-7 * dt);
+      /* Slightly softer than player — sharp XZ sync + instant sea height made hull bob look jittery. */
+      const tiltK2 = 1 - Math.exp(-4.6 * dt);
       if (!Number.isFinite(npc._visWavePitch)) npc._visWavePitch = nt.wavePitch;
       if (!Number.isFinite(npc._visWaveRoll)) npc._visWaveRoll = nt.waveRoll;
       npc._visWavePitch += (nt.wavePitch - npc._visWavePitch) * tiltK2;
       npc._visWaveRoll += (nt.waveRoll - npc._visWaveRoll) * tiltK2;
-      npc.mesh.position.set(npc.x, worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD, npc.z);
+      const targetHullY = worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
+      if (!Number.isFinite(npc._npcHullSeaYVis)) npc._npcHullSeaYVis = targetHullY;
+      const hullYK = 1 - Math.exp(-28 * dt);
+      npc._npcHullSeaYVis += (targetHullY - npc._npcHullSeaYVis) * hullYK;
+      npc.mesh.position.set(npc.x, npc._npcHullSeaYVis, npc.z);
       npc.mesh.rotation.y = npc.rotation;
       npc.mesh.rotation.x = npc._visWavePitch;
       npc.mesh.rotation.z = npc._visWaveRoll;
