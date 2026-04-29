@@ -24,7 +24,7 @@ const MAX_CONCURRENT_CAPTAINS = Math.max(0, Math.floor(Number(process.env.MAX_CO
 /** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
 const SERVER_WORLD_T0_MS = Date.now();
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
-const TICK_RATE = 45;
+const TICK_RATE = 60;
 /** Match client `WORLD_EDGE_CLAMP` (7 * 270 + 135) — reject runaway coordinates from glitched clients. */
 const PLAYER_WORLD_EDGE_CLAMP = 7 * 270 + 135;
 function clampPlayerWorldX(x) {
@@ -670,7 +670,7 @@ function savePartyStore() {
   }
 }
 
-/** Defer full disk flush to the next idle turn so 45Hz `state` + WS I/O are not blocked in the timer callback. */
+/** Defer full disk flush to the next idle turn so periodic `state` + WS I/O are not blocked in the timer callback. */
 let idlePersistCoalesced = false;
 function scheduleIdlePersistedStateFlush() {
   if (idlePersistCoalesced) return;

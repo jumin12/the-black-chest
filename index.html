@@ -3010,6 +3010,8 @@ function clampPlayerIntoWorldBounds() {
   G.player.x = Math.max(-lim, Math.min(lim, G.player.x));
   G.player.z = Math.max(-lim, Math.min(lim, G.player.z));
 }
+/** Authoritative sim + AOI `state` / `npc_sync` rate — must match `server.js` `TICK_RATE`. */
+const NET_SYNC_HZ = 60;
 /** Keep AI merchants & pirates inside the playable archipelago (world edge is empty ocean). */
 function clampNpcIntoWorldBounds(npc) {
   if (!npc) return;
@@ -11274,7 +11276,7 @@ function otherPlayerShipCacheKey(p) {
   const nm = (p.shipName || p.name || '').trim();
   const fc = String(p.flagColor || p.color || '').trim();
   const cd = p.crewData;
-  /* Full crew hashes forced constant ship mesh rebuilds at 45Hz as health changed — catastrophic for FPS and WS throughput. */
+  /* Full crew hashes forced constant ship mesh rebuilds at periodic net ticks as health changed — catastrophic for FPS and WS throughput. */
   const crewSeg = Array.isArray(cd) && cd.length ? `C${cd.length}` : '_';
   const ptag = String(p.partyTag || '').slice(0, 24);
   const fa = sanitizeFlagPngId(p.flagAssetId);
@@ -20626,7 +20628,7 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   const deadFloor = pvpRelax ? 5.2 : 2.6;
   /* Wider dead zone + gentler pull: small server/client drift from wind integration was read as jitter. */
   if (d < deadFloor) {
-    /* Rotation: soft-align heading to server (authoritative sim) so turns do not fight 45Hz snapshots. */
+    /* Rotation: soft-align heading to server (authoritative sim) so turns do not fight periodic snapshots. */
     if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
       const sr = Number(selfRow.rotation);
       let dr = angleDeltaToward(G.player.rotation, sr);
@@ -20681,7 +20683,7 @@ function finalizeNetDesyncProbe(selfRow) {
     }
     const stalePos = rem > 58 && rem < 268;
     const staleAng = ad > 0.52 && ad < 2.75;
-    if (stalePos || staleAng) G._netDesyncSticky = (G._netDesyncSticky || 0) + 1 / 45;
+    if (stalePos || staleAng) G._netDesyncSticky = (G._netDesyncSticky || 0) + 1 / NET_SYNC_HZ;
     else G._netDesyncSticky = Math.max(0, (G._netDesyncSticky || 0) - 0.22);
     if ((G._netDesyncSticky || 0) > 5.8) {
       setDesyncBlockingOverlay(true, 'Your ship could not stay synchronized with this realm. Reconnect or reload.');
@@ -20808,12 +20810,12 @@ function applyNpcSyncMessage(msg) {
     }
     {
       const prevSX = npc.syncX, prevSZ = npc.syncZ;
-      let dtn = 4 / 45;
+      let dtn = 4 / NET_SYNC_HZ;
       /* srvTick advances once per authoritative physics step (must match server.js TICK_RATE). */
       if (syncSrvTick != null && Number.isFinite(syncSrvTick) && npc._lastNpcSrvTick != null && Number.isFinite(npc._lastNpcSrvTick)) {
         const dTick = syncSrvTick - npc._lastNpcSrvTick;
         if (dTick > 0 && dTick < 400) {
-          dtn = Math.max(1 / 90, Math.min(1.05, dTick / 45));
+          dtn = Math.max(1 / (NET_SYNC_HZ * 2), Math.min(1.05, dTick / NET_SYNC_HZ));
         }
       } else if (npc._npcSyncWallT != null) {
         const tw = (typeof performance !== 'undefined' && performance.now) ? performance.now() * 0.001 : Date.now() * 0.001;
@@ -20912,16 +20914,16 @@ function applyNetStateMessage(msg, opts) {
   /** When the self-row is omitted (ordering bug or one bad tick), still merge AOI peers — old early-return stalled everyone. */
   const selfSnapPresent = msg.players.some(p => netPlayerId(p.id) === myIdForState);
   const wtNum = Number(wT);
-  /* Fallback matches server TICK_RATE (45Hz). Prefer srvTick delta when present — stable vs clock jitter. */
-  let dtSnap = 1 / 45;
+  /* Fallback matches server TICK_RATE. Prefer srvTick delta when present — stable vs clock jitter. */
+  let dtSnap = 1 / NET_SYNC_HZ;
   if (G._lastNetStateWT != null && Number.isFinite(wtNum) && Number.isFinite(G._lastNetStateWT)) {
-    dtSnap = Math.max(1 / 90, Math.min(0.48, wtNum - G._lastNetStateWT));
+    dtSnap = Math.max(1 / (NET_SYNC_HZ * 2), Math.min(0.48, wtNum - G._lastNetStateWT));
   }
   const stNum = msg.srvTick != null ? Number(msg.srvTick) : null;
   if (stNum != null && Number.isFinite(stNum) && G._lastNetStateSrvTick != null && Number.isFinite(G._lastNetStateSrvTick)) {
     const dTick = stNum - G._lastNetStateSrvTick;
-    if (dTick > 0 && dTick <= 96) {
-      dtSnap = Math.max(1 / 90, Math.min(0.48, dTick / 45));
+    if (dTick > 0 && dTick <= 128) {
+      dtSnap = Math.max(1 / (NET_SYNC_HZ * 2), Math.min(0.48, dTick / NET_SYNC_HZ));
     }
   }
   if (Number.isFinite(wtNum)) G._lastNetStateWT = wtNum;
@@ -30122,7 +30124,7 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
   };
 }
 
-/** Low-pass remote peer velocity so finite-difference noise does not fight the smoother each 45Hz tick. */
+/** Low-pass remote peer velocity so finite-difference noise does not fight the smoother each net tick. */
 function smoothRemotePlayerNetVelocity(p, dt) {
   const tx = p._netVelTargetX, tz = p._netVelTargetZ;
   if (Number.isFinite(tx) && Number.isFinite(tz)) {
@@ -30227,11 +30229,9 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 }
 
 /* ============================== GAME LOOP ================================ */
-/** Must match server.js TICK_RATE (authoritative sim + interest-managed state). */
-const NET_SYNC_HZ = 45;
 /** Render remote hulls (~2 ticks) behind realtime so buffered snapshots always bracket playback (Source-style). */
 const REMOTE_HULL_INTERP_DELAY_MS = 92;
-/** ~200ms sliding window @ 45Hz for NPC + peer interp. */
+/** ~230ms sliding window @ 60Hz for NPC + peer interp. */
 const REMOTE_SNAP_HIST_MAX = 14;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
