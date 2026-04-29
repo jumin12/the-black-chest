@@ -11,6 +11,8 @@ const PLAYER_BROADSIDE_COOLDOWN = 2.5;
 const CANNONBALL_XY_SPEED = 35;
 const TRADE_DOCK_DIST = 40;
 const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
+/** Vanilla pirate slots (syncId 0..n-1) respawn this long after removal (matches browser host). */
+const VANILLA_PIRATE_RESPAWN_MS = 180000;
 
 const SHIP_TYPES = {
   cutter: { hullLen: 5, hullW: 1.6, speed: 1.75, turnRate: 1.6, cannonSlots: 1 },
@@ -907,6 +909,8 @@ function createServerNpcWorld(opts) {
   let dryLand = (x, z) => ctx.dryLandAtWorldPosition(x, z);
   let edgeClamp = ctx.edgeClamp;
   let npcs = [];
+  let pirateSlotCount = 0;
+  const pirateRespawnAt = new Map();
   let nextPatrolId = PATROL_SYNC_MIN;
   let broadcastAll = typeof opts.broadcastAll === 'function' ? opts.broadcastAll : () => {};
 
@@ -1058,6 +1062,76 @@ function createServerNpcWorld(opts) {
     return true;
   }
 
+  function isVanillaReplenishablePirateShip(n) {
+    if (!n || n.isTradeShip || n.isFactionPatrol || n.isStoryBounty || n.isHuntContract) return false;
+    const sid = n.syncId | 0;
+    return pirateSlotCount > 0 && sid >= 0 && sid < pirateSlotCount && sid < 46;
+  }
+
+  function spawnVanillaPirateAtSlotIndex(i, playerMap) {
+    if (i < 0 || i >= pirateSlotCount) return;
+    if (npcs.some(n => (n.syncId | 0) === i)) return;
+    const npcSeed = (ws | 0) * 7 + 13;
+    const typePool = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
+    let s = npcSeed + i * 997;
+    const sr = () => {
+      s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647;
+      return s / 2147483647;
+    };
+    const npcType = typePool[Math.floor(sr() * 5)];
+    let nx = 0;
+    let nz = 0;
+    let placed = false;
+    for (let attempt = 0; attempt < 90; attempt++) {
+      const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, (wx, wz, c) => ctx.hasMinClearanceFromLand(wx, wz, c));
+      nx = pt.nx;
+      nz = pt.nz;
+      if (isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp)) {
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, (wx, wz, c) => ctx.hasMinClearanceFromLand(wx, wz, c));
+        nx = pt.nx;
+        nz = pt.nz;
+        if (isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp)) {
+          placed = true;
+          break;
+        }
+      }
+    }
+    if (!placed) return;
+    const chunkX = Math.floor(nx / ctx.CHUNK_SIZE);
+    const chunkZ = Math.floor(nz / ctx.CHUNK_SIZE);
+    const pirateFaction = ((chunkX * 31 + chunkZ * 17 + npcSeed * 3 + i * 13) & 0x7fffffff) % FACTION_COUNT;
+    npcs.push({
+      syncId: i,
+      x: nx,
+      z: nz,
+      rotation: sr() * Math.PI * 2,
+      speed: 0,
+      health: 60 + sr() * 40,
+      type: npcType,
+      name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws),
+      wanderAngle: sr() * Math.PI * 2,
+      wanderTimer: 5 + sr() * 10,
+      underFireTimer: 0,
+      riggingHealth: 100,
+      factionId: pirateFaction,
+      flagColor: FACTION_TRADE_COLORS[pirateFaction],
+      flagAssetId: randomChoosableFlagRng(sr),
+      sailBonus: 0.1,
+      attackNpcSyncId: null,
+      returnFireSyncId: null,
+      fireCooldown: 0,
+      aggro: false
+    });
+    const last = npcs[npcs.length - 1];
+    last.speed = npcMaxForwardSpeed(last) * (0.52 + sr() * 0.2);
+  }
+
   function reset(players) {
     npcs = [];
     nextPatrolId = PATROL_SYNC_MIN;
@@ -1066,6 +1140,8 @@ function createServerNpcWorld(opts) {
     const typePool = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
     const portCount = collectAllPorts().length;
     const nPirates = Math.min(46, 10 + Math.floor(portCount * 0.48));
+    pirateSlotCount = nPirates;
+    pirateRespawnAt.clear();
     for (let i = 0; i < nPirates; i++) {
       let s = npcSeed + i * 997;
       const sr = () => {
@@ -1516,6 +1592,16 @@ function createServerNpcWorld(opts) {
     syncQuestContractNpcs(npcs, playerQuests, ctx, playerMap);
     clearBoardLocks(npcs);
     applyNpcBoardingLocks(npcs, playerMap);
+    const nowMs = Date.now();
+    for (const [sid, when] of [...pirateRespawnAt.entries()]) {
+      if (nowMs < when) continue;
+      if (npcs.some(n => (n.syncId | 0) === sid)) {
+        pirateRespawnAt.delete(sid);
+        continue;
+      }
+      pirateRespawnAt.delete(sid);
+      spawnVanillaPirateAtSlotIndex(sid, playerMap);
+    }
     /* Match client `updateNpcs`: cannon kills stay in roster with sinking=true until animation completes. */
     for (const n of npcs) {
       if (!n.sinking) continue;
@@ -1531,7 +1617,9 @@ function createServerNpcWorld(opts) {
     }
     npcs = npcs.filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
-      return h > -900;
+      if (h > -900) return true;
+      if (isVanillaReplenishablePirateShip(n)) pirateRespawnAt.set(n.syncId | 0, Date.now() + VANILLA_PIRATE_RESPAWN_MS);
+      return false;
     });
   }
 

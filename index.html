@@ -4123,8 +4123,8 @@ function applyNpcBoardingScuttleSinkVisualLocal(npc) {
   npc.speed = 0;
   npc._sinkDebrisAcc = 0;
   npc._sinkExtraLootN = 0;
-  npc._sinkSkipSurfaceDebris = false;
-  detachNpcCrewAndSpawnBailSwimmers(npc, {});
+  npc._sinkSkipSurfaceDebris = true;
+  detachNpcCrewAndSpawnBailSwimmers(npc, { skipDefaultSwimmers: true });
   reconcileSlotsWithInventory();
 }
 
@@ -4270,11 +4270,13 @@ function runNpcSinkOutcome(npc, killerPlayerId, sinkOpts) {
   npc._sinkExtraLootN = 0;
   /* Single scatter batch from this function; the per-frame sink loop would spawn many extra loot_spawn and felt like duplicates. */
   npc._sinkSkipSurfaceDebris = true;
-  detachNpcCrewAndSpawnBailSwimmers(npc, sinkOpts);
+  const tutRaidHull = !!(npc.tutorialRaidHull || npc.syncId === TUTORIAL_RAID_NPC_SYNC);
+  const swimmerOpts = sinkOpts.skipDefaultSwimmers ? sinkOpts : (tutRaidHull ? Object.assign({}, sinkOpts, { skipDefaultSwimmers: true }) : sinkOpts);
+  detachNpcCrewAndSpawnBailSwimmers(npc, swimmerOpts);
   const lootTypes = goldLoot > 0
     ? ['wood', 'iron', 'gunpowder', 'food', 'cannonballs']
     : ['wood', 'iron', 'gold', 'gunpowder', 'food', 'cannonballs'];
-  if (!wasEscortContractShip && !sinkOpts.skipScatterLoot) {
+  if (!wasEscortContractShip && !sinkOpts.skipScatterLoot && !tutRaidHull) {
     for (let li = 0; li < 2 + Math.floor(Math.random() * 3); li++) {
       const t = lootTypes[Math.floor(Math.random() * lootTypes.length)];
       const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
@@ -12863,6 +12865,14 @@ function syncFloatingNametagVisibility() {
 /*  from other players' boarding in state for authoritative npc_sync).          */
 /* -------------------------------------------------------------------------- */
 const BOARDING_PULL_DUR = 4.35;
+/** Reference grapple gap (world units) — used to shorten pull reel time when ships started very far alongside. */
+const BOARDING_PULL_GAP_REF = 44;
+/** Wall-clock grapple duration scales with starting separation (`computeBoardingPullDuration`). */
+function computeBoardingPullDuration(px, pz, ex, ez) {
+  const gap = Math.hypot(Number(ex) - Number(px), Number(ez) - Number(pz));
+  const u = gap / Math.max(BOARDING_PULL_GAP_REF * 0.65, BOARDING_PULL_GAP_REF);
+  return Math.min(BOARDING_PULL_DUR * 2.45, Math.max(0.68, BOARDING_PULL_DUR * Math.min(1.95, Math.max(0.42, u * 1.05))));
+}
 /** Sim-authority deck fight cadence — slower ticks + one-sided hits so combat visibly trades blows. */
 const BOARDING_FIGHT_TICK_SEC = 1.34;
 function boardingSurfaceGapMeters(px, pz, ex, ez, pShipType, eShipType) {
@@ -13380,12 +13390,14 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
   const aName = atk ? (atk.shipName || networkPlayerCaptainName(atk)) : 'Attacker';
   const myN = (G.player.shipName || '').trim() || 'Your ship';
   const locks = computeBoardingLocks(G.player.x, G.player.z, G.player.rotation, atk.x, atk.z, G.player.shipType, atk.shipType || 'sloop');
+  const pullDur = computeBoardingPullDuration(G.player.x, G.player.z, atk.x, atk.z);
   const p0 = getRemotePlayerCrewRoster(atk);
   const pTot = countCrewFighters(G.player.crew);
   const eTot = countCrewFighters(p0);
   G.boarding = {
     phase: bo.ph === 'f' ? 'fight' : 'pull',
     pullT: 0,
+    _pullDur: pullDur,
     partnerPlayerId: attackerId,
     npcSyncId: null,
     attackerId: canonAtk,
@@ -13426,12 +13438,14 @@ function startPlayerBoardingAttack(targetId) {
   const myN = (G.player.shipName || '').trim() || 'Your ship';
   const theirN = (op.shipName && String(op.shipName).trim()) ? String(op.shipName).trim() : networkPlayerCaptainName(op);
   const locks = computeBoardingLocks(G.player.x, G.player.z, G.player.rotation, op.x, op.z, G.player.shipType, op.shipType || 'sloop');
+  const pullDur = computeBoardingPullDuration(G.player.x, G.player.z, op.x, op.z);
   const pTot = countCrewFighters(G.player.crew);
   const eTot = countCrewFighters(getRemotePlayerCrewRoster(op));
   const canonAtk = Math.min(Number(G.myId), Number(tid));
   G.boarding = {
     phase: 'pull',
     pullT: 0,
+    _pullDur: pullDur,
     partnerPlayerId: tid,
     npcSyncId: null,
     attackerId: canonAtk,
@@ -13457,6 +13471,7 @@ function startNpcBoardingAttack(npc) {
   const myN = (G.player.shipName || '').trim() || 'Your ship';
   const theirN = npc.name || 'Enemy';
   const locks = computeBoardingLocks(G.player.x, G.player.z, G.player.rotation, npc.x, npc.z, G.player.shipType, npc.type);
+  const pullDur = computeBoardingPullDuration(G.player.x, G.player.z, npc.x, npc.z);
   const pTot = countCrewFighters(G.player.crew);
   const eTot = getNpcBoardingCrewCount(npc);
   const sid0 = npc.syncId | 0;
@@ -13465,7 +13480,7 @@ function startNpcBoardingAttack(npc) {
     ? { gold: Math.max(0, npc._bdNpcLoot.gold | 0), wood: Math.max(0, (npc._bdNpcLoot.wood != null ? npc._bdNpcLoot.wood : defWood) | 0) }
     : { gold: defGold, wood: defWood };
   G.boarding = {
-    phase: 'pull', pullT: 0, partnerPlayerId: null, npcSyncId: npc.syncId, attackerId: G.myId,
+    phase: 'pull', pullT: 0, partnerPlayerId: null, npcSyncId: npc.syncId, attackerId: G.myId, _pullDur: pullDur,
     tNet: 0, pAtk: pTot, eAtk: eTot, pHeart: pTot, eHeart: eTot, pTotal: pTot, eTotal: eTot, pTotStart: pTot, eTotStart: eTot,
     lockPX: locks.lockPX, lockPZ: locks.lockPZ, lockPR: locks.lockPR, lockEX: locks.lockEX, lockEZ: locks.lockEZ, lockER: locks.lockER,
     _p0x: G.player.x, _p0z: G.player.z, _e0x: npc.x, _e0z: npc.z,
@@ -15320,8 +15335,9 @@ function tickBoardingEngagement(dt) {
   if (b.phase === 'spoils' || b.phase === 'await_opponent') return;
   /* Fight end runs only on the authority; followers resolve from ph:'e' merge (local atk<=0 caused desync / frozen peers). */
   if (b.phase === 'pull') {
+    const pullDurSec = (b._pullDur > 0 && Number.isFinite(Number(b._pullDur))) ? Number(b._pullDur) : BOARDING_PULL_DUR;
     if (b.npcSyncId != null || boardingIAmSimLeader(b)) {
-      b.pullT = (b.pullT || 0) + dt / BOARDING_PULL_DUR;
+      b.pullT = (b.pullT || 0) + dt / pullDurSec;
     }
     const u = 1 - Math.pow(1 - Math.min(1, b.pullT), 1.4);
     G.player.x = b._p0x + (b.lockPX - b._p0x) * u;
@@ -16720,6 +16736,86 @@ function spawnNPCs() {
   ensureActiveContractNpcsForHost();
   initTownStockpiles();
   ensureSeaReefsPopulated();
+  G._vanillaPirateSlots = nPirates;
+  G._pirateRespawnAt = new Map();
+}
+
+/** Host-only: vanilla pirate slots 0..n−1 respawn after sinking (matches dedicated server policy). */
+const VANILLA_PIRATE_RESPAWN_MS = 180000;
+function hostVanillaPirateSlotEligible(syncId) {
+  const mx = G._vanillaPirateSlots | 0;
+  const sid = syncId | 0;
+  return mx > 0 && sid >= 0 && sid < mx && sid < 46;
+}
+function enqueueVanillaPirateRespawnHost(npc) {
+  if (!npc || npc.isTradeShip || npc.isFactionPatrol || npc.isStoryBounty || npc.isHuntContract || npc.tutorialRaidHull) return;
+  if (!hostVanillaPirateSlotEligible(npc.syncId)) return;
+  if (!(G._pirateRespawnAt instanceof Map)) G._pirateRespawnAt = new Map();
+  G._pirateRespawnAt.set(npc.syncId | 0, Date.now() + VANILLA_PIRATE_RESPAWN_MS);
+}
+function spawnVanillaPirateAtSlotIndex(i) {
+  if (ws && ws.readyState === 1 && G.npcSimFromServer) return;
+  const maxS = G._vanillaPirateSlots | 0;
+  if (i < 0 || i >= maxS) return;
+  if (G.npcs.some(n => (n.syncId | 0) === i)) return;
+  const npcSeed = (G.worldSeed | 0) * 7 + 13;
+  const typePool = ['cutter','sloop','brigantine','galleon','warship'];
+  let s = npcSeed + i * 997;
+  const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
+  const npcType = typePool[Math.floor(sr() * 5)];
+  let nx = 0, nz = 0;
+  let placed = false;
+  for (let attempt = 0; attempt < 90; attempt++) {
+    const pt = sampleOpenOceanPointInWorld(sr);
+    nx = pt.nx;
+    nz = pt.nz;
+    if (isWorldPositionFreeForNpcSpawn(nx, nz, npcType)) { placed = true; break; }
+  }
+  if (!placed) {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const pt = sampleOpenOceanPointInWorld(sr);
+      nx = pt.nx;
+      nz = pt.nz;
+      if (isWorldPositionFreeForNpcSpawn(nx, nz, npcType)) { placed = true; break; }
+    }
+  }
+  if (!placed) return;
+  const chunkX = Math.floor(nx / CHUNK_SIZE), chunkZ = Math.floor(nz / CHUNK_SIZE);
+  const pirateFaction = ((chunkX * 31 + chunkZ * 17 + npcSeed * 3 + i * 13) & 0x7fffffff) % FACTION_COUNT;
+  const npc = {
+    syncId: i,
+    x: nx, z: nz,
+    rotation: sr() * Math.PI * 2, speed: 0,
+    health: 60 + sr() * 40, type: npcType,
+    name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i),
+    wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
+    underFireTimer: 0, fireJitter: sr(),
+    riggingHealth: 100,
+    flagPosition: pickRandomAiFlagPosition(sr())
+  };
+  npc.factionId = pirateFaction;
+  npc.flagColor = FACTION_TRADE_COLORS[pirateFaction];
+  npc.flagAssetId = randomChoosableFlagRng(sr);
+  npc.sailBonus = 0.1;
+  npc.pirateCannon = tradeShipCannonForType(npc.type);
+  npc.speed = npcMaxForwardSpeed(npc) * (0.48 + sr() * 0.3);
+  const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: npc.pirateCannon, figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
+  npc.crewData = ambientPirateCrewData((npcSeed + i * 997) >>> 0, npc.type);
+  buildCrewMeshes(mesh, npc.crewData, npc.type);
+  npc.mesh = mesh;
+  scene.add(mesh);
+  applyRiggingVisualToGroup(mesh, getNpcRiggingHealth(npc));
+  G.npcs.push(npc);
+}
+function tickVanillaPirateRespawnsHost() {
+  if (!isMultiplayerHost() || G.npcSimFromServer || !(G._pirateRespawnAt instanceof Map) || !G._pirateRespawnAt.size) return;
+  const now = Date.now();
+  for (const [sid, t] of [...G._pirateRespawnAt.entries()]) {
+    if (now < t) continue;
+    G._pirateRespawnAt.delete(sid);
+    if (G.npcs.some(n => (n.syncId | 0) === (sid | 0))) continue;
+    spawnVanillaPirateAtSlotIndex(sid | 0);
+  }
 }
 
 function rebuildNPCShipMesh(npc) {
@@ -17579,7 +17675,7 @@ function updateNPCs(dt) {
       let leadX = npc.syncX, leadZ = npc.syncZ;
       if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed)) && npc.syncR != null) {
         const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        const el = Math.min(0.18, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
+        const el = Math.min(0.26, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
         const sp = Number(npc.speed);
         const au = Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
         leadX += Math.sin(au) * sp * el;
@@ -17591,7 +17687,7 @@ function updateNPCs(dt) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
       } else {
-        const posK = 1 - Math.exp(-(err > 90 ? 8.5 : err > 35 ? 5.0 : err > 12 ? 3.8 : err > 4 ? 2.4 : 9.5) * dt);
+        const posK = 1 - Math.exp(-(err > 90 ? 7.2 : err > 35 ? 4.2 : err > 12 ? 3.2 : err > 4 ? 1.9 : 7.8) * dt);
         npc.x += ex * posK;
         npc.z += ez * posK;
       }
@@ -17668,10 +17764,17 @@ function updateNPCs(dt) {
     clampNpcIntoWorldBounds(npc);
   });
   if (host) {
+    if (!(G._pirateRespawnAt instanceof Map)) G._pirateRespawnAt = new Map();
+    for (const n of G.npcs) {
+      const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
+      if (h > -900) continue;
+      enqueueVanillaPirateRespawnHost(n);
+    }
     G.npcs = G.npcs.filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       return h > -900;
     });
+    tickVanillaPirateRespawnsHost();
   } else {
     G.npcs = G.npcs.filter(n => {
       if (!(n.syncId === TUTORIAL_RAID_NPC_SYNC && n.tutorialRaidHull)) return true;
@@ -20802,8 +20905,10 @@ window.addEventListener('keydown', e => {
     if (G.captainWalk?.active) tryCaptainWalkJump();
     else doFire();
   }
-  if (k === 'z' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(1);
-  if (k === 'x' && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) doFireSide(-1);
+  if ((k === 'z' || k === 'x') && !e.repeat && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) {
+    if (k === 'z') doFireSide(1);
+    else doFireSide(-1);
+  }
   if (e.key === 'Escape') {
     if (G.spectate) {
       endSpectateMode();
@@ -21968,8 +22073,18 @@ window.addEventListener('resize', () => {
 });
 
 let audioCtx, masterGain;
-/** Player broadside: captain yell then 1s fuse before shot (see scheduleBroadsideSides). */
-let playerBroadsidePending = null;
+/** PC: hold Z/X to refire each battery as soon as reload allows (per-side cooldown). Space fires both banks when ready. */
+const BROADSIDE_CAPTAIN_YELL_MIN_MS = 920;
+function maybePlayBroadsideCaptainYellForVolley() {
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  if (G._lastBroadsideYellAt != null && now - G._lastBroadsideYellAt < BROADSIDE_CAPTAIN_YELL_MIN_MS) return;
+  G._lastBroadsideYellAt = now;
+  bootstrapGameAudioOnUserGesture();
+  playCaptainFireYell();
+  ensureAudio();
+  if (audioCtx) void audioCtx.resume();
+  void ensureWaGunshotBuffer().catch(() => {});
+}
 let _musicAudio = null;
 /** Shuffled indices into MUSIC_URLS; no repeat until all played, then reshuffle. */
 let _musicShuffled = [];
@@ -22860,56 +22975,60 @@ function executeBroadsideVolley(info, opts) {
   });
 }
 
-function scheduleBroadsideSides(sidesRaw) {
-  if (G.spectate || G.playerSinking || G.player.health <= 0) return;
-  if (G.docked || G.captainWalk?.active) return;
-  const seen = new Set();
-  const order = [];
-  for (const s of sidesRaw) {
-    if (s !== 1 && s !== -1) continue;
-    if (seen.has(s)) continue;
-    seen.add(s);
-    order.push(s);
+/**
+ * Immediate broadside. Use `silent` to avoid notify toast; `suppressCaptainYell` for held-key repeat (no spam).
+ * @returns {boolean} true if a volley actually fired
+ */
+function tryInstantBroadsideVolley(fireSide, opts) {
+  opts = opts || {};
+  if (G.spectate || G.playerSinking || G.player.health <= 0) return false;
+  if (G.docked || G.captainWalk?.active) {
+    if (!opts.silent) notify('You cannot fire while in port or on foot.');
+    return false;
   }
-  if (!order.length) return;
-  const ready = [];
-  for (const s of order) {
-    const inf = broadsideReadyInfo(s, true);
-    if (inf) ready.push(inf);
-  }
-  if (!ready.length) {
-    broadsideReadyInfo(order[0], false);
-    return;
-  }
-  if (playerBroadsidePending) {
-    notify('Steady — the crew is still on the last order.');
-    return;
-  }
-  const orderToken = Math.random();
-  playerBroadsidePending = { sides: ready.map(r => r.fireSide), token: orderToken };
-  bootstrapGameAudioOnUserGesture();
-  playCaptainFireYell();
-  ensureAudio();
-  if (audioCtx) void audioCtx.resume();
-  void ensureWaGunshotBuffer().catch(() => {});
-  window.setTimeout(() => {
-    const pend = playerBroadsidePending;
-    playerBroadsidePending = null;
-    if (!pend || G.mode !== 'playing' || G.spectate) return;
-    for (const fs of pend.sides) {
-      const inf = broadsideReadyInfo(fs, true);
-      if (inf) executeBroadsideVolley(inf, {});
-    }
-  }, 1000);
+  const inf = broadsideReadyInfo(fireSide, !!opts.silent);
+  if (!inf) return false;
+  if (!opts.suppressCaptainYell) maybePlayBroadsideCaptainYellForVolley();
+  executeBroadsideVolley(inf, opts);
+  return true;
 }
 
-/** Fire one player broadside: `fireSide` is world −1 (port) or +1 (starboard), same as `scheduleBroadsideSides` / hull guns. */
+function tickHeldPcBroadsideKeys() {
+  if (isMobile || G.mode !== 'playing' || G.spectate || G.playerSinking || G.player.health <= 0) return;
+  if (G.docked || G.captainWalk?.active) return;
+  if (!keys['z'] && !keys['x']) return;
+  if (keys['z']) tryInstantBroadsideVolley(1, { silent: true, suppressCaptainYell: true });
+  if (keys['x']) tryInstantBroadsideVolley(-1, { silent: true, suppressCaptainYell: true });
+}
+
+/** Fire one player broadside: `fireSide` is world −1 (port) or +1 (starboard). */
 function doFireSide(fireSide) {
-  scheduleBroadsideSides([fireSide]);
+  tryInstantBroadsideVolley(fireSide, {});
 }
 
 function doFire() {
-  scheduleBroadsideSides([-1, 1]);
+  if (G.spectate || G.playerSinking || G.player.health <= 0) return;
+  if (G.docked || G.captainWalk?.active) {
+    notify('You cannot fire while in port or on foot.');
+    return;
+  }
+  bootstrapGameAudioOnUserGesture();
+  const pa = broadsideReadyInfo(-1, true);
+  const pb = broadsideReadyInfo(1, true);
+  if (!pa && !pb) {
+    broadsideReadyInfo(-1, false);
+    return;
+  }
+  let any = false;
+  if (pa) {
+    maybePlayBroadsideCaptainYellForVolley();
+    executeBroadsideVolley(pa, {});
+    any = true;
+  }
+  if (pb) {
+    if (!any) maybePlayBroadsideCaptainYellForVolley();
+    executeBroadsideVolley(pb, {});
+  }
 }
 
 function syncAnchorToolbarButton() {
@@ -29436,7 +29555,7 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const px = G.player && Number.isFinite(Number(G.player.x)) ? Number(G.player.x) : null;
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const near = px != null && pz != null && Math.hypot(Number(p.x) - px, Number(p.z) - pz) < 92;
-    const a = 1 - Math.exp(-(near ? 22 : 14) * dt);
+    const a = 1 - Math.exp(-(near ? 26 : 17) * dt);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -29474,18 +29593,18 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : 0;
   const nearPeer = Math.hypot(p.x - px, p.z - pz) < 92;
   if (velPred) {
-    const vcap = nearPeer ? 72 : 52;
+    const vcap = nearPeer ? 80 : 52;
     const vm = Math.hypot(evx, evz);
     const s = vm > vcap ? vcap / vm : 1;
     ns.x += evx * s * dt;
     ns.z += evz * s * dt;
   } else if (Math.abs(v) > 0.006) {
-    const pred = nearPeer ? 0.997 : 0.992;
+    const pred = nearPeer ? 0.9982 : 0.992;
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
-  const pk = nearPeer ? 1.58 : 1;
-  const posK = 1 - Math.exp(-(err > 120 ? 4.55 : err > 55 ? 2.85 : err > 22 ? 1.72 : err > 8 ? 0.88 : 0.45) * pk * dt);
+  const pk = nearPeer ? 1.52 : 1;
+  const posK = 1 - Math.exp(-(err > 120 ? 3.95 : err > 55 ? 2.5 : err > 22 ? 1.52 : err > 8 ? 0.74 : 0.38) * pk * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
@@ -29858,6 +29977,7 @@ function update(dt) {
 
   if (G.portCooldown > 0) G.portCooldown -= dt;
   if (G.starboardCooldown > 0) G.starboardCooldown -= dt;
+  tickHeldPcBroadsideKeys();
   if (G.crewReloading) {
     G.crewReloadTimer -= dt;
     if (G.crewReloadTimer <= 0) G.crewReloading = false;
@@ -30632,7 +30752,6 @@ function update(dt) {
       try { abortActiveBoarding(''); } catch (e) {}
     }
     try { if (G.boardingVictimAwaitingDecision) clearBoardingVictimAwaiting(''); } catch (e) {}
-    playerBroadsidePending = null;
     playCaptainSinkDeathSound();
     bumpNotoriety({ deaths: 1 });
     if (ws?.readyState === 1 && G.lastAttackerId != null) {
