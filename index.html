@@ -16189,8 +16189,8 @@ function pushPlayerOutOfShipOverlaps() {
       if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) return;
         const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, nt, margin, pHull, npcCollisionHullPart(npc));
       if (!sep) return;
-      let pushAmt = sep.depth * 0.62;
-      if (npc.tutorialRaidHull && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive) pushAmt *= 0.26;
+      /* Full separation during tutorial pass so player can ram — old 0.26 softening made overlaps ghosty / no ram feel. */
+      const pushAmt = sep.depth * 0.62;
       {
         const sid = npc.syncId != null ? npc.syncId : `u${Math.round(npc.x)}_${Math.round(npc.z)}`;
         const rKey = G.myId != null ? `me${G.myId}|npc${sid}` : `me|npc${sid}`;
@@ -16306,7 +16306,12 @@ function separateHostNpcsFromLocalPlayer() {
     if (playerInHarborRamExemptZone(px, pz, pType) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) return;
     const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, nt, px, pz, G.player.rotation, G.player.shipType, margin, npcCollisionHullPart(npc), pHull);
     if (!sep) return;
-    const push = sep.depth * 0.55;
+    let push = sep.depth * 0.55;
+    {
+      const tr = G.tutorialRaidCutscene;
+      if (npc.tutorialRaidHull && tr && tr.scriptingActive && !tr._combatPhase)
+        push *= 0.4;
+    }
     const ox = npc.x, oz = npc.z;
     npc.x += sep.nx * push;
     npc.z += sep.nz * push;
@@ -16965,6 +16970,8 @@ function tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer) {
   const pType = G.player.shipType || 'sloop';
   const nt = npcCollisionShipType(npc);
   const hullGap = shipHullRadius(pType) + shipHullRadius(nt) + 18;
+  /* Inside contact range skip tangential dodge so player can close for rams — rely on hull separation + ram dmg. */
+  if (dPlayer <= hullGap + 14) return;
   if (dPlayer >= hullGap + 38) return;
   /* Weight pushes harder as we penetrate the comfort band (tangential avoidance, not chasing). */
   const t = Math.max(0, Math.min(1, 1 - (dPlayer - hullGap) / 46));
@@ -19430,6 +19437,18 @@ async function connectToServer() {
       case 'world_resume':
         try { applyWorldResumeFromServer(msg); } catch (e) {}
         break;
+      case 'tutorial_raid_ready': {
+        const wtRaw = msg.wildlifeWorldT != null ? Number(msg.wildlifeWorldT) : NaN;
+        const stRaw = msg.srvTick != null ? Number(msg.srvTick) : NaN;
+        const payload = {
+          wildlifeWorldT: Number.isFinite(wtRaw) ? wtRaw : null,
+          srvTick: Number.isFinite(stRaw) ? stRaw : null
+        };
+        const tre = G.tutorialRaidCutscene;
+        if (tre && tre.active) applyTutorialRaidServerAck(tre, payload);
+        else G._pendingTutorialRaidReady = payload;
+        break;
+      }
       case 'world_announce':
         if (msg.text) {
           notify(String(msg.text).slice(0, 600), 12000);
@@ -33208,6 +33227,18 @@ function spawnTutorialRaidPirateNearPlayer() {
   return npc;
 }
 
+/** Server ack from `tutorial_raid_ready`: snap wildlife clock + record tick for scripted timing. */
+function applyTutorialRaidServerAck(tr, payload) {
+  if (!tr || !payload) return;
+  const wt = payload.wildlifeWorldT;
+  if (wt != null && Number.isFinite(Number(wt))) {
+    try { anchorWildlifeClockFromServer(Number(wt)); } catch (e) {}
+    tr._srvWildlifeWorldTStart = Number(wt);
+  }
+  const st = payload.srvTick;
+  if (st != null && Number.isFinite(Number(st))) tr._srvTickAtStart = Math.floor(Number(st));
+}
+
 function tryBeginTutorialRaidFromUi() {
   if (!G.tutorialRaidPending || G.tutorialRaidConsumed || G.mode !== 'playing') return;
   const sq = G.storyQuest;
@@ -33259,8 +33290,15 @@ function startTutorialRaidEncounter() {
     _released: false,
     _showSinkDirective: false
   };
+  if (G._pendingTutorialRaidReady) {
+    applyTutorialRaidServerAck(G.tutorialRaidCutscene, G._pendingTutorialRaidReady);
+    G._pendingTutorialRaidReady = null;
+  }
   tutorialRaidUiSetSuppressed(true);
   tutorialRaidSetBanner('Sail ho — raider bears down toward your bow!');
+  try {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'tutorial_raid_begin' }));
+  } catch (eTut0) {}
 }
 
 /** Tutorial raider stays slightly under player top scalar speed (same order as npc.speed); wind limits travel via npcEffectiveForwardSpeed. */

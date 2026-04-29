@@ -2927,6 +2927,20 @@ wss.on('connection', (ws, req) => {
           playerQuests.set(id, sanitizePlayerQuestsForServer(msg.quests));
           break;
         }
+        case 'tutorial_raid_begin': {
+          /** Immediate ack so client cutscene state locks to server tick / world clock (solo intro runs host-side; DS still acks for timing). */
+          ensureSimulationLayer();
+          try {
+            ws.send(
+              JSON.stringify({
+                type: 'tutorial_raid_ready',
+                wildlifeWorldT: (Date.now() - SERVER_WORLD_T0_MS) / 1000,
+                srvTick: serverStateTickSeq
+              })
+            );
+          } catch (eTut) {}
+          break;
+        }
         case 'npc_sync': {
           break;
         }
