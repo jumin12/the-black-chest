@@ -13,9 +13,6 @@ const TRADE_DOCK_DIST = 40;
 const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
 /** Vanilla pirate slots (syncId 0..n-1) respawn this long after removal (matches browser host). */
 const VANILLA_PIRATE_RESPAWN_MS = 180000;
-/** Match client `factionHostileToPlayer` — only open combat on strong personal standing penalty. */
-const COMBAT_HOSTILE_STANDING = -42;
-
 const SHIP_TYPES = {
   cutter: { hullLen: 5, hullW: 1.6, speed: 1.75, turnRate: 1.6, cannonSlots: 1 },
   sloop: { hullLen: 7, hullW: 2.2, speed: 1.5, turnRate: 1.3, cannonSlots: 2 },
@@ -1332,13 +1329,23 @@ function createServerNpcWorld(opts) {
     if (bestId != null) npc.attackNpcSyncId = bestId;
   }
 
-  function hostileStandingToFaction(playerId, factionIdx) {
-    if (getPlayerStanding == null || playerId == null) return false;
+  function getJoinedFactionId(playerId) {
+    if (getPlayerStanding == null || playerId == null) return null;
     const st = getPlayerStanding(Math.floor(Number(playerId)));
-    if (!st || !Array.isArray(st.relations)) return false;
-    const f = (factionIdx | 0) % FACTION_COUNT;
-    const r = Number(st.relations[f]);
-    return Number.isFinite(r) && r <= COMBAT_HOSTILE_STANDING;
+    if (!st || st.joinedFaction == null || !Number.isFinite(Number(st.joinedFaction))) return null;
+    return Math.max(0, Math.min(FACTION_COUNT - 1, Number(st.joinedFaction) | 0));
+  }
+
+  function playerAtWarWithMerchantHome(pid, merchantHomeFac) {
+    const j = getJoinedFactionId(pid);
+    if (j == null) return false;
+    return factionsConsideredAtWar((merchantHomeFac | 0) % FACTION_COUNT, j, politics.matrix);
+  }
+
+  function playerAtWarWithPatrolFaction(pid, patrolFac) {
+    const j = getJoinedFactionId(pid);
+    if (j == null) return false;
+    return factionsConsideredAtWar((patrolFac | 0) % FACTION_COUNT, j, politics.matrix);
   }
 
   function updateMerchantThreat(npc) {
@@ -1385,7 +1392,7 @@ function createServerNpcWorld(opts) {
     const pid = near && near.p && near.p.id != null ? Math.floor(Number(near.p.id)) : null;
     let provoked = false;
     if (near && pid != null) {
-      if (distToPlayer < 142 && hostileStandingToFaction(pid, mPfid)) provoked = true;
+      if (distToPlayer < 142 && playerAtWarWithMerchantHome(pid, mPfid)) provoked = true;
       else if (distToPlayer < 148 && npc.underFireTimer != null && npc.underFireTimer > 0.05) provoked = true;
     }
     if (!npc.aggro && provoked) {
@@ -1395,7 +1402,8 @@ function createServerNpcWorld(opts) {
     if (npc.aggro && (distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) npc.aggro = false;
     const fighting = npc.aggro && distToPlayer < 135;
     const fightingNpc = !!atkShip && Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 128;
-    const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.92;
+    const maxMerc = npcMaxForwardSpeed(npc);
+    const tgtC = Math.max(npc.targetCruise != null ? npc.targetCruise : maxMerc * 0.92, maxMerc * 0.44);
     if (fightingNpc) {
       const sharp = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 92 ? 2.55 : 2.12;
       if (!npc.escapeMode) {
@@ -1577,6 +1585,11 @@ function createServerNpcWorld(opts) {
       focus = npcs.find(n => n.syncId === npc.attackNpcSyncId && !n.sinking && (n.health == null || n.health > 0));
       if (!focus) npc.attackNpcSyncId = null;
     }
+    if (focus) {
+      npc.pirateFenceDockX = null;
+      npc.pirateFenceDockZ = null;
+      npc.pirateFencePhase = null;
+    }
     const near = nearestCaptain(npc.x, npc.z, players);
     const distToPlayer = near ? near.d : 1e9;
     const aimx = focus ? focus.x : near ? near.p.x : 0;
@@ -1584,10 +1597,45 @@ function createServerNpcWorld(opts) {
     const distToTarget = focus ? Math.hypot(focus.x - npc.x, focus.z - npc.z) : distToPlayer;
     const pirFid = (npc.factionId | 0) % FACTION_COUNT;
     const nid = near && near.p && near.p.id != null ? Math.floor(Number(near.p.id)) : null;
-    if (!focus && near && nid != null && distToPlayer < 118
-      && (hostileStandingToFaction(nid, pirFid) || (npc.underFireTimer != null && npc.underFireTimer > 0.05))) {
-      npc.aggro = true;
-      npc.underFireTimer = Math.max(npc.underFireTimer || 0, 2.9);
+    if (!isPatrol && !focus && !npc.aggro) {
+      npc._pfAcc = (npc._pfAcc || 0) + dt;
+      npc._pfCd = (npc._pfCd || 0) - dt;
+      if (!npc.pirateFenceDockX && (npc._pfCd || 0) <= 0 && npc._pfAcc > 58) {
+        npc._pfAcc = 0;
+        const hid = typeof ctx.collectAllPirateHideouts === 'function' ? ctx.collectAllPirateHideouts() : [];
+        if (hid.length) {
+          const h = hid[((npc.syncId | 0) ^ (ws >>> 0)) % hid.length];
+          npc.pirateFenceDockX = h.dockX;
+          npc.pirateFenceDockZ = h.dockZ;
+          npc.pirateFencePhase = 'travel';
+        }
+      }
+    } else if (!isPatrol) {
+      npc._pfAcc = 0;
+    }
+    if (!focus && near && nid != null && distToPlayer < 118) {
+      let want = false;
+      if (isPatrol) {
+        want =
+          (npc.underFireTimer != null && npc.underFireTimer > 0.05) || playerAtWarWithPatrolFaction(nid, pirFid);
+      } else {
+        want = true;
+      }
+      if (want) {
+        npc.aggro = true;
+        npc.underFireTimer = Math.max(npc.underFireTimer || 0, 2.9);
+      }
+    }
+    if (
+      !focus &&
+      isPatrol &&
+      near &&
+      nid != null &&
+      distToPlayer < 132 &&
+      !playerAtWarWithPatrolFaction(nid, pirFid) &&
+      (npc.underFireTimer == null || npc.underFireTimer <= 0)
+    ) {
+      npc.aggro = false;
     }
     if (!focus && (!near || distToPlayer > 175)) npc.aggro = false;
     const sharp = (focus && distToTarget < 115) || (!focus && npc.aggro && distToPlayer < 110) ? 2.55 : 2.05;
@@ -1630,6 +1678,31 @@ function createServerNpcWorld(opts) {
           emitBroadside(broadcastAll, npc, near.p.x, near.p.z, pvx, pvz);
           npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
         }
+      } else if (!isPatrol && npc.pirateFenceDockX != null && npc.pirateFencePhase === 'unload') {
+        npc.pirateUnloadT = (npc.pirateUnloadT || 0) + dt;
+        if (npc.pirateUnloadT > 9) {
+          npc.pirateFenceDockX = null;
+          npc.pirateFenceDockZ = null;
+          npc.pirateFencePhase = null;
+          npc.pirateUnloadT = 0;
+          npc._pfCd = 42 + Math.random() * 48;
+          const h0 = npc.health != null ? Number(npc.health) : 72;
+          npc.health = Math.min(h0 + 16 + Math.floor(Math.random() * 22), 140);
+          npc.wanderAngle = npc.rotation + (Math.random() - 0.5) * 2.6;
+        }
+      } else if (!isPatrol && npc.pirateFenceDockX != null && npc.pirateFencePhase === 'travel') {
+        const fx = npc.pirateFenceDockX - npc.x;
+        const fz = npc.pirateFenceDockZ - npc.z;
+        const dfg = Math.hypot(fx, fz);
+        const targetAngle = Math.atan2(fx, fz);
+        let tdiff = targetAngle - npc.rotation;
+        while (tdiff > Math.PI) tdiff -= Math.PI * 2;
+        while (tdiff < -Math.PI) tdiff += Math.PI * 2;
+        npc.rotation += tdiff * 1.18 * dt * npcSailingTurnFactor(npc, windAt);
+        if (dfg < 58) {
+          npc.pirateFencePhase = 'unload';
+          npc.pirateUnloadT = 0;
+        }
       } else {
         npc.wanderTimer -= dt;
         if (npc.wanderTimer <= 0) {
@@ -1645,7 +1718,10 @@ function createServerNpcWorld(opts) {
     steerNpcClearanceAhead(npc, dt, sharp, windAt, dryLand);
     nudgeNpcOffIsland(npc, dryLand, edgeClamp);
     const maxF = npcMaxForwardSpeed(npc);
-    const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 110) ? maxF * 0.88 : maxF * 0.72;
+    let tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 110) ? maxF * 0.88 : maxF * 0.72;
+    if (isPatrol) tgtSpd = Math.min(maxF * 0.88, tgtSpd * 1.12);
+    if (!isPatrol && npc.pirateFencePhase === 'travel') tgtSpd = maxF * 0.9;
+    else if (!isPatrol && npc.pirateFencePhase === 'unload') tgtSpd = maxF * 0.1;
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }
