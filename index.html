@@ -19466,6 +19466,7 @@ async function connectToServer() {
   G._lastNetStateWT = null;
   G._lastNetStateSrvTick = null;
   G._netInterpOffsetMs = null;
+  G._interpClockSrvTick = null;
   G._pendingNpcSync = null;
   G._netStateDrainQueue = [];
   try { G.netPeerStaleSince = null; } catch (e) {}
@@ -20930,10 +20931,7 @@ function applyNetStateMessage(msg, opts) {
   const wtNum = Number(wT);
   const stNum = msg.srvTick != null ? Number(msg.srvTick) : null;
   if (Number.isFinite(wtNum)) G._lastNetStateWT = wtNum;
-  if (stNum != null && Number.isFinite(stNum)) {
-    G._lastNetStateSrvTick = stNum;
-    refreshNetInterpolationClock(stNum);
-  }
+  if (stNum != null && Number.isFinite(stNum)) G._lastNetStateSrvTick = stNum;
   let selfRow = null;
   const activeRemote = new Set();
   msg.players.forEach(p => {
@@ -30047,18 +30045,26 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt, wakeCooldownOverrid
  * (~100–140 ms behind) reconstructs pose between server ticks instead of rubber-band blending. */
 const NET_SYNC_HZ = 45;
 const NET_SIM_MS_PER_TICK = 1000 / NET_SYNC_HZ;
-const NET_INTERP_DELAY_MS = 118;
+const NET_INTERP_DELAY_MS = 132;
 const NET_INTERP_MAX_RING = 96;
+/** Max sim-time to extrapolate past the newest ring sample (avoids runaway motion when starved). */
+const NET_INTERP_EXTRA_MAX_MS = NET_SIM_MS_PER_TICK * 5;
 
 function refreshNetInterpolationClock(srvTick) {
   if (srvTick == null || !Number.isFinite(Number(srvTick))) return;
-  const t = Number(srvTick);
+  const t = Math.floor(Number(srvTick));
   const perf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const idealOff = perf - t * NET_SIM_MS_PER_TICK;
+  const prevCt = G._interpClockSrvTick;
+  if (prevCt != null && Number.isFinite(prevCt)) {
+    if (t < prevCt - 64) G._netInterpOffsetMs = null;
+    else if (t < prevCt - 3) return;
+  }
+  G._interpClockSrvTick = t;
   if (G._netInterpOffsetMs == null || !Number.isFinite(G._netInterpOffsetMs)) {
     G._netInterpOffsetMs = idealOff;
   } else {
-    G._netInterpOffsetMs += (idealOff - G._netInterpOffsetMs) * 0.088;
+    G._netInterpOffsetMs += (idealOff - G._netInterpOffsetMs) * 0.2;
   }
 }
 
@@ -30113,7 +30119,8 @@ function sampleInterpRingAt(ring, targetSimT) {
     const vz = (al.z - a2.z) / dts;
     const vt = angleDeltaToward(a2.r, al.r) / dts;
     const dsp = (al.sp - a2.sp) / dts;
-    const extrap = targetSimT - al.simT;
+    const rawEx = targetSimT - al.simT;
+    const extrap = Math.min(Math.max(0, rawEx), NET_INTERP_EXTRA_MAX_MS);
     return {
       x: al.x + vx * extrap,
       z: al.z + vz * extrap,
@@ -30224,6 +30231,13 @@ function update(dt) {
         });
       } catch (e) {}
     }
+    try {
+      const lastSnap = batch[batch.length - 1];
+      if (lastSnap && lastSnap.srvTick != null) {
+        const st = Number(lastSnap.srvTick);
+        if (Number.isFinite(st)) refreshNetInterpolationClock(st);
+      }
+    } catch (e) {}
   }
   if (G._pendingNpcSync) {
     const npcSt = G._pendingNpcSync;
