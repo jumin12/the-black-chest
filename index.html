@@ -15517,8 +15517,9 @@ function updatePlayerShipNametagOnly() {
 
 /* ============================== CANNON VFX (smoke) ======================= */
 const cannonSmokePuffs = [];
-/** Optional inheritVel { vx, vz } = shooter world velocity so puffs stay with the hull while drifting. */
-function spawnCannonMuzzleSmoke(x, y, z, dx, dz, inheritVel) {
+/** Optional inheritVel { vx, vz }. `liteMode`: fewer particles for scripted intro broadside (smooth frame times). */
+function spawnCannonMuzzleSmoke(x, y, z, dx, dz, inheritVel, liteMode) {
+  const lite = !!liteMode;
   const sg = new THREE.Group();
   const len = Math.hypot(dx, dz) || 1;
   const ndx = dx / len, ndz = dz / len;
@@ -15532,32 +15533,44 @@ function spawnCannonMuzzleSmoke(x, y, z, dx, dz, inheritVel) {
   const flashMat = (color, op) => new THREE.MeshBasicMaterial({
     color, transparent: true, opacity: op, depthWrite: false, blending: THREE.AdditiveBlending
   });
-  const flashOuter = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), flashMat(0xffaa44, 0.85));
-  flashOuter.userData.isMuzzleFlash = true;
-  flashOuter.userData.life = 0.1;
-  flashOuter.userData.life0 = 0.1;
-  flashOuter.userData.flashOp0 = 0.85;
-  flashOuter.renderOrder = 2;
-  sg.add(flashOuter);
-  const flashMid = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), flashMat(0xffeecc, 0.95));
-  flashMid.userData.isMuzzleFlash = true;
-  flashMid.userData.life = 0.085;
-  flashMid.userData.life0 = 0.085;
-  flashMid.userData.flashOp0 = 0.95;
-  flashMid.renderOrder = 3;
-  sg.add(flashMid);
-  const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), flashMat(0xffffff, 1));
-  flashCore.userData.isMuzzleFlash = true;
-  flashCore.userData.life = 0.055;
-  flashCore.userData.life0 = 0.055;
-  flashCore.userData.flashOp0 = 1;
-  flashCore.renderOrder = 4;
-  sg.add(flashCore);
+  if (!lite) {
+    const flashOuter = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), flashMat(0xffaa44, 0.85));
+    flashOuter.userData.isMuzzleFlash = true;
+    flashOuter.userData.life = 0.1;
+    flashOuter.userData.life0 = 0.1;
+    flashOuter.userData.flashOp0 = 0.85;
+    flashOuter.renderOrder = 2;
+    sg.add(flashOuter);
+    const flashMid = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), flashMat(0xffeecc, 0.95));
+    flashMid.userData.isMuzzleFlash = true;
+    flashMid.userData.life = 0.085;
+    flashMid.userData.life0 = 0.085;
+    flashMid.userData.flashOp0 = 0.95;
+    flashMid.renderOrder = 3;
+    sg.add(flashMid);
+    const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), flashMat(0xffffff, 1));
+    flashCore.userData.isMuzzleFlash = true;
+    flashCore.userData.life = 0.055;
+    flashCore.userData.life0 = 0.055;
+    flashCore.userData.flashOp0 = 1;
+    flashCore.renderOrder = 4;
+    sg.add(flashCore);
+  } else {
+    const flashOne = new THREE.Mesh(new THREE.SphereGeometry(0.2, 7, 6), flashMat(0xffddaa, 0.78));
+    flashOne.userData.isMuzzleFlash = true;
+    flashOne.userData.life = 0.07;
+    flashOne.userData.life0 = 0.07;
+    flashOne.userData.flashOp0 = 0.78;
+    flashOne.renderOrder = 3;
+    sg.add(flashOne);
+  }
   const perpX = -ndz, perpZ = ndx;
   const yaw = Math.atan2(ndx, ndz);
   const qx = Math.floor(sx * 1000), qy = Math.floor(sy * 1000), qz = Math.floor(sz * 1000);
-  for (let i = 0; i < 20; i++) {
-    const isJet = i < 5;
+  const puffCount = lite ? 9 : 20;
+  const jetLim = lite ? 3 : 5;
+  for (let i = 0; i < puffCount; i++) {
+    const isJet = i < jetLim;
     const r0 = fxHash01(qx, qy, qz, i * 5 + 11);
     const r1 = fxHash01(qx, qy, qz, i * 5 + 12);
     const r2 = fxHash01(qx, qy, qz, i * 5 + 13);
@@ -17136,14 +17149,16 @@ function npcFireBroadsideAtPlayer(npc, opts) {
     shots.push({ g, wx, wy, wz, dirX, dirZ, side });
   }
   if (!shots.length) return false;
-  const staggerMs = Math.max(35, Math.round(BROADSIDE_GUN_STAGGER_SEC * 1000));
+  const staggerMs = tut
+    ? Math.max(104, Math.round(BROADSIDE_GUN_STAGGER_SEC * 1000 * 1.92))
+    : Math.max(35, Math.round(BROADSIDE_GUN_STAGGER_SEC * 1000));
   shots.forEach((shot, idx) => {
     window.setTimeout(() => {
       if (G.mode !== 'playing') return;
       if (!npc.mesh || npc.sinking || npc.health <= 0 || G.playerSinking || !G.player || G.player.health <= 0) return;
       kickShipBroadsideCannon(npc.mesh, shot.side, shot.g);
       const nVel = (!npc.anchored && Math.abs(npc.speed || 0) > 0.04) ? npcShipVelocityXZ(npc) : { vx: 0, vz: 0 };
-      spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ, nVel);
+      spawnCannonMuzzleSmoke(shot.wx, shot.wy, shot.wz, shot.dirX, shot.dirZ, nVel, tut);
       fireCannonball(shot.wx, shot.wz, shot.dirX, shot.dirZ, shot.wy, 'npc', null, 'ball', npc.syncId);
       npc.mesh.userData.crewDeckCombatT = Math.max(npc.mesh.userData.crewDeckCombatT || 0, 1);
       if (ws?.readyState === 1 && isMultiplayerHost()) {
@@ -25568,10 +25583,15 @@ function renderPortVistaIfOpen() {
 
 function updateInventoryPanel() {
   ensureCargoSlots();
-  if (document.getElementById('cargo-3d')) {
+  const lp = document.getElementById('log-panel');
+  const inv = document.getElementById('log-inv');
+  if (document.getElementById('cargo-3d') && lp && inv && lp.style.display !== 'none' && inv.style.display !== 'none') {
     ensureCargoPreview();
-    cargoPreviewMeshSig = getCargoPreviewMeshSig();
-    updateCargo3DMesh();
+    const meshSig = getCargoPreviewMeshSig();
+    if (meshSig !== cargoPreviewMeshSig) {
+      cargoPreviewMeshSig = meshSig;
+      updateCargo3DMesh();
+    }
   }
   if (!cargoPtrDrag.active) renderCargoSlotsOverlay();
   cargoInvUiSig = getCargoInventoryUiSig();
@@ -33312,6 +33332,11 @@ function tickTutorialRaidCutscene(dt) {
     tr.scriptingActive = false;
     tr.cameraActive = false;
     tr._showSinkDirective = false;
+    tutorialRaidUiSetSuppressed(false);
+    /* Defer surrogate/cleanup until sink mesh finishes (dispose used to run same frame and stack with spawnNPCs). */
+    if (npc && npc.tutorialRaidHull && npc.sinking && npc.mesh != null && (npc.sinkTimer || 0) < 4.25) {
+      return;
+    }
     disposeTutorialRaidCutscene();
     return;
   }
