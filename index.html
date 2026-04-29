@@ -3384,6 +3384,8 @@ const G = {
   _tutorialRaidCutsceneWarmPrepared: false,
   /** True while solo client drives the intro training raider (server ghosts sync id 90190). */
   localTutorialRaidNpcSurrogate: false,
+  /** Deferred tryBeginTutorialRaidFromUi retries while MP world seed is still syncing — avoids wiping the raid hull via spawnNPCs. */
+  _tutorialRaidDeferTimer: null,
   tutorialRaidCutscene: null,
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
@@ -16700,9 +16702,25 @@ function tickFactionPatrolReserves(dt) {
     }
   }
 }
-function spawnNPCs() {
-  G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
-  G.npcs = [];
+/** @param {{ preserveLocalTutorialRaid?: boolean }} opts When true, keep the solo-client tutorial raid hull while resetting ambient pirates/trade patrols — required after world seed reload so `spawnNPCs` does not orphan the scripted intro. */
+function spawnNPCs(opts) {
+  opts = opts || {};
+  let keepTutorialRaid = null;
+  if (opts.preserveLocalTutorialRaid === true && G.localTutorialRaidNpcSurrogate && G.tutorialRaidCutscene && G.tutorialRaidCutscene.active) {
+    for (let qi = 0; qi < G.npcs.length; qi++) {
+      const n = G.npcs[qi];
+      if (!n || (n.health != null && n.health <= 0)) continue;
+      if (n.syncId === TUTORIAL_RAID_NPC_SYNC && n.tutorialRaidHull && !n.sinking) {
+        keepTutorialRaid = n;
+        break;
+      }
+    }
+  }
+  G.npcs.forEach(n => {
+    if (keepTutorialRaid && n === keepTutorialRaid) return;
+    if (n.mesh) scene.remove(n.mesh);
+  });
+  G.npcs = keepTutorialRaid ? [keepTutorialRaid] : [];
   if (ws && ws.readyState === 1 && G.npcSimFromServer) {
     return;
   }
@@ -18940,8 +18958,7 @@ function applySharedWorldFromServerSeed(s, opts) {
     clearTimeout(playWorldNetTimeoutId);
     playWorldNetTimeoutId = null;
   }
-  G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
-  G.npcs = [];
+  /* Do not clear G.npcs here — `spawnNPCs` handles removal; preserve the tutorial raid hull when the solo intro is mid-flight. */
   G.chunks.clear();
   islandGroup.clear();
   clearSeaReefs();
@@ -18963,7 +18980,7 @@ function applySharedWorldFromServerSeed(s, opts) {
       if (!nudgePlayerSavedPositionToValidSea(saveX, saveZ, saveR, st)) ensurePlayerInOpenOcean();
     }
   }
-  spawnNPCs();
+  spawnNPCs({ preserveLocalTutorialRaid: true });
   nudgePlayerSpawnClearOfShips();
   scatterWindStreaksNearPlayer();
   seedDecorativeWildlifeNearPlayer();
@@ -28276,7 +28293,8 @@ document.querySelectorAll('.port-tab').forEach(t => { t.onclick = () => showPort
 document.getElementById('btn-help').onclick = () => {
   const gh = document.getElementById('game-help-modal');
   if (gh && gh.style.display === 'flex') {
-    closeGameHelpModal({ runPendingTutorial: false });
+    /* Default close runs the post-welcome HUD tour when pending — do not pass runPendingTutorial:false or new captains lose the raid intro chain. */
+    closeGameHelpModal();
     return;
   }
   openGameHelpModal({ welcomePulse: false, thenTutorial: false });
@@ -33071,6 +33089,8 @@ function tutorialRaidSetBanner(text) {
 function disposeTutorialRaidCutscene() {
   tutorialRaidSetBanner('');
   tutorialRaidUiSetSuppressed(false);
+  clearTimeout(G._tutorialRaidDeferTimer);
+  G._tutorialRaidDeferTimer = null;
   G.localTutorialRaidNpcSurrogate = false;
   const ring = document.getElementById('tutorial-raid-world-target');
   if (ring) {
@@ -33191,13 +33211,21 @@ function spawnTutorialRaidPirateNearPlayer() {
 function tryBeginTutorialRaidFromUi() {
   if (!G.tutorialRaidPending || G.tutorialRaidConsumed || G.mode !== 'playing') return;
   const sq = G.storyQuest;
-  if (!sq || sq.phase !== 'intro') return;
+  if (!sq) return;
+  if (sq.phase != null && sq.phase !== 'intro') return;
+  if (G.playWorldAwaitingNetInit) {
+    clearTimeout(G._tutorialRaidDeferTimer);
+    G._tutorialRaidDeferTimer = setTimeout(() => { tryBeginTutorialRaidFromUi(); }, 90);
+    return;
+  }
   startTutorialRaidEncounter();
 }
 
 function startTutorialRaidEncounter() {
   if (G.tutorialRaidConsumed || G.mode !== 'playing') return;
   if (!G.tutorialRaidPending) return;
+  clearTimeout(G._tutorialRaidDeferTimer);
+  G._tutorialRaidDeferTimer = null;
   G.tutorialRaidPending = false;
   const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const multiplayerCrewmate = !!(ws && ws.readyState === 1 && G.otherPlayers && G.otherPlayers.size > 0);
