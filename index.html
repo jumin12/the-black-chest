@@ -180,6 +180,18 @@ input,textarea{-webkit-user-select:text;user-select:text;}
     height:auto;
     max-height:none;
   }
+  body.offline-voyage.game-playing #chat-tab-players,
+  body.offline-voyage.game-playing #chat-tab-party,
+  body.offline-voyage.game-playing #chat-tab-directory{display:none!important;}
+  body.offline-voyage.game-playing #chat-box .chat-panel-header-row,
+  body.offline-voyage.game-playing #chat-realm-line{display:none!important;}
+  body.offline-voyage.game-playing #chat-box #chat-input{display:none!important;}
+  body.offline-voyage.game-playing #chat-directory-panel,
+  body.offline-voyage.game-playing #chat-party-panel{display:none!important;}
+  body.offline-voyage.game-playing #chat-channel-hint{font-size:10px;color:#6a6658;line-height:1.35;margin:0 0 6px;}
+  body.offline-voyage.game-playing #chat-log-players,
+  body.offline-voyage.game-playing #chat-log-clan{display:none!important;}
+  body.offline-voyage.game-playing #chat-log-world{display:none!important;}
   body.game-playing #chat-box .chat-clan-panel{
     flex:1 1 0;
     min-height:0;
@@ -437,6 +449,18 @@ body > a[href="https://vibej.am/"][target="_blank"]{
 .chat-players-table tr.self-row td{background:rgba(50,40,25,0.35);}
 .chat-log-pane div{margin-bottom:4px;line-height:1.35;}
 #chat-input{width:100%;background:rgba(40,30,20,0.65);border:1px solid rgba(120,90,40,0.4);border-radius:8px;padding:10px;color:#e0d6c2;font-size:14px;outline:none;min-height:44px;}
+body.offline-voyage.game-playing #chat-tab-players,
+body.offline-voyage.game-playing #chat-tab-party,
+body.offline-voyage.game-playing #chat-tab-directory{display:none!important;}
+body.offline-voyage.game-playing #chat-box .chat-panel-header-row,
+body.offline-voyage.game-playing #chat-realm-line{display:none!important;}
+body.offline-voyage.game-playing #chat-box #chat-directory-panel,
+body.offline-voyage.game-playing #chat-box #chat-party-panel{display:none!important;}
+body.offline-voyage.game-playing #chat-log-players,
+body.offline-voyage.game-playing #chat-log-clan{display:none!important;}
+body.offline-voyage.game-playing #chat-box #chat-input{display:none!important;}
+body.offline-voyage.game-playing #chat-log-world{display:none!important;}
+body.offline-voyage.game-playing #chat-channel-hint{margin:0;font-size:10px;color:#9a9080;line-height:1.4;}
 #start-screen{position:fixed;top:0;left:0;width:100%;height:100%;background:radial-gradient(ellipse 85% 65% at 50% 20%,rgba(201,162,74,0.07),transparent 55%),transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;padding:max(16px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom));overflow-y:auto;-webkit-overflow-scrolling:touch;}
 .main-menu-card{
   width:100%;max-width:420px;display:flex;flex-direction:column;align-items:center;
@@ -15923,6 +15947,12 @@ function pickUniqueNPCShipNames(count, rng) {
 }
 /** True when this session runs the full NPC AI step and may send `npc_sync` (server picks the stepper; solo always local). */
 function isMultiplayerHost() {
+  /* Standalone/offline voyages must always simulate NPCs locally even if an old websocket is still CONNECTING/CLOSING without going through reconnect cleanup. */
+  if (G.offlineMode) {
+    G.multiplayerNpcAuthorityId = null;
+    G.npcSimFromServer = false;
+    return true;
+  }
   if (!ws || ws.readyState !== 1) {
     G.multiplayerNpcAuthorityId = null;
     return true;
@@ -18002,7 +18032,7 @@ function updateNPCs(dt) {
       checkNpcSeaReefWreck(npc);
       }
     } else if (!npc.sinking) {
-      const useNetInterpNpc = G.npcSimFromServer || (!host && ws && ws.readyState === 1);
+      const useNetInterpNpc = !G.offlineMode && (G.npcSimFromServer || (!host && ws && ws.readyState === 1));
       const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const delayNpc = getEffectiveRemoteInterpDelayMs();
       const npcVelOpt =
@@ -19563,6 +19593,28 @@ function removeRemotePeer(lid) {
 async function connectToServer() {
   if (wsUserBanned) return;
   if (G.offlineMode) {
+    if (wsReconnectTimer) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
+    if (ws) {
+      try {
+        ws.onclose = null;
+        ws.close();
+      } catch (err) {}
+      ws = null;
+      if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
+        for (const sg of G.prizeHullDecoySinks) {
+          try { disposeObject3DSubtree(sg); } catch (e) {}
+          try { scene.remove(sg); } catch (e2) {}
+        }
+        G.prizeHullDecoySinks.length = 0;
+      }
+      for (const opid of Array.from(G.otherPlayers.keys())) {
+        removeRemotePeer(opid);
+      }
+    }
+    G.myId = null;
     G.netDesyncFrozen = false;
     G._netDesyncSticky = 0;
     setMultiplayerConnectingOverlay(false);
@@ -19578,6 +19630,7 @@ async function connectToServer() {
     applySharedWorldFromServerSeed(s, { preservePlayerPosition: true });
     G.playWorldAwaitingNetInit = false;
     notify('Offline voyage — local world, no server.', 4200);
+    try { setChatChannel('global'); } catch (e) {}
     return;
   }
   G.netDesyncFrozen = false;
@@ -24264,6 +24317,7 @@ function startPlayersTabServices() {
 }
 
 function setChatChannel(ch) {
+  if (G.offlineMode && G.mode === 'playing') ch = 'global';
   stopPlayersTabServices();
   G.chatChannel = ch === 'party' ? 'party' : ch === 'directory' ? 'directory' : ch === 'players' ? 'players' : 'global';
   const gBtn = document.getElementById('chat-tab-global');
@@ -24293,7 +24347,9 @@ function setChatChannel(ch) {
     }
   }
   if (hint) {
-    if (G.chatChannel === 'directory') {
+    if (G.offlineMode) {
+      hint.textContent = G.mode === 'playing' ? 'Offline voyage — no server chat.' : 'Offline — local save only.';
+    } else if (G.chatChannel === 'directory') {
       hint.textContent = 'Search clans on this server and apply — captains or officers approve under Clan.';
     } else if (G.chatChannel === 'players') {
       hint.textContent = 'Active captains on this world session. Notoriety rank matches the Pirates board. Ping is each captain’s round-trip to this server (reported to everyone).';
@@ -26869,6 +26925,26 @@ function lbEntryDisplayName(e) {
   return 'Unknown captain';
 }
 
+/** Free-roaming pirate AI in the current world (excludes merchants, faction patrol, story bounties, escorts). */
+function collectSortedAmbientPirateNpcsForNotoriousPanel() {
+  const out = [];
+  for (let i = 0; i < G.npcs.length; i++) {
+    const npc = G.npcs[i];
+    if (!npc || npc.sinking) continue;
+    if (npc.health != null && npc.health <= 0) continue;
+    if (npc.isTradeShip || npc.isFactionPatrol) continue;
+    if (npc.isStoryBounty || npc.isHuntContract || npc.tutorialRaidHull) continue;
+    if ((npc.isEscortCargo && npc.escortQuestActive) || npc.escortRaider) continue;
+    out.push(npc);
+  }
+  out.sort((a, b) => npcCombatPowerEstimate(b) - npcCombatPowerEstimate(a));
+  return out;
+}
+function npcShipTypeLabelForPanel(npc) {
+  const st = SHIP_TYPES[npc && npc.type] || SHIP_TYPES.sloop;
+  return st && st.name ? st.name : 'Ship';
+}
+
 function updatePiratesPanel() {
   const l = document.getElementById('pirates-list');
   if (!l) return;
@@ -26883,6 +26959,109 @@ function updatePiratesPanel() {
     &nbsp;·&nbsp; <span style="color:#88a8cc;">Rival captains sunk</span> ${tot.sinksPlayer}
     &nbsp;·&nbsp; <span style="color:#c4a86a;">Boarding wins</span> ${tot.boardings}
     &nbsp;·&nbsp; <span style="color:#a8c8a8;">Ransoms</span> ${tot.ransoms} &nbsp;·&nbsp; <span style="color:#9888a8;">Lost at sea</span> ${tot.deaths}</div>`;
+  if (G.offlineMode) {
+    let head = '<div style="color:#d4a848;font-size:12px;margin-bottom:8px;text-align:center;letter-spacing:1px;">NOTORIOUS AT SEA (AI)</div>';
+    head += '<div style="color:#7a7068;font-size:9px;line-height:1.45;margin-bottom:10px;text-align:center;">Ranked by estimated fighting strength among pirate vessels in this saved world — merchants and crown patrols are omitted.</div>';
+    head += youBlk;
+    const board = collectSortedAmbientPirateNpcsForNotoriousPanel();
+    l.innerHTML = head;
+    if (board.length === 0) {
+      l.innerHTML += '<div style="color:#8a7a60;font-size:12px;text-align:center;">No pirate captains on the chart right now. Sail the archipelago and they will appear as the world spawns them.</div>';
+      return;
+    }
+    const top1 = board[0];
+    const topStrip = document.createElement('div');
+    topStrip.style.cssText = 'margin-top:4px;padding:10px 10px 12px;background:linear-gradient(180deg, rgba(90,60,20,0.55), rgba(40,28,12,0.75));border:1px solid rgba(220,180,60,0.4);border-radius:8px;';
+    {
+      const fi = top1.factionId != null ? (top1.factionId | 0) % FACTION_COUNT : 0;
+      const facNm = FACTION_SHORT_NAMES[fi] || '';
+      const facCol = FACTION_TRADE_COLORS[fi] || '#c9a878';
+      const pow = Math.round(npcCombatPowerEstimate(top1));
+      const shipLbl = npcShipTypeLabelForPanel(top1);
+      topStrip.innerHTML = `<div style="color:#b8860b;font-size:9px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px;">Deadliest rogue (estimated)</div>
+      <div style="display:flex;align-items:flex-start;gap:8px;">
+        <div style="color:#ffd700;font-weight:bold;font-size:15px;min-width:32px;text-align:center;">1st</div>
+        <div style="flex:1;min-width:0;">
+          <div style="color:#f8ecd0;font-size:15px;font-weight:600;">${escapeDebugHtml(top1.name && String(top1.name).trim() ? String(top1.name).trim() : 'Unnamed hull')}</div>
+          <div style="color:#8a7a68;font-size:9px;margin-top:3px;line-height:1.2;">${escapeDebugHtml(shipLbl)} · power ~${pow}</div>
+          <div style="color:${facCol};font-size:10px;margin-top:4px;">${escapeDebugHtml(facNm)} colors</div>
+        </div>
+      </div>`;
+    }
+    l.appendChild(topStrip);
+    const tail = board.length > 1 ? board.slice(1) : [];
+    const totalPages = Math.max(1, Math.ceil(tail.length / PIRATES_LEADERBOARD_PAGE_SIZE));
+    piratesLeaderboardPage = Math.max(0, Math.min(piratesLeaderboardPage, totalPages - 1));
+    if (!tail.length) {
+      const foot = document.createElement('div');
+      foot.style.cssText = 'margin-top:12px;font-size:9px;color:#6a6058;line-height:1.45;text-align:center;';
+      foot.textContent = 'Play online to see live captain rankings from the server.';
+      l.appendChild(foot);
+      return;
+    }
+    const subHead = document.createElement('div');
+    subHead.style.cssText = 'color:#8a7a60;font-size:10px;margin:12px 0 6px;text-align:center;letter-spacing:0.04em;';
+    subHead.textContent = 'Other pirate vessels';
+    l.appendChild(subHead);
+    const pageStart = piratesLeaderboardPage * PIRATES_LEADERBOARD_PAGE_SIZE;
+    const pageSlice = tail.slice(pageStart, pageStart + PIRATES_LEADERBOARD_PAGE_SIZE);
+    const pageWrap = document.createElement('div');
+    pageWrap.style.cssText = 'margin-top:4px;';
+    pageSlice.forEach((e, j) => {
+      const rank = 2 + pageStart + j;
+      const medal = rank === 2 ? '2nd' : rank === 3 ? '3rd' : `${rank}th`;
+      const medalColor = rank === 2 ? '#c0c0c0' : rank === 3 ? '#cd7f32' : '#8a7a60';
+      const fi = e.factionId != null ? (e.factionId | 0) % FACTION_COUNT : 0;
+      const facNm = FACTION_SHORT_NAMES[fi] || '';
+      const facCol = FACTION_TRADE_COLORS[fi] || '#c9a878';
+      const pow = Math.round(npcCombatPowerEstimate(e));
+      const shipLbl = npcShipTypeLabelForPanel(e);
+      const d = document.createElement('div');
+      d.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:8px;background:rgba(30,20,12,0.4);border:1px solid rgba(140,100,40,0.15);border-radius:5px;margin-bottom:4px;';
+      d.innerHTML = `<div style="color:${medalColor};font-weight:bold;font-size:13px;min-width:32px;text-align:center;">${medal}</div>
+      <div style="flex:1;min-width:0;"><div style="color:#e0d6c2;font-size:13px;">${escapeDebugHtml(e.name && String(e.name).trim() ? String(e.name).trim() : 'Unnamed hull')}</div>
+      <div style="color:#8a7a68;font-size:9px;margin-top:2px;line-height:1.2;">${escapeDebugHtml(shipLbl)} · power ~${pow}</div>
+      <div style="color:${facCol};font-size:10px;margin-top:3px;">${escapeDebugHtml(facNm)}</div></div>`;
+      pageWrap.appendChild(d);
+    });
+    l.appendChild(pageWrap);
+    const nav = document.createElement('div');
+    nav.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid rgba(120,90,50,0.25);flex-wrap:wrap;';
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    prev.textContent = '‹ Prev';
+    prev.style.cssText = 'font-family:Georgia,serif;font-size:10px;padding:6px 10px;border-radius:6px;cursor:pointer;border:1px solid rgba(160,120,60,0.45);background:rgba(55,42,26,0.88);color:#e8dcc8;';
+    prev.disabled = piratesLeaderboardPage <= 0;
+    prev.onclick = () => {
+      if (piratesLeaderboardPage <= 0) return;
+      piratesLeaderboardPage--;
+      updatePiratesPanel();
+    };
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.textContent = 'Next ›';
+    next.style.cssText = prev.style.cssText;
+    next.disabled = piratesLeaderboardPage >= totalPages - 1;
+    next.onclick = () => {
+      if (piratesLeaderboardPage >= totalPages - 1) return;
+      piratesLeaderboardPage++;
+      updatePiratesPanel();
+    };
+    const hint = document.createElement('div');
+    hint.style.cssText = 'font-size:9px;color:#7a6a58;line-height:1.35;text-align:center;flex:1;min-width:120px;';
+    hint.innerHTML = totalPages > 1
+      ? `<span style="color:#a89880;">Page ${piratesLeaderboardPage + 1} / ${totalPages}</span>`
+      : `<span style="color:#a89880;">+${tail.length} more</span>`;
+    nav.appendChild(prev);
+    nav.appendChild(hint);
+    nav.appendChild(next);
+    l.appendChild(nav);
+    const foot = document.createElement('div');
+    foot.style.cssText = 'margin-top:10px;font-size:9px;color:#6a6058;line-height:1.45;text-align:center;';
+    foot.textContent = 'Play online to compare with live captain rankings from the server.';
+    l.appendChild(foot);
+    return;
+  }
   let head = '<div style="color:#d4a848;font-size:12px;margin-bottom:8px;text-align:center;letter-spacing:1px;">TOP PIRATES</div>';
   head += youBlk;
   const board = dedupeLeaderboardForDisplay(leaderboardData);
@@ -32678,12 +32857,14 @@ function gameLoop(time) {
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
     lastTime = time;
     document.body.classList.toggle('game-playing', G.mode === 'playing');
+    document.body.classList.toggle('offline-voyage', !!G.offlineMode);
     return;
   }
   let dt = (time - lastTime) / 1000;
   if (lastTime <= 0) {
     lastTime = time;
     document.body.classList.toggle('game-playing', G.mode === 'playing');
+    document.body.classList.toggle('offline-voyage', !!G.offlineMode);
     if (G.mode === 'playing') {
       try { render(); } catch (e) { console.error('[playground] render error:', e); }
     }
@@ -32693,6 +32874,7 @@ function gameLoop(time) {
   lastTime = time;
   _gameLoopFrame++;
   document.body.classList.toggle('game-playing', G.mode === 'playing');
+  document.body.classList.toggle('offline-voyage', !!G.offlineMode);
   /* While on the main menu / creation flow, `menuRender` owns the WebGL view. Do not `render()` here too — double 60fps world draws OOM/thermal-throttle GPUs and can crash mobile tabs. In play, this loop is the only renderer. */
   if (G.mode === 'playing') {
     try {
