@@ -13,6 +13,8 @@ const TRADE_DOCK_DIST = 40;
 const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
 /** Vanilla pirate slots (syncId 0..n-1) respawn this long after removal (matches browser host). */
 const VANILLA_PIRATE_RESPAWN_MS = 180000;
+/** Match client `factionHostileToPlayer` — only open combat on strong personal standing penalty. */
+const COMBAT_HOSTILE_STANDING = -42;
 
 const SHIP_TYPES = {
   cutter: { hullLen: 5, hullW: 1.6, speed: 1.75, turnRate: 1.6, cannonSlots: 1 },
@@ -941,6 +943,7 @@ function applyBoardingScuttleAuthoritative(npcs, fromPlayerId, npcSyncId, player
 
 function createServerNpcWorld(opts) {
   const windAt = opts.windAt;
+  const getPlayerStanding = typeof opts.getPlayerStanding === 'function' ? opts.getPlayerStanding : null;
   const baseEdgeClamp = opts.edgeClamp != null ? opts.edgeClamp : 2025;
   let ws = (opts.worldSeed >>> 0) || 42;
   let worldMapPayloadRef = opts.worldMapPayload && typeof opts.worldMapPayload === 'object' ? opts.worldMapPayload : null;
@@ -1100,7 +1103,7 @@ function createServerNpcWorld(opts) {
       fireCooldown: 0,
       aggro: false
     };
-    npc.speed = npcMaxForwardSpeed(npc) * (0.48 + sr() * 0.2);
+    npc.speed = npcMaxForwardSpeed(npc) * (0.52 + sr() * 0.24);
     npcs.push(npc);
     return true;
   }
@@ -1172,7 +1175,7 @@ function createServerNpcWorld(opts) {
       aggro: false
     });
     const last = npcs[npcs.length - 1];
-    last.speed = npcMaxForwardSpeed(last) * (0.52 + sr() * 0.2);
+    last.speed = npcMaxForwardSpeed(last) * (0.56 + sr() * 0.22);
   }
 
   function reset(players) {
@@ -1231,7 +1234,7 @@ function createServerNpcWorld(opts) {
         aggro: false
       });
       const last = npcs[npcs.length - 1];
-      last.speed = npcMaxForwardSpeed(last) * (0.52 + sr() * 0.2);
+      last.speed = npcMaxForwardSpeed(last) * (0.56 + sr() * 0.22);
     }
     const allPorts = collectAllPorts();
     if (allPorts.length >= 2) {
@@ -1329,6 +1332,15 @@ function createServerNpcWorld(opts) {
     if (bestId != null) npc.attackNpcSyncId = bestId;
   }
 
+  function hostileStandingToFaction(playerId, factionIdx) {
+    if (getPlayerStanding == null || playerId == null) return false;
+    const st = getPlayerStanding(Math.floor(Number(playerId)));
+    if (!st || !Array.isArray(st.relations)) return false;
+    const f = (factionIdx | 0) % FACTION_COUNT;
+    const r = Number(st.relations[f]);
+    return Number.isFinite(r) && r <= COMBAT_HOSTILE_STANDING;
+  }
+
   function updateMerchantThreat(npc) {
     if (!npc.isTradeShip || npc.sinking) return;
     npc._merThreatAcc = (npc._merThreatAcc || 0) + 0.022;
@@ -1369,8 +1381,14 @@ function createServerNpcWorld(opts) {
     }
     const near = nearestCaptain(npc.x, npc.z, players);
     const distToPlayer = near ? near.d : 1e9;
-    const mPfid = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true }, politics.portController, ws);
-    if (!npc.aggro && distToPlayer < 142) {
+    const mPfid = (townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true }, politics.portController, ws) | 0) % FACTION_COUNT;
+    const pid = near && near.p && near.p.id != null ? Math.floor(Number(near.p.id)) : null;
+    let provoked = false;
+    if (near && pid != null) {
+      if (distToPlayer < 142 && hostileStandingToFaction(pid, mPfid)) provoked = true;
+      else if (distToPlayer < 148 && npc.underFireTimer != null && npc.underFireTimer > 0.05) provoked = true;
+    }
+    if (!npc.aggro && provoked) {
       npc.aggro = true;
       npc.underFireTimer = Math.max(npc.underFireTimer || 0, 3.6);
     }
@@ -1564,7 +1582,10 @@ function createServerNpcWorld(opts) {
     const aimx = focus ? focus.x : near ? near.p.x : 0;
     const aimz = focus ? focus.z : near ? near.p.z : 0;
     const distToTarget = focus ? Math.hypot(focus.x - npc.x, focus.z - npc.z) : distToPlayer;
-    if (!focus && near && distToPlayer < 118) {
+    const pirFid = (npc.factionId | 0) % FACTION_COUNT;
+    const nid = near && near.p && near.p.id != null ? Math.floor(Number(near.p.id)) : null;
+    if (!focus && near && nid != null && distToPlayer < 118
+      && (hostileStandingToFaction(nid, pirFid) || (npc.underFireTimer != null && npc.underFireTimer > 0.05))) {
       npc.aggro = true;
       npc.underFireTimer = Math.max(npc.underFireTimer || 0, 2.9);
     }

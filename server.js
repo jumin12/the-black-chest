@@ -104,7 +104,8 @@ function ensureNpcWorld() {
       worldSeed: WORLD_SEED >>> 0,
       edgeClamp: PLAYER_WORLD_EDGE_CLAMP,
       worldMapPayload: currentWorldMapPayloadOrNull(),
-      politicsRef: pol
+      politicsRef: pol,
+      getPlayerStanding: (pid) => ensureWorldPolitics().getPlayerStanding(pid)
     });
     npcWorld.setBroadcastAll(broadcastAll);
   }

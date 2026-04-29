@@ -3190,6 +3190,8 @@ const FACTION_COLONIAL_PREFIXES = [
 ];
 const DEFAULT_SAIL_TRIM_COLOR = '#c9b89a';
 const BANNED_FROM_PORT_RELATION = -40;
+/** Open-sea combat / broadsides — stricter than port ban so neutral captains are not shot on sight. */
+const COMBAT_HOSTILE_RELATION = -42;
 /** Player sail accel/decel and max SOG (player only, not AI). +50% vs prior 0.42 base (was tuned down from legacy 0.7). */
 const PLAYER_BASE_SPEED_MULT = 0.63;
 
@@ -8529,7 +8531,7 @@ function playerBannedFromFactionPort(fid) {
 function factionHostileToPlayer(fid) {
   const f = (fid | 0) % FACTION_COUNT;
   if (playerBannedFromFactionPort(f)) return true;
-  return playerFactionRelation(f) <= -30;
+  return playerFactionRelation(f) <= COMBAT_HOSTILE_RELATION;
 }
 function randomChoosableFlagRng(rng) {
   const ids = PLAYER_FLAG_CHOICE_IDS;
@@ -17887,7 +17889,8 @@ function updateNPCs(dt) {
         npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
         npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
       }
-      if (Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ)) {
+      const useNpcVelSm = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ);
+      if (useNpcVelSm) {
         const vm = Math.hypot(npc._npcVelSmX, npc._npcVelSmZ);
         const cap = 78;
         const sc = vm > cap ? cap / vm : 1;
@@ -17896,10 +17899,10 @@ function updateNPCs(dt) {
       }
       const vFwd = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
       const au = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
-      const blendHeading = (Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ)) ? 0.38 : 1;
-      if (Math.abs(vFwd) > 0.006) {
-        npc.x += Math.sin(au) * vFwd * dt * 0.985 * blendHeading;
-        npc.z += Math.cos(au) * vFwd * dt * 0.985 * blendHeading;
+      /* Heading×speed duplicates net Δ-velocity smoothing — doing both snaps the hull back toward authority each tick. */
+      if (!useNpcVelSm && Math.abs(vFwd) > 0.006) {
+        npc.x += Math.sin(au) * vFwd * dt * 0.985;
+        npc.z += Math.cos(au) * vFwd * dt * 0.985;
       }
       let leadX = npc.syncX, leadZ = npc.syncZ;
       if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed)) && npc.syncR != null) {
@@ -17918,7 +17921,9 @@ function updateNPCs(dt) {
         npc._npcHullSeaYVis = undefined;
       } else {
         /* Small err used 7.8 — over-correct vs prediction + net rounding → micro jitter. */
-        const pull = err > 90 ? 9.8 : err > 35 ? 5.5 : err > 12 ? 3.85 : err > 4 ? 2.45 : err > 1.1 ? 1.28 : err > 0.22 ? 0.72 : 0.3;
+        const velPull = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ) ? 0.74 : 1;
+        const pull =
+          (err > 90 ? 8.35 : err > 35 ? 4.95 : err > 12 ? 3.42 : err > 4 ? 2.08 : err > 1.1 ? 1.05 : err > 0.22 ? 0.62 : 0.24) * velPull;
         const posK = 1 - Math.exp(-pull * dt);
         npc.x += ex * posK;
         npc.z += ez * posK;
@@ -30085,8 +30090,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.z += Math.cos(th) * v * dt * pred;
   }
   const pk = nearPeer ? 1.72 : 1;
-  let posErrK = err > 120 ? 5.2 : err > 55 ? 3.1 : err > 22 ? 1.88 : err > 8 ? 0.95 : 0.52;
-  if (nearPeer) posErrK *= 1.06;
+  let posErrK = err > 120 ? 4.52 : err > 55 ? 2.74 : err > 22 ? 1.66 : err > 8 ? 0.85 : 0.46;
+  if (nearPeer) posErrK *= 1.04;
   const posK = 1 - Math.exp(-posErrK * pk * dt);
   ns.x += (ax - ns.x) * posK;
   ns.z += (az - ns.z) * posK;
@@ -34514,7 +34519,15 @@ function saveProgress() {
         const s = G.player.sailBanner && typeof G.player.sailBanner === 'object' ? sanitizeBannerDesignClient(G.player.sailBanner) : null;
         return s || null;
       })(),
-      serverCaptainKey: (G.myCaptainKey != null && String(G.myCaptainKey).trim()) ? String(G.myCaptainKey).trim() : null
+      serverCaptainKey: (G.myCaptainKey != null && String(G.myCaptainKey).trim()) ? String(G.myCaptainKey).trim() : null,
+      captainAccountToken: (() => {
+        try {
+          const t = getCaptainTokenForResume();
+          return typeof t === 'string' && t.trim() ? t.trim().slice(0, 140) : null;
+        } catch (e) {
+          return null;
+        }
+      })()
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     if (G.mode === 'playing') maybeSendWorldCheckpointAfterSave(false);
@@ -34555,6 +34568,15 @@ function loadProgress() {
       G.myCaptainKey = String(data.serverCaptainKey).trim();
     } else if (data.clanSnap && data.clanSnap.captainKey != null && String(data.clanSnap.captainKey).trim()) {
       G.myCaptainKey = String(data.clanSnap.captainKey).trim();
+    }
+    if (data.captainAccountToken != null && typeof data.captainAccountToken === 'string') {
+      const tk = String(data.captainAccountToken).trim();
+      if (tk) {
+        const cap = G.player.crew && G.player.crew.find(c => c && c.role === 'captain');
+        const nm = cap && cap.name ? String(cap.name).trim() : '';
+        if (nm) rememberCaptainToken(nm, tk);
+        if (G.myCaptainKey && String(G.myCaptainKey).trim()) rememberCaptainToken(String(G.myCaptainKey).trim(), tk);
+      }
     }
     if (data.quests) G.quests = data.quests.filter(q => q && q.type !== 'explore');
     if (data.completedMissionLog && Array.isArray(data.completedMissionLog)) G.completedMissionLog = data.completedMissionLog.slice(0, 40);
