@@ -59,6 +59,21 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 @keyframes mp-connecting-spin{ to { transform:rotate(360deg); } }
 #mp-connecting-overlay .mp-connecting-title{font-size:18px;color:var(--brass);letter-spacing:0.04em;text-transform:uppercase;}
 #mp-connecting-overlay .mp-connecting-sub{max-width:280px;opacity:0.88;font-size:13px;}
+#desync-blocking-overlay{
+  display:none;position:absolute;inset:0;z-index:13050;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+  padding:24px;box-sizing:border-box;text-align:center;touch-action:manipulation;
+  background:linear-gradient(180deg, rgba(42,12,10,0.94), rgba(8,4,6,0.96));
+  color:var(--parchment);font-family:Georgia,serif;font-size:15px;line-height:1.5;
+  pointer-events:auto;
+}
+#desync-blocking-overlay h3{margin:0;color:var(--brass);font-size:19px;letter-spacing:0.04em;}
+#desync-blocking-overlay p{margin:0;max-width:400px;opacity:0.92;font-size:14px;}
+#desync-blocking-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:6px;}
+#desync-blocking-actions button{
+  font-family:Georgia,serif;padding:11px 18px;border-radius:8px;border:1px solid rgba(201,162,74,0.5);
+  background:linear-gradient(180deg,#5a3820,#3a2412);color:#f0e4c8;cursor:pointer;font-size:14px;
+}
+#desync-blocking-actions button.desync-secondary{background:rgba(28,22,18,0.95);border-color:rgba(140,110,70,0.45);}
 #hud-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:95vw;}
 .hud-box{
   background:linear-gradient(180deg,rgba(55,38,24,0.92),rgba(32,22,14,0.94)),
@@ -2234,6 +2249,14 @@ body.game-help-mobile-minimal #game-help-panel{
     <div class="mp-connecting-title">Connecting</div>
     <div class="mp-connecting-sub">Syncing with the realm&hellip; your ship will steady once the line is ready.</div>
   </div>
+  <div id="desync-blocking-overlay" aria-live="assertive" aria-hidden="true" role="alertdialog">
+    <h3 id="desync-blocking-title">Out of sync</h3>
+    <p id="desync-blocking-msg">Your hull no longer matches the realm server. Reload or reconnect to continue.</p>
+    <div id="desync-blocking-actions">
+      <button type="button" id="desync-blocking-reconnect">Reconnect</button>
+      <button type="button" id="desync-blocking-reload" class="desync-secondary">Reload page</button>
+    </div>
+  </div>
   <button type="button" id="board-prompt-btn" style="display:none;">Board</button>
   <div id="boarding-tw-wrap" aria-hidden="true">
     <div id="boarding-tw-inner">
@@ -3429,6 +3452,10 @@ const G = {
   clientServerRttMs: null,
   /** Monotonic counter for `update.seq` (server acks via `state` / authoritative self row). */
   netSendSeq: 0,
+  /** Multiplayer: hull no longer matches realm — block play until reload / reconnect. */
+  netDesyncFrozen: false,
+  _netDesyncSticky: 0,
+  _netSentYawAlign: null,
   /** Throttle `rtt_update` WebSocket messages to the server. */
   _lastRttReportAt: 0,
   townFlagMeshes: [],
@@ -4167,6 +4194,24 @@ function setMultiplayerConnectingOverlay(show) {
   const on = !!show;
   el.style.display = on ? 'flex' : 'none';
   el.setAttribute('aria-hidden', on ? 'false' : 'true');
+}
+
+function setDesyncBlockingOverlay(show, message) {
+  const el = document.getElementById('desync-blocking-overlay');
+  if (!el) return;
+  const on = !!show;
+  if (!on) {
+    G.netDesyncFrozen = false;
+    el.style.display = 'none';
+    el.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  const p = document.getElementById('desync-blocking-msg');
+  if (p && message) p.textContent = String(message).slice(0, 560);
+  G.netDesyncFrozen = true;
+  try { setMultiplayerConnectingOverlay(false); } catch (e) {}
+  el.style.display = 'flex';
+  el.setAttribute('aria-hidden', 'false');
 }
 
 function detachNpcCrewAndSpawnBailSwimmers(npc, sinkOpts) {
@@ -15521,6 +15566,31 @@ function rebuildPlayerShip() {
   respawnAllPlayerShipWindStreamParticles();
 }
 
+/** Re-add crew rigs after rescue / brig change without tearing down sails/jack meshes (prevents banner white flash). */
+function refreshPlayerShipCrewMeshesOnly() {
+  if (G.mode !== 'playing' || !playerShipGroup) return;
+  ensurePlayerCrewTasks();
+  let shipRoot = null;
+  for (let i = 0; i < playerShipGroup.children.length; i++) {
+    const ch = playerShipGroup.children[i];
+    if (!ch.isGroup || ch instanceof THREE.Sprite) continue;
+    shipRoot = ch;
+    break;
+  }
+  if (!shipRoot) {
+    rebuildPlayerShip();
+    return;
+  }
+  try {
+    removeCrewMeshesFromShipGroup(shipRoot);
+    buildCrewMeshes(shipRoot, G.player.crew, G.player.shipType);
+  } catch (e) {
+    try { rebuildPlayerShip(); } catch (e2) {}
+    return;
+  }
+  updatePlayerShipNametagOnly();
+}
+
 /** Update floating nametag only (clan tag line). Avoids full mesh teardown on every `party_sync` roster tick — that was destabilizing the world for some clients. */
 function updatePlayerShipNametagOnly() {
   if (G.mode !== 'playing') return;
@@ -19277,6 +19347,8 @@ function removeRemotePeer(lid) {
 }
 async function connectToServer() {
   if (wsUserBanned) return;
+  G.netDesyncFrozen = false;
+  G._netDesyncSticky = 0;
   try {
     await ensureServerEndpoints();
   } catch (e) {}
@@ -19313,7 +19385,7 @@ async function connectToServer() {
   try { stopMultiplayerRttLoop(); } catch (e) {}
   if (G.mode === 'playing') {
     setMultiplayerConnectingOverlay(true);
-    queueMicrotask(() => { try { warmTutorialRaidCutsceneMeshesIfEligible(); } catch (e) {} });
+    queueMicrotask(() => { try { preloadRealmWhileConnecting(); } catch (e) {} });
   }
   let socket;
   try {
@@ -19498,6 +19570,8 @@ async function connectToServer() {
           flushGameViewRender();
         } catch (e) {}
         setMultiplayerConnectingOverlay(false);
+        G._netDesyncSticky = 0;
+        try { setDesyncBlockingOverlay(false); } catch (e) {}
         break;
       case 'server_pop':
         applyServerPop(msg);
@@ -20386,7 +20460,7 @@ function getNavigatorSessionToken() {
   }
 }
 function sendUpdate(includeCrew) {
-  if (!ws || ws.readyState !== 1) return;
+  if (!ws || ws.readyState !== 1 || G.netDesyncFrozen) return;
   if (includeCrew === undefined) includeCrew = true;
   G.netSendSeq = (G.netSendSeq | 0) + 1;
   const payload = {
@@ -20427,6 +20501,7 @@ function sendUpdate(includeCrew) {
   const navT = getNavigatorSessionToken();
   if (navT) payload.navigatorToken = navT;
   ws.send(JSON.stringify(payload));
+  G._netSentYawAlign = G.player.rotation;
 }
 
 /**
@@ -20445,16 +20520,71 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     if (voyageSaveExistsInStorage() && G._wsOpenedAt && (Date.now() - G._wsOpenedAt) < 5000) return;
     G.player.x = sx;
     G.player.z = sz;
+    if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
+      G.player.rotation = Number(selfRow.rotation);
+    }
+    finalizeNetDesyncProbe(selfRow);
     return;
   }
   /* Wider dead zone + gentler pull: small server/client drift from wind integration was read as jitter. */
-  if (d < 1.2) return;
+  if (d < 1.2) {
+    /* Rotation: soft-align heading to server (authoritative sim) so turns do not fight 45Hz snapshots. */
+    if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
+      const sr = Number(selfRow.rotation);
+      let dr = angleDeltaToward(G.player.rotation, sr);
+      if (Math.abs(dr) > 0.02) {
+        const kRot = Math.min(0.44, 0.11 + Math.abs(dr) * 0.125);
+        G.player.rotation += dr * kRot;
+      }
+    }
+    finalizeNetDesyncProbe(selfRow);
+    return;
+  }
   let cap = Math.min(0.32, 0.022 + d * 0.0068);
   /* After latency spikes, one large state delta used to yank the hull in a single frame — ease in over several frames. */
   if (d > 52) cap *= 0.62;
   if (d > 120) cap *= 0.5;
   G.player.x += dx * cap;
   G.player.z += dz * cap;
+  if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
+    const sr = Number(selfRow.rotation);
+    let dr = angleDeltaToward(G.player.rotation, sr);
+    if (Math.abs(dr) > 0.018) {
+      const kRot = Math.min(0.52, 0.095 + Math.abs(dr) * 0.12);
+      G.player.rotation += dr * kRot;
+    }
+  }
+  finalizeNetDesyncProbe(selfRow);
+}
+
+/** After merge: if residuals stay large or grow, block play — safer than invisible rubber-banding forever. */
+function finalizeNetDesyncProbe(selfRow) {
+  try {
+    if (!selfRow || !ws || ws.readyState !== 1 || G.netDesyncFrozen) return;
+    if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.captainWalk?.active || G.boarding) {
+      G._netDesyncSticky = 0;
+      return;
+    }
+    if (G._wsOpenedAt && Date.now() - G._wsOpenedAt < 9000) return;
+    const sx = Number(selfRow.x), sz = Number(selfRow.z);
+    const srvR = selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation)) ? Number(selfRow.rotation) : G.player.rotation;
+    if (!Number.isFinite(sx) || !Number.isFinite(sz) || !Number.isFinite(srvR)) return;
+    const rem = Math.hypot(sx - G.player.x, sz - G.player.z);
+    const ad = Math.abs(angleDeltaToward(G.player.rotation, srvR));
+    if (rem > 310 || ad > 2.92) {
+      setDesyncBlockingOverlay(true, 'Position or heading no longer matched the realm. Reconnect when your connection stabilizes.');
+      try { ws.close(); } catch (e) {}
+      return;
+    }
+    const stalePos = rem > 58 && rem < 268;
+    const staleAng = ad > 0.52 && ad < 2.75;
+    if (stalePos || staleAng) G._netDesyncSticky = (G._netDesyncSticky || 0) + 1 / 45;
+    else G._netDesyncSticky = Math.max(0, (G._netDesyncSticky || 0) - 0.22);
+    if ((G._netDesyncSticky || 0) > 5.8) {
+      setDesyncBlockingOverlay(true, 'Your ship could not stay synchronized with this realm. Reconnect or reload.');
+      try { ws.close(); } catch (e) {}
+    }
+  } catch (e) {}
 }
 
 /**
@@ -21465,6 +21595,15 @@ function buildWorldMapJsonFromCustomMapSession() {
   });
 })();
 document.getElementById('spectate-return-btn')?.addEventListener('click', () => endSpectateMode());
+document.getElementById('desync-blocking-reload')?.addEventListener('click', () => { location.reload(); });
+document.getElementById('desync-blocking-reconnect')?.addEventListener('click', () => {
+  try {
+    setDesyncBlockingOverlay(false);
+  } catch (e) {}
+  G.netDesyncFrozen = false;
+  G._netDesyncSticky = 0;
+  if (G.mode === 'playing') connectToServer();
+});
 function closeDebugPasswordModal() {
   const pm = document.getElementById('debug-password-root');
   if (pm) { pm.style.display = 'none'; pm.setAttribute('aria-hidden', 'true'); }
@@ -29874,7 +30013,13 @@ function update(dt) {
     if (G.mode === 'playing') try { applyNpcSyncMessage(npcSt); } catch (e) {}
   }
   if (G.mode !== 'playing') return;
-   G.time += dt; G.dt = dt;
+  if (G.netDesyncFrozen) {
+    G.time += dt;
+    G.dt = dt;
+    try { warmUpGameView(); } catch (e) {}
+    return;
+  }
+  G.time += dt; G.dt = dt;
   if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
     for (let i = G.prizeHullDecoySinks.length - 1; i >= 0; i--) {
       const sg = G.prizeHullDecoySinks[i];
@@ -30925,7 +31070,7 @@ function update(dt) {
           missedMeals: c.missedMeals != null ? c.missedMeals : 0
         }));
         notify(`${c.name} pulled from the water!`);
-        rebuildPlayerShip();
+        refreshPlayerShipCrewMeshesOnly();
         updateCrewPanel();
         refreshCargoPanelIfOpen();
         collected = true;
@@ -30941,7 +31086,7 @@ function update(dt) {
           notify('Prisoner captured!');
           const pris = normalizeCrewMemberRecord({ name: ['Barnacle Bill','Peg Leg Pete','Scurvy Sam','Old Bones'][Math.floor(Math.random()*4)], role: 'prisoner', health: 80, task: 'idle', color: '#5a5a5a' });
           G.player.crew.push(pris);
-          rebuildPlayerShip();
+          refreshPlayerShipCrewMeshesOnly();
           updateCrewPanel();
           refreshCargoPanelIfOpen();
           collected = true;
@@ -31278,6 +31423,23 @@ function update(dt) {
     sendTimer = ws?.readyState === 1 ? (pvpGrapple ? (1 / 60) : (1 / NET_SYNC_HZ)) : 0.05;
   }
 
+  if (!G._netYawBurstCd) G._netYawBurstCd = 0;
+  G._netYawBurstCd -= dt;
+  const yawBurstPvPBoarding = !!(G.boarding && G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null
+    && (G.boarding.phase === 'pull' || G.boarding.phase === 'fight'));
+  if (
+    ws?.readyState === 1 && G.mode === 'playing' && !G.netDesyncFrozen && G._netYawBurstCd <= 0
+    && !yawBurstPvPBoarding
+  ) {
+    const sent = G._netSentYawAlign;
+    const base = Number.isFinite(Number(sent)) ? Number(sent) : G.player.rotation;
+    const yawErr = Math.abs(angleDeltaToward(base, G.player.rotation));
+    if (yawErr > 0.042) {
+      sendUpdate(false);
+      G._netYawBurstCd = 0.072;
+    }
+  }
+
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
   if (isMultiplayerHost() && !G.npcSimFromServer && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
@@ -31406,6 +31568,20 @@ function warmUpGameView() {
   waterUniforms.uTime.value = G.time;
   waterUniforms.uCamPos.value.copy(camera.position);
   renderer.render(scene, camera);
+}
+
+/**
+ * During MP "Connecting", pull nearby terrain, compile tutorial-raid hull, and render once so first frames stay smooth.
+ */
+function preloadRealmWhileConnecting() {
+  if (G.mode !== 'playing' || typeof THREE === 'undefined') return;
+  try { kickOffGameAssetPreload(); } catch (e0) {}
+  try { updateChunks(); } catch (e1) {}
+  try { warmTutorialRaidCutsceneMeshesIfEligible(); } catch (e2) {}
+  try {
+    warmUpGameView();
+    flushGameViewRender();
+  } catch (e3) {}
 }
 
 /**
