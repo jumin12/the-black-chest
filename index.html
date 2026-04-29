@@ -13163,6 +13163,7 @@ function boardingIAmSimLeader(b) {
 }
 /** When another captain boards an AI ship, the NPC stepper does not run that hull’s AI tick — copy locked hull ex/er from state so npc_sync matches the attacker. */
 function applyHostForeignNpcBoardingFromPeers() {
+  if (G.offlineMode) return;
   if (G.mode !== 'playing' || !isMultiplayerHost()) return;
   for (const row of G.otherPlayers.values()) {
     const bo = row && row.boarding;
@@ -15372,6 +15373,7 @@ function updateBoardingRopes() {
   trimBoardingRopeMeshesTo(meshIdx);
 }
 function tickRemoteBoardingSpectatorUi() {
+  if (G.offlineMode) return;
   if (G.mode !== 'playing' || G.spectate || G.boarding) return;
   let best = null, bestD = 1e9;
   G.otherPlayers.forEach((row, pid) => {
@@ -30898,8 +30900,8 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 }
 
 function update(dt) {
-  if (G.mode === 'playing') updatePvpProximityFlag();
-  if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
+  if (G.mode === 'playing' && !G.offlineMode) updatePvpProximityFlag();
+  if (!G.offlineMode && G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
     const q = G._netStateDrainQueue;
     while (q.length > 128) q.shift();
     /** Drop backlog — apply only newest `state` per frame so the world doesn’t stutter through stale snapshots. */
@@ -30914,7 +30916,7 @@ function update(dt) {
       });
     } catch (e) {}
   }
-  if (G._pendingNpcSyncQueue && G._pendingNpcSyncQueue.length && G.mode === 'playing') {
+  if (!G.offlineMode && G._pendingNpcSyncQueue && G._pendingNpcSyncQueue.length && G.mode === 'playing') {
     const arr = G._pendingNpcSyncQueue;
     while (arr.length > 64) arr.shift();
     while (arr.length > 1) arr.shift();
@@ -31276,12 +31278,17 @@ function update(dt) {
   updateNPCs(dt);
   scheduleOceanSurfaceBatchBurstOffMain();
   tickEscortAbandonment(dt);
-  G.npcs.forEach(npc => {
+  G.npcs.forEach((npc, nix) => {
     if (!npc.mesh || npc.sinking) return;
-    animateRemoteShipSails(npc.mesh, npc.x, npc.z, npc.rotation, npc.speed || 0, dt);
-    if (!npc.mesh.userData.crewManifest || !npc.mesh.userData.crewManifest.length) return;
     const pseudo = { rotation: npc.rotation, speed: npc.speed || 0, docked: false, deckWalk: null };
-    updateRemoteCrewDeckAnimations(dt, npc.mesh, pseudo, npc.type || 'sloop');
+    const npcDeckHeavy =
+      !!(G.offlineMode && G.npcs.length >= 28 && ((_gameLoopFrame + nix) & 1));
+    if (!npcDeckHeavy) {
+      animateRemoteShipSails(npc.mesh, npc.x, npc.z, npc.rotation, npc.speed || 0, dt);
+      if (npc.mesh.userData.crewManifest && npc.mesh.userData.crewManifest.length) {
+        updateRemoteCrewDeckAnimations(dt, npc.mesh, pseudo, npc.type || 'sloop');
+      }
+    }
   });
   storyBountyEnsureAcc += dt;
   if (storyBountyEnsureAcc >= 1.35) {
@@ -31485,7 +31492,7 @@ function update(dt) {
     child.rotation.y = Math.max(-SAIL_MAX_YAW, Math.min(SAIL_MAX_YAW, yaw));
   });
 
-   G.otherPlayers.forEach((p, id) => {
+  if (!G.offlineMode) G.otherPlayers.forEach((p, id) => {
     const cacheKey = p._netShipCacheKey != null ? p._netShipCacheKey : otherPlayerShipCacheKey(p);
     if (!otherShipGroups.has(id) || otherShipGroups.get(id).userData.cacheKey !== cacheKey) {
       let preservedSinking = null;
@@ -32374,6 +32381,7 @@ function update(dt) {
   try { updateBoardingUiOverlay(); } catch (e) {}
   try { tickRemoteBoardingSpectatorUi(); } catch (e) {}
 
+  if (!G.offlineMode) {
   sendTimer -= dt;
   if (sendTimer <= 0) {
     sendUpdate(shouldIncludeCrewOnPeriodicNetTick());
@@ -32467,6 +32475,7 @@ function update(dt) {
         inf: G.politics.inflation != null ? G.politics.inflation : 1
       }));
     } catch (e) {}
+  }
   }
   updateCannonSmoke(dt);
   updateAllShipCannonRecoil(dt);
