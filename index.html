@@ -3458,6 +3458,7 @@ const G = {
   _netSentYawAlign: null,
   /** Throttle `rtt_update` WebSocket messages to the server. */
   _lastRttReportAt: 0,
+  _pvpNearby: false,
   townFlagMeshes: [],
   /** Per-port `{ cx,cz }` key → `{ goodId: count }` — trade stockpiles & debug display */
   townStockpiles: null,
@@ -20515,10 +20516,31 @@ function sendUpdate(includeCrew) {
  * Soft-merge local hull position toward the server’s integrated state (prediction reconciliation).
  * Keeps near–Fortnite responsiveness while correcting wind / collision divergence.
  */
+function updatePvpProximityFlag() {
+  G._pvpNearby = false;
+  if (ws?.readyState !== 1 || !G.otherPlayers || G.otherPlayers.size === 0 || G.docked || G.boarding || G.playerSinking) return;
+  const px = Number(G.player.x), pz = Number(G.player.z);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return;
+  const r2 = 385 * 385;
+  for (const op of G.otherPlayers.values()) {
+    if (!op || op.docked) continue;
+    const mh = op.health != null ? Number(op.health) : null;
+    if (mh != null && Number.isFinite(mh) && mh <= 0) continue;
+    const ox = Number(op.x), oz = Number(op.z);
+    if (!Number.isFinite(ox) || !Number.isFinite(oz)) continue;
+    const dx = ox - px, dz = oz - pz;
+    if (dx * dx + dz * dz <= r2) {
+      G._pvpNearby = true;
+      return;
+    }
+  }
+}
+
 function reconcileLocalPlayerFromServerState(selfRow) {
   if (!selfRow || G.spectate || G.playerSinking || G.docked || G.captainWalk?.active || G.boarding) return;
   const sx = Number(selfRow.x), sz = Number(selfRow.z);
   if (!Number.isFinite(sx) || !Number.isFinite(sz)) return;
+  const pvpRelax = !!G._pvpNearby;
   const dx = sx - G.player.x, dz = sz - G.player.z;
   const d = Math.hypot(dx, dz);
   /* Hard snap only on true divergence (stuck hints, tab resume, handoff) — lower threshold caused visible pops. */
@@ -20533,14 +20555,16 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     finalizeNetDesyncProbe(selfRow);
     return;
   }
+  /* Near another captain: evasive arcs + cannon recoil differ from authoritative 45Hz snaps — widen the deadband. */
+  const deadFloor = pvpRelax ? 3.15 : 1.2;
   /* Wider dead zone + gentler pull: small server/client drift from wind integration was read as jitter. */
-  if (d < 1.2) {
+  if (d < deadFloor) {
     /* Rotation: soft-align heading to server (authoritative sim) so turns do not fight 45Hz snapshots. */
     if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
       const sr = Number(selfRow.rotation);
       let dr = angleDeltaToward(G.player.rotation, sr);
-      if (Math.abs(dr) > 0.02) {
-        const kRot = Math.min(0.44, 0.11 + Math.abs(dr) * 0.125);
+      if (Math.abs(dr) > (pvpRelax ? 0.034 : 0.02)) {
+        const kRot = Math.min(pvpRelax ? 0.36 : 0.44, (pvpRelax ? 0.08 : 0.11) + Math.abs(dr) * (pvpRelax ? 0.1 : 0.125));
         G.player.rotation += dr * kRot;
       }
     }
@@ -20548,6 +20572,7 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     return;
   }
   let cap = Math.min(0.32, 0.022 + d * 0.0068);
+  if (pvpRelax) cap *= 0.71;
   /* After latency spikes, one large state delta used to yank the hull in a single frame — ease in over several frames. */
   if (d > 52) cap *= 0.62;
   if (d > 120) cap *= 0.5;
@@ -20556,8 +20581,8 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
     const sr = Number(selfRow.rotation);
     let dr = angleDeltaToward(G.player.rotation, sr);
-    if (Math.abs(dr) > 0.018) {
-      const kRot = Math.min(0.52, 0.095 + Math.abs(dr) * 0.12);
+    if (Math.abs(dr) > (pvpRelax ? 0.028 : 0.018)) {
+      const kRot = Math.min(pvpRelax ? 0.44 : 0.52, (pvpRelax ? 0.075 : 0.095) + Math.abs(dr) * (pvpRelax ? 0.1 : 0.12));
       G.player.rotation += dr * kRot;
     }
   }
@@ -20581,6 +20606,11 @@ function finalizeNetDesyncProbe(selfRow) {
     if (rem > 310 || ad > 2.92) {
       setDesyncBlockingOverlay(true, 'Position or heading no longer matched the realm. Reconnect when your connection stabilizes.');
       try { ws.close(); } catch (e) {}
+      return;
+    }
+    /* Broadside range: residuals spike from dodging shots while the server extrapolates a straight wind model — never treat as creeping desync. */
+    if (G._pvpNearby) {
+      G._netDesyncSticky = Math.max(0, (G._netDesyncSticky || 0) - 0.52);
       return;
     }
     const stalePos = rem > 58 && rem < 268;
@@ -30073,6 +30103,7 @@ function update(dt) {
     return;
   }
   G.time += dt; G.dt = dt;
+  updatePvpProximityFlag();
   if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
     for (let i = G.prizeHullDecoySinks.length - 1; i >= 0; i--) {
       const sg = G.prizeHullDecoySinks[i];
@@ -30766,7 +30797,10 @@ function update(dt) {
       const px0 = Number(G.player.x), pz0 = Number(G.player.z);
       const dCam = Math.hypot(ns.x - px0, ns.z - pz0);
       const peerN = otherShipGroups.size | 0;
-      const rigCrewMs = peerN > 3 ? 52 : peerN > 2 ? 40 : peerN > 1 ? 32 : 0;
+      const cannonBusy = Math.min(48, G.cannonballs?.length | 0);
+      let rigBase = peerN > 3 ? 52 : peerN > 2 ? 40 : peerN > 1 ? 32 : 0;
+      if ((G._pvpNearby || cannonBusy > 8) && rigBase > 0) rigBase = Math.round(rigBase * 1.45);
+      const rigCrewMs = rigBase + (cannonBusy > 12 ? Math.min(24, cannonBusy >> 2) : 0);
       const nowRf = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const doRigCrew = rigCrewMs <= 0 || sg.userData._rmbRigAt == null || nowRf - sg.userData._rmbRigAt >= rigCrewMs + (id & 3) * 3;
       if (doRigCrew) sg.userData._rmbRigAt = nowRf;
@@ -30966,17 +31000,23 @@ function update(dt) {
     if (b.owner === 'player') {
       const at = b.ammoType || 'ball';
       const isPellet = !!b.isPellet;
+      const tcx = b.x - (b.dx || 0) * dt;
+      const tcz = b.z - (b.dz || 0) * dt;
       G.otherPlayers.forEach((op, opId) => {
         if (op.docked) return;
         if (op.health != null && op.health <= 0) return;
         const opNet = opId != null ? netPlayerId(opId) : null;
         if (opNet != null && G.pendingRemoteShipSink.has(opNet)) return;
         if (harborPvpTruceBetween(G.player.x, G.player.z, G.player.shipType, op.x, op.z, op.shipType || 'sloop')) return;
+        const ox = Number(op.x), oz = Number(op.z);
+        if (!Number.isFinite(ox) || !Number.isFinite(oz)) return;
+        const opHull = op.shipParts && op.shipParts.hull;
+        const gdx = tcx - ox, gdz = tcz - oz;
+        if (gdx * gdx + gdz * gdz > 290 * 290) return;
         const hitR = cannonballStrikeHitRadius(op.shipType || 'sloop', at, isPellet, opHull);
         const opx0 = b.x - b.dx * dt, opz0 = b.z - b.dz * dt;
         const oYaw = op.rotation != null ? op.rotation : 0;
-        const opHull = op.shipParts && op.shipParts.hull;
-        const distOp = distSegmentToShipHullOBB(opx0, opz0, b.x, b.z, op.x, op.z, oYaw, op.shipType || 'sloop', opHull);
+        const distOp = distSegmentToShipHullOBB(opx0, opz0, b.x, b.z, ox, oz, oYaw, op.shipType || 'sloop', opHull);
         if (distOp < hitR) {
           let msg = `Hit ${networkPlayerCaptainName(op)}!`;
           if (at === 'ball') msg = `Round shot · hull −9`;
