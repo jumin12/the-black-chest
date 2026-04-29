@@ -3199,14 +3199,21 @@ wss.on('connection', (ws, req) => {
           if (_v?.crewData && Array.isArray(_v.crewData) && _v.crewData[0]?.name) {
             _sinkName = String(_v.crewData[0].name).slice(0, 28);
           }
-          broadcastAll({
+          const out = {
             type: 'ship_sunk',
             victimId,
             x: msg.x,
             z: msg.z,
             loot,
             name: _sinkName
-          });
+          };
+          const vws = findWsByPlayerId(victimId);
+          if (vws && vws.readyState === 1) {
+            broadcast(out, victimId);
+            try { vws.send(JSON.stringify(out)); } catch (e) {}
+          } else {
+            broadcastAll(out);
+          }
           break;
         }
         case 'loot_spawn': {
