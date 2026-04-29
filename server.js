@@ -4130,16 +4130,14 @@ setInterval(() => {
     ensureWorldPolitics().tickEconomy(1 / TICK_RATE);
   } catch (e) {}
   npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
-  if (serverStateTickSeq % 3 === 0) {
-    try {
-      broadcastAll({
-        type: 'npc_sync',
-        npcs: npcWorld.buildSyncRows(),
-        wind: npcWorld.getWindSample(),
-        srvTick: serverStateTickSeq
-      });
-    } catch (e) {}
-  }
+  try {
+    broadcastAll({
+      type: 'npc_sync',
+      npcs: npcWorld.buildSyncRows(),
+      wind: npcWorld.getWindSample(),
+      srvTick: serverStateTickSeq
+    });
+  } catch (e) {}
   if (serverStateTickSeq % 540 === 0) {
     try {
       const wp = ensureWorldPolitics().snapshot();

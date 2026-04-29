@@ -20315,7 +20315,10 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   }
   /* Wider dead zone + gentler pull: small server/client drift from wind integration was read as jitter. */
   if (d < 1.2) return;
-  const cap = Math.min(0.32, 0.022 + d * 0.0068);
+  let cap = Math.min(0.32, 0.022 + d * 0.0068);
+  /* After latency spikes, one large state delta used to yank the hull in a single frame — ease in over several frames. */
+  if (d > 52) cap *= 0.62;
+  if (d > 120) cap *= 0.5;
   G.player.x += dx * cap;
   G.player.z += dz * cap;
 }
@@ -20439,16 +20442,28 @@ function applyNpcSyncMessage(msg) {
     {
       const prevSX = npc.syncX, prevSZ = npc.syncZ;
       let dtn = 4 / 45;
+      /* srvTick advances once per authoritative physics step (must match server.js TICK_RATE). */
       if (syncSrvTick != null && Number.isFinite(syncSrvTick) && npc._lastNpcSrvTick != null && Number.isFinite(npc._lastNpcSrvTick)) {
         const dTick = syncSrvTick - npc._lastNpcSrvTick;
-        if (dTick > 0 && dTick < 160) dtn = Math.max(1 / 45, dTick / 45);
+        if (dTick > 0 && dTick < 400) {
+          dtn = Math.max(1 / 90, Math.min(1.05, dTick / 45));
+        }
       } else if (npc._npcSyncWallT != null) {
         const tw = (typeof performance !== 'undefined' && performance.now) ? performance.now() * 0.001 : Date.now() * 0.001;
-        dtn = Math.max(1 / 22, Math.min(0.72, tw - npc._npcSyncWallT));
+        const raw = tw - npc._npcSyncWallT;
+        /* Old code clamped dtn to ≤0.72s while real gaps could be seconds — huge Δx / tiny divisor spiked velocity and “teleport” blends. */
+        dtn = Math.max(1 / 120, Math.min(raw, 2.2));
       }
       if (prevSX != null && prevSZ != null && Number.isFinite(prevSX) && Number.isFinite(prevSZ) && Number.isFinite(nd.x) && Number.isFinite(nd.z)) {
         npc._npcVelTX = (nd.x - prevSX) / dtn;
         npc._npcVelTZ = (nd.z - prevSZ) / dtn;
+        const vm = Math.hypot(npc._npcVelTX, npc._npcVelTZ);
+        const vcap = 88;
+        if (vm > vcap && vm > 1e-6) {
+          const sc = vcap / vm;
+          npc._npcVelTX *= sc;
+          npc._npcVelTZ *= sc;
+        }
       }
       if (syncSrvTick != null && Number.isFinite(syncSrvTick)) npc._lastNpcSrvTick = syncSrvTick;
       npc._npcSyncWallT = (typeof performance !== 'undefined' && performance.now) ? performance.now() * 0.001 : Date.now() * 0.001;
@@ -20542,10 +20557,10 @@ function applyNetStateMessage(msg) {
         let vtx = (px1 - px0) / dtSnap;
         let vtz = (pz1 - pz0) / dtSnap;
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
-        const vcap0 = dNear < 90 ? 58 : 38;
+        const vcap1 = dNear < 90 ? 70 : 48;
         const vm0 = Math.hypot(vtx, vtz);
-        if (vm0 > vcap0) {
-          const s0 = vcap0 / vm0;
+        if (vm0 > vcap1) {
+          const s0 = vcap1 / vm0;
           vtx *= s0;
           vtz *= s0;
         }
@@ -20961,7 +20976,11 @@ window.addEventListener('keydown', e => {
     closeAllPanels();
   }
 });
-window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener('keyup', e => {
+  keys[e.key.toLowerCase()] = false;
+  const lk = e.key.toLowerCase();
+  if ((lk === 'z' || lk === 'x') && !keys['z'] && !keys['x']) G._bsdRapidHold = false;
+});
 function buildWorldMapJsonFromCustomMapSession() {
   const cm = G.customMap;
   if (!cm || !cm.heights) return null;
@@ -22075,6 +22094,45 @@ window.addEventListener('resize', () => {
 let audioCtx, masterGain;
 /** PC: hold Z/X to refire each battery as soon as reload allows (per-side cooldown). Space fires both banks when ready. */
 const BROADSIDE_CAPTAIN_YELL_MIN_MS = 920;
+/** Captain “run out the guns” order — fired banks launch after this delay; Z+X before elapse combine into one volley set. */
+const BROADSIDE_ORDER_DELAY_MS = 1000;
+function cancelBroadsideOrderTimer() {
+  if (G._bsdOrderTimer != null) {
+    clearTimeout(G._bsdOrderTimer);
+    G._bsdOrderTimer = null;
+  }
+}
+function flushBroadsideOrderBundle() {
+  cancelBroadsideOrderTimer();
+  const q = G._bsdOrderPending;
+  G._bsdOrderPending = null;
+  if (!q || !q.sides || q.sides.size === 0) return;
+  if (G.mode !== 'playing' || G.spectate) return;
+  for (const fs of q.sides) tryInstantBroadsideVolley(fs, { silent: true, suppressCaptainYell: true });
+  if (keys['z'] || keys['x']) G._bsdRapidHold = true;
+}
+/** Queue −1/+1 sides; merges rapid key presses until the fuse elapses — then executes together. */
+function queueBroadsideOrderSides(sidesRaw) {
+  const nowFn = (typeof performance !== 'undefined' && performance.now) ? performance.now : Date.now;
+  const now = nowFn();
+  const sides = [];
+  for (let i = 0; i < sidesRaw.length; i++) {
+    const s = sidesRaw[i];
+    if (s === 1 || s === -1) sides.push(s);
+  }
+  if (!sides.length) return;
+  let q = G._bsdOrderPending;
+  if (!q || now >= q.fireAt) {
+    G._bsdOrderPending = { sides: new Set(sides), fireAt: now + BROADSIDE_ORDER_DELAY_MS };
+    G._bsdRapidHold = false;
+    bootstrapGameAudioOnUserGesture();
+    maybePlayBroadsideCaptainYellForVolley();
+    cancelBroadsideOrderTimer();
+    G._bsdOrderTimer = setTimeout(flushBroadsideOrderBundle, BROADSIDE_ORDER_DELAY_MS);
+  } else {
+    for (const s of sides) q.sides.add(s);
+  }
+}
 function maybePlayBroadsideCaptainYellForVolley() {
   const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   if (G._lastBroadsideYellAt != null && now - G._lastBroadsideYellAt < BROADSIDE_CAPTAIN_YELL_MIN_MS) return;
@@ -22996,14 +23054,22 @@ function tryInstantBroadsideVolley(fireSide, opts) {
 function tickHeldPcBroadsideKeys() {
   if (isMobile || G.mode !== 'playing' || G.spectate || G.playerSinking || G.player.health <= 0) return;
   if (G.docked || G.captainWalk?.active) return;
-  if (!keys['z'] && !keys['x']) return;
+  const nowFn = (typeof performance !== 'undefined' && performance.now) ? performance.now : Date.now;
+  if (!keys['z'] && !keys['x']) {
+    G._bsdRapidHold = false;
+    return;
+  }
+  const qWait = G._bsdOrderPending;
+  if (qWait && nowFn() < qWait.fireAt) return;
+  if (!G._bsdRapidHold) return;
   if (keys['z']) tryInstantBroadsideVolley(1, { silent: true, suppressCaptainYell: true });
   if (keys['x']) tryInstantBroadsideVolley(-1, { silent: true, suppressCaptainYell: true });
 }
 
 /** Fire one player broadside: `fireSide` is world −1 (port) or +1 (starboard). */
 function doFireSide(fireSide) {
-  tryInstantBroadsideVolley(fireSide, {});
+  if (isMobile) tryInstantBroadsideVolley(fireSide, {});
+  else queueBroadsideOrderSides([fireSide]);
 }
 
 function doFire() {
@@ -23012,23 +23078,27 @@ function doFire() {
     notify('You cannot fire while in port or on foot.');
     return;
   }
-  bootstrapGameAudioOnUserGesture();
-  const pa = broadsideReadyInfo(-1, true);
-  const pb = broadsideReadyInfo(1, true);
-  if (!pa && !pb) {
-    broadsideReadyInfo(-1, false);
+  if (isMobile) {
+    bootstrapGameAudioOnUserGesture();
+    const pa = broadsideReadyInfo(-1, true);
+    const pb = broadsideReadyInfo(1, true);
+    if (!pa && !pb) {
+      broadsideReadyInfo(-1, false);
+      return;
+    }
+    let any = false;
+    if (pa) {
+      maybePlayBroadsideCaptainYellForVolley();
+      executeBroadsideVolley(pa, {});
+      any = true;
+    }
+    if (pb) {
+      if (!any) maybePlayBroadsideCaptainYellForVolley();
+      executeBroadsideVolley(pb, {});
+    }
     return;
   }
-  let any = false;
-  if (pa) {
-    maybePlayBroadsideCaptainYellForVolley();
-    executeBroadsideVolley(pa, {});
-    any = true;
-  }
-  if (pb) {
-    if (!any) maybePlayBroadsideCaptainYellForVolley();
-    executeBroadsideVolley(pb, {});
-  }
+  queueBroadsideOrderSides([-1, 1]);
 }
 
 function syncAnchorToolbarButton() {
@@ -29618,13 +29688,6 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 /* ============================== GAME LOOP ================================ */
 /** Must match server.js TICK_RATE (authoritative sim + interest-managed state). */
 const NET_SYNC_HZ = 45;
-/**
- * Slower than NET_SYNC_HZ on purpose. The host sends the full world NPC list each tick; 45Hz JSON + applying
- * several `npc_sync` in one `ws.onmessage` chain used to hitch the main thread — we now coalesce to one apply
- * per frame in `update()` (`applyNpcSyncMessage`). Non-hosts interpolate from sync — ~20Hz + extrapolation stays smooth vs faster AI hulls.
- */
-/* Was 12Hz — faster hulls stepped larger between snaps; slightly higher cadence smooths interpolation on clients without full 45Hz JSON. */
-const NPC_NET_SYNC_HZ = 20;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
@@ -30752,6 +30815,9 @@ function update(dt) {
       try { abortActiveBoarding(''); } catch (e) {}
     }
     try { if (G.boardingVictimAwaitingDecision) clearBoardingVictimAwaiting(''); } catch (e) {}
+    try { cancelBroadsideOrderTimer(); } catch (e) {}
+    G._bsdOrderPending = null;
+    G._bsdRapidHold = false;
     playCaptainSinkDeathSound();
     bumpNotoriety({ deaths: 1 });
     if (ws?.readyState === 1 && G.lastAttackerId != null) {
@@ -31044,9 +31110,7 @@ function update(dt) {
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
   if (isMultiplayerHost() && !G.npcSimFromServer && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
-    /* PvE boarding: locked hulls must not step at 12Hz while the rest of the sim uses 45Hz or grapple visuals desync. */
-    const npcHz = (G.boarding && G.boarding.npcSyncId != null) ? NET_SYNC_HZ : NPC_NET_SYNC_HZ;
-    G.npcSyncTimer = 1 / npcHz;
+    G.npcSyncTimer = 1 / NET_SYNC_HZ;
     const npcData = G.npcs.filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       if (n.sinking) return true;
@@ -31090,7 +31154,11 @@ function update(dt) {
       }
       return row;
     });
-    ws.send(JSON.stringify({ type: 'npc_sync', npcs: npcData }));
+    ws.send(JSON.stringify({
+      type: 'npc_sync',
+      npcs: npcData,
+      srvTick: G._hostNpcSrvTick = (G._hostNpcSrvTick | 0) + 1
+    }));
   }
 
   if (!G._polSnapTimer) G._polSnapTimer = 0;
