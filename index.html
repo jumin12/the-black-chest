@@ -19328,6 +19328,7 @@ function clearBoardingVictimAwaiting(notifyMsg) {
 function removeRemotePeer(lid) {
   const lidN = netPlayerId(lid);
   if (lidN == null) return;
+  try { if (G.netPeerStaleSince) G.netPeerStaleSince.delete(lidN); } catch (e) {}
   if (G.boardingVictimAwaitingDecision != null && lidN === G.boardingVictimAwaitingDecision.partnerId) {
     clearBoardingVictimAwaiting('The victor fled — you slip your cable and get underway.');
   }
@@ -19378,6 +19379,8 @@ async function connectToServer() {
   G._lastNetStateWT = null;
   G._lastNetStateSrvTick = null;
   G._pendingNpcSync = null;
+  G._netStateDrainQueue = [];
+  try { G.netPeerStaleSince = null; } catch (e) {}
   G.multiplayerNpcAuthorityId = null;
   G.npcSimFromServer = false;
   G.npcSimDelegatedByServer = false;
@@ -19693,7 +19696,11 @@ async function connectToServer() {
         break;
       }
       case 'state': {
-        G._pendingNetState = msg;
+        if (!G._netStateDrainQueue) G._netStateDrainQueue = [];
+        G._netStateDrainQueue.push(msg);
+        /** Coalesce bursts — main thread starving one frame loses intermediate snaps; draining several per tick fixes velocity + peer continuity. */
+        const maxQ = 8;
+        if (G._netStateDrainQueue.length > maxQ) G._netStateDrainQueue.splice(0, G._netStateDrainQueue.length - maxQ);
         break;
       }
       case 'ship_update': {
@@ -20780,18 +20787,24 @@ function applyNpcSyncMessage(msg) {
 }
 
 /**
- * One authoritative `state` snapshot. Run at most once per frame (see `update`): processing a burst of
- * `state` messages in one main-thread turn leaves `performance.now()` nearly unchanged while `worldT`
- * steps every packet, which used to stack `anchorWildlifeClockFromServer` corrections and jerk fish/gulls.
+ * Authoritative AOI `state` snapshot(s). Incoming messages queue in `_netStateDrainQueue`; `update` drains bursts
+ * so peers catch up fast without dropping intermediate velocity samples. Wildlife anchor + reconcile + roster run
+ * on the newest snapshot only to avoid jitter from stacked server clock steps.
  */
-function applyNetStateMessage(msg) {
+function applyNetStateMessage(msg, opts) {
+  opts = opts || {};
+  const reconcileSelf = 'reconcileSelf' in opts ? !!opts.reconcileSelf : true;
+  const runHudRoster = 'runHudRoster' in opts ? !!opts.runHudRoster : true;
+  /** Draining snapshots mid-frame stacks wildlife corrections unless only the newest clock step applies. */
+  const applyWildlifeAnchor = 'applyWildlifeAnchor' in opts ? !!opts.applyWildlifeAnchor : true;
   if (!msg || typeof msg !== 'object') return;
   const wT = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
-  if (wT != null) anchorWildlifeClockFromServer(wT);
+  if (wT != null && applyWildlifeAnchor) anchorWildlifeClockFromServer(wT);
   if (!Array.isArray(msg.players)) return;
   const myIdForState = netPlayerId(G.myId);
   if (myIdForState == null) return;
-  if (!msg.players.some(p => netPlayerId(p.id) === myIdForState)) return;
+  /** When the self-row is omitted (ordering bug or one bad tick), still merge AOI peers — old early-return stalled everyone. */
+  const selfSnapPresent = msg.players.some(p => netPlayerId(p.id) === myIdForState);
   const wtNum = Number(wT);
   /* Fallback matches server TICK_RATE (45Hz). Prefer srvTick delta when present — stable vs clock jitter. */
   let dtSnap = 1 / 45;
@@ -20840,19 +20853,36 @@ function applyNetStateMessage(msg) {
       }
       Object.assign(ex, patch);
       if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
+      ex._srvSnapPerfMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     } else {
       G.otherPlayers.set(pid, patch);
+      const nw = G.otherPlayers.get(pid);
+      if (nw) nw._srvSnapPerfMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     }
     const row = G.otherPlayers.get(pid);
     if (row) refreshOtherPlayerShipCacheKey(row);
   });
+  /** Delay removing peers omitted from AOI (packet loss edge or boundary flicker causes pop + hull rebuild churn). */
+  if (!G.netPeerStaleSince) G.netPeerStaleSince = new Map();
+  const _nowStale = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const _STALE_MS = 580;
+  for (const _pid of activeRemote) G.netPeerStaleSince.delete(_pid);
   for (const pid of Array.from(G.otherPlayers.keys())) {
-    if (!activeRemote.has(pid)) removeRemotePeer(pid);
+    if (activeRemote.has(pid)) continue;
+    let t0 = G.netPeerStaleSince.get(pid);
+    if (t0 == null) {
+      G.netPeerStaleSince.set(pid, _nowStale);
+      continue;
+    }
+    if (_nowStale - t0 >= _STALE_MS) {
+      G.netPeerStaleSince.delete(pid);
+      removeRemotePeer(pid);
+    }
   }
   recalcMultiplayerNpcAuthorityFromPeers();
   try { ingestRemoteBoardingState(msg.players); } catch (e) {}
-  if (selfRow && G.mode === 'playing') try { reconcileLocalPlayerFromServerState(selfRow); } catch (e) {}
-  if (G.chatChannel === 'players') renderActivePlayersRoster();
+  if (reconcileSelf && selfRow && selfSnapPresent && G.mode === 'playing') try { reconcileLocalPlayerFromServerState(selfRow); } catch (e) {}
+  if (runHudRoster && G.chatChannel === 'players') renderActivePlayersRoster();
 }
 
 /** Server-authoritative last session snapshot (MMO) — skipped when a local voyage save owns progress. */
@@ -29938,11 +29968,24 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.ry = authR;
     return ns;
   }
-  const err = Math.hypot(p.x - ns.x, p.z - ns.z);
+  let ax = Number(p.x), az = Number(p.z);
+  if (!Number.isFinite(ax) || !Number.isFinite(az)) {
+    ax = ns.x;
+    az = ns.z;
+  }
+  if (Number.isFinite(ax) && Number.isFinite(az) && p._srvSnapPerfMs != null && Number.isFinite(Number(p.speed))) {
+    const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const elapsed = Math.min(0.2, Math.max(0, (nowP - p._srvSnapPerfMs) * 0.001));
+    const sp = Number(p.speed);
+    const au = authR;
+    ax += Math.sin(au) * sp * elapsed;
+    az += Math.cos(au) * sp * elapsed;
+  }
+  const err = Math.hypot(ax - ns.x, az - ns.z);
   /* Only snap on extreme desync (e.g. AOI resume); mid-range errors blend over a few frames. */
   if (err > 420) {
-    ns.x = p.x;
-    ns.z = p.z;
+    ns.x = ax;
+    ns.z = az;
     ns.ry = authR;
     return ns;
   }
@@ -29968,16 +30011,16 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
-  const pk = nearPeer ? 1.58 : 1;
+  const pk = nearPeer ? 1.72 : 1;
   let posErrK = err > 120 ? 3.95 : err > 55 ? 2.5 : err > 22 ? 1.52 : err > 8 ? 0.74 : 0.38;
-  if (nearPeer) posErrK *= 0.86;
+  if (nearPeer) posErrK *= 1.06;
   const posK = 1 - Math.exp(-posErrK * pk * dt);
-  ns.x += (p.x - ns.x) * posK;
-  ns.z += (p.z - ns.z) * posK;
+  ns.x += (ax - ns.x) * posK;
+  ns.z += (az - ns.z) * posK;
   let dYaw = authR - ns.ry;
   while (dYaw > Math.PI) dYaw -= Math.PI * 2;
   while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-  const rotK = 1 - Math.exp(-(nearPeer ? 12.4 : 8.2) * dt);
+  const rotK = 1 - Math.exp(-(nearPeer ? 15.6 : 8.4) * dt);
   ns.ry += dYaw * Math.min(1, rotK);
   return ns;
 }
@@ -30002,10 +30045,20 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 }
 
 function update(dt) {
-  if (G._pendingNetState) {
-    const st = G._pendingNetState;
-    G._pendingNetState = null;
-    if (G.mode === 'playing') try { applyNetStateMessage(st); } catch (e) {}
+  if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
+    const burst = Math.min(G._netStateDrainQueue.length, 14);
+    const batch = [];
+    for (let _qi = 0; _qi < burst; _qi++) batch.push(G._netStateDrainQueue.shift());
+    for (let _bi = 0; _bi < batch.length; _bi++) {
+      const last = _bi === batch.length - 1;
+      try {
+        applyNetStateMessage(batch[_bi], {
+          reconcileSelf: last,
+          runHudRoster: last,
+          applyWildlifeAnchor: last
+        });
+      } catch (e) {}
+    }
   }
   if (G._pendingNpcSync) {
     const npcSt = G._pendingNpcSync;

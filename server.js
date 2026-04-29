@@ -67,8 +67,8 @@ function applyNavigatorDevPlayerUpdate(p, msg) {
   return { kick: false, stripped, denyPositionHint: false };
 }
 
-/** Per-client interest radius (world units). Massively cuts bandwidth vs full-world snapshots at high player counts. */
-const STATE_AOI_RADIUS = Math.max(800, Math.min(20000, Number(process.env.STATE_AOI_RADIUS) || 5200));
+/** Per-client interest radius (world units). Larger default keeps allied captains mutual visibility stable vs npc_sync broadcast (bandwidth still AOI-scoped vs full roster). Override STATE_AOI_RADIUS to tune. */
+const STATE_AOI_RADIUS = Math.max(800, Math.min(20000, Number(process.env.STATE_AOI_RADIUS) || 7800));
 const STATE_AOI_RADIUS_SQ = STATE_AOI_RADIUS * STATE_AOI_RADIUS;
 
 /** Dedicated VM / process managers / horizontal realms: see docs/MULTIPLAYER-DEPLOYMENT.md and multiplayer-server.example.env (not geographic multi-region). */
