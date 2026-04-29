@@ -115,11 +115,6 @@ function createTerrainContext(opts) {
     return procedural.collectAllTradingPorts();
   }
 
-  function collectAllPirateHideouts() {
-    if (useCustom) return [];
-    return procedural.collectAllPirateHideouts();
-  }
-
   function forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, centerWx, centerWz) {
     return procedural.forEachProceduralIslandInWorldBounds(minWx, maxWx, minWz, maxWz, fn, centerWx, centerWz);
   }
@@ -133,7 +128,6 @@ function createTerrainContext(opts) {
     hasMinClearanceFromLand,
     getProceduralIslandMeta,
     collectAllTradingPorts,
-    collectAllPirateHideouts,
     forEachProceduralIslandInWorldBounds,
     sampleCustomHeight01: useCustom ? sampleCustomHeight01 : null
   };

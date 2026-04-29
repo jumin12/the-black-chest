@@ -150,15 +150,6 @@ function createProceduralTerrain(worldSeed) {
     const ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
     return ht > PROC_LAND_HT_MIN + PROC_COLLIDE_LAND_EXTRA_HT && warpedDist < PROC_LAND_WARP_MAX - PROC_COLLIDE_WARP_SHRINK;
   }
-  const PIRATE_HIDEOUT_STEMS = ['Skull Cove', 'Smugglers\' Hook', 'Dead Reckoning Bay', 'Cutlass Reach', 'Black Sand Haven', 'Gallows Point', 'Rum Row', 'Tide Thieves\' Rest'];
-  const PIRATE_HIDEOUT_TAGS = [' Anchorage', ' Cove', ' Den', ' Brig', ' Jetty'];
-  function proceduralPirateHideoutName(cx, cz) {
-    let th = (cx * 73856093 ^ cz * 19349663 ^ ws ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
-    const baseIdx = th % PIRATE_HIDEOUT_STEMS.length;
-    th = Math.imul(th, 1103515245) + 12345 >>> 0;
-    const tagIdx = th % PIRATE_HIDEOUT_TAGS.length;
-    return (PIRATE_HIDEOUT_STEMS[baseIdx] + PIRATE_HIDEOUT_TAGS[tagIdx]).replace(/\s{2,}/g, ' ').trim();
-  }
   function proceduralTownNameCore(cx, cz, prefixFaction) {
     const fi = (prefixFaction | 0) % FACTION_COUNT;
     const stems = FACTION_TOWN_STEMS[fi] || FACTION_TOWN_STEMS[0];
@@ -170,7 +161,7 @@ function createProceduralTerrain(worldSeed) {
     return (body + TOWN_NAME_TAGS[tagIdx]).replace(/\s{2,}/g, ' ').trim();
   }
   function placeTownDockSeaward(meta) {
-    if (!meta || (!meta.hasTown && !meta.hasPirateHideout)) return;
+    if (!meta || !meta.hasTown) return;
     const wx0 = meta.worldX, wz0 = meta.worldZ;
     const R = meta.radius;
     const da = meta.dockAngle || 0;
@@ -229,12 +220,6 @@ function createProceduralTerrain(worldSeed) {
       meta.townName = proceduralTownNameCore(cx, cz, meta.faction % FACTION_COUNT);
       meta.dockAngle = (hashChunk(cx + 99, cz + 99, ws) * 2 - 1) * Math.PI;
       placeTownDockSeaward(meta);
-    } else if (!meta.hasTown && islandRadius >= 44 && h >= 0.10 && h < 0.195 && hashChunk(cx + 2, cz + 8, ws) < 0.056) {
-      meta.hasPirateHideout = true;
-      meta.faction = ((cx * 1319 ^ cz * 1703 ^ ws) >>> 0) % FACTION_COUNT;
-      meta.hideoutName = proceduralPirateHideoutName(cx, cz);
-      meta.dockAngle = (hashChunk(cx + 41, cz + 71, ws) * 2 - 1) * Math.PI;
-      placeTownDockSeaward(meta);
     }
     return meta;
   }
@@ -274,14 +259,6 @@ function createProceduralTerrain(worldSeed) {
     }, 0, 0);
     return out;
   }
-  function collectAllPirateHideouts() {
-    const out = [];
-    const lim = WORLD_EDGE_CLAMP;
-    forEachProceduralIslandInWorldBounds(-lim, lim, -lim, lim, m => {
-      if (m.hasPirateHideout && m.dockX != null) out.push(m);
-    }, 0, 0);
-    return out;
-  }
   return {
     CHUNK_SIZE,
     WORLD_EDGE_CLAMP,
@@ -291,8 +268,7 @@ function createProceduralTerrain(worldSeed) {
     dryLandAtWorldPosition,
     getProceduralIslandMeta,
     forEachProceduralIslandInWorldBounds,
-    collectAllTradingPorts,
-    collectAllPirateHideouts
+    collectAllTradingPorts
   };
 }
 
