@@ -3670,18 +3670,22 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
   if (!fxOnly) {
     npc.health -= dh;
     npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
-    const humanKiller = killerPlayerId != null && Number.isFinite(Number(killerPlayerId));
+    const fromPlayerCaptain = !!opts.fromPlayerCaptain;
+    const humanKiller = (killerPlayerId != null && Number.isFinite(Number(killerPlayerId))) || fromPlayerCaptain;
     if (humanKiller) {
-      const kid = Math.floor(Number(killerPlayerId));
-      npc._humanAttackerId = kid;
+      if (killerPlayerId != null && Number.isFinite(Number(killerPlayerId))) {
+        npc._humanAttackerId = Math.floor(Number(killerPlayerId));
+      }
       npc.aggro = true;
       npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
-      const vf = npcFactionIdForPolitics(npc);
-      if (vf != null) {
-        const now = typeof G.time === 'number' ? G.time : 0;
-        if (npc._facProvokeNextT == null || now >= npc._facProvokeNextT) {
-          npc._facProvokeNextT = now + 3.4;
-          adjustPlayerFactionRelation(vf, -2);
+      if (killerPlayerId != null && Number.isFinite(Number(killerPlayerId))) {
+        const vf = npcFactionIdForPolitics(npc);
+        if (vf != null) {
+          const now = typeof G.time === 'number' ? G.time : 0;
+          if (npc._facProvokeNextT == null || now >= npc._facProvokeNextT) {
+            npc._facProvokeNextT = now + 3.4;
+            adjustPlayerFactionRelation(vf, -2);
+          }
         }
       }
     }
@@ -3712,6 +3716,10 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
     const rigBefore = npc.riggingHealth != null ? npc.riggingHealth : getNpcRiggingHealth(npc);
     npc.riggingHealth = Math.max(0, rigBefore - (30 + Math.random() * 14));
     if (npc.mesh) applyRiggingVisualToGroup(npc.mesh, npc.riggingHealth);
+  }
+  if (!fxOnly && npc.tutorialRaidHull && npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene
+    && G.tutorialRaidCutscene.active && G.tutorialRaidCutscene.scriptingActive && !G.tutorialRaidCutscene._combatPhase) {
+    tutorialRaidRevealCombatPhase();
   }
   if (!fxOnly && npc.health <= 0) {
     const kid = killerPlayerId != null && Number.isFinite(Number(killerPlayerId)) ? Number(killerPlayerId) : null;
@@ -17843,7 +17851,7 @@ function updateNPCs(dt) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
       const vNet = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
-      const vsmK = 1 - Math.exp(-24 * dt);
+      const vsmK = 1 - Math.exp(-34 * dt);
       if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
         npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
         npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
@@ -20762,8 +20770,8 @@ function applyNpcSyncMessage(msg) {
         npc._npcVelTZ = rdz / dtn;
         const dq = rdx * rdx + rdz * rdz;
         if (dq < 0.0144) {
-          npc._npcVelTX *= 0.42;
-          npc._npcVelTZ *= 0.42;
+          npc._npcVelTX *= 0.82;
+          npc._npcVelTZ *= 0.82;
         }
         const vm = Math.hypot(npc._npcVelTX, npc._npcVelTZ);
         const vcap = 88;
@@ -30911,9 +30919,14 @@ function update(dt) {
             }
           }
           const killerPid = b.owner === 'player' ? (G.myId != null ? G.myId : null) : null;
-          applyAuthorizedNpcDamageFromPlayerShot(npc, killerPid, at, isPellet, b.x, b.y, b.z);
+          applyAuthorizedNpcDamageFromPlayerShot(npc, killerPid, at, isPellet, b.x, b.y, b.z,
+            { fromPlayerCaptain: b.owner === 'player' });
         } else {
           spawnDamageChunks(b.x, b.y, b.z);
+          if (npc.syncId === TUTORIAL_RAID_NPC_SYNC && npc.tutorialRaidHull && G.tutorialRaidCutscene
+            && G.tutorialRaidCutscene.active && G.tutorialRaidCutscene.scriptingActive && !G.tutorialRaidCutscene._combatPhase) {
+            tutorialRaidRevealCombatPhase();
+          }
           if (predictLocalNpcHitFx && ws?.readyState === 1) {
             const ammoNet = isPellet ? 'grape_pellet' : at;
             try {
