@@ -164,6 +164,69 @@ function buildStateRow(p, includeCrew) {
   if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
   return row;
 }
+
+const STATE_DELTA_HEAVY = ['crewData', 'boarding', 'shipParts', 'hullBanner', 'sailBanner', 'deckWalk'];
+function jsonSigDelta(v) {
+  try {
+    return JSON.stringify(v === undefined ? null : v);
+  } catch (e) {
+    return '';
+  }
+}
+function valsEqDelta(a, b) {
+  if (a === b) return true;
+  if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
+    return Math.abs(a - b) < 1e-4;
+  }
+  if ((a === null || a === undefined) && (b === null || b === undefined)) return true;
+  if (typeof a === 'object' && a && typeof b === 'object' && b)
+    return jsonSigDelta(a) === jsonSigDelta(b);
+  return false;
+}
+function cloneStateRowEcho(r) {
+  return JSON.parse(JSON.stringify(r));
+}
+function pruneEmittedStateForAoI(ws, seenSet) {
+  const m = ws._stateEmittedByPid;
+  if (!m || !seenSet || typeof seenSet.forEach !== 'function') return;
+  for (const k of [...m.keys()]) {
+    if (!seenSet.has(k)) m.delete(k);
+  }
+}
+function buildClientStateDeltaRow(ws, fullRow) {
+  const pid = fullRow.id;
+  if (!ws._stateEmittedByPid) ws._stateEmittedByPid = new Map();
+  const mmap = ws._stateEmittedByPid;
+  const prev = mmap.get(pid);
+  let needFull = !prev;
+  if (!needFull) {
+    for (let hi = 0; hi < STATE_DELTA_HEAVY.length; hi++) {
+      const hk = STATE_DELTA_HEAVY[hi];
+      if (jsonSigDelta(prev[hk]) !== jsonSigDelta(fullRow[hk])) {
+        needFull = true;
+        break;
+      }
+    }
+  }
+  if (needFull) {
+    const o = cloneStateRowEcho(fullRow);
+    o.df = 1;
+    mmap.set(pid, cloneStateRowEcho(fullRow));
+    return o;
+  }
+  const delta = { id: pid };
+  for (const k of Object.keys(fullRow)) {
+    if (k === 'id') continue;
+    if (valsEqDelta(prev[k], fullRow[k])) continue;
+    delta[k] = fullRow[k];
+  }
+  delta.x = fullRow.x;
+  delta.z = fullRow.z;
+  delta.rotation = fullRow.rotation;
+  delta.speed = fullRow.speed;
+  mmap.set(pid, cloneStateRowEcho(fullRow));
+  return delta;
+}
 /** Matches client `RESERVED_PLAYER_FLAG_IDS` — national / reserved hull-flag PNGs. */
 const RESERVED_PLAYER_FLAG_ASSET_IDS = new Set([10, 13, 15, 16, 19, 21]);
 function sanitizeClientFlagAssetId(v) {
@@ -2429,6 +2492,7 @@ wss.on('connection', (ws, req) => {
 
   const id = nextId++;
   ws.playerId = id;
+  ws._stateEmittedByPid = new Map();
 
   const spawnCtx = createTerrainContext({
     worldSeed: WORLD_SEED >>> 0,
@@ -4083,6 +4147,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    ws._stateEmittedByPid = null;
     try {
     clearCaptainSocketSlot(ws);
     const left = players.get(id);
@@ -4198,10 +4263,14 @@ setInterval(() => {
     const viewer = players.get(client.playerId);
     if (!viewer) continue;
     const snap = [];
+    const seenAoI = new Set();
     for (const p of all) {
       if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
-      snap.push(buildStateRow(p, includeCrew || !!p.boarding));
+      const fr = buildStateRow(p, includeCrew || !!p.boarding);
+      seenAoI.add(fr.id);
+      snap.push(buildClientStateDeltaRow(client, fr));
     }
+    pruneEmittedStateForAoI(client, seenAoI);
     stateQueue.push({ client, snap });
   }
   const tQueueBuilt = Date.now();

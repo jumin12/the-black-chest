@@ -3458,6 +3458,7 @@ const G = {
   /** Last measured RTT to game server (ms), from `client_pong` after `client_ping`. */
   clientServerRttMs: null,
   lastServerPerf: null,
+  lastSelfNetStateRow: null,
   /** Monotonic counter for `update.seq` (server acks via `state` / authoritative self row). */
   netSendSeq: 0,
   /** Multiplayer: hull no longer matches realm — block play until reload / reconnect. */
@@ -19548,6 +19549,7 @@ async function connectToServer() {
     wsUserBanned = false;
     G._realmMotdShown = false;
     G.lastServerPerf = null;
+    G.lastSelfNetStateRow = null;
     G._recvHistSrvAnchorMs = null;
     G._recvHistPerfAnchorMs = null;
     knownServerWorldMapRev = 0;
@@ -20782,6 +20784,21 @@ function finalizeNetDesyncProbe(selfRow) {
  * Apply host NPC roster (non-authoritative clients). Incoming `npc_sync` messages queue; `update()` drains
  * with synthetic receive times (see `applyNetStateMessage`).
  */
+function mergeIncomingStatePlayerRow(prevObj, incoming) {
+  if (!incoming || typeof incoming !== 'object') return null;
+  let inc = incoming;
+  if (!prevObj && incoming.df !== 1 && incoming.df !== true) {
+    inc = { df: 1, ...incoming };
+  }
+  if (inc.df === 1 || inc.df === true) {
+    const o = Object.assign({}, inc);
+    delete o.df;
+    return o;
+  }
+  const merged = Object.assign({}, prevObj || {}, inc);
+  delete merged.df;
+  return merged;
+}
 function netSnapRecvInterpMs(msg, perfFbMs) {
   const srvNm = msg && Number(msg.serverNowMs);
   if (!(Number.isFinite(srvNm) && srvNm > 0)) return perfFbMs;
@@ -21040,13 +21057,17 @@ function applyNetStateMessage(msg, opts) {
     const pid = netPlayerId(p.id);
     if (pid == null) return;
     if (pid === myIdForState) {
-      selfRow = p;
+      selfRow = mergeIncomingStatePlayerRow(G.lastSelfNetStateRow, p);
+      if (selfRow) G.lastSelfNetStateRow = { ...selfRow };
+      else selfRow = p;
       return;
     }
     activeRemote.add(pid);
     const ex = G.otherPlayers.get(pid);
     const prevCrew = ex && Array.isArray(ex.crewData) ? ex.crewData : null;
-    const patch = { ...p, id: pid };
+    const merged = mergeIncomingStatePlayerRow(ex || null, p);
+    if (!merged) return;
+    const patch = { ...merged, id: pid };
     if (!Array.isArray(patch.crewData)) delete patch.crewData;
     if (ex) {
       const px0 = Number(ex.x), pz0 = Number(ex.z);
@@ -21066,7 +21087,7 @@ function applyNetStateMessage(msg, opts) {
         ex._netVelTargetZ = vtz;
       }
       Object.assign(ex, patch);
-      if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
+      if (!Array.isArray(patch.crewData) && !Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
       ex._srvSnapPerfMs = snapLineMs;
       {
         const recvMs = snapLineMs;
@@ -21116,7 +21137,14 @@ function applyNetStateMessage(msg, opts) {
     }
   }
   recalcMultiplayerNpcAuthorityFromPeers();
-  try { ingestRemoteBoardingState(msg.players); } catch (e) {}
+  try {
+    const boardingRows = [];
+    for (const pr of activeRemote) {
+      const r = G.otherPlayers.get(pr);
+      if (r) boardingRows.push(r);
+    }
+    ingestRemoteBoardingState(boardingRows);
+  } catch (e) {}
   if (reconcileSelf && selfRow && selfSnapPresent && G.mode === 'playing') try { reconcileLocalPlayerFromServerState(selfRow); } catch (e) {}
   if (runHudRoster && G.chatChannel === 'players') renderActivePlayersRoster();
 }
