@@ -3422,6 +3422,9 @@ const G = {
   camera: {
     offsetX: 0, offsetZ: 0, zoom: CAM_ZOOM_DEFAULT, targetZoom: CAM_ZOOM_DEFAULT,
     angle: CAM_ANGLE_CHASE_DEFAULT, targetAngle: CAM_ANGLE_CHASE_DEFAULT, yaw: Math.PI, targetYaw: Math.PI,
+    /** Smooth chase orbit pivot (avoid hard-snapping XY to authored ship pos each frame). */
+    chasePivotX: null,
+    chasePivotZ: null,
     /** Mobile: after one-finger orbit outside HUD, skip chase-cam until reset (dock, sail, zoom buttons). */
     mobileOrbitFree: false,
     /** PC: Q/E or middle-mouse orbit — in Chase mode, yaw snaps behind ship on release; tilt can persist. */
@@ -17901,22 +17904,16 @@ function updateNPCs(dt) {
       const delayNpc = getEffectiveRemoteInterpDelayMs();
       const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
-        const jnHi = delayNpc < 58 ? 26 : 45;
-        const tnRate = delayNpc < 58 ? 22 : 13;
-        const jn = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-        if (jn > jnHi) {
-          const tn = Math.min(1, tnRate * dt);
-          npc.x += (ipNpc.x - npc.x) * tn;
-          npc.z += (ipNpc.z - npc.z) * tn;
-          let drn = ipNpc.ry - npc.rotation;
-          while (drn > Math.PI) drn -= Math.PI * 2;
-          while (drn < -Math.PI) drn += Math.PI * 2;
-          npc.rotation += drn * tn;
-        } else {
-          npc.x = ipNpc.x;
-          npc.z = ipNpc.z;
-          npc.rotation = ipNpc.ry;
-        }
+        const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
+        const nt = delayNpc < 58 ? 40 : delayNpc < 108 ? 30 : delayNpc < 165 ? 20 : 15;
+        const nb = ej > 40 ? (delayNpc < 58 ? 16 : 9) : ej > 8 ? (delayNpc < 58 ? 24 : 16) : 10;
+        const an = Math.min(1, 1 - Math.exp(-(nt + nb) * dt));
+        npc.x += (ipNpc.x - npc.x) * an;
+        npc.z += (ipNpc.z - npc.z) * an;
+        let drn = ipNpc.ry - npc.rotation;
+        while (drn > Math.PI) drn -= Math.PI * 2;
+        while (drn < -Math.PI) drn += Math.PI * 2;
+        npc.rotation += drn * an;
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -21248,6 +21245,10 @@ function resetChaseCameraBehindShip() {
   G.camera.targetYaw = y;
   G.camera.targetAngle = CAM_ANGLE_CHASE_DEFAULT;
   G.camera.angle = CAM_ANGLE_CHASE_DEFAULT;
+  if (G.player && Number.isFinite(Number(G.player.x)) && Number.isFinite(Number(G.player.z))) {
+    G.camera.chasePivotX = Number(G.player.x);
+    G.camera.chasePivotZ = Number(G.player.z);
+  }
 }
 function resetMobileCameraChase() {
   resetChaseCameraBehindShip();
@@ -30277,7 +30278,7 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
     const near = dm < 160;
-    const a = 1 - Math.exp(-(near ? 30 : 18) * dc);
+    const a = 1 - Math.exp(-(near ? 24 : 15) * dc);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -30302,22 +30303,17 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const delayMsPlay = getEffectiveRemoteInterpDelayMs();
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    const jmpHi = delayMsPlay < 58 ? 22 : 38;
-    const tlRate = delayMsPlay < 58 ? 24 : 14;
     const jmp = Math.hypot(ip.x - ns.x, ip.z - ns.z);
-    if (jmp > jmpHi) {
-      const tl = Math.min(1, tlRate * dt);
-      ns.x += (ip.x - ns.x) * tl;
-      ns.z += (ip.z - ns.z) * tl;
-      let dry = ip.ry - ns.ry;
-      while (dry > Math.PI) dry -= Math.PI * 2;
-      while (dry < -Math.PI) dry += Math.PI * 2;
-      ns.ry += dry * tl;
-    } else {
-      ns.x = ip.x;
-      ns.z = ip.z;
-      ns.ry = ip.ry;
-    }
+    const tight = delayMsPlay < 58;
+    const kBase = tight ? 38 : delayMsPlay < 108 ? 29 : delayMsPlay < 165 ? 20 : 15;
+    const kBoost = jmp > 38 ? (tight ? 16 : 10) : jmp > 9 ? (tight ? 22 : 14) : 8;
+    const alpha = Math.min(1, 1 - Math.exp(-(kBase + kBoost) * dt));
+    ns.x += (ip.x - ns.x) * alpha;
+    ns.z += (ip.z - ns.z) * alpha;
+    let dry = ip.ry - ns.ry;
+    while (dry > Math.PI) dry -= Math.PI * 2;
+    while (dry < -Math.PI) dry += Math.PI * 2;
+    ns.ry += dry * alpha;
     return ns;
   }
   smoothRemotePlayerNetVelocity(p, dt);
@@ -31820,12 +31816,42 @@ function update(dt) {
     }
   }
 
-  let camX = G.player.x, camZ = G.player.z;
+  let tgtCamX = Number(G.player.x), tgtCamZ = Number(G.player.z);
   if (G.spectate) {
     const t = resolveSpectateTargetXZR();
     if (!t) endSpectateMode('Spectate target lost.');
-    else { camX = t.x; camZ = t.z; }
+    else { tgtCamX = t.x; tgtCamZ = t.z; }
   }
+  const orbitFreePivot =
+    (G.mode === 'playing' && G.sailingCameraMode === 'free')
+    || (isMobile && G.camera.mobileOrbitFree) || G.camera.pcOrbitFree || middleDown;
+  const dtmPivot = Number.isFinite(Number(G.dt)) ? Math.min(0.096, Math.max(Number(G.dt), 2e-5)) : 1 / 60;
+  const smoothChasePivot =
+    G.mode === 'playing' && !G.playerSinking && !G.captainWalk?.active
+    && !(G.tutorialRaidCutscene && G.tutorialRaidCutscene.cameraActive && !fullmapOpen);
+  if (smoothChasePivot) {
+    if (G.camera.chasePivotX == null || !Number.isFinite(G.camera.chasePivotX)
+      || G.camera.chasePivotZ == null || !Number.isFinite(G.camera.chasePivotZ)) {
+      G.camera.chasePivotX = tgtCamX;
+      G.camera.chasePivotZ = tgtCamZ;
+    }
+    if (orbitFreePivot) {
+      G.camera.chasePivotX = tgtCamX;
+      G.camera.chasePivotZ = tgtCamZ;
+    } else {
+      const dpx = tgtCamX - G.camera.chasePivotX, dpz = tgtCamZ - G.camera.chasePivotZ;
+      const dist = Math.hypot(dpx, dpz);
+      const kP = dist > 320 ? 52 : dist > 140 ? 31 : dist > 38 ? 21 : 13.5;
+      const pivA = 1 - Math.exp(-kP * dtmPivot);
+      G.camera.chasePivotX += dpx * pivA;
+      G.camera.chasePivotZ += dpz * pivA;
+    }
+  } else {
+    G.camera.chasePivotX = tgtCamX;
+    G.camera.chasePivotZ = tgtCamZ;
+  }
+  const camX = G.camera.chasePivotX;
+  const camZ = G.camera.chasePivotZ;
   waterFollowCamX = camX;
   waterFollowCamZ = camZ;
   water.position.set(camX, SEA_LEVEL - 0.5, camZ);
@@ -31843,9 +31869,9 @@ function update(dt) {
         const nx = npcRaid.x, nz = npcRaid.z;
         const midX = (px + nx) * 0.5, midZ = (pz + nz) * 0.5;
         const dx = nx - px, dz = nz - pz;
-        const dist = Math.hypot(dx, dz) || 1;
-        const sideX = -dz / dist, sideZ = dx / dist;
-        const fwdX = dx / dist, fwdZ = dz / dist;
+        const distRaid = Math.hypot(dx, dz) || 1;
+        const sideX = -dz / distRaid, sideZ = dx / distRaid;
+        const fwdX = dx / distRaid, fwdZ = dz / distRaid;
         const swoop = Math.min(3.8, Math.max(0, ra.age || 0) * 0.28);
         const pull = 36 + swoop * 6;
         const camY = 24 + swoop * 2.8;
@@ -32005,6 +32031,8 @@ function warmUpGameView() {
     const t = resolveSpectateTargetXZR();
     if (t) { camX = t.x; camZ = t.z; }
   }
+  G.camera.chasePivotX = camX;
+  G.camera.chasePivotZ = camZ;
   waterFollowCamX = camX;
   waterFollowCamZ = camZ;
   water.position.set(camX, SEA_LEVEL - 0.5, camZ);
