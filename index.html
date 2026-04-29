@@ -17941,8 +17941,8 @@ function updateNPCs(dt) {
       const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
         const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-        const nt = delayNpc < 58 ? 40 : delayNpc < 108 ? 30 : delayNpc < 165 ? 20 : 15;
-        const nb = ej > 40 ? (delayNpc < 58 ? 16 : 9) : ej > 8 ? (delayNpc < 58 ? 24 : 16) : 10;
+        const nt = delayNpc < 68 ? 44 : delayNpc < 100 ? 32 : delayNpc < 128 ? 22 : 16;
+        const nb = ej > 40 ? (delayNpc < 68 ? 18 : 10) : ej > 8 ? (delayNpc < 68 ? 26 : 17) : 10;
         const an = Math.min(1, 1 - Math.exp(-(nt + nb) * dt));
         npc.x += (ipNpc.x - npc.x) * an;
         npc.z += (ipNpc.z - npc.z) * an;
@@ -20696,9 +20696,12 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   if (!selfRow || G.spectate || G.playerSinking || G.docked || G.captainWalk?.active || G.boarding) return;
   const sx = Number(selfRow.x), sz = Number(selfRow.z);
   if (!Number.isFinite(sx) || !Number.isFinite(sz)) return;
-  const d0 = Math.hypot(sx - G.player.x, sz - G.player.z);
-  /* Teleport only on gross divergence — otherwise your client drives the hull; server still validates `update`. */
-  if (d0 > 320) {
+  const dx0 = sx - G.player.x;
+  const dz0 = sz - G.player.z;
+  const d0 = Math.hypot(dx0, dz0);
+  const pvpRelax = !!G._pvpNearby;
+  /* Hard snap on gross divergence. */
+  if (d0 > 280) {
     if (voyageSaveExistsInStorage() && G._wsOpenedAt && (Date.now() - G._wsOpenedAt) < 5000) return;
     G.player.x = sx;
     G.player.z = sz;
@@ -20707,6 +20710,22 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     }
     finalizeNetDesyncProbe(selfRow);
     return;
+  }
+  /* One light nudge per `state` (~1×/frame), capped — shrinks sim vs authority gap without the old per-frame “rubber band”. */
+  if (d0 > 14 && d0 <= 280) {
+    let t = Math.min(0.022, 0.0048 + d0 * 0.0001);
+    if (pvpRelax) t *= 0.62;
+    t = Math.min(t, 0.018);
+    G.player.x += dx0 * t;
+    G.player.z += dz0 * t;
+  }
+  if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
+    const sr = Number(selfRow.rotation);
+    let dr = angleDeltaToward(G.player.rotation, sr);
+    if (Math.abs(dr) > 0.018) {
+      const rk = Math.min(0.13, 0.036 + Math.abs(dr) * 0.11) * (pvpRelax ? 0.58 : 1);
+      G.player.rotation += dr * rk;
+    }
   }
   finalizeNetDesyncProbe(selfRow);
 }
@@ -20735,8 +20754,8 @@ function finalizeNetDesyncProbe(selfRow) {
       G._netDesyncSticky = Math.max(0, (G._netDesyncSticky || 0) - 0.52);
       return;
     }
-    /* With soft client authority, normal wind/integration drift can sit ~40–120m without being “stuck”. */
-    const stalePos = rem > 200 && rem < 300;
+    /* “Stuck between server and client” zone — tightened now that we micro-reconcile above. */
+    const stalePos = rem > 155 && rem < 285;
     const staleAng = ad > 0.52 && ad < 2.75;
     if (stalePos || staleAng) G._netDesyncSticky = (G._netDesyncSticky || 0) + 1 / NET_SYNC_HZ;
     else G._netDesyncSticky = Math.max(0, (G._netDesyncSticky || 0) - 0.22);
@@ -30148,16 +30167,17 @@ function interpYawShortest(a, b, u) {
   return v;
 }
 
-/** Remote hull playback delay (ms): simple RTT-based buffer (~2 ticks @60Hz typical). */
-const REMOTE_HULL_INTERP_DELAY_MIN_MS = 42;
-const REMOTE_HULL_INTERP_DELAY_MAX_MS = 110;
+/** Remote hull playback delay (ms): small buffer = less “other ships lag” vs fish; clamped for stability. */
+const REMOTE_HULL_INTERP_DELAY_MIN_MS = 26;
+const REMOTE_HULL_INTERP_DELAY_MAX_MS = 86;
 
 function getEffectiveRemoteInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
-      : 75;
-  const d = 50 + r * 0.52;
+      : 62;
+  /* ~1–2 ticks @ 60Hz + RTT cushion; keeps delay as low as safe for snap history + interp. */
+  const d = 32 + r * 0.38;
   return Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, d));
 }
 
@@ -30182,10 +30202,10 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
     const vx = (last.x - prev.x) / dtm;
     const vz = (last.z - prev.z) / dtm;
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
-    const extrapMax = Math.min(138, Math.max(52, delayMs * 0.4 + 26));
+    const extrapMax = Math.min(108, Math.max(38, delayMs * 0.34 + 20));
     const over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
     let uex = 1 + over / dtm;
-    const ueCap = delayMs >= 128 ? 2.12 : 1.94;
+    const ueCap = delayMs >= 88 ? 1.96 : 1.78;
     if (uex > ueCap) uex = ueCap;
     return {
       x: last.x + vx * over,
@@ -30241,8 +30261,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
     const jmp = Math.hypot(ip.x - ns.x, ip.z - ns.z);
-    const k = 24 + Math.min(22, jmp * 0.32);
-    let alpha = Math.min(0.62, 1 - Math.exp(-k * dt));
+    const k = 28 + Math.min(28, jmp * 0.36);
+    let alpha = Math.min(0.68, 1 - Math.exp(-k * dt));
     ns.x += (ip.x - ns.x) * alpha;
     ns.z += (ip.z - ns.z) * alpha;
     let dry = ip.ry - ns.ry;
