@@ -20698,7 +20698,7 @@ function applyNetStateMessage(msg) {
         let vtx = (px1 - px0) / dtSnap;
         let vtz = (pz1 - pz0) / dtSnap;
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
-        const vcap1 = dNear < 90 ? 70 : 48;
+        const vcap1 = dNear < 168 ? 74 : 48;
         const vm0 = Math.hypot(vtx, vtz);
         if (vm0 > vcap1) {
           const s0 = vcap1 / vm0;
@@ -29750,9 +29750,12 @@ function spawnShipWakePiece(x, z, rotation, speed, sideSign, wakeKind) {
   }
 }
 
-function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
+function tickShipWakeSpawner(key, x, z, rotation, speed, dt, wakeCooldownOverride) {
   if (!G.wakeSpawnCooldowns) G.wakeSpawnCooldowns = new Map();
   if (Math.abs(speed) <= 0.36) return;
+  const baseCd = wakeCooldownOverride != null && Number.isFinite(wakeCooldownOverride) && wakeCooldownOverride > 0.08
+    ? wakeCooldownOverride
+    : 0.152;
   let t = G.wakeSpawnCooldowns.get(key);
   if (t == null) t = 0;
   t -= dt;
@@ -29760,7 +29763,7 @@ function tickShipWakeSpawner(key, x, z, rotation, speed, dt) {
     G.wakeSpawnCooldowns.set(key, t);
     return;
   }
-  G.wakeSpawnCooldowns.set(key, 0.152);
+  G.wakeSpawnCooldowns.set(key, baseCd);
   spawnShipWakePiece(x, z, rotation, speed, -1, 'stern');
   spawnShipWakePiece(x, z, rotation, speed, 1, 'stern');
 }
@@ -29775,8 +29778,9 @@ function smoothRemotePlayerNetVelocity(p, dt) {
   if (Number.isFinite(tx) && Number.isFinite(tz)) {
     const px = G.player && Number.isFinite(Number(G.player.x)) ? Number(G.player.x) : null;
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
-    const near = px != null && pz != null && Math.hypot(Number(p.x) - px, Number(p.z) - pz) < 92;
-    const a = 1 - Math.exp(-(near ? 26 : 17) * dt);
+    const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
+    const near = dm < 160;
+    const a = 1 - Math.exp(-(near ? 30 : 17) * dt);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -29812,20 +29816,23 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     Number.isFinite(evx) && Number.isFinite(evz) && (Math.abs(evx) > 1e-6 || Math.abs(evz) > 1e-6);
   const px = G.player && Number.isFinite(Number(G.player.x)) ? Number(G.player.x) : 0;
   const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : 0;
-  const nearPeer = Math.hypot(p.x - px, p.z - pz) < 92;
+  const dPeerCam = Math.hypot(ns.x - px, ns.z - pz);
+  const nearPeer = dPeerCam < 165;
   if (velPred) {
-    const vcap = nearPeer ? 80 : 52;
+    const vcap = nearPeer ? 84 : 52;
     const vm = Math.hypot(evx, evz);
     const s = vm > vcap ? vcap / vm : 1;
     ns.x += evx * s * dt;
     ns.z += evz * s * dt;
   } else if (Math.abs(v) > 0.006) {
-    const pred = nearPeer ? 0.9982 : 0.992;
+    const pred = nearPeer ? 0.9975 : 0.992;
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
-  const pk = nearPeer ? 1.52 : 1;
-  const posK = 1 - Math.exp(-(err > 120 ? 3.95 : err > 55 ? 2.5 : err > 22 ? 1.52 : err > 8 ? 0.74 : 0.38) * pk * dt);
+  const pk = nearPeer ? 1.58 : 1;
+  let posErrK = err > 120 ? 3.95 : err > 55 ? 2.5 : err > 22 ? 1.52 : err > 8 ? 0.74 : 0.38;
+  if (nearPeer) posErrK *= 0.86;
+  const posK = 1 - Math.exp(-posErrK * pk * dt);
   ns.x += (p.x - ns.x) * posK;
   ns.z += (p.z - ns.z) * posK;
   let dYaw = authR - ns.ry;
@@ -30540,8 +30547,11 @@ function update(dt) {
       const ns = advanceRemoteShipNetSmooth(sg, p, dt);
       const w = playerShipWaveAt(ns.x, ns.z, ns.ry);
       const wd = dampShipWaveTiltRemote(w.wavePitch, w.waveRoll);
-      const sy = worldSeaSurfaceY(ns.x, ns.z) + SHIP_FREEBOARD;
-      sg.position.set(ns.x, sy, ns.z);
+      const tgtY = worldSeaSurfaceY(ns.x, ns.z) + SHIP_FREEBOARD;
+      if (!Number.isFinite(sg.userData.peerHullSeaY)) sg.userData.peerHullSeaY = tgtY;
+      const hyK = 1 - Math.exp(-24 * dt);
+      sg.userData.peerHullSeaY += (tgtY - sg.userData.peerHullSeaY) * hyK;
+      sg.position.set(ns.x, sg.userData.peerHullSeaY, ns.z);
       if (sg.userData.visYaw == null) sg.userData.visYaw = ns.ry;
       let dVisYaw = ns.ry - sg.userData.visYaw;
       while (dVisYaw > Math.PI) dVisYaw -= Math.PI * 2;
@@ -30555,11 +30565,23 @@ function update(dt) {
       sg.userData.visWaveRoll += (wd.waveRoll - sg.userData.visWaveRoll) * tiltK;
       const ryVis = sg.userData.visYaw;
       sg.rotation.set(sg.userData.visWavePitch, ryVis, sg.userData.visWaveRoll);
+      const px0 = Number(G.player.x), pz0 = Number(G.player.z);
+      const dCam = Math.hypot(ns.x - px0, ns.z - pz0);
+      const peerN = otherShipGroups.size | 0;
+      const rigCrewMs = peerN > 3 ? 52 : peerN > 2 ? 40 : peerN > 1 ? 32 : 0;
+      const nowRf = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const doRigCrew = rigCrewMs <= 0 || sg.userData._rmbRigAt == null || nowRf - sg.userData._rmbRigAt >= rigCrewMs + (id & 3) * 3;
+      if (doRigCrew) sg.userData._rmbRigAt = nowRf;
       animateRemoteShipSails(sg, ns.x, ns.z, ryVis, p.speed || 0, dt);
-      updateRemoteCrewDeckAnimations(dt, sg, p, p.shipType || 'sloop');
-      applyRiggingVisualToGroup(sg, p.riggingHealth != null ? p.riggingHealth : 100);
+      if (doRigCrew) {
+        updateRemoteCrewDeckAnimations(dt, sg, p, p.shipType || 'sloop');
+        applyRiggingVisualToGroup(sg, p.riggingHealth != null ? p.riggingHealth : 100);
+      }
       if (!p.docked) {
-        tickShipWakeSpawner(`p${id}`, ns.x, ns.z, ryVis, p.speed || 0, dt);
+        const sp0 = Math.abs(p.speed || 0);
+        let wakeIv = dCam > 900 ? 0.44 : dCam > 500 ? 0.27 : peerN > 2 ? 0.2 : 0.152;
+        if (sp0 < 8) wakeIv *= 1.4;
+        tickShipWakeSpawner(`p${id}`, ns.x, ns.z, ryVis, p.speed || 0, dt, wakeIv);
       }
       if (p.docked && p.dockX != null && p.dockZ != null) {
         let ropes = remoteDockRopes.get(id);
@@ -31394,7 +31416,6 @@ function warmTutorialRaidCutsceneMeshesIfEligible() {
   if (G.mode !== 'playing' || typeof THREE === 'undefined' || !renderer || !scene || !camera) return false;
   if (!G.tutorialRaidPending || G.tutorialRaidConsumed) return false;
   if (!G.storyQuest || G.storyQuest.phase !== 'intro') return false;
-  if (ws && ws.readyState === 1 && G.otherPlayers && G.otherPlayers.size > 0) return false;
   if (G._tutorialRaidCutsceneWarmPrepared) return true;
 
   const px = G.player.x, pz = G.player.z;
@@ -33335,12 +33356,6 @@ function startTutorialRaidEncounter() {
   G._tutorialRaidDeferTimer = null;
   G.tutorialRaidPending = false;
   const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  const multiplayerCrewmate = !!(ws && ws.readyState === 1 && G.otherPlayers && G.otherPlayers.size > 0);
-  if (multiplayerCrewmate) {
-    G.tutorialRaidConsumed = true;
-    notify('Training raids run on solo voyages — find action on the compass when sailing with allies.', 5200);
-    return;
-  }
   G.localTutorialRaidNpcSurrogate = true;
   G.tutorialRaidConsumed = true;
   const npc = spawnTutorialRaidPirateNearPlayer();

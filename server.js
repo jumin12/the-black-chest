@@ -71,6 +71,7 @@ function applyNavigatorDevPlayerUpdate(p, msg) {
 const STATE_AOI_RADIUS = Math.max(800, Math.min(20000, Number(process.env.STATE_AOI_RADIUS) || 5200));
 const STATE_AOI_RADIUS_SQ = STATE_AOI_RADIUS * STATE_AOI_RADIUS;
 
+/** Dedicated VM / process managers / horizontal realms: see docs/MULTIPLAYER-DEPLOYMENT.md and multiplayer-server.example.env (not geographic multi-region). */
 /** Authoritative wind + motion integration (see simulation-layer.js). */
 let gameSim = null;
 let antiCheat = null;
