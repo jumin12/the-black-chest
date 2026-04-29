@@ -2469,7 +2469,8 @@ wss.on('connection', (ws, req) => {
     rtt: null,
     lastNetSeq: 0,
     hullBanner: null,
-    sailBanner: null
+    sailBanner: null,
+    npcEnsignFaction: null
   };
 
   players.set(id, playerData);
@@ -2602,8 +2603,17 @@ wss.on('connection', (ws, req) => {
           if (msg.shipName !== undefined) p.shipName = String(msg.shipName || '').slice(0, 28);
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.flagAssetId !== undefined) {
-            if (msg.flagAssetId === null) p.flagAssetId = null;
-            else {
+            if (msg.flagAssetId === null) {
+              p.flagAssetId = null;
+              p.npcEnsignFaction = null;
+            } else {
+              const rawAid = Math.floor(Number(msg.flagAssetId));
+              if (Number.isFinite(rawAid)) {
+                const ENS = [10, 13, 21, 19, 16];
+                let ens = null;
+                for (let fi = 0; fi < 5; fi++) if (ENS[fi] === rawAid) ens = fi;
+                p.npcEnsignFaction = ens;
+              }
               const a = sanitizeClientFlagAssetId(msg.flagAssetId);
               if (a != null) p.flagAssetId = a;
             }
@@ -2782,8 +2792,17 @@ wss.on('connection', (ws, req) => {
           }
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.flagAssetId !== undefined) {
-            if (msg.flagAssetId === null) p.flagAssetId = null;
-            else {
+            if (msg.flagAssetId === null) {
+              p.flagAssetId = null;
+              p.npcEnsignFaction = null;
+            } else {
+              const rawAid = Math.floor(Number(msg.flagAssetId));
+              if (Number.isFinite(rawAid)) {
+                const ENS = [10, 13, 21, 19, 16];
+                let ens = null;
+                for (let fi = 0; fi < 5; fi++) if (ENS[fi] === rawAid) ens = fi;
+                p.npcEnsignFaction = ens;
+              }
               const a = sanitizeClientFlagAssetId(msg.flagAssetId);
               if (a != null) p.flagAssetId = a;
             }

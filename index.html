@@ -7488,18 +7488,8 @@ function pierDeckSurfaceWorldY(meta) {
 }
 
 /** Pier end sits just past the procedural shoreline along dockAngle so three sides are in water. */
-function proceduralPirateHideoutName(cx, cz, worldSeedOpt) {
-  const wsU = worldSeedOpt !== undefined ? (Number(worldSeedOpt) >>> 0) : (G.worldSeed >>> 0);
-  const stems = ['Skull Cove', 'Smugglers\' Hook', 'Dead Reckoning Bay', 'Cutlass Reach', 'Black Sand Haven', 'Gallows Point', 'Rum Row', 'Tide Thieves\' Rest'];
-  const tags = [' Anchorage', ' Cove', ' Den', ' Brig', ' Jetty'];
-  let th = (cx * 73856093 ^ cz * 19349663 ^ wsU ^ (cx * 374761393) ^ (cz * 668265263)) >>> 0;
-  const baseIdx = th % stems.length;
-  th = Math.imul(th, 1103515245) + 12345 >>> 0;
-  const tagIdx = th % tags.length;
-  return (stems[baseIdx] + tags[tagIdx]).replace(/\s{2,}/g, ' ').trim();
-}
 function placeTownDockSeaward(meta) {
-  if (!meta || (!meta.hasTown && !meta.hasPirateHideout)) return;
+  if (!meta || !meta.hasTown) return;
   const wx0 = meta.worldX, wz0 = meta.worldZ;
   const R = meta.radius;
   const da = meta.dockAngle || 0;
@@ -7565,12 +7555,6 @@ function getProceduralIslandMeta(cx, cz, worldSeedOpt) {
     meta.townName = proceduralTownNameCore(cx, cz, meta.faction % FACTION_COUNT, worldSeedOpt);
     meta.dockAngle = (hashChunk(cx + 99, cz + 99, worldSeedOpt) * 2 - 1) * Math.PI;
     placeTownDockSeaward(meta);
-  } else if (!meta.hasTown && islandRadius >= 44 && h >= 0.10 && h < 0.195 && hashChunk(cx + 2, cz + 8, worldSeedOpt) < 0.056) {
-    meta.hasPirateHideout = true;
-    meta.faction = ((cx * 1319 ^ cz * 1703 ^ wsU) >>> 0) % FACTION_COUNT;
-    meta.hideoutName = proceduralPirateHideoutName(cx, cz, worldSeedOpt);
-    meta.dockAngle = (hashChunk(cx + 41, cz + 71, worldSeedOpt) * 2 - 1) * Math.PI;
-    placeTownDockSeaward(meta);
   }
   return meta;
 }
@@ -7631,7 +7615,6 @@ function proceduralTownNameCore(cx, cz, prefixFaction, worldSeedOpt) {
 }
 /** Port label / map name: tracks `townFaction` (conquest) and custom towns. */
 function proceduralTownDisplayName(meta) {
-  if (meta && meta.hasPirateHideout) return meta.hideoutName || 'Pirate hideout';
   if (!meta || !meta.hasTown) return meta?.townName || 'Port';
   ensurePolitics();
   const fac = townFaction(meta) % FACTION_COUNT;
@@ -7940,7 +7923,7 @@ function findNearestPortDock(wx, wz) {
     wx - NEAREST_PORT_SEARCH_HALF, wx + NEAREST_PORT_SEARCH_HALF,
     wz - NEAREST_PORT_SEARCH_HALF, wz + NEAREST_PORT_SEARCH_HALF,
     meta => {
-      if ((!meta.hasTown && !meta.hasPirateHideout) || meta.dockX == null) return;
+      if (!meta.hasTown || meta.dockX == null) return;
       const d = distToDockTrigger(meta, wx, wz);
       const d2 = d * d;
       if (d2 < bestD2) { bestD2 = d2; best = meta; }
@@ -8304,10 +8287,8 @@ function parseFactionsFromMapJson(data) {
   };
 }
 function townFaction(meta) {
-  if (!meta) return 0;
+  if (!meta || !meta.hasTown) return 0;
   ensurePolitics();
-  if (meta.hasPirateHideout && meta.faction != null) return (meta.faction | 0) % FACTION_COUNT;
-  if (!meta.hasTown) return 0;
   const k = portStockKey(meta);
   if (G.politics.portController[k] != null) return (G.politics.portController[k] | 0) % FACTION_COUNT;
   return meta.faction != null ? (meta.faction | 0) % FACTION_COUNT : (((meta.cx * 7919 ^ meta.cz * 9341 ^ (G.worldSeed >>> 0)) >>> 0) % FACTION_COUNT);
@@ -8542,12 +8523,6 @@ function factionsConsideredAtWar(a, b) {
   const i = (a | 0) % FACTION_COUNT, j = (b | 0) % FACTION_COUNT;
   if (i === j) return false;
   return (G.politics.matrix[i][j] + G.politics.matrix[j][i]) / 2 < 18;
-}
-/** True when the player sails under a faction that is at open war with `fid` on the world matrix. */
-function playerAtWarWithJoinedFaction(fid) {
-  ensurePolitics();
-  if (G.politics.joinedFaction == null) return false;
-  return factionsConsideredAtWar(fid, G.politics.joinedFaction);
 }
 function playerBannedFromFactionPort(fid) {
   return playerFactionRelation(fid) <= BANNED_FROM_PORT_RELATION;
@@ -9051,15 +9026,6 @@ function collectAllTradingPorts() {
   const lim = WORLD_EDGE_CLAMP;
   forEachProceduralIslandInWorldBounds(-lim, lim, -lim, lim, m => {
     if (m.hasTown && m.dockX != null) out.push(m);
-  }, 0, 0);
-  return out;
-}
-
-function collectAllPirateHideouts() {
-  const out = [];
-  const lim = WORLD_EDGE_CLAMP;
-  forEachProceduralIslandInWorldBounds(-lim, lim, -lim, lim, m => {
-    if (m.hasPirateHideout && m.dockX != null) out.push(m);
   }, 0, 0);
   return out;
 }
@@ -9958,7 +9924,7 @@ function generateIsland(cx, cz) {
   const islandRadius = meta0.radius, islandHeight = meta0.maxH;
   const h = meta0.h;
   const group = new THREE.Group();
-  group.userData = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: !!meta0.hasTown, hasPirateHideout: !!meta0.hasPirateHideout };
+  group.userData = { cx, cz, worldX, worldZ, radius: islandRadius, maxH: islandHeight, hasTown: !!meta0.hasTown };
   if (meta0.hasTown) {
     group.userData.dockX = meta0.dockX;
     group.userData.dockZ = meta0.dockZ;
@@ -10203,52 +10169,6 @@ function generateIsland(cx, cz) {
     }
     const fyy = SEA_LEVEL + Math.max(terrainYWorld(fxx, fzz), 0.35) + 0.35;
     addDockFactionFlag(group, tf, fxx, fzz, fyy, dockAngle, dockWidX, dockWidZ);
-  } else if (meta0.hasPirateHideout) {
-    const dockAngle = meta0.dockAngle;
-    const dockX = meta0.dockX, dockZ = meta0.dockZ;
-    group.userData.hasPirateHideout = true;
-    group.userData.hideoutName = meta0.hideoutName;
-    group.userData.dockX = dockX;
-    group.userData.dockZ = dockZ;
-    group.userData.dockAngle = dockAngle;
-    group.userData.faction = meta0.faction;
-    const terrainYWorld = (wx, wz) => {
-      const px = wx - worldX, pz = wz - worldZ;
-      const dist = proceduralIslandNormDistCore(px, pz, worldX, worldZ, islandRadius, islandNoise);
-      const edgeWarp = islandNoise.noise2D(px * 0.02, pz * 0.02) * PROC_EDGE_WARP_AMP1 + islandNoise.noise2D(px * 0.05, pz * 0.05) * PROC_EDGE_WARP_AMP2;
-      const coastWobble = islandNoise.noise2D(px * 0.11, pz * 0.11) * PROC_COAST_WOBBLE;
-      const warpedDist = dist + edgeWarp + coastWobble;
-      const falloff = Math.max(0, 1 - warpedDist * warpedDist);
-      const n1 = noise.fbm(wx * 0.015, wz * 0.015, 4);
-      const n2 = islandNoise.noise2D(wx * 0.025, wz * 0.025) * 0.25;
-      const ridges = Math.abs(islandNoise.noise2D(wx * 0.04, wz * 0.04)) * 0.2;
-      const combined = n1 * 0.6 + n2 + ridges;
-      let ht = (combined * 0.5 + 0.5) * islandHeight * Math.pow(falloff, ISLAND_HEIGHT_FALLOFF_POW);
-      const isLand = ht > PROC_LAND_HT_MIN && warpedDist < PROC_LAND_WARP_MAX;
-      if (!isLand) return 0;
-      return Math.max(PROC_LAND_HT_MIN, ht);
-    };
-    const dockLongX = Math.sin(dockAngle), dockLongZ = Math.cos(dockAngle);
-    const dockYLand = Math.max(
-      terrainYWorld(dockX + dockLongX * PIER_SEA_HALF, dockZ + dockLongZ * PIER_SEA_HALF),
-      terrainYWorld(dockX - dockLongX * PIER_LAND_HALF, dockZ - dockLongZ * PIER_LAND_HALF),
-      terrainYWorld(dockX, dockZ)
-    );
-    const dockGround = dockYLand > 0 ? dockYLand : 0;
-    const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH * 0.92, 0.4, PIER_TOTAL_LEN * 0.95);
-    const dock = new THREE.Mesh(dockGeo, new THREE.MeshLambertMaterial({ color: 0x4a3820 }));
-    const dockDeckClear = 0.52;
-    const dockCenterY = SEA_LEVEL + dockGround + dockDeckClear;
-    dock.position.set(dockX, dockCenterY, dockZ);
-    dock.rotation.y = dockAngle;
-    dock.receiveShadow = true;
-    dock.castShadow = true;
-    group.add(dock);
-    const disp = proceduralTownDisplayName(meta0);
-    const hoLabel = makeTextSprite(disp, '#c9a878', 'Fence · illicit trade', '', '', 4);
-    const labelBaseH = Math.max(terrainYWorld(worldX, worldZ), dockGround, PROC_LAND_HT_MIN);
-    hoLabel.position.set(dockX, SEA_LEVEL + labelBaseH + 6.2, dockZ);
-    group.add(hoLabel);
   }
 
   islandGroup.add(group);
@@ -17647,12 +17567,12 @@ function updateNPCs(dt) {
         ensurePolitics();
         const mPfid = townFaction({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
         if (!npc.aggro && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
-          if (playerAtWarWithJoinedFaction(mPfid) || (npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0)) {
+          if (factionHostileToPlayer(mPfid) || (npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0)) {
             npc.aggro = true;
           }
         }
         if (npc.aggro && (G.playerSinking || G.player.health <= 0
-          || (!playerAtWarWithJoinedFaction(mPfid) && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0))
+          || (!factionHostileToPlayer(mPfid) && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0))
           || (npc.underFireTimer <= 0 && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0) && distToPlayer > 280))) {
           npc.aggro = false;
         }
@@ -17729,8 +17649,7 @@ function updateNPCs(dt) {
           npc.wanderAngle = npc.rotation;
         }
         if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
-        const maxM = npcMaxForwardSpeed(npc);
-        const tgtC = Math.max(npc.targetCruise != null ? npc.targetCruise : maxM * 0.94, maxM * 0.44);
+        const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.94;
         const phase = npc.tradePhase || 'to_dest';
         const dockTx = npc.tradeDestX, dockTz = npc.tradeDestZ;
         let tx = dockTx, tz = dockTz;
@@ -17878,23 +17797,21 @@ function updateNPCs(dt) {
       ensurePolitics();
       const pirF = npc.factionId != null ? (npc.factionId | 0) % FACTION_COUNT : 0;
       if (npc.aggro && (G.playerSinking || G.player.health <= 0
+        || (!factionHostileToPlayer(pirF) && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0))
         || (npc.underFireTimer <= 0 && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0) && distToPlayer > 280))) {
-        npc.aggro = false;
-      } else if (
-        npc.isFactionPatrol && npc.aggro && !G.playerSinking && G.player.health > 0 && distToPlayer < 175
-        && !playerAtWarWithJoinedFaction(pirF)
-        && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0)
-        && (npc.underFireTimer == null || npc.underFireTimer <= 0)
-      ) {
         npc.aggro = false;
       }
       if (!focus && !npc.escortRaider && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
-        if (npc.isFactionPatrol) {
-          if (playerAtWarWithJoinedFaction(pirF) || (npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0)) {
-            npc.aggro = true;
-          }
-        } else {
+        if (factionHostileToPlayer(pirF) || (npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0)) {
           npc.aggro = true;
+        } else if (!npc.aggro && distToPlayer < 152 && npcCombatPowerEstimate(npc) < playerCombatPowerEstimate() * 0.92) {
+          const dx = npc.x - G.player.x, dz = npc.z - G.player.z;
+          const away = Math.atan2(dx, dz);
+          let diff = away - npc.rotation;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          npc.rotation += diff * 0.42 * dt * npcSailingTurnFactor(npc);
+          npc.wanderAngle = npc.rotation;
         }
       }
       const sharp = (focus && distToTarget < 115) || (!focus && npc.aggro && distToPlayer < 110) ? 2.55 : 2.05;
@@ -17990,7 +17907,7 @@ function updateNPCs(dt) {
       let leadX = npc.syncX, leadZ = npc.syncZ;
       if (npc._npcSnapRecvPerfMs != null && Number.isFinite(Number(npc.speed)) && npc.syncR != null) {
         const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        const el = Math.min(0.26, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
+        const el = Math.min(0.36, Math.max(0, (nowP - npc._npcSnapRecvPerfMs) * 0.001));
         const sp = Number(npc.speed);
         const au = Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : authR;
         leadX += Math.sin(au) * sp * el;
@@ -18004,9 +17921,9 @@ function updateNPCs(dt) {
         npc._npcHullSeaYVis = undefined;
       } else {
         /* Small err used 7.8 — over-correct vs prediction + net rounding → micro jitter. */
-        const velPull = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ) ? 0.74 : 1;
+        const velPull = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ) ? 0.78 : 1;
         const pull =
-          (err > 90 ? 8.35 : err > 35 ? 4.95 : err > 12 ? 3.42 : err > 4 ? 2.08 : err > 1.1 ? 1.05 : err > 0.22 ? 0.62 : 0.24) * velPull;
+          (err > 90 ? 8.85 : err > 35 ? 5.25 : err > 12 ? 3.55 : err > 4 ? 2.18 : err > 1.1 ? 1.12 : err > 0.22 ? 0.66 : 0.26) * velPull;
         const posK = 1 - Math.exp(-pull * dt);
         npc.x += ex * posK;
         npc.z += ez * posK;
@@ -20702,11 +20619,11 @@ function reconcileLocalPlayerFromServerState(selfRow) {
     finalizeNetDesyncProbe(selfRow);
     return;
   }
-  let cap = Math.min(0.52, 0.028 + d * 0.0088);
+  let cap = Math.min(0.32, 0.022 + d * 0.0068);
   if (pvpRelax) cap *= 0.71;
   /* After latency spikes, one large state delta used to yank the hull in a single frame — ease in over several frames. */
-  if (d > 52) cap *= 0.72;
-  if (d > 120) cap *= 0.56;
+  if (d > 52) cap *= 0.62;
+  if (d > 120) cap *= 0.5;
   G.player.x += dx * cap;
   G.player.z += dz * cap;
   if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
@@ -27260,13 +27177,11 @@ function resolveNetPlayerDockCleats(p) {
 function dockAtPort() {
   if (G.boarding) { notify('Cannot dock during boarding.', 3000); return; }
   if (!G.nearDock) return;
-  if (!G.nearDock.hasPirateHideout) {
-    ensurePolitics();
-    const banF = townFaction(G.nearDock);
-    if (playerBannedFromFactionPort(banF)) {
-      notify(`${FACTION_NAMES[banF]} forbids you from their harbors — seek a governor's pardon or mend relations.`);
-      return;
-    }
+  ensurePolitics();
+  const banF = townFaction(G.nearDock);
+  if (playerBannedFromFactionPort(banF)) {
+    notify(`${FACTION_NAMES[banF]} forbids you from their harbors — seek a governor’s pardon or mend relations.`);
+    return;
   }
   const berthIdx = findFreeDockBerth(G.nearDock);
   if (berthIdx < 0) {
@@ -27322,17 +27237,6 @@ function dockAtPort() {
       const ptf = document.getElementById('port-title-faction');
       const pfi = document.getElementById('port-title-flag');
       if (pt && G.nearDock) {
-        if (G.nearDock.hasPirateHideout) {
-          pt.textContent = proceduralTownDisplayName(G.nearDock);
-          if (ptf) {
-            ptf.textContent = 'Fence · illicit goods';
-            ptf.style.color = '#cfa068';
-          }
-          if (pfi) {
-            pfi.src = 'assets/flags/flag4.png';
-            pfi.alt = 'Pirate fence';
-          }
-        } else {
         const fid = townFaction(G.nearDock);
         const fc = FACTION_TRADE_COLORS[fid % FACTION_COUNT];
         pt.textContent = proceduralTownDisplayName(G.nearDock);
@@ -27344,7 +27248,6 @@ function dockAtPort() {
           const pngId = factionFlagPngIdForFaction(fid);
           pfi.src = `assets/flags/flag${pngId}.png`;
           pfi.alt = `${factionLabel(fid)} ensign`;
-        }
         }
       }
       showPortTab('trade');
@@ -30150,7 +30053,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
   if (Number.isFinite(ax) && Number.isFinite(az) && p._srvSnapPerfMs != null && Number.isFinite(Number(p.speed))) {
     const nowP = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const elapsed = Math.min(0.2, Math.max(0, (nowP - p._srvSnapPerfMs) * 0.001));
+    const elapsed = Math.min(0.36, Math.max(0, (nowP - p._srvSnapPerfMs) * 0.001));
     const sp = Number(p.speed);
     const au = authR;
     ax += Math.sin(au) * sp * elapsed;
@@ -30187,8 +30090,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     ns.z += Math.cos(th) * v * dt * pred;
   }
   const pk = nearPeer ? 1.72 : 1;
-  let posErrK = err > 120 ? 5.95 : err > 55 ? 3.45 : err > 22 ? 2.12 : err > 8 ? 1.12 : 0.62;
-  if (nearPeer) posErrK *= 1.12;
+  let posErrK = err > 120 ? 5.12 : err > 55 ? 3.12 : err > 22 ? 1.9 : err > 8 ? 0.98 : 0.53;
+  if (nearPeer) posErrK *= 1.1;
   const posK = 1 - Math.exp(-posErrK * pk * dt);
   ns.x += (ax - ns.x) * posK;
   ns.z += (az - ns.z) * posK;
@@ -30221,7 +30124,9 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 
 function update(dt) {
   if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
-    const burst = Math.min(G._netStateDrainQueue.length, 14);
+    /* Drop backlog so we apply recent AOI snapshots instead of replaying stale poses (hull lag behind cannon FX). */
+    while (G._netStateDrainQueue.length > 9) G._netStateDrainQueue.shift();
+    const burst = Math.min(G._netStateDrainQueue.length, 8);
     const batch = [];
     for (let _qi = 0; _qi < burst; _qi++) batch.push(G._netStateDrainQueue.shift());
     for (let _bi = 0; _bi < batch.length; _bi++) {
@@ -31560,7 +31465,7 @@ function update(dt) {
 
   let nearestDock = null, nearestDockDist = Infinity;
   G.islands.forEach(isl => {
-    if ((!isl.hasTown && !isl.hasPirateHideout) || isl.dockX == null) return;
+    if (!isl.hasTown) return;
     const dd = distToDockTrigger(isl, G.player.x, G.player.z);
     if (dd <= DOCK_TRIGGER_RADIUS && dd < nearestDockDist) { nearestDock = isl; nearestDockDist = dd; }
   });
