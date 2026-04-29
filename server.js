@@ -8,6 +8,7 @@ const { createServerNpcWorld } = require('./server/npc-authoritative.cjs');
 const { createWorldPoliticsStore, sanitizePlayerPoliticsPatch } = require('./server/world-politics.cjs');
 const { createTerrainContext, sampleOffshoreSpawn } = require('./server/terrain-context.cjs');
 const { createTavernGames } = require('./server/tavern-games.cjs');
+const { createGameRtcBridge } = require('./server/webrtc-game-channel.cjs');
 
 const PORT = process.env.PORT || 3000;
 /** Realm identity for server browsers and the in-game HUD (env-tunable). */
@@ -25,6 +26,14 @@ const MAX_CONCURRENT_CAPTAINS = Math.max(0, Math.floor(Number(process.env.MAX_CO
 const SERVER_WORLD_T0_MS = Date.now();
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
 const TICK_RATE = 60;
+/** Browser↔realm WebRTC DataChannel for gameplay payloads (signaling uses the existing WebSocket). */
+const RTC_GAME_CHANNEL = /^1|true|yes$/i.test(String(process.env.RTC_GAME_CHANNEL || '').trim());
+/** When set, duplicate `state` on WebSocket and DataChannel while DC is open (debug / migration). */
+const RTC_STATE_DUAL_STACK = /^1|true|yes$/i.test(String(process.env.RTC_STATE_DUAL_STACK || '').trim());
+const gameRtc = createGameRtcBridge({
+  enabled: RTC_GAME_CHANNEL,
+  dualStack: RTC_STATE_DUAL_STACK
+});
 /** Match client `WORLD_EDGE_CLAMP` (7 * 270 + 135) — reject runaway coordinates from glitched clients. */
 const PLAYER_WORLD_EDGE_CLAMP = 7 * 270 + 135;
 function clampPlayerWorldX(x) {
@@ -163,74 +172,6 @@ function buildStateRow(p, includeCrew) {
   };
   if ((includeCrew || p.boarding != null) && Array.isArray(p.crewData)) row.crewData = p.crewData;
   return row;
-}
-
-const STATE_DELTA_HEAVY = ['crewData', 'boarding', 'shipParts', 'hullBanner', 'sailBanner', 'deckWalk'];
-function jsonSigDelta(v) {
-  try {
-    return JSON.stringify(v === undefined ? null : v);
-  } catch (e) {
-    return '';
-  }
-}
-/** Stable hash over heavyweight AOI fields — call once per cached row per tick. */
-function heavyHashRow(fr) {
-  let s = '';
-  for (let hi = 0; hi < STATE_DELTA_HEAVY.length; hi++) {
-    const hk = STATE_DELTA_HEAVY[hi];
-    s += '#' + hk + ':' + jsonSigDelta(fr[hk]);
-  }
-  return String(fr.id) + ',' + jsonSigDelta(fr.name) + s;
-}
-function valsEqDelta(a, b) {
-  if (a === b) return true;
-  if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
-    return Math.abs(a - b) < 1e-4;
-  }
-  if ((a === null || a === undefined) && (b === null || b === undefined)) return true;
-  if (typeof a === 'object' && a && typeof b === 'object' && b)
-    return jsonSigDelta(a) === jsonSigDelta(b);
-  return false;
-}
-function snapshotEmittedRow(r) {
-  try {
-    return JSON.parse(JSON.stringify(r));
-  } catch (e) {
-    return {};
-  }
-}
-function pruneEmittedStateForAoI(ws, seenSet) {
-  const m = ws._stateEmittedByPid;
-  if (!m || !seenSet) return;
-  for (const k of m.keys()) {
-    if (!seenSet.has(k)) m.delete(k);
-  }
-}
-function buildClientStateDeltaRow(ws, fullRow, heavyHashCached) {
-  const pid = fullRow.id;
-  if (!ws._stateEmittedByPid) ws._stateEmittedByPid = new Map();
-  const mmap = ws._stateEmittedByPid;
-  const hh = heavyHashCached != null ? heavyHashCached : heavyHashRow(fullRow);
-  const prevEnt = mmap.get(pid);
-  const prev = prevEnt && prevEnt.r;
-  const needFull = !prevEnt || hh !== prevEnt.h;
-  if (needFull) {
-    const snap = snapshotEmittedRow(fullRow);
-    mmap.set(pid, { h: hh, r: snap });
-    return Object.assign({}, snap, { df: 1 });
-  }
-  const delta = { id: pid };
-  for (const k of Object.keys(fullRow)) {
-    if (k === 'id') continue;
-    if (valsEqDelta(prev[k], fullRow[k])) continue;
-    delta[k] = fullRow[k];
-  }
-  delta.x = fullRow.x;
-  delta.z = fullRow.z;
-  delta.rotation = fullRow.rotation;
-  delta.speed = fullRow.speed;
-  mmap.set(pid, { h: hh, r: snapshotEmittedRow(fullRow) });
-  return delta;
 }
 /** Matches client `RESERVED_PLAYER_FLAG_IDS` — national / reserved hull-flag PNGs. */
 const RESERVED_PLAYER_FLAG_ASSET_IDS = new Set([10, 13, 15, 16, 19, 21]);
@@ -2497,7 +2438,6 @@ wss.on('connection', (ws, req) => {
 
   const id = nextId++;
   ws.playerId = id;
-  ws._stateEmittedByPid = new Map();
 
   const spawnCtx = createTerrainContext({
     worldSeed: WORLD_SEED >>> 0,
@@ -2585,7 +2525,8 @@ wss.on('connection', (ws, req) => {
       registered: Object.keys(captainAccounts || {}).length,
       realm: getRealmConfig(),
       maxPlayers: MAX_CONCURRENT_CAPTAINS > 0 ? MAX_CONCURRENT_CAPTAINS : null
-    }
+    },
+    ...(gameRtc.enabled ? { rtcGameChannel: true, rtcIceServers: gameRtc.publicIceServers } : {})
   }));
   reconcileLeaderboardRows();
   ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboardHistory }));
@@ -2615,10 +2556,8 @@ wss.on('connection', (ws, req) => {
   broadcastServerPopulation();
   sendNpcSimulationDelegates();
 
-  ws.on('message', (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      switch (msg.type) {
+  function handleCaptainJsonMessage(msg) {
+    switch (msg.type) {
         case 'update': {
           const p = players.get(id);
           if (!p) break;
@@ -3199,21 +3138,14 @@ wss.on('connection', (ws, req) => {
           if (_v?.crewData && Array.isArray(_v.crewData) && _v.crewData[0]?.name) {
             _sinkName = String(_v.crewData[0].name).slice(0, 28);
           }
-          const out = {
+          broadcastAll({
             type: 'ship_sunk',
             victimId,
             x: msg.x,
             z: msg.z,
             loot,
             name: _sinkName
-          };
-          const vws = findWsByPlayerId(victimId);
-          if (vws && vws.readyState === 1) {
-            broadcast(out, victimId);
-            try { vws.send(JSON.stringify(out)); } catch (e) {}
-          } else {
-            broadcastAll(out);
-          }
+          });
           break;
         }
         case 'loot_spawn': {
@@ -4153,14 +4085,26 @@ wss.on('connection', (ws, req) => {
           break;
         }
       }
+  }
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (gameRtc.enabled && msg && (msg.type === 'rtc_offer' || msg.type === 'rtc_candidate')) {
+        gameRtc.handleSignalingMessage(ws, msg);
+        return;
+      }
+      handleCaptainJsonMessage(msg);
     } catch (e) {
       console.error('[playground] ws message error:', e && e.message ? e.message : e);
     }
   });
 
+  gameRtc.attachCaptainChannel(ws, id, handleCaptainJsonMessage);
+
   ws.on('close', () => {
-    ws._stateEmittedByPid = null;
     try {
+    gameRtc.disposeCaptainRtc(ws);
     clearCaptainSocketSlot(ws);
     const left = players.get(id);
     const leftCk = left && left.captainKey ? normalizeCaptainKey(String(left.captainKey))
@@ -4229,7 +4173,6 @@ setInterval(() => {
     npcWorldHadPlayers = false;
     return;
   }
-  const tickStateBeg = Date.now();
   serverStateTickSeq++;
   ensureSimulationLayer();
   gameSim.stepAll(players);
@@ -4243,14 +4186,12 @@ setInterval(() => {
     ensureWorldPolitics().tickEconomy(1 / TICK_RATE);
   } catch (e) {}
   npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
-  const srvNowEmitTick = Date.now();
   try {
     broadcastAll({
       type: 'npc_sync',
       npcs: npcWorld.buildSyncRows(),
       wind: npcWorld.getWindSample(),
-      srvTick: serverStateTickSeq,
-      serverNowMs: srvNowEmitTick
+      srvTick: serverStateTickSeq
     });
   } catch (e) {}
   if (serverStateTickSeq % 540 === 0) {
@@ -4269,65 +4210,32 @@ setInterval(() => {
   const includeCrew = (serverStateTickSeq % 2 === 0);
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   const all = Array.from(players.values());
-  const tickStateRowsCache = new Map();
-  const stateQueue = [];
   for (const client of wss.clients) {
     if (client.readyState !== 1 || client.playerId == null) continue;
     const viewer = players.get(client.playerId);
     if (!viewer) continue;
     const snap = [];
-    const seenAoI = new Set();
     for (const p of all) {
       if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
-      let rr = tickStateRowsCache.get(p.id);
-      if (!rr) {
-        const fr = buildStateRow(p, includeCrew || !!p.boarding);
-        rr = { fr, hh: heavyHashRow(fr) };
-        tickStateRowsCache.set(p.id, rr);
-      }
-      seenAoI.add(rr.fr.id);
-      snap.push(buildClientStateDeltaRow(client, rr.fr, rr.hh));
+      snap.push(buildStateRow(p, includeCrew || !!p.boarding));
     }
-    pruneEmittedStateForAoI(client, seenAoI);
-    stateQueue.push({ client, snap });
-  }
-  const tQueueBuilt = Date.now();
-  const pfBase = {
-    w: Math.max(0, tQueueBuilt - tickStateBeg),
-    rc: Math.max(0, stateQueue.length | 0),
-    b: 0
-  };
-  let sumBodies = 0;
-  for (let qi = 0; qi < stateQueue.length; qi++) {
     try {
-      const sq = stateQueue[qi];
-      const preWire = JSON.stringify({
+      const payloadStr = JSON.stringify({
         type: 'state',
-        players: sq.snap,
+        players: snap,
         worldT: tickWorldT,
         wildlifeWorldT: tickWorldT,
         srvTick: serverStateTickSeq,
-        aoiR: STATE_AOI_RADIUS,
-        serverNowMs: srvNowEmitTick
+        aoiR: STATE_AOI_RADIUS
       });
-      sumBodies += Buffer.byteLength(preWire, 'utf8');
-    } catch (ePre) {}
-  }
-  pfBase.b = Math.max(0, sumBodies + pfBase.rc * 76);
-  for (let qi = 0; qi < stateQueue.length; qi++) {
-    try {
-      const sq = stateQueue[qi];
-      sq.client.send(JSON.stringify({
-        type: 'state',
-        players: sq.snap,
-        worldT: tickWorldT,
-        wildlifeWorldT: tickWorldT,
-        srvTick: serverStateTickSeq,
-        aoiR: STATE_AOI_RADIUS,
-        serverNowMs: srvNowEmitTick,
-        serverPerf: pfBase
-      }));
-    } catch (eSn) {}
+      let sentDc = false;
+      if (gameRtc.enabled) {
+        sentDc = !!gameRtc.sendGameStatePayload(client, payloadStr).sentDc;
+      }
+      if (!sentDc || gameRtc.dualStack) {
+        client.send(payloadStr);
+      }
+    } catch (e) {}
   }
   } catch (e) {
     console.error('[playground] state tick error:', e && e.message ? e.message : e);
@@ -4355,6 +4263,9 @@ server.listen(PORT, '0.0.0.0', () => {
   const rc = getRealmConfig();
   console.log(`[playground] realm: «${rc.name}» (${rc.id}) — REALM_NAME / REALM_ID env`);
   console.log(`[playground] multiplayer AOI radius (world units): ${STATE_AOI_RADIUS} — set STATE_AOI_RADIUS env to tune; per-client state lists only nearby captains (+ boarding partners).`);
+  if (gameRtc.enabled) {
+    console.log(`[playground] WebRTC game DataChannel: ON (signaling on WebSocket). Dual-stack WS \`state\`: ${gameRtc.dualStack ? 'ON' : 'OFF'} — set RTC_STATE_DUAL_STACK=1 to compare. ICE: ${(gameRtc.publicIceServers || []).join(', ')}`);
+  }
   if (MAX_CONCURRENT_CAPTAINS > 0) console.log(`[playground] concurrent captain cap: ${MAX_CONCURRENT_CAPTAINS} (MAX_CONCURRENT_CAPTAINS)`);
   const navMsg = NAVIGATOR_ADMIN_PASSWORD
     ? `password configured (${NAVIGATOR_ADMIN_PASSWORD_SOURCE === 'env' ? 'NAVIGATOR_ADMIN_PASSWORD' : 'navigator_admin.secret'})`
