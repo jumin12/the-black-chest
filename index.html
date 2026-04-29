@@ -16912,7 +16912,9 @@ function npcFireBroadsideAtPlayer(npc, opts) {
   }
   const dx = px - npc.x, dz = pz - npc.z;
   const dist = Math.hypot(dx, dz);
-  if (dist > 108 || dist < 2) return false;
+  if (tut) {
+    if (dist > 168 || dist < 14) return false;
+  } else if (dist > 108 || dist < 2) return false;
 
   const toTargetAngle = Math.atan2(dx, dz);
   const relAngle = toTargetAngle - npc.rotation;
@@ -19730,6 +19732,12 @@ async function connectToServer() {
         const hx = msg.hx != null && Number.isFinite(Number(msg.hx)) ? Number(msg.hx) : npc.x;
         const hy = msg.hy != null && Number.isFinite(Number(msg.hy)) ? Number(msg.hy) : (worldSeaSurfaceY(npc.x, npc.z) + 1.2);
         const hz = msg.hz != null && Number.isFinite(Number(msg.hz)) ? Number(msg.hz) : npc.z;
+        /** Surrogate-driven intro raider: own hit-claim prediction path applies hull here (`fromId===myId` would otherwise bail). */
+        if (nid === TUTORIAL_RAID_NPC_SYNC && npc.tutorialRaidHull && G.localTutorialRaidNpcSurrogate
+          && fromId === G.myId && G.myId != null) {
+          applyAuthorizedNpcDamageFromPlayerShot(npc, fromId, at, isPellet, hx, hy, hz);
+          break;
+        }
         if (G.npcSimFromServer) {
           /* Node authoritative sim: hull/rig come from `npc_sync`; relayed claim is impact FX only. */
           applyAuthorizedNpcDamageFromPlayerShot(npc, fromId, at, isPellet, hx, hy, hz, { fxOnly: true });
@@ -20344,9 +20352,10 @@ function applyNpcSyncMessage(msg) {
       npc._npcSnapRecvPerfMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     }
     npc.syncX = nd.x; npc.syncZ = nd.z; npc.syncR = nd.r;
-    if (nd.h != null && Number.isFinite(Number(nd.h))) npc.health = Math.round(Number(nd.h));
+    const raidHullLocal = !!(nid === TUTORIAL_RAID_NPC_SYNC && npc.tutorialRaidHull && G.localTutorialRaidNpcSurrogate);
+    if (!raidHullLocal && nd.h != null && Number.isFinite(Number(nd.h))) npc.health = Math.round(Number(nd.h));
     npc.aggro = !!nd.aggro;
-    if (nd.rg != null) npc.riggingHealth = Math.max(0, Math.min(100, nd.rg));
+    if (!raidHullLocal && nd.rg != null) npc.riggingHealth = Math.max(0, Math.min(100, nd.rg));
     if (npc.mesh) {
       const rhNet = getNpcRiggingHealth(npc);
       const rhKey = Math.round(rhNet);
@@ -31089,7 +31098,8 @@ function warmTutorialRaidCutsceneMeshesIfEligible() {
   const npcFlagColor = FACTION_TRADE_COLORS[pirateFaction] || '#5a0808';
   const pp = G.player.shipParts || {};
   const flagAid = randomChoosableFlagRng(() => ((TUTORIAL_RAID_NPC_SYNC * 997) >>> 0) / 4294967296);
-  const pirateCannon = pp.cannon || tradeShipCannonForType(st);
+  let pirateCannon = pp.cannon || tradeShipCannonForType(st);
+  if (!pirateCannon || pirateCannon === 'none') pirateCannon = 'light';
   const meshCos = {
     hull: pp.hull || 'basic',
     sail: pp.sail || 'basic',
@@ -32804,7 +32814,7 @@ function tutorialRaidRevealCombatPhase() {
   tr.lockHelmEnd = past;
   tutorialRaidSetBanner('');
   tutorialRaidUiSetSuppressed(false);
-  notify('Run her down and sink her — Z starboard, X port.', 4800);
+  notify('Give chase and close the range until you can rake her — then run her down. Broadsides: Z starboard, X port.', 5600);
 }
 
 function tutorialRaidSetBanner(text) {
@@ -32931,7 +32941,12 @@ function spawnTutorialRaidPirateNearPlayer() {
     tutorialRaidHull: true
   };
   npc.flagAssetId = randomChoosableFlagRng(() => ((TUTORIAL_RAID_NPC_SYNC * 997) >>> 0) / 4294967296);
-  npc.pirateCannon = pp.cannon || tradeShipCannonForType(st);
+  {
+    let pc = pp.cannon || tradeShipCannonForType(st);
+    if (!pc || pc === 'none') pc = 'light';
+    npc.pirateCannon = pc;
+  }
+  npc.fireCooldown = 0;
   const meshCos = {
     hull: pp.hull || 'basic',
     sail: pp.sail || 'basic',
@@ -33048,7 +33063,7 @@ function tickTutorialRaidCutscene(dt) {
       const since = tr.age - tr._volleyAtAge;
       if (since >= 0.95 && since < 4.8 && tr.bannerPhase === 1) {
         tr.bannerPhase = 2;
-        tutorialRaidSetBanner('She falls off…');
+        tutorialRaidSetBanner('She falls off — give chase until you earn a broadside.');
       }
       const fled = distPlayer > 118;
       if (since >= 2.0 && fled) tutorialRaidRevealCombatPhase();
