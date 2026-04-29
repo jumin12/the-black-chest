@@ -7039,6 +7039,11 @@ function seaReefBlocksPoint(wx, wz, clearance) {
   }
   return false;
 }
+/** AI hull space: reefs are navigable probes but forward motion must reject them like shoals — matches cannon ray probes. */
+function npcNavWaterBlocked(wx, wz, reefPad) {
+  const pad = reefPad != null ? reefPad : 0.76;
+  return isSeaObstructed(wx, wz) || seaReefBlocksPoint(wx, wz, pad);
+}
 
 function checkPlayerSeaReefWreck() {
   if (G.mode !== 'playing' || G.spectate || G.docked || G.playerSinking || G.captainWalk?.active) return;
@@ -15837,7 +15842,7 @@ function findNpcOpenWaterHeading(npc, testStep) {
     for (let s = 1; s <= nSeg; s++) {
       const tx = npc.x + Math.sin(ang) * step * s;
       const tz = npc.z + Math.cos(ang) * step * s;
-      if (!isSeaObstructed(tx, tz)) ok++;
+      if (!npcNavWaterBlocked(tx, tz, step * 0.05 + 0.72)) ok++;
       else break;
     }
     if (ok > best) { best = ok; bestA = ang; }
@@ -15845,7 +15850,7 @@ function findNpcOpenWaterHeading(npc, testStep) {
   return best >= 1 ? bestA : null;
 }
 function nudgeNpcOffIsland(npc) {
-  if (!isSeaObstructed(npc.x, npc.z)) return;
+  if (!npcNavWaterBlocked(npc.x, npc.z, 0.55)) return;
   const step = npc.isTradeShip ? 44 : 26;
   const push = npc.isTradeShip ? 16 : 5;
   const esc = findNpcOpenWaterHeading(npc, step);
@@ -15958,13 +15963,14 @@ function npcForwardRayClear(npc, dist, segments) {
 /** When land is ahead, steer toward the best arc around it (longest open ray among sampled headings). */
 function steerNpcClearanceAhead(npc, dt, turnSharp) {
   if (npc.escapeMode) return;
-  if (isSeaObstructed(npc.x, npc.z)) return;
+  if (npcNavWaterBlocked(npc.x, npc.z, 0.55)) return;
   const look = npc.isTradeShip ? 76 : 56;
   if (npcForwardRayClear(npc, look, npc.isTradeShip ? 14 : 12)) return;
   const turn = turnSharp != null ? turnSharp : 2.35;
   const arc = npc.isTradeShip ? 1.38 : 1.22;
   const turnMul = npc.isTradeShip ? 0.88 : 0.76;
-  let bestAng = npc.rotation, bestScore = 0;
+  let bestScore = -1;
+  const cand = [];
   for (let i = -16; i <= 16; i++) {
     const a = npc.rotation + (i / 16) * arc;
     let score = 0;
@@ -15973,18 +15979,39 @@ function steerNpcClearanceAhead(npc, dt, turnSharp) {
     for (let s = 1; s <= rayLen; s++) {
       const x = npc.x + Math.sin(a) * rayStep * s;
       const z = npc.z + Math.cos(a) * rayStep * s;
-      if (!isSeaObstructed(x, z) && !seaReefBlocksPoint(x, z, 0.78)) score++;
+      if (!npcNavWaterBlocked(x, z, 0.78)) score++;
       else break;
     }
-    if (score > bestScore) { bestScore = score; bestAng = a; }
+    if (score > bestScore) {
+      bestScore = score;
+      cand.length = 0;
+      cand.push(a);
+    } else if (score === bestScore) {
+      cand.push(a);
+    }
   }
-  if (bestScore >= (npc.isTradeShip ? 4 : 3)) {
-    let diff = bestAng - npc.rotation;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc);
-    npc.wanderAngle = npc.rotation;
+  const needScore = npc.isTradeShip ? 4 : 3;
+  if (bestScore < needScore || !cand.length) return;
+  let bestAng = cand[0];
+  if (cand.length > 1) {
+    let bestAbs = Infinity;
+    for (let ci = 0; ci < cand.length; ci++) {
+      const ca = cand[ci];
+      let d0 = ca - npc.rotation;
+      while (d0 > Math.PI) d0 -= Math.PI * 2;
+      while (d0 < -Math.PI) d0 += Math.PI * 2;
+      const ad = Math.abs(d0);
+      if (ad < bestAbs - 1e-7) {
+        bestAbs = ad;
+        bestAng = ca;
+      }
+    }
   }
+  let diff = bestAng - npc.rotation;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc);
+  npc.wanderAngle = npc.rotation;
 }
 /** Stuck = moving forward but path blocked; then turn 180° and sail straight until open water ahead. */
 function updateNpcEscapeMode(npc, dt) {
@@ -16031,7 +16058,7 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
     npc.navLastMoveClear = true;
     return;
   }
-  if (!isSeaObstructed(nNewX, nNewZ)) {
+  if (!npcNavWaterBlocked(nNewX, nNewZ, 0.74)) {
     npc.x = nNewX;
     npc.z = nNewZ;
     npc.navLastMoveClear = true;
@@ -16053,14 +16080,14 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   const back = Math.atan2(npc.x - nNewX, npc.z - nNewZ);
   let bx = npc.x + Math.sin(back) * bump;
   let bz = npc.z + Math.cos(back) * bump;
-  if (!isSeaObstructed(bx, bz)) {
+  if (!npcNavWaterBlocked(bx, bz, 0.72)) {
     npc.x = bx;
     npc.z = bz;
   } else {
     const side = npc.rotation + Math.PI / 2;
     bx = npc.x + Math.sin(side) * bump * 0.75;
     bz = npc.z + Math.cos(side) * bump * 0.75;
-    if (!isSeaObstructed(bx, bz)) { npc.x = bx; npc.z = bz; }
+    if (!npcNavWaterBlocked(bx, bz, 0.72)) { npc.x = bx; npc.z = bz; }
   }
   nudgeNpcOffIsland(npc);
   if (!npc._navStuckAccum) npc._navStuckAccum = 0;
@@ -16417,14 +16444,15 @@ function steerNpcAvoidCloseShips(npc, dt) {
     wz += nz * t;
     wsum += t;
   }
-  if (wsum < 0.08) return;
+  if (wsum < 0.2) return;
   wx /= wsum;
   wz /= wsum;
   const want = Math.atan2(wx, wz);
   let diff = want - npc.rotation;
   while (diff > Math.PI) diff -= Math.PI * 2;
   while (diff < -Math.PI) diff += Math.PI * 2;
-  const gain = (npc.isTradeShip ? 0.42 : 0.55) * Math.min(1, wsum * 0.45);
+  if (Math.abs(diff) < 0.038) return;
+  const gain = (npc.isTradeShip ? 0.3 : 0.39) * Math.min(1, wsum * 0.42);
   npc.rotation += diff * gain * dt * npcSailingTurnFactor(npc);
   npc.wanderAngle = npc.rotation;
 }
@@ -17657,7 +17685,7 @@ function updateNPCs(dt) {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
       const vNet = npc.speed != null && Number.isFinite(Number(npc.speed)) ? Number(npc.speed) : 0;
-      const vsmK = 1 - Math.exp(-38 * dt);
+      const vsmK = 1 - Math.exp(-24 * dt);
       if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
         npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
         npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
@@ -17687,14 +17715,16 @@ function updateNPCs(dt) {
         npc.x = npc.syncX;
         npc.z = npc.syncZ;
       } else {
-        const posK = 1 - Math.exp(-(err > 90 ? 7.2 : err > 35 ? 4.2 : err > 12 ? 3.2 : err > 4 ? 1.9 : 7.8) * dt);
+        /* Small err used 7.8 — over-correct vs prediction + net rounding → micro jitter. */
+        const pull = err > 90 ? 6.8 : err > 35 ? 3.9 : err > 12 ? 2.85 : err > 4 ? 1.82 : err > 1.1 ? 1.06 : err > 0.22 ? 0.58 : 0.22;
+        const posK = 1 - Math.exp(-pull * dt);
         npc.x += ex * posK;
         npc.z += ez * posK;
       }
       let dr = authR - npc.rotation;
       while (dr > Math.PI) dr -= Math.PI * 2;
       while (dr < -Math.PI) dr += Math.PI * 2;
-      const kRot = 1 - Math.exp(-14 * dt);
+      const kRot = 1 - Math.exp(-10.5 * dt);
       npc.rotation += dr * Math.min(1, kRot);
     }
 
@@ -20455,8 +20485,15 @@ function applyNpcSyncMessage(msg) {
         dtn = Math.max(1 / 120, Math.min(raw, 2.2));
       }
       if (prevSX != null && prevSZ != null && Number.isFinite(prevSX) && Number.isFinite(prevSZ) && Number.isFinite(nd.x) && Number.isFinite(nd.z)) {
-        npc._npcVelTX = (nd.x - prevSX) / dtn;
-        npc._npcVelTZ = (nd.z - prevSZ) / dtn;
+        const rdx = nd.x - prevSX;
+        const rdz = nd.z - prevSZ;
+        npc._npcVelTX = rdx / dtn;
+        npc._npcVelTZ = rdz / dtn;
+        const dq = rdx * rdx + rdz * rdz;
+        if (dq < 0.0144) {
+          npc._npcVelTX *= 0.42;
+          npc._npcVelTZ *= 0.42;
+        }
         const vm = Math.hypot(npc._npcVelTX, npc._npcVelTZ);
         const vcap = 88;
         if (vm > vcap && vm > 1e-6) {
@@ -31128,8 +31165,8 @@ function update(dt) {
       }
       const row = {
         id: n.syncId,
-        x: Math.round(n.x * 10) / 10,
-        z: Math.round(n.z * 10) / 10,
+        x: Math.round(n.x * 20) / 20,
+        z: Math.round(n.z * 20) / 20,
         r: Math.round(n.rotation * 1000) / 1000,
         h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
         rg: Math.round(getNpcRiggingHealth(n)),

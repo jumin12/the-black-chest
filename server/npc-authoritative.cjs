@@ -301,8 +301,8 @@ function steerNpcClearanceAhead(npc, dt, turnSharp, windAt, dryLand) {
   const turn = turnSharp != null ? turnSharp : 2.35;
   const arc = npc.isTradeShip ? 1.38 : 1.22;
   const turnMul = npc.isTradeShip ? 0.88 : 0.76;
-  let bestAng = npc.rotation;
-  let bestScore = 0;
+  let bestScore = -1;
+  const cand = [];
   for (let i = -16; i <= 16; i++) {
     const a = npc.rotation + (i / 16) * arc;
     let score = 0;
@@ -316,16 +316,34 @@ function steerNpcClearanceAhead(npc, dt, turnSharp, windAt, dryLand) {
     }
     if (score > bestScore) {
       bestScore = score;
-      bestAng = a;
+      cand.length = 0;
+      cand.push(a);
+    } else if (score === bestScore) {
+      cand.push(a);
     }
   }
-  if (bestScore >= (npc.isTradeShip ? 4 : 3)) {
-    let diff = bestAng - npc.rotation;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc, windAt);
-    npc.wanderAngle = npc.rotation;
+  const needScore = npc.isTradeShip ? 4 : 3;
+  if (bestScore < needScore || !cand.length) return;
+  let bestAng = cand[0];
+  if (cand.length > 1) {
+    let bestAbs = Infinity;
+    for (let ci = 0; ci < cand.length; ci++) {
+      const ca = cand[ci];
+      let d0 = ca - npc.rotation;
+      while (d0 > Math.PI) d0 -= Math.PI * 2;
+      while (d0 < -Math.PI) d0 += Math.PI * 2;
+      const ad = Math.abs(d0);
+      if (ad < bestAbs - 1e-7) {
+        bestAbs = ad;
+        bestAng = ca;
+      }
+    }
   }
+  let diff = bestAng - npc.rotation;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc, windAt);
+  npc.wanderAngle = npc.rotation;
 }
 
 function nudgeNpcOffIsland(npc, dryLand, edgeClamp) {
@@ -740,8 +758,8 @@ function buildSyncRows(npcs, portController, ws) {
       }
       const row = {
         id: n.syncId,
-        x: Math.round(n.x * 10) / 10,
-        z: Math.round(n.z * 10) / 10,
+        x: Math.round(n.x * 20) / 20,
+        z: Math.round(n.z * 20) / 20,
         r: Math.round(n.rotation * 1000) / 1000,
         h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
         rg: Math.round(getNpcRiggingHealth(n)),
