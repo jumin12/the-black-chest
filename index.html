@@ -3087,9 +3087,11 @@ function mmoSeaRegionLabel(wx, wz) {
 const RENDER_DIST = isMobile ? (isLowEndMobile ? 1 : 2) : 3;
 /** Extra chunk rings kept beyond `RENDER_DIST` (terrain unload only; visibility uses `RENDER_DIST` ring). */
 const CHUNK_UNLOAD_MARGIN = isLowEndMobile ? 1 : 2;
+/** Desktop 4K/Retina DPR at 1.5–2.0 multiplies fragment cost ~2–4×; capping dominates steady FPS gains vs tiny visual loss (try window zoom if UI feels small). */
+const MAIN_CANVAS_DPR_CAP_DESKTOP = 1.38;
 function mainCanvasPixelRatio() {
   const raw = Math.max(0.5, window.devicePixelRatio || 1);
-  let cap = isMobile ? 1.36 : 1.65;
+  let cap = isMobile ? 1.36 : MAIN_CANVAS_DPR_CAP_DESKTOP;
   if (isLowEndMobile) cap = Math.min(cap, 1.0);
   else if (isMobile) {
     const mem = _deviceMem != null ? _deviceMem : 6;
@@ -3100,7 +3102,7 @@ function mainCanvasPixelRatio() {
 }
 /** Inset ship/cargo/yard/port previews: keep below main DPR to limit extra WebGL drawing buffers on phones. */
 function secondaryPanelPixelRatio() {
-  return Math.min(mainCanvasPixelRatio(), isLowEndMobile ? 0.95 : (isMobile ? 1.2 : 1.75));
+  return Math.min(mainCanvasPixelRatio(), isLowEndMobile ? 0.95 : (isMobile ? 1.2 : MAIN_CANVAS_DPR_CAP_DESKTOP));
 }
 function initPortraitMode() {
   if (typeof document === 'undefined') return;
@@ -6091,7 +6093,8 @@ if (renderer.outputColorSpace !== undefined) renderer.outputColorSpace = THREE.S
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
 renderer.shadowMap.enabled = !isMobile;
-if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+/* PCF (non-soft) + smaller maps: ~half shadow pass cost vs PCFSoft+1536² with negligible gameplay impact. */
+if (!isMobile) renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.setClearColor(0x152a45, 1);
 document.body.prepend(renderer.domElement);
 renderer.domElement.style.background = '#152a45';
@@ -6110,8 +6113,8 @@ renderer.domElement.addEventListener('webglcontextlost', e => {
 }, false);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x87a5c0, isLowEndMobile ? 0.00225 : 0.0018);
-const VIEW_CAMERA_FAR = isLowEndMobile ? 4200 : (isMobile ? 5800 : 8000);
+scene.fog = new THREE.FogExp2(0x87a5c0, isLowEndMobile ? 0.00225 : (isMobile ? 0.00185 : 0.00208));
+const VIEW_CAMERA_FAR = isLowEndMobile ? 4200 : (isMobile ? 5800 : 6400);
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, VIEW_CAMERA_FAR);
 /** Sky is a sphere centered on the camera; radius must be < camera.far or the dome is clipped (black sky). */
 const SKY_RADIUS = camera.far * 0.9;
@@ -6123,7 +6126,8 @@ const sunLight = new THREE.DirectionalLight(0xffeedd, 1.6);
 sunLight.position.set(200, 300, 100);
 if (!isMobile) {
   sunLight.castShadow = true;
-  sunLight.shadow.mapSize.set(1536, 1536);
+  sunLight.shadow.mapSize.set(1024, 1024);
+  sunLight.shadow.bias = -0.00018;
   sunLight.shadow.camera.near = 10; sunLight.shadow.camera.far = 600;
   sunLight.shadow.camera.left = -150; sunLight.shadow.camera.right = 150;
   sunLight.shadow.camera.top = 150; sunLight.shadow.camera.bottom = -150;
@@ -6150,8 +6154,8 @@ const skyUniforms = {
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(
     SKY_RADIUS,
-    isLowEndMobile ? 12 : (isMobile ? 20 : 48),
-    isLowEndMobile ? 8 : (isMobile ? 16 : 48)
+    isLowEndMobile ? 12 : (isMobile ? 20 : 28),
+    isLowEndMobile ? 8 : (isMobile ? 16 : 22)
   ),
   new THREE.ShaderMaterial({
     side: THREE.BackSide,
@@ -10956,8 +10960,8 @@ const FISH_SPECIES = [
   { color: 0x20b2aa, size: 0.055, len: 0.2, name: 'pilchard' }
 ];
 
-const WILDLIFE_FISH_CAP = 1400;
-const WILDLIFE_SEAGULL_CAP = 900;
+const WILDLIFE_FISH_CAP = 900;
+const WILDLIFE_SEAGULL_CAP = 520;
 const WILDLIFE_SHARK_PAIR_CAP = 140;
 /** Stable tie-break for multiplayer: everyone drops the same schools / gulls / sharks when over cap. */
 function wildlifePruneKey(wx, wz, salt) {
