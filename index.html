@@ -4926,13 +4926,13 @@ function ramRiggingLossFromBowDot(bowDot, closing) {
   if (Math.abs(bowDot) > 0.5) return 0;
   return Math.min(18, 4 + closing * 0.85);
 }
-function cannonballStrikeHitRadius(shipType, ammoType, isPellet) {
-  const hull = shipHullRadius(shipType || 'sloop');
+function cannonballStrikeHitRadius(shipType, ammoType, isPellet, hullPartId) {
+  const core = shipHullCollisionCircularExtent(shipType || 'sloop', hullPartId);
   const at = ammoType || 'ball';
-  if (isPellet) return Math.max(1.35, Math.min(6.2, hull * 0.38 + 0.45));
-  if (at === 'grape') return Math.max(2.45, Math.min(9.8, hull * 0.7 + 1.0));
-  if (at === 'chain') return Math.max(2.35, Math.min(9.2, hull * 0.61 + 0.95));
-  return Math.max(2.2, Math.min(8.6, hull * 0.56 + 0.92));
+  if (isPellet) return Math.max(1.1, Math.min(5.4, core * 0.34 + 0.38));
+  if (at === 'grape') return Math.max(2.05, Math.min(8.4, core * 0.58 + 0.72));
+  if (at === 'chain') return Math.max(2.05, Math.min(8.0, core * 0.52 + 0.68));
+  return Math.max(1.95, Math.min(7.5, core * 0.48 + 0.72));
 }
 
 /** Closest distance from segment (x0,z0)-(x1,z1) to point (px,pz) — avoids tunneling past hulls at high speed. */
@@ -4949,9 +4949,9 @@ function distSegmentToPointXZ(x0, z0, x1, z1, px, pz) {
 /** Half-beam / half-length along ship-local X (starboard) and Z (bow), tuned to extruded hull mesh + bow style + hull part. */
 function shipHullObbHalfExtents(shipType, hullPartId) {
   const spec = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
-  /* Tighter beam/length vs mesh so cannon hits hug the planks (was wide on the rails). */
-  let hw = spec.hullW * 0.5 * 0.92;
-  let hl = spec.hullLen * 0.5 * 0.968;
+  /* Hull OBB hugs built mesh + equipped hull plank part (narrower than old circle radii). */
+  let hw = spec.hullW * 0.5 * 0.875;
+  let hl = spec.hullLen * 0.5 * 0.942;
   const bs = spec.bowStyle;
   if (bs === 'blunt') hl *= 1.02;
   else if (bs === 'wide') { hw *= 1.015; hl *= 1.008; }
@@ -4959,6 +4959,11 @@ function shipHullObbHalfExtents(shipType, hullPartId) {
   if (hullPartId === 'reinforced') { hw *= 1.03; hl *= 1.018; }
   else if (hullPartId === 'darkwood') { hw *= 1.015; hl *= 1.012; }
   return { hw, hl };
+}
+/** Circle upper bound on hull footprint for cheap relax passes (matches OBB corner, not legacy shipHullRadius). */
+function shipHullCollisionCircularExtent(shipType, hullPartId) {
+  const { hw, hl } = shipHullObbHalfExtents(shipType, hullPartId);
+  return Math.hypot(hw, hl);
 }
 /** Unsigned distance from (px,pz) to ship hull oriented box (0 inside). */
 function distPointToShipHullOBB(px, pz, shipX, shipZ, yaw, shipType, hullPartId) {
@@ -16101,9 +16106,16 @@ function applyNpcMoveWithIslandEscape(npc, dt, turnSharp) {
   }
 }
 
-/** Hull part id for collision sizing (aligned with buildShipMesh: merchants/patrol basic, corsairs & bounty darkwood). */
+/** Hull part id for collision sizing (matches mesh: basic / reinforced / darkwood). */
 function npcCollisionHullPart(npc) {
   if (!npc) return undefined;
+  if (npc.collisionHull === 'basic' || npc.collisionHull === 'reinforced' || npc.collisionHull === 'darkwood') {
+    return npc.collisionHull;
+  }
+  const sp = npc.shipParts && npc.shipParts.hull;
+  if (sp === 'basic' || sp === 'reinforced' || sp === 'darkwood') return sp;
+  const mc = npc.meshCos && npc.meshCos.hull;
+  if (mc === 'basic' || mc === 'reinforced' || mc === 'darkwood') return mc;
   if (npc.isTradeShip || npc.isEscortCargo) return 'basic';
   if (npc.isFactionPatrol) return 'basic';
   if (npc.isStoryBounty) return 'darkwood';
@@ -16119,7 +16131,7 @@ function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
   if (shipFootprintOverlapsLand(tx, tz, yaw, shipType)) return false;
   if (!G.npcs || !G.npcs.length) return true;
   const hp = hullPart != null ? hullPart : (G.player.shipParts && G.player.shipParts.hull);
-  const margin = 0.99;
+  const margin = 0.935;
   const st = shipType || 'sloop';
   for (let i = 0; i < G.npcs.length; i++) {
     const npc = G.npcs[i];
@@ -16134,28 +16146,24 @@ function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
 
 function relaxPlayerNpcCircleOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
-  const pad = 1.08;
+  const pad = 0.14;
   const pType = G.player.shipType || 'sloop';
   const ph = G.player.shipParts && G.player.shipParts.hull;
-  let pr = shipHullRadius(pType);
-  if (ph === 'reinforced') pr *= 1.07;
-  else if (ph === 'darkwood') pr *= 1.03;
+  let pr = shipHullCollisionCircularExtent(pType, ph);
   for (let pass = 0; pass < 4; pass++) {
     let moved = false;
     for (const npc of G.npcs) {
       if (npc.sinking || npc.health <= 0) continue;
       const nt = npcCollisionShipType(npc);
       if (playerInHarborRamExemptZone(G.player.x, G.player.z, pType) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) continue;
-      let nr = shipHullRadius(nt);
       const nh = npcCollisionHullPart(npc);
-      if (nh === 'reinforced') nr *= 1.07;
-      else if (nh === 'darkwood') nr *= 1.03;
+      let nr = shipHullCollisionCircularExtent(nt, nh);
       const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
       const d = Math.hypot(dx, dz);
       const need = pr + nr + pad;
       if (d >= need - 1e-4 || d < 1e-5) continue;
       const nx = dx / d, nz = dz / d;
-      const push = Math.min(need - d, 5.2) * 0.5;
+      const push = Math.min(need - d, 4.2) * 0.28;
       const ox = G.player.x, oz = G.player.z;
       G.player.x += nx * push;
       G.player.z += nz * push;
@@ -16172,7 +16180,7 @@ function pushPlayerOutOfShipOverlaps() {
   if (G.mode !== 'playing' || G.spectate || G.playerSinking || G.docked || G.player.health <= 0) return;
   if (G.dockingAnim) return;
   const px = G.player.x, pz = G.player.z;
-  const margin = 0.99;
+  const margin = 0.935;
   const pHull = G.player.shipParts && G.player.shipParts.hull;
   const pPos = { x: G.player.x, z: G.player.z };
   const pv = (!G.player.anchored && Math.abs(G.player.speed) > 0.04) ? getPlayerWorldVelocityXZ() : { vx: 0, vz: 0 };
@@ -16190,7 +16198,7 @@ function pushPlayerOutOfShipOverlaps() {
         const sep = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, npc.x, npc.z, npc.rotation, nt, margin, pHull, npcCollisionHullPart(npc));
       if (!sep) return;
       /* Full separation during tutorial pass so player can ram — old 0.26 softening made overlaps ghosty / no ram feel. */
-      const pushAmt = sep.depth * 0.62;
+      const pushAmt = sep.depth * 0.38;
       {
         const sid = npc.syncId != null ? npc.syncId : `u${Math.round(npc.x)}_${Math.round(npc.z)}`;
         const rKey = G.myId != null ? `me${G.myId}|npc${sid}` : `me|npc${sid}`;
@@ -16276,7 +16284,7 @@ function pushPlayerOutOfShipOverlaps() {
               notify(`Ram! −${Math.round(stP.dmg)} hull`);
             }
           }
-          const push = sepOp.depth * 0.62;
+          const push = sepOp.depth * 0.38;
           G.player.x += sepOp.nx * push;
           G.player.z += sepOp.nz * push;
           moved = true;
@@ -16299,14 +16307,14 @@ function separateHostNpcsFromLocalPlayer() {
   const px = G.player.x, pz = G.player.z;
   const pType = G.player.shipType || 'sloop';
   const pHull = G.player.shipParts && G.player.shipParts.hull;
-  const margin = 0.99;
+  const margin = 0.935;
   G.npcs.forEach(npc => {
     if (npc.sinking || npc.health <= 0) return;
     const nt = npcCollisionShipType(npc);
     if (playerInHarborRamExemptZone(px, pz, pType) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) return;
     const sep = obbShipsSeparation(npc.x, npc.z, npc.rotation, nt, px, pz, G.player.rotation, G.player.shipType, margin, npcCollisionHullPart(npc), pHull);
     if (!sep) return;
-    let push = sep.depth * 0.55;
+    let push = sep.depth * 0.36;
     {
       const tr = G.tutorialRaidCutscene;
       if (npc.tutorialRaidHull && tr && tr.scriptingActive && !tr._combatPhase)
@@ -16353,7 +16361,7 @@ function applyNpcOverlapResolutionPair(a, b, sep, penHalf) {
 
 /** Fallback when OBB SAT axes miss a deep crossing angle: keep hull circles from interpenetrating. */
 function relaxHostNpcNpcCircleOverlaps(list) {
-  const pad = 1.85;
+  const pad = 1.12;
   for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
@@ -16969,9 +16977,13 @@ function tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer) {
   if (!npc || !G.player) return;
   const pType = G.player.shipType || 'sloop';
   const nt = npcCollisionShipType(npc);
-  const hullGap = shipHullRadius(pType) + shipHullRadius(nt) + 18;
+  const ph = G.player.shipParts && G.player.shipParts.hull;
+  const hullGap =
+    shipHullCollisionCircularExtent(pType, ph) +
+    shipHullCollisionCircularExtent(nt, npcCollisionHullPart(npc)) +
+    6;
   /* Inside contact range skip tangential dodge so player can close for rams — rely on hull separation + ram dmg. */
-  if (dPlayer <= hullGap + 14) return;
+  if (dPlayer <= hullGap + 10) return;
   if (dPlayer >= hullGap + 38) return;
   /* Weight pushes harder as we penetrate the comfort band (tangential avoidance, not chasing). */
   const t = Math.max(0, Math.min(1, 1 - (dPlayer - hullGap) / 46));
@@ -20993,7 +21005,7 @@ window.addEventListener('keydown', e => {
     if (G.captainWalk?.active) tryCaptainWalkJump();
     else doFire();
   }
-  if ((k === 'z' || k === 'x') && !e.repeat && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) {
+  if ((k === 'z' || k === 'x') && !e.repeat && isMobile && G.mode === 'playing' && !G.spectate && !G.playerSinking && G.player.health > 0) {
     if (k === 'z') doFireSide(1);
     else doFireSide(-1);
   }
@@ -21051,8 +21063,6 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => {
   keys[e.key.toLowerCase()] = false;
-  const lk = e.key.toLowerCase();
-  if ((lk === 'z' || lk === 'x') && !keys['z'] && !keys['x']) G._bsdRapidHold = false;
 });
 function buildWorldMapJsonFromCustomMapSession() {
   const cm = G.customMap;
@@ -22165,47 +22175,8 @@ window.addEventListener('resize', () => {
 });
 
 let audioCtx, masterGain;
-/** PC: hold Z/X to refire each battery as soon as reload allows (per-side cooldown). Space fires both banks when ready. */
+/** PC: hold Z/X to refire each battery when reload allows (matches mobile instant volleys). */
 const BROADSIDE_CAPTAIN_YELL_MIN_MS = 920;
-/** Captain “run out the guns” order — fired banks launch after this delay; Z+X before elapse combine into one volley set. */
-const BROADSIDE_ORDER_DELAY_MS = 1000;
-function cancelBroadsideOrderTimer() {
-  if (G._bsdOrderTimer != null) {
-    clearTimeout(G._bsdOrderTimer);
-    G._bsdOrderTimer = null;
-  }
-}
-function flushBroadsideOrderBundle() {
-  cancelBroadsideOrderTimer();
-  const q = G._bsdOrderPending;
-  G._bsdOrderPending = null;
-  if (!q || !q.sides || q.sides.size === 0) return;
-  if (G.mode !== 'playing' || G.spectate) return;
-  for (const fs of q.sides) tryInstantBroadsideVolley(fs, { silent: true, suppressCaptainYell: true });
-  if (keys['z'] || keys['x']) G._bsdRapidHold = true;
-}
-/** Queue −1/+1 sides; merges rapid key presses until the fuse elapses — then executes together. */
-function queueBroadsideOrderSides(sidesRaw) {
-  const nowFn = (typeof performance !== 'undefined' && performance.now) ? performance.now : Date.now;
-  const now = nowFn();
-  const sides = [];
-  for (let i = 0; i < sidesRaw.length; i++) {
-    const s = sidesRaw[i];
-    if (s === 1 || s === -1) sides.push(s);
-  }
-  if (!sides.length) return;
-  let q = G._bsdOrderPending;
-  if (!q || now >= q.fireAt) {
-    G._bsdOrderPending = { sides: new Set(sides), fireAt: now + BROADSIDE_ORDER_DELAY_MS };
-    G._bsdRapidHold = false;
-    bootstrapGameAudioOnUserGesture();
-    maybePlayBroadsideCaptainYellForVolley();
-    cancelBroadsideOrderTimer();
-    G._bsdOrderTimer = setTimeout(flushBroadsideOrderBundle, BROADSIDE_ORDER_DELAY_MS);
-  } else {
-    for (const s of sides) q.sides.add(s);
-  }
-}
 function maybePlayBroadsideCaptainYellForVolley() {
   const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   if (G._lastBroadsideYellAt != null && now - G._lastBroadsideYellAt < BROADSIDE_CAPTAIN_YELL_MIN_MS) return;
@@ -23127,22 +23098,14 @@ function tryInstantBroadsideVolley(fireSide, opts) {
 function tickHeldPcBroadsideKeys() {
   if (isMobile || G.mode !== 'playing' || G.spectate || G.playerSinking || G.player.health <= 0) return;
   if (G.docked || G.captainWalk?.active) return;
-  const nowFn = (typeof performance !== 'undefined' && performance.now) ? performance.now : Date.now;
-  if (!keys['z'] && !keys['x']) {
-    G._bsdRapidHold = false;
-    return;
-  }
-  const qWait = G._bsdOrderPending;
-  if (qWait && nowFn() < qWait.fireAt) return;
-  if (!G._bsdRapidHold) return;
+  if (!keys['z'] && !keys['x']) return;
   if (keys['z']) tryInstantBroadsideVolley(1, { silent: true, suppressCaptainYell: true });
   if (keys['x']) tryInstantBroadsideVolley(-1, { silent: true, suppressCaptainYell: true });
 }
 
 /** Fire one player broadside: `fireSide` is world −1 (port) or +1 (starboard). */
 function doFireSide(fireSide) {
-  if (isMobile) tryInstantBroadsideVolley(fireSide, {});
-  else queueBroadsideOrderSides([fireSide]);
+  tryInstantBroadsideVolley(fireSide, {});
 }
 
 function doFire() {
@@ -23171,7 +23134,23 @@ function doFire() {
     }
     return;
   }
-  queueBroadsideOrderSides([-1, 1]);
+  bootstrapGameAudioOnUserGesture();
+  const pa = broadsideReadyInfo(-1, true);
+  const pb = broadsideReadyInfo(1, true);
+  if (!pa && !pb) {
+    broadsideReadyInfo(-1, false);
+    return;
+  }
+  let any = false;
+  if (pa) {
+    maybePlayBroadsideCaptainYellForVolley();
+    executeBroadsideVolley(pa, {});
+    any = true;
+  }
+  if (pb) {
+    if (!any) maybePlayBroadsideCaptainYellForVolley();
+    executeBroadsideVolley(pb, {});
+  }
 }
 
 function syncAnchorToolbarButton() {
@@ -30556,15 +30535,16 @@ function update(dt) {
         if (npc.sinking || (npc.health != null && npc.health <= 0)) return;
         if (b.owner === 'npc' && b.sourceNpcSyncId === npc.syncId) return;
         const ntHit = npcCollisionShipType(npc);
-        const coarseR = Math.max(102, shipHullRadius(ntHit) * 2.05);
+        const nHullPart = npcCollisionHullPart(npc);
+        const extDiag = shipHullCollisionCircularExtent(ntHit, nHullPart);
+        const coarseR = Math.max(38, extDiag * 2.2 + 24);
         const adx = b.x - npc.x, adz = b.z - npc.z;
         if (adx * adx + adz * adz > coarseR * coarseR) return;
         const at = b.ammoType || 'ball';
         const isPellet = !!b.isPellet;
-        let hitR = cannonballStrikeHitRadius(ntHit, at, isPellet);
+        let hitR = cannonballStrikeHitRadius(ntHit, at, isPellet, nHullPart);
         if (at === 'ball' && !isPellet) hitR *= 1.08;
         const nYaw = npc.rotation != null ? npc.rotation : 0;
-        const nHullPart = npcCollisionHullPart(npc);
         const distHit = distSegmentToShipHullOBB(px, pz, b.x, b.z, npc.x, npc.z, nYaw, ntHit, nHullPart);
         if (distHit >= hitR * 1.04 || b.y < SEA_LEVEL - 4) return;
         if (hitNpcsAsHost) {
@@ -30608,7 +30588,7 @@ function update(dt) {
       const plYaw = G.player.rotation != null ? G.player.rotation : 0;
       const pHull = G.player.shipParts && G.player.shipParts.hull;
       const distP = distSegmentToShipHullOBB(ppx, ppz, b.x, b.z, G.player.x, G.player.z, plYaw, G.player.shipType, pHull);
-      let hitR = cannonballStrikeHitRadius(G.player.shipType, at, isPellet);
+      let hitR = cannonballStrikeHitRadius(G.player.shipType, at, isPellet, pHull);
       if (at === 'ball' && !isPellet) hitR *= 1.08;
       let skipPvpHarbor = false;
       if (b.owner === 'other_player' && b.sourcePlayerId != null && G.otherPlayers.has(b.sourcePlayerId)) {
@@ -30674,7 +30654,7 @@ function update(dt) {
         const opNet = opId != null ? netPlayerId(opId) : null;
         if (opNet != null && G.pendingRemoteShipSink.has(opNet)) return;
         if (harborPvpTruceBetween(G.player.x, G.player.z, G.player.shipType, op.x, op.z, op.shipType || 'sloop')) return;
-        const hitR = cannonballStrikeHitRadius(op.shipType || 'sloop', at, isPellet);
+        const hitR = cannonballStrikeHitRadius(op.shipType || 'sloop', at, isPellet, opHull);
         const opx0 = b.x - b.dx * dt, opz0 = b.z - b.dz * dt;
         const oYaw = op.rotation != null ? op.rotation : 0;
         const opHull = op.shipParts && op.shipParts.hull;
@@ -30889,9 +30869,6 @@ function update(dt) {
       try { abortActiveBoarding(''); } catch (e) {}
     }
     try { if (G.boardingVictimAwaitingDecision) clearBoardingVictimAwaiting(''); } catch (e) {}
-    try { cancelBroadsideOrderTimer(); } catch (e) {}
-    G._bsdOrderPending = null;
-    G._bsdRapidHold = false;
     playCaptainSinkDeathSound();
     bumpNotoriety({ deaths: 1 });
     if (ws?.readyState === 1 && G.lastAttackerId != null) {
@@ -33217,6 +33194,7 @@ function spawnTutorialRaidPirateNearPlayer() {
     figurehead: pp.figurehead || 'none',
     flag: npc.flagPosition
   };
+  npc.meshCos = meshCos;
   const mesh = buildShipMesh(st, meshCos, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
   npc.crewData = ambientPirateCrewData((TUTORIAL_RAID_NPC_SYNC * 997) >>> 0, st);
   buildCrewMeshes(mesh, npc.crewData, st);
