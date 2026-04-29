@@ -20695,7 +20695,8 @@ function updatePvpProximityFlag() {
   if (ws?.readyState !== 1 || !G.otherPlayers || G.otherPlayers.size === 0 || G.docked || G.boarding || G.playerSinking) return;
   const px = Number(G.player.x), pz = Number(G.player.z);
   if (!Number.isFinite(px) || !Number.isFinite(pz)) return;
-  const r2 = 385 * 385;
+  const rad = 468;
+  const r2 = rad * rad;
   for (const op of G.otherPlayers.values()) {
     if (!op || op.docked) continue;
     const mh = op.health != null ? Number(op.health) : null;
@@ -21053,6 +21054,7 @@ function applyNetStateMessage(msg, opts) {
       dtSnap = Math.max(1 / (NET_SYNC_HZ * 2), Math.min(0.48, dTick / NET_SYNC_HZ));
     }
   }
+  dtSnap = Math.max(1 / 100, Math.min(0.52, dtSnap));
   if (Number.isFinite(wtNum)) G._lastNetStateWT = wtNum;
   if (stNum != null && Number.isFinite(stNum)) G._lastNetStateSrvTick = stNum;
   let selfRow = null;
@@ -21080,7 +21082,7 @@ function applyNetStateMessage(msg, opts) {
         let vtx = (px1 - px0) / dtSnap;
         let vtz = (pz1 - pz0) / dtSnap;
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
-        const vcap1 = dNear < 168 ? 92 : 54;
+        let vcap1 = dNear < 105 ? 58 : dNear < 168 ? 72 : 88;
         const vm0 = Math.hypot(vtx, vtz);
         if (vm0 > vcap1) {
           const s0 = vcap1 / vm0;
@@ -30224,20 +30226,20 @@ function interpYawShortest(a, b, u) {
   return v;
 }
 
-const REMOTE_INTERP_BACK_MS_BASE = 120;
-const REMOTE_INTERP_BACK_MS_MIN = 108;
-const REMOTE_INTERP_BACK_MS_MAX = 168;
+const REMOTE_INTERP_BACK_MS_BASE = 130;
+const REMOTE_INTERP_BACK_MS_MIN = 118;
+const REMOTE_INTERP_BACK_MS_MAX = 182;
 /** Max time ahead of newest snapshot (ms); keeps extrap from running away in turns. */
 const REMOTE_MAX_EXTRAP_MS = 180;
 /** Max extrapolation speed (world units/s), aligned with near-peer velocity caps elsewhere. */
 const REMOTE_MAX_EXTRAP_SPEED = 94;
 /** Secondary smoothing toward sampled hull target (exp toward buffered sample; higher = snappier chase). */
-const REMOTE_VISUAL_POS_SMOOTH = 16;
-const REMOTE_VISUAL_ROT_SMOOTH = 18;
+const REMOTE_VISUAL_POS_SMOOTH = 13.2;
+const REMOTE_VISUAL_ROT_SMOOTH = 16.5;
 /** Above this gap (world units) snap visuals to interp target — alt-tab / real teleports. */
 const REMOTE_VISUAL_HARD_SNAP_DIST = 92;
 /** Max hull correction speed (world units/s) toward interpolated target per frame (FPS-style catch-up cap). */
-const REMOTE_CATCHUP_MAX_UNITS_PER_S = 172;
+const REMOTE_CATCHUP_MAX_UNITS_PER_S = 138;
 
 function getEffectiveRemoteInterpDelayMs() {
   let d = REMOTE_INTERP_BACK_MS_BASE;
@@ -30246,16 +30248,16 @@ function getEffectiveRemoteInterpDelayMs() {
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 74;
   d += Math.min(22, r * 0.14);
-  if (G._pvpNearby) d += 16;
+  if (G._pvpNearby) d += 28;
   const jEw =
     G._netInterpJitterEwma != null && Number.isFinite(Number(G._netInterpJitterEwma))
       ? Number(G._netInterpJitterEwma)
       : 0;
-  if (jEw > 10) d += Math.min(32, (jEw - 10) * 1.22);
+  if (jEw > 10) d += Math.min(38, (jEw - 10) * 1.15);
   let raw = Math.max(REMOTE_INTERP_BACK_MS_MIN, Math.min(REMOTE_INTERP_BACK_MS_MAX, d));
   if (!(Number.isFinite(G._netSmoothedInterpDelayMs))) G._netSmoothedInterpDelayMs = raw;
   const sm0 = G._netSmoothedInterpDelayMs;
-  const maxDv = Math.min(12, Math.max(6, raw * 0.07 + 3));
+  const maxDv = Math.min(14, Math.max(5, raw * 0.075 + 3.2));
   let dv = raw - sm0;
   if (dv > maxDv) dv = maxDv;
   if (dv < -maxDv) dv = -maxDv;
@@ -30333,7 +30335,9 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
     const near = dm < 160;
-    const a = 1 - Math.exp(-(near ? 32 : 21) * dc);
+    let k = near ? 38 : 21;
+    if (G._pvpNearby && dm < 490) k = Math.min(50, k + (near ? 10 : 9));
+    const a = 1 - Math.exp(-k * dc);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -30475,7 +30479,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 
 /* ============================== GAME LOOP ================================ */
 /** Sample ring for remote hull interp (~1–1.5 s @ 60Hz, buffered playback). */
-const REMOTE_SNAP_HIST_MAX = 96;
+const REMOTE_SNAP_HIST_MAX = 108;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
@@ -30493,6 +30497,7 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 }
 
 function update(dt) {
+  if (G.mode === 'playing') updatePvpProximityFlag();
   if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
     const q = G._netStateDrainQueue;
     while (q.length > 128) q.shift();
@@ -30526,7 +30531,6 @@ function update(dt) {
   }
   G.time += dt; G.dt = dt;
 
-  updatePvpProximityFlag();
   if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
     for (let i = G.prizeHullDecoySinks.length - 1; i >= 0; i--) {
       const sg = G.prizeHullDecoySinks[i];
@@ -34124,13 +34128,21 @@ function startTutorialRaidEncounter() {
   } catch (eTut0) {}
 }
 
-/** Tutorial raider stays slightly under player top scalar speed (same order as npc.speed); wind limits travel via npcEffectiveForwardSpeed. */
+/** Strong wind swing vs hull heading — tutorial hull should slog upwind (global npcWindEffect clamps too high ~0.38). */
+function tutorialRaidNpcWindSailFactor(npc) {
+  const w = getWindAt(npc.x, npc.z);
+  const align = Math.cos(Number(w.angle) - Number(npc.rotation));
+  return Math.max(0.1, align * 0.5 + 0.45);
+}
+
+/** Tutorial raider stays slightly under player top scalar speed (same order as npc.speed). */
 function tutorialRaidNpcSailSpeedTarget(npc, fracOfHullMax) {
   const nmax = npcMaxForwardSpeed(npc);
   const sm = playerSpeedMultFromShipParts();
   const playerScalarCeil = 12 * sm * PLAYER_BASE_SPEED_MULT;
   const f = fracOfHullMax != null ? fracOfHullMax : 0.22;
-  return Math.max(0.013, Math.min(nmax * f, playerScalarCeil * 0.91) * 0.25);
+  const base = Math.max(0.013, Math.min(nmax * f, playerScalarCeil * 0.91) * 0.25);
+  return Math.max(0.01, base * tutorialRaidNpcWindSailFactor(npc));
 }
 
 function tickTutorialRaidCutscene(dt) {
@@ -34203,8 +34215,10 @@ function tickTutorialRaidNpcHost(dt, npc) {
   const nx = npc.x, nz = npc.z;
   const sharp = 2.05;
   const dPlayer = Math.hypot(nx - px, nz - pz);
-  /** Wind trims requested sail — same effective curve as normal NPC sail (movement multiplies npcWindEffect). */
   const wEff = npcWindEffect(npc);
+  /** Steer yaw — halved vs legacy so hull doesn’t twitch like a motorboat */
+  const turnKPre = npcSailingTurnFactor(npc);
+  const turnRatePre = 0.55;
   if (!tr._volleyTriggered) {
     /* Wide beam crossing ahead — lateral offset scales up when closing so we pass around, not through, the player. */
     const sideMag =
@@ -34220,13 +34234,14 @@ function tickTutorialRaidNpcHost(dt, npc) {
     let dTurn = toT - npc.rotation;
     while (dTurn > Math.PI) dTurn -= Math.PI * 2;
     while (dTurn < -Math.PI) dTurn += Math.PI * 2;
-    npc.rotation += dTurn * Math.min(1, 1.15 * dt) * npcSailingTurnFactor(npc);
+    npc.rotation += dTurn * Math.min(1, turnRatePre * dt) * turnKPre;
     tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
     if (!npcForwardRayClear(npc, 66, 13)) {
       tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, tr.age);
     }
     let frac = distT > 95 ? 0.19 : 0.13;
     frac *= Math.max(0.62, Math.min(1.06, wEff));
+    frac *= 0.88 + 0.12 * tutorialRaidNpcWindSailFactor(npc);
     let tgt = tutorialRaidNpcSailSpeedTarget(npc, frac);
     if (dPlayer < 72) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.1));
     if (dPlayer < 48) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.068));
@@ -34241,7 +34256,8 @@ function tickTutorialRaidNpcHost(dt, npc) {
     let dBear = navBear - npc.rotation;
     while (dBear > Math.PI) dBear -= Math.PI * 2;
     while (dBear < -Math.PI) dBear += Math.PI * 2;
-    npc.rotation += dBear * Math.min(1, 0.94 * dt) * npcSailingTurnFactor(npc);
+    const turnKCombat = npcSailingTurnFactor(npc);
+    npc.rotation += dBear * Math.min(1, 0.48 * dt) * turnKCombat;
     if (!npcForwardRayClear(npc, 94, 16)) {
       tutorialRaidFleeTowardOpenSea(npc, dt * 0.82, px, pz, tr.age + dPlayer * 0.004);
     }
@@ -34254,6 +34270,7 @@ function tickTutorialRaidNpcHost(dt, npc) {
     } else {
       tgtSpd = maxF * 0.64;
     }
+    tgtSpd = Math.max(0.01, tgtSpd * tutorialRaidNpcWindSailFactor(npc));
     accelerateNpcToward(npc, dt, tgtSpd);
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
