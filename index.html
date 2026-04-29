@@ -3475,6 +3475,10 @@ const G = {
   _netInterpDelaySmoothed: null,
   /** Main-thread hitch accumulator (heavy frames mimic “network lag” visually). */
   _netFrameStallMs: null,
+  /** Authoritative self position/heading targets from latest `state` — eased in `tickLocalPlayerServerBlend`. */
+  _netSrvBlendX: null,
+  _netSrvBlendZ: null,
+  _netSrvBlendR: null,
   _pvpNearby: false,
   townFlagMeshes: [],
   /** Per-port `{ cx,cz }` key → `{ goodId: count }` — trade stockpiles & debug display */
@@ -19521,6 +19525,9 @@ async function connectToServer() {
   G._netLastStateGapMs = null;
   G._netInterpDelaySmoothed = null;
   G._netFrameStallMs = null;
+  G._netSrvBlendX = null;
+  G._netSrvBlendZ = null;
+  G._netSrvBlendR = null;
   G._netStateDrainQueue = [];
   try { G.netPeerStaleSince = null; } catch (e) {}
   G.multiplayerNpcAuthorityId = null;
@@ -19847,8 +19854,8 @@ async function connectToServer() {
             const gap = nowA - G._netStatePrevArrivalAt;
             G._netLastStateGapMs = gap;
             let jitter = Math.abs(gap - nom);
-            /** Loss / long stalls: widen buffer even if the next packet is “on time”. */
-            if (gap > nom * 2.85) jitter = Math.max(jitter, Math.min(420, (gap - nom) * 0.45));
+            /** Loss / long stalls — avoid over-inflating EMA after single-frame bursts (often drains same tick). */
+            if (gap > nom * 3.55) jitter = Math.max(jitter, Math.min(320, (gap - nom) * 0.32));
             const a = 0.14;
             G._netInterpJitterEwma = G._netInterpJitterEwma == null
               ? jitter
@@ -20610,6 +20617,9 @@ async function connectToServer() {
     }
   };
   ws.onclose = () => {
+    G._netSrvBlendX = null;
+    G._netSrvBlendZ = null;
+    G._netSrvBlendR = null;
     setMultiplayerConnectingOverlay(false);
     if (wsUserBanned) return;
     if (wsSuppressReconnect) {
@@ -20702,52 +20712,66 @@ function reconcileLocalPlayerFromServerState(selfRow) {
   if (!selfRow || G.spectate || G.playerSinking || G.docked || G.captainWalk?.active || G.boarding) return;
   const sx = Number(selfRow.x), sz = Number(selfRow.z);
   if (!Number.isFinite(sx) || !Number.isFinite(sz)) return;
-  const pvpRelax = !!G._pvpNearby;
-  const dx = sx - G.player.x, dz = sz - G.player.z;
-  const d = Math.hypot(dx, dz);
-  /* Hard snap only on true divergence (stuck hints, tab resume, handoff) — lower threshold caused visible pops. */
-  if (d > 240) {
-    /* After Continue, the server still has offshore spawn until several `update` hints arrive — do not snap back to spawn. */
+  const dx0 = sx - G.player.x, dz0 = sz - G.player.z;
+  const d0 = Math.hypot(dx0, dz0);
+  /* Hard snap only on true divergence (stuck hints, tab resume, handoff). */
+  if (d0 > 240) {
     if (voyageSaveExistsInStorage() && G._wsOpenedAt && (Date.now() - G._wsOpenedAt) < 5000) return;
     G.player.x = sx;
     G.player.z = sz;
     if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
       G.player.rotation = Number(selfRow.rotation);
     }
+    G._netSrvBlendX = sx;
+    G._netSrvBlendZ = sz;
+    G._netSrvBlendR = selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation)) ? Number(selfRow.rotation) : null;
     finalizeNetDesyncProbe(selfRow);
     return;
   }
-  /* Near another captain: evasive arcs + cannon recoil — never micro-correct on sub-meter drift. */
-  const deadFloor = pvpRelax ? 5.2 : 2.6;
-  /* Wider dead zone + gentler pull: small server/client drift from wind integration was read as jitter. */
-  if (d < deadFloor) {
-    /* Rotation: soft-align heading to server (authoritative sim) so turns do not fight periodic snapshots. */
-    if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
-      const sr = Number(selfRow.rotation);
-      let dr = angleDeltaToward(G.player.rotation, sr);
-      if (Math.abs(dr) > (pvpRelax ? 0.034 : 0.02)) {
-        const kRot = Math.min(pvpRelax ? 0.36 : 0.44, (pvpRelax ? 0.08 : 0.11) + Math.abs(dr) * (pvpRelax ? 0.1 : 0.125));
-        G.player.rotation += dr * kRot;
-      }
-    }
-    finalizeNetDesyncProbe(selfRow);
-    return;
-  }
-  let cap = Math.min(0.275, 0.018 + d * 0.006);
-  if (pvpRelax) cap *= 0.68;
-  if (d > 52) cap *= 0.58;
-  if (d > 120) cap *= 0.52;
-  G.player.x += dx * cap;
-  G.player.z += dz * cap;
+  /* Sample targets only — `tickLocalPlayerServerBlend` eases the hull toward authority each frame (no one-frame pops). */
+  G._netSrvBlendX = sx;
+  G._netSrvBlendZ = sz;
   if (selfRow.rotation != null && Number.isFinite(Number(selfRow.rotation))) {
-    const sr = Number(selfRow.rotation);
-    let dr = angleDeltaToward(G.player.rotation, sr);
-    if (Math.abs(dr) > (pvpRelax ? 0.028 : 0.018)) {
-      const kRot = Math.min(pvpRelax ? 0.44 : 0.52, (pvpRelax ? 0.075 : 0.095) + Math.abs(dr) * (pvpRelax ? 0.1 : 0.12));
-      G.player.rotation += dr * kRot;
-    }
+    G._netSrvBlendR = Number(selfRow.rotation);
   }
   finalizeNetDesyncProbe(selfRow);
+}
+
+/** After local sailing integration, ease toward last `state` self row (multiplayer). */
+function tickLocalPlayerServerBlend(dt) {
+  if (typeof ws === 'undefined' || !ws || ws.readyState !== 1 || G.mode !== 'playing') return;
+  if (G.spectate || G.playerSinking || G.docked || G.captainWalk?.active || G.boarding) {
+    G._netSrvBlendX = null;
+    G._netSrvBlendZ = null;
+    G._netSrvBlendR = null;
+    return;
+  }
+  if (G._netSrvBlendX == null || !Number.isFinite(Number(G._netSrvBlendX))
+    || G._netSrvBlendZ == null || !Number.isFinite(Number(G._netSrvBlendZ))) return;
+  const tx = Number(G._netSrvBlendX), tz = Number(G._netSrvBlendZ);
+  const pvpRelax = !!G._pvpNearby;
+  const dx = tx - G.player.x, dz = tz - G.player.z;
+  const d = Math.hypot(dx, dz);
+  const deadFloor = pvpRelax ? 6.8 : 4.2;
+  const dtN = Math.min(Math.max(Number(dt) || 0, 1e-5), 0.058);
+  if (d >= deadFloor) {
+    const k = d > 130 ? 12.2 : d > 58 ? 8.6 : d > 22 ? 6.1 : 4.0;
+    let a = 1 - Math.exp(-k * dtN);
+    a = Math.min(a, pvpRelax ? 0.36 : 0.34);
+    G.player.x += dx * a;
+    G.player.z += dz * a;
+  }
+  if (G._netSrvBlendR != null && Number.isFinite(Number(G._netSrvBlendR))) {
+    const sr = Number(G._netSrvBlendR);
+    let dr = angleDeltaToward(G.player.rotation, sr);
+    const minA = pvpRelax ? 0.055 : 0.03;
+    if (Math.abs(dr) > minA) {
+      const kR = d > deadFloor ? (pvpRelax ? 5.1 : 5.8) : (pvpRelax ? 3.5 : 4.6);
+      let rA = 1 - Math.exp(-kR * dtN);
+      rA = Math.min(rA, pvpRelax ? 0.26 : 0.3);
+      G.player.rotation += dr * rA;
+    }
+  }
 }
 
 /** After merge: if residuals stay large or grow, block play — safer than invisible rubber-banding forever. */
@@ -30200,7 +30224,7 @@ function netHullPlaybackPreferTightDelay() {
   if (je != null && Number.isFinite(je) && je > 28) return false;
   const nom = 1000 / NET_SYNC_HZ;
   const lg = G._netLastStateGapMs;
-  if (lg != null && Number.isFinite(lg) && lg > nom * 4.6) return false;
+  if (lg != null && Number.isFinite(lg) && lg > nom * 5.05) return false;
   if (G._netFrameStallMs != null && Number.isFinite(G._netFrameStallMs) && G._netFrameStallMs > 42) return false;
   return true;
 }
@@ -30225,8 +30249,8 @@ function computeTargetRemoteInterpDelayMs() {
   let gapBoost = 0;
   if (G._netLastStateGapMs != null && Number.isFinite(G._netLastStateGapMs)) {
     const g = G._netLastStateGapMs;
-    if (g > nom * 1.62) {
-      gapBoost = Math.min(netHullPlaybackPreferTightDelay() ? 52 : 88, (g - nom * 1.62) * (netHullPlaybackPreferTightDelay() ? 0.16 : 0.24));
+    if (g > nom * 2.08) {
+      gapBoost = Math.min(netHullPlaybackPreferTightDelay() ? 38 : 72, (g - nom * 2.08) * (netHullPlaybackPreferTightDelay() ? 0.11 : 0.18));
     }
   }
   const tight = netHullPlaybackPreferTightDelay();
@@ -30246,10 +30270,10 @@ function tickNetInterpDelaySmoother(dt) {
   let s = G._netInterpDelaySmoothed;
   const diff = tgt - s;
   const dtn = Math.min(Math.max(Number(dt) || 0, 1e-5), 0.09);
-  const alphaUp = Math.min(1, 5.4 * dtn + 0.08);
+  const alphaUp = Math.min(1, 4.2 * dtn + 0.055);
   const alphaDn = diff >= 0
-    ? Math.min(1, 0.72 * dtn + 0.012)
-    : Math.min(1, 2.92 * dtn + 0.08 + (netHullPlaybackPreferTightDelay() ? 0.2 : 0));
+    ? Math.min(1, 0.62 * dtn + 0.01)
+    : Math.min(1, 2.55 * dtn + 0.07 + (netHullPlaybackPreferTightDelay() ? 0.16 : 0));
   s += diff * (diff >= 0 ? alphaUp : alphaDn);
   G._netInterpDelaySmoothed = Math.max(
     REMOTE_HULL_INTERP_DELAY_MIN_MS * 0.9,
@@ -30260,7 +30284,7 @@ function tickNetInterpDelaySmoother(dt) {
 function getEffectiveRemoteInterpDelayMs() {
   let d = G._netInterpDelaySmoothed != null ? G._netInterpDelaySmoothed : computeTargetRemoteInterpDelayMs();
   /* Small trim at healthy RTT keeps hulls perceptually aligned with deterministic wildlife without unsafe negative delay. */
-  if (netHullPlaybackPreferTightDelay()) d = Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, d - 14);
+  if (netHullPlaybackPreferTightDelay()) d = Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, d - 11);
   return d;
 }
 
@@ -30318,7 +30342,7 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
     const near = dm < 160;
-    const a = 1 - Math.exp(-(near ? 24 : 15) * dc);
+    const a = 1 - Math.exp(-(near ? 18 : 11) * dc);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -30347,7 +30371,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     const tight = delayMsPlay < 58;
     const kBase = tight ? 46 : delayMsPlay < 108 ? 34 : delayMsPlay < 145 ? 25 : 18;
     const kBoost = jmp > 38 ? (tight ? 22 : 12) : jmp > 9 ? (tight ? 28 : 16) : 10;
-    const alpha = Math.min(1, 1 - Math.exp(-(kBase + kBoost) * dt));
+    let alpha = Math.min(1, 1 - Math.exp(-(kBase + kBoost) * dt));
+    alpha = Math.min(alpha, tight ? 0.42 : 0.36);
     ns.x += (ip.x - ns.x) * alpha;
     ns.z += (ip.z - ns.z) * alpha;
     let dry = ip.ry - ns.ry;
@@ -30460,8 +30485,8 @@ function update(dt) {
     const depth = q.length;
     const nominal = 1000 / NET_SYNC_HZ;
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    /* Backlog with synthetic receive times spaced ~one tick apart so `_snapHist` stays temporally sane. */
-    const burst = depth > 14 ? Math.min(depth, 12) : Math.min(depth, 6);
+    /* Backlog: fewer applies per frame reduces interp/jitter thrash; queue may span more frames. */
+    const burst = depth > 10 ? Math.min(depth, 5) : Math.min(depth, 4);
     for (let _bi = 0; _bi < burst; _bi++) {
       const last = _bi === burst - 1;
       try {
@@ -30480,7 +30505,7 @@ function update(dt) {
     const depth = arr.length;
     const nominal = 1000 / NET_SYNC_HZ;
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    const burstNpc = depth > 10 ? Math.min(depth, 10) : Math.min(depth, 4);
+    const burstNpc = depth > 8 ? Math.min(depth, 6) : Math.min(depth, 3);
     for (let _ni = 0; _ni < burstNpc; _ni++) {
       const msgNpc = arr.shift();
       try {
@@ -30640,6 +30665,7 @@ function update(dt) {
     }
     clampPlayerIntoWorldBounds();
     pushPlayerOutOfShipOverlaps();
+    tickLocalPlayerServerBlend(dt);
   } else if (!G.player.anchored && !G.spectate && !G.playerSinking && G.player.health > 0 && !G.boarding) {
     const spec = SHIP_TYPES[G.player.shipType];
     const speedMult = playerSpeedMultFromShipParts();
@@ -30800,6 +30826,7 @@ function update(dt) {
     clampPlayerIntoWorldBounds();
     pushPlayerOutOfShipOverlaps();
     nudgePlayerOffLand();
+    tickLocalPlayerServerBlend(dt);
   }
 
   if (!G.captainWalk.active) {
