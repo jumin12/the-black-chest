@@ -3457,6 +3457,7 @@ const G = {
   serverMaxPlayers: null,
   /** Last measured RTT to game server (ms), from `client_pong` after `client_ping`. */
   clientServerRttMs: null,
+  lastServerPerf: null,
   /** Monotonic counter for `update.seq` (server acks via `state` / authoritative self row). */
   netSendSeq: 0,
   /** Multiplayer: hull no longer matches realm — block play until reload / reconnect. */
@@ -19546,6 +19547,9 @@ async function connectToServer() {
     wsConnectErrorNotified = false;
     wsUserBanned = false;
     G._realmMotdShown = false;
+    G.lastServerPerf = null;
+    G._recvHistSrvAnchorMs = null;
+    G._recvHistPerfAnchorMs = null;
     knownServerWorldMapRev = 0;
     serverWorldMapFetchToken++;
     notify('Connected to server');
@@ -20778,13 +20782,24 @@ function finalizeNetDesyncProbe(selfRow) {
  * Apply host NPC roster (non-authoritative clients). Incoming `npc_sync` messages queue; `update()` drains
  * with synthetic receive times (see `applyNetStateMessage`).
  */
+function netSnapRecvInterpMs(msg, perfFbMs) {
+  const srvNm = msg && Number(msg.serverNowMs);
+  if (!(Number.isFinite(srvNm) && srvNm > 0)) return perfFbMs;
+  if (!(typeof perfFbMs === 'number') || !Number.isFinite(perfFbMs)) return perfFbMs;
+  if (G._recvHistSrvAnchorMs == null || srvNm + 2e3 < G._recvHistSrvAnchorMs) {
+    G._recvHistSrvAnchorMs = srvNm;
+    G._recvHistPerfAnchorMs = perfFbMs;
+  }
+  return srvNm - G._recvHistSrvAnchorMs + G._recvHistPerfAnchorMs;
+}
 function applyNpcSyncMessage(msg, opts) {
   opts = opts || {};
   if (!msg || typeof msg !== 'object') return;
-  const recvWallNpc =
+  const recvWallNpcRaw =
     opts.snapshotWallMs != null && Number.isFinite(opts.snapshotWallMs)
       ? opts.snapshotWallMs
       : (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const recvWallNpc = netSnapRecvInterpMs(msg, recvWallNpcRaw);
   if (isMultiplayerHost() && !G.npcSimFromServer) return;
   if (G.myId == null) return;
   if (!Array.isArray(msg.npcs)) return;
@@ -20987,14 +21002,16 @@ function applyNpcSyncMessage(msg, opts) {
  */
 function applyNetStateMessage(msg, opts) {
   opts = opts || {};
+  if (!msg || typeof msg !== 'object') return;
   const reconcileSelf = 'reconcileSelf' in opts ? !!opts.reconcileSelf : true;
   const runHudRoster = 'runHudRoster' in opts ? !!opts.runHudRoster : true;
   /** Draining snapshots mid-frame stacks wildlife corrections unless only the newest clock step applies. */
   const applyWildlifeAnchor = 'applyWildlifeAnchor' in opts ? !!opts.applyWildlifeAnchor : true;
   const perfWall = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  const snapWallMs =
+  const snapWallMsRaw =
     opts.snapshotWallMs != null && Number.isFinite(opts.snapshotWallMs) ? opts.snapshotWallMs : perfWall;
-  if (!msg || typeof msg !== 'object') return;
+  const snapLineMs = netSnapRecvInterpMs(msg, snapWallMsRaw);
+  if (msg.serverPerf && typeof msg.serverPerf === 'object') G.lastServerPerf = msg.serverPerf;
   const wT = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
   if (wT != null && applyWildlifeAnchor) anchorWildlifeClockFromServer(wT);
   if (!Array.isArray(msg.players)) return;
@@ -21050,9 +21067,9 @@ function applyNetStateMessage(msg, opts) {
       }
       Object.assign(ex, patch);
       if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
-      ex._srvSnapPerfMs = snapWallMs;
+      ex._srvSnapPerfMs = snapLineMs;
       {
-        const recvMs = snapWallMs;
+        const recvMs = snapLineMs;
         const rx = Number(ex.x), rz = Number(ex.z);
         const rr =
           ex.rotation != null && Number.isFinite(Number(ex.rotation))
@@ -21067,13 +21084,13 @@ function applyNetStateMessage(msg, opts) {
     } else {
       G.otherPlayers.set(pid, patch);
       const nw = G.otherPlayers.get(pid);
-      if (nw) nw._srvSnapPerfMs = snapWallMs;
+      if (nw) nw._srvSnapPerfMs = snapLineMs;
       if (nw) {
         const rx = Number(nw.x), rz = Number(nw.z);
         const rr = nw.rotation != null && Number.isFinite(Number(nw.rotation)) ? Number(nw.rotation) : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(nw._snapHist)) nw._snapHist = [];
-          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: snapWallMs });
+          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: snapLineMs });
           while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
         }
       }
@@ -30175,10 +30192,6 @@ function interpYawShortest(a, b, u) {
   return v;
 }
 
-/**
- * Playback delay (“render in the past”) — Dead Man’s Vibe–style fixed back-time + small adaptive padding.
- * See: sample at (now − delayMs) inside recvMs-ordered snapshots; lerp between bracketing keys; short capped extrap.
- */
 const REMOTE_INTERP_BACK_MS_BASE = 120;
 const REMOTE_INTERP_BACK_MS_MIN = 108;
 const REMOTE_INTERP_BACK_MS_MAX = 168;
@@ -30186,7 +30199,7 @@ const REMOTE_INTERP_BACK_MS_MAX = 168;
 const REMOTE_MAX_EXTRAP_MS = 180;
 /** Max extrapolation speed (world units/s), aligned with near-peer velocity caps elsewhere. */
 const REMOTE_MAX_EXTRAP_SPEED = 94;
-/** Secondary smoothing toward sampled hull target (exponential coefficients, DMV-style). */
+/** Secondary smoothing toward sampled hull target (exponential coefficients. */
 const REMOTE_VISUAL_POS_SMOOTH = 12;
 const REMOTE_VISUAL_ROT_SMOOTH = 14;
 /** Above this gap (world units) snap visuals to interp target — alt-tab / real teleports. */
@@ -30211,7 +30224,7 @@ function getEffectiveRemoteInterpDelayMs() {
 /**
  * Buffered hull playback: recvMs-ordered ring, sample at (nowMs − delayMs).
  * Between snapshots: linear xz + shortest-path yaw.
- * Beyond newest: extrap with velocity from last segment, or velOpt (units/s); cap distance + speed — yaw unchanged (DMV-style).
+ * Beyond newest: extrap with velocity from last segment, or velOpt (units/s); cap distance + speed — yaw unchanged.
  */
 function interpolateHullHistory(hist, nowMs, delayMs, velOpt) {
   if (!hist || hist.length < 1) return null;
@@ -30409,7 +30422,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 }
 
 /* ============================== GAME LOOP ================================ */
-/** Sample ring for remote hull interp (~1–1.5 s @ 60Hz, DMV-style buffered playback). */
+/** Sample ring for remote hull interp (~1–1.5 s @ 60Hz, buffered playback). */
 const REMOTE_SNAP_HIST_MAX = 96;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;

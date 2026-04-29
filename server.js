@@ -4152,6 +4152,7 @@ setInterval(() => {
     npcWorldHadPlayers = false;
     return;
   }
+  const tickStateBeg = Date.now();
   serverStateTickSeq++;
   ensureSimulationLayer();
   gameSim.stepAll(players);
@@ -4165,12 +4166,14 @@ setInterval(() => {
     ensureWorldPolitics().tickEconomy(1 / TICK_RATE);
   } catch (e) {}
   npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
+  const srvNowEmitTick = Date.now();
   try {
     broadcastAll({
       type: 'npc_sync',
       npcs: npcWorld.buildSyncRows(),
       wind: npcWorld.getWindSample(),
-      srvTick: serverStateTickSeq
+      srvTick: serverStateTickSeq,
+      serverNowMs: srvNowEmitTick
     });
   } catch (e) {}
   if (serverStateTickSeq % 540 === 0) {
@@ -4189,6 +4192,7 @@ setInterval(() => {
   const includeCrew = (serverStateTickSeq % 2 === 0);
   const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
   const all = Array.from(players.values());
+  const stateQueue = [];
   for (const client of wss.clients) {
     if (client.readyState !== 1 || client.playerId == null) continue;
     const viewer = players.get(client.playerId);
@@ -4198,16 +4202,45 @@ setInterval(() => {
       if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
       snap.push(buildStateRow(p, includeCrew || !!p.boarding));
     }
+    stateQueue.push({ client, snap });
+  }
+  const tQueueBuilt = Date.now();
+  let sumBodies = 0;
+  const rows = [];
+  for (let qi = 0; qi < stateQueue.length; qi++) {
+    const sq = stateQueue[qi];
     try {
-      client.send(JSON.stringify({
+      const preWire = JSON.stringify({
         type: 'state',
-        players: snap,
+        players: sq.snap,
         worldT: tickWorldT,
         wildlifeWorldT: tickWorldT,
         srvTick: serverStateTickSeq,
-        aoiR: STATE_AOI_RADIUS
+        aoiR: STATE_AOI_RADIUS,
+        serverNowMs: srvNowEmitTick
+      });
+      sumBodies += Buffer.byteLength(preWire, 'utf8');
+      rows.push(sq);
+    } catch (ePre) {}
+  }
+  const pf = {
+    w: Math.max(0, tQueueBuilt - tickStateBeg),
+    b: Math.max(0, sumBodies + rows.length * 76),
+    rc: Math.max(0, rows.length | 0)
+  };
+  for (let ri = 0; ri < rows.length; ri++) {
+    try {
+      rows[ri].client.send(JSON.stringify({
+        type: 'state',
+        players: rows[ri].snap,
+        worldT: tickWorldT,
+        wildlifeWorldT: tickWorldT,
+        srvTick: serverStateTickSeq,
+        aoiR: STATE_AOI_RADIUS,
+        serverNowMs: srvNowEmitTick,
+        serverPerf: pf
       }));
-    } catch (e) {}
+    } catch (eSn) {}
   }
   } catch (e) {
     console.error('[playground] state tick error:', e && e.message ? e.message : e);
