@@ -16835,6 +16835,43 @@ function tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer) {
   npc.rotation += diff * Math.min(1, (0.38 + t * 0.62) * 2.85 * dt) * npcSailingTurnFactor(npc);
 }
 
+/** Flee leg: sail away from the player but score candidate headings by open-water rays (land & reef) like normal NPC clearance. */
+function tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, ageWobble) {
+  if (!npc) return;
+  const nx = npc.x, nz = npc.z;
+  const rdx = nx - px, rdz = nz - pz;
+  let baseAng = Math.atan2(-(rdx || 1e-4), -(rdz || 1e-4));
+  if (ageWobble != null) baseAng += Math.sin(ageWobble * 0.85) * 0.09;
+  const arc = 1.52;
+  const rayStep = 9;
+  const rayLen = 11;
+  let bestAng = baseAng;
+  let bestScore = -1e9;
+  for (let i = -22; i <= 22; i++) {
+    const a = baseAng + (i / 22) * arc;
+    let clear = 0;
+    for (let s = 1; s <= rayLen; s++) {
+      const sx = nx + Math.sin(a) * rayStep * s;
+      const sz = nz + Math.cos(a) * rayStep * s;
+      if (!isSeaObstructed(sx, sz) && !seaReefBlocksPoint(sx, sz, 0.78)) clear += 1.12;
+      else break;
+    }
+    let dA = a - baseAng;
+    while (dA > Math.PI) dA -= Math.PI * 2;
+    while (dA < -Math.PI) dA += Math.PI * 2;
+    const align = (1 - Math.abs(dA) / Math.max(arc * 1.05, 0.001)) * 3.4;
+    const tot = clear + align;
+    if (tot > bestScore) {
+      bestScore = tot;
+      bestAng = a;
+    }
+  }
+  let dTurn = bestAng - npc.rotation;
+  while (dTurn > Math.PI) dTurn -= Math.PI * 2;
+  while (dTurn < -Math.PI) dTurn += Math.PI * 2;
+  npc.rotation += dTurn * Math.min(1, 1.38 * dt) * npcSailingTurnFactor(npc);
+}
+
 /** Broadside yaw toward player's COM for tutorial pass (helps one clean volley). */
 function tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, weight) {
   const dx = px - npc.x, dz = pz - npc.z;
@@ -17625,7 +17662,7 @@ function updateNPCs(dt) {
       tickShipWakeSpawner(wakeKey, npc.x, npc.z, npc.rotation, effWakeSpd, dt);
     }
     if (stepping && !npc.sinking && (npc.health == null || npc.health > 0)
-      && !(npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive)) steerNpcAvoidCloseShips(npc, dt);
+      && !(npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive && !G.tutorialRaidCutscene._volleyTriggered)) steerNpcAvoidCloseShips(npc, dt);
     clampNpcIntoWorldBounds(npc);
   });
   if (host) {
@@ -33057,22 +33094,15 @@ function tickTutorialRaidNpcHost(dt, npc) {
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
   } else {
-    const rax = nx - px, raz = nz - pz;
-    const fleeAng = Math.atan2(-rax || 1e-4, -raz || 1e-4) + Math.sin(tr.age * 0.85) * 0.26;
-    const fx = nx + Math.sin(fleeAng) * 220;
-    const fz = nz + Math.cos(fleeAng) * 220;
-    const rdx = fx - nx, rdz = fz - nz;
-    const toAway = Math.atan2(rdx || 1e-4, rdz || 1e-4);
-    let dTurn = toAway - npc.rotation;
-    while (dTurn > Math.PI) dTurn -= Math.PI * 2;
-    while (dTurn < -Math.PI) dTurn += Math.PI * 2;
-    npc.rotation += dTurn * Math.min(1, 1.45 * dt) * npcSailingTurnFactor(npc);
+    tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, tr.age);
     tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
     const tgtFlee = tutorialRaidNpcSailSpeedTarget(npc, 0.2 * Math.max(0.68, Math.min(1.04, wEff)));
     accelerateNpcToward(npc, dt, tgtFlee);
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
   }
+  updateNpcEscapeMode(npc, dt);
+  try { checkNpcSeaReefWreck(npc); } catch (e) {}
 }
 
 function endTutorial() {
