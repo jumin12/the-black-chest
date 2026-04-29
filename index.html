@@ -17938,12 +17938,18 @@ function updateNPCs(dt) {
       const useNetInterpNpc = G.npcSimFromServer || (!host && ws && ws.readyState === 1);
       const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const delayNpc = getEffectiveRemoteInterpDelayMs();
-      const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
+      const npcVelOpt =
+        Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ)
+          ? { vx: npc._npcVelSmX, vz: npc._npcVelSmZ }
+          : Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)
+            ? { vx: npc._npcVelTX, vz: npc._npcVelTZ }
+            : null;
+      const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, npcVelOpt) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
         const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
         const nt =
-          delayNpc < 92 ? 28 : delayNpc < 118 ? 22 : delayNpc < 144 ? 16 : delayNpc < 170 ? 12 : 9;
-        const nb = ej > 40 ? (delayNpc < 92 ? 12 : 7) : ej > 8 ? (delayNpc < 92 ? 17 : 11) : 9;
+          delayNpc < 118 ? REMOTE_VISUAL_POS_SMOOTH + 14 : delayNpc < 145 ? REMOTE_VISUAL_POS_SMOOTH + 8 : REMOTE_VISUAL_POS_SMOOTH;
+        const nb = ej > 40 ? REMOTE_VISUAL_POS_SMOOTH * 0.55 : ej > 8 ? REMOTE_VISUAL_POS_SMOOTH * 0.75 : REMOTE_VISUAL_POS_SMOOTH * 0.35;
         const an = Math.min(1, 1 - Math.exp(-(nt + nb) * dt));
         npc.x += (ipNpc.x - npc.x) * an;
         npc.z += (ipNpc.z - npc.z) * an;
@@ -30169,68 +30175,96 @@ function interpYawShortest(a, b, u) {
   return v;
 }
 
-/** Remote hull playback delay (ms): enough buffer so samples usually bracket (now − delay) — avoids extrapolation “teleports” when combat jitter/spikes hit. Extra padding near PvP + high jitter EWMA. */
-const REMOTE_HULL_INTERP_DELAY_MIN_MS = 44;
-const REMOTE_HULL_INTERP_DELAY_MAX_MS = 126;
+/**
+ * Playback delay (“render in the past”) — Dead Man’s Vibe–style fixed back-time + small adaptive padding.
+ * See: sample at (now − delayMs) inside recvMs-ordered snapshots; lerp between bracketing keys; short capped extrap.
+ */
+const REMOTE_INTERP_BACK_MS_BASE = 120;
+const REMOTE_INTERP_BACK_MS_MIN = 108;
+const REMOTE_INTERP_BACK_MS_MAX = 168;
+/** Max time ahead of newest snapshot (ms); keeps extrap from running away in turns. */
+const REMOTE_MAX_EXTRAP_MS = 180;
+/** Max extrapolation speed (world units/s), aligned with near-peer velocity caps elsewhere. */
+const REMOTE_MAX_EXTRAP_SPEED = 94;
+/** Secondary smoothing toward sampled hull target (exponential coefficients, DMV-style). */
+const REMOTE_VISUAL_POS_SMOOTH = 12;
+const REMOTE_VISUAL_ROT_SMOOTH = 14;
+/** Above this gap (world units) snap visuals to interp target — alt-tab / real teleports. */
+const REMOTE_VISUAL_HARD_SNAP_DIST = 92;
 
 function getEffectiveRemoteInterpDelayMs() {
+  let d = REMOTE_INTERP_BACK_MS_BASE;
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
-      : 76;
-  /* Base ~= a few ticks + RTT cushion; clamps below fight noisy extrapolation. */
-  let d = 46 + r * 0.5;
-  if (G._pvpNearby) d += 26;
+      : 74;
+  d += Math.min(22, r * 0.14);
+  if (G._pvpNearby) d += 16;
   const jEw =
     G._netInterpJitterEwma != null && Number.isFinite(Number(G._netInterpJitterEwma))
       ? Number(G._netInterpJitterEwma)
       : 0;
-  if (jEw > 10) d += Math.min(44, (jEw - 10) * 1.42);
-  return Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, d));
+  if (jEw > 10) d += Math.min(32, (jEw - 10) * 1.22);
+  return Math.max(REMOTE_INTERP_BACK_MS_MIN, Math.min(REMOTE_INTERP_BACK_MS_MAX, d));
 }
 
 /**
- * Playback from a short receive-time ring buffer at (now - delay) so motion is sampled between two real
- * server snapshots instead of guessing with conflicting velocity + positional pulls (major rubber-band source).
+ * Buffered hull playback: recvMs-ordered ring, sample at (nowMs − delayMs).
+ * Between snapshots: linear xz + shortest-path yaw.
+ * Beyond newest: extrap with velocity from last segment, or velOpt (units/s); cap distance + speed — yaw unchanged (DMV-style).
  */
-function interpolateHullHistory(hist, nowMs, delayMs) {
-  if (!hist || hist.length < 2) return null;
+function interpolateHullHistory(hist, nowMs, delayMs, velOpt) {
+  if (!hist || hist.length < 1) return null;
+  if (hist.length === 1) {
+    const h = hist[0];
+    return { x: h.x, z: h.z, ry: h.ry };
+  }
   const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
-  if (!(la > 0.05)) return null;
-  const tgt = nowMs - delayMs;
+  if (!(la > 0.01)) return null;
+  const renderMs = nowMs - delayMs;
   const h0 = hist[0];
-  if (tgt <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
+  if (renderMs <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
+
   let i = 1;
-  while (i < hist.length && hist[i].recvMs < tgt) i++;
-  const last = hist[hist.length - 1];
-  if (i >= hist.length || tgt >= last.recvMs) {
-    if (hist.length < 2) return { x: last.x, z: last.z, ry: last.ry };
-    const prev = hist[hist.length - 2];
-    const dtm = Math.max(4.5, last.recvMs - prev.recvMs);
-    const vx = (last.x - prev.x) / dtm;
-    const vz = (last.z - prev.z) / dtm;
-    /* Keep extrapolation short — mistaken velocity during turns is the main PvP “teleport” source. */
-    const extrapMax = Math.min(78, Math.max(22, delayMs * 0.22 + 12));
-    const over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
-    let uex = 1 + over / dtm;
-    const ueCap = delayMs >= 102 ? 1.74 : 1.58;
-    if (uex > ueCap) uex = ueCap;
+  while (i < hist.length && hist[i].recvMs < renderMs) i++;
+
+  if (i < hist.length) {
+    const a = hist[i - 1];
+    const b = hist[i];
+    const t0 = a.recvMs;
+    const t1 = b.recvMs;
+    const span = Math.max(0.05, t1 - t0);
+    let u = (renderMs - t0) / span;
+    if (u < 0) u = 0;
+    if (u > 1) u = 1;
     return {
-      x: last.x + vx * over,
-      z: last.z + vz * over,
-      ry: interpYawShortest(prev.ry, last.ry, uex)
+      x: a.x + (b.x - a.x) * u,
+      z: a.z + (b.z - a.z) * u,
+      ry: interpYawShortest(a.ry, b.ry, u)
     };
   }
-  const a = hist[i - 1], b = hist[i];
-  const t0 = a.recvMs, t1 = b.recvMs;
-  if (!(t1 > t0 + 0.22)) return null;
-  let u = (tgt - t0) / (t1 - t0);
-  if (u < 0) u = 0;
-  if (u > 1) u = 1;
+
+  const prev = hist[hist.length - 2];
+  const last = hist[hist.length - 1];
+  const dtm = Math.max(1, last.recvMs - prev.recvMs);
+  let vx = ((last.x - prev.x) / dtm) * 1000;
+  let vz = ((last.z - prev.z) / dtm) * 1000;
+  if (velOpt && Number.isFinite(velOpt.vx) && Number.isFinite(velOpt.vz)) {
+    vx = Number(velOpt.vx);
+    vz = Number(velOpt.vz);
+  }
+  const vm = Math.hypot(vx, vz);
+  if (vm > REMOTE_MAX_EXTRAP_SPEED) {
+    const s = REMOTE_MAX_EXTRAP_SPEED / vm;
+    vx *= s;
+    vz *= s;
+  }
+  const overMs = Math.min(REMOTE_MAX_EXTRAP_MS, Math.max(0, renderMs - last.recvMs));
+  const sec = overMs * 0.001;
   return {
-    x: a.x + (b.x - a.x) * u,
-    z: a.z + (b.z - a.z) * u,
-    ry: interpYawShortest(a.ry, b.ry, u)
+    x: last.x + vx * sec,
+    z: last.z + vz * sec,
+    ry: last.ry
   };
 }
 
@@ -30266,18 +30300,34 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const nowWall =
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
   const delayMsPlay = getEffectiveRemoteInterpDelayMs();
-  const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
+  const velOpt =
+    Number.isFinite(p._netVelSmX) && Number.isFinite(p._netVelSmZ)
+      ? { vx: p._netVelSmX, vz: p._netVelSmZ }
+      : Number.isFinite(p._netVelTargetX) && Number.isFinite(p._netVelTargetZ)
+        ? { vx: p._netVelTargetX, vz: p._netVelTargetZ }
+        : null;
+  const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, velOpt);
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    const jmp = Math.hypot(ip.x - ns.x, ip.z - ns.z);
-    const k = 18 + Math.min(20, jmp * 0.22);
-    let alpha = Math.min(G._pvpNearby ? 0.44 : 0.5, 1 - Math.exp(-k * dt));
-    if (jmp > 48) alpha *= 0.72;
-    ns.x += (ip.x - ns.x) * alpha;
-    ns.z += (ip.z - ns.z) * alpha;
-    let dry = ip.ry - ns.ry;
-    while (dry > Math.PI) dry -= Math.PI * 2;
-    while (dry < -Math.PI) dry += Math.PI * 2;
-    ns.ry += dry * alpha;
+    const dx = ip.x - ns.x;
+    const dz = ip.z - ns.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > REMOTE_VISUAL_HARD_SNAP_DIST) {
+      ns.x = ip.x;
+      ns.z = ip.z;
+      ns.ry = ip.ry;
+    } else if (dist > 0.03) {
+      const posLerp = 1 - Math.exp(-REMOTE_VISUAL_POS_SMOOTH * dt);
+      ns.x += dx * posLerp;
+      ns.z += dz * posLerp;
+    } else {
+      ns.x = ip.x;
+      ns.z = ip.z;
+    }
+    let dYaw = ip.ry - ns.ry;
+    while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+    while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+    if (Math.abs(dYaw) <= 0.008) ns.ry = ip.ry;
+    else ns.ry += dYaw * (1 - Math.exp(-REMOTE_VISUAL_ROT_SMOOTH * dt));
     return ns;
   }
   smoothRemotePlayerNetVelocity(p, dt);
@@ -30359,8 +30409,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 }
 
 /* ============================== GAME LOOP ================================ */
-/** ~360ms sliding window @ ~60Hz for NPC + peer interp. */
-const REMOTE_SNAP_HIST_MAX = 22;
+/** Sample ring for remote hull interp (~1–1.5 s @ 60Hz, DMV-style buffered playback). */
+const REMOTE_SNAP_HIST_MAX = 96;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
