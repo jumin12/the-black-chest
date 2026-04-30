@@ -21059,7 +21059,12 @@ function applyNpcSyncMessage(msg, opts) {
         const rr = nd.r != null && Number.isFinite(Number(nd.r)) ? Number(nd.r) : (npc.rotation || 0);
         if (Number.isFinite(rx) && Number.isFinite(rz) && rMs != null) {
           if (!Array.isArray(npc._snapHist)) npc._snapHist = [];
-          npc._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: rMs });
+          let histMs = rMs;
+          const prevN = npc._snapHist[npc._snapHist.length - 1];
+          if (prevN && prevN.recvMs != null && histMs <= prevN.recvMs) {
+            histMs = prevN.recvMs + Math.max(0.35, 1000 / NET_SYNC_HZ * 0.22);
+          }
+          npc._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: histMs });
           while (npc._snapHist.length > REMOTE_SNAP_HIST_MAX) npc._snapHist.shift();
         }
       }
@@ -21175,7 +21180,7 @@ function applyNetStateMessage(msg, opts) {
       if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
       ex._srvSnapPerfMs = snapWallMs;
       {
-        const recvMs = snapWallMs;
+        let recvMs = snapWallMs;
         const rx = Number(ex.x), rz = Number(ex.z);
         const rr =
           ex.rotation != null && Number.isFinite(Number(ex.rotation))
@@ -21183,6 +21188,10 @@ function applyNetStateMessage(msg, opts) {
             : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(ex._snapHist)) ex._snapHist = [];
+          const prevEx = ex._snapHist[ex._snapHist.length - 1];
+          if (prevEx && prevEx.recvMs != null && recvMs <= prevEx.recvMs) {
+            recvMs = prevEx.recvMs + Math.max(0.35, 1000 / NET_SYNC_HZ * 0.22);
+          }
           ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
           while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
         }
@@ -21196,7 +21205,12 @@ function applyNetStateMessage(msg, opts) {
         const rr = nw.rotation != null && Number.isFinite(Number(nw.rotation)) ? Number(nw.rotation) : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(nw._snapHist)) nw._snapHist = [];
-          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: snapWallMs });
+          let recvMs = snapWallMs;
+          const prevNw = nw._snapHist[nw._snapHist.length - 1];
+          if (prevNw && prevNw.recvMs != null && recvMs <= prevNw.recvMs) {
+            recvMs = prevNw.recvMs + Math.max(0.35, 1000 / NET_SYNC_HZ * 0.22);
+          }
+          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
           while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
         }
       }
@@ -30355,8 +30369,10 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
   }
   const a = hist[i - 1], b = hist[i];
   const t0 = a.recvMs, t1 = b.recvMs;
-  if (!(t1 > t0 + 0.22)) return null;
-  let u = (tgt - t0) / (t1 - t0);
+  /* Reject only degenerate / duplicate timestamps — was `> 0.22` (220ms), which blocked all normal 60Hz pairs (~17ms) and forced NPCs + peers onto extrapolation-only/stuttery fallbacks. */
+  const span = t1 - t0;
+  if (!(span > 0.001)) return null;
+  let u = (tgt - t0) / span;
   if (u < 0) u = 0;
   if (u > 1) u = 1;
   return {
@@ -30401,8 +30417,12 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
     const jmp = Math.hypot(ip.x - ns.x, ip.z - ns.z);
-    const k = 24 + Math.min(22, jmp * 0.32);
-    let alpha = Math.min(0.62, 1 - Math.exp(-k * dt));
+    const px = G.player && Number.isFinite(Number(G.player.x)) ? Number(G.player.x) : null;
+    const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
+    const nearCam =
+      px != null && pz != null ? Math.hypot(ns.x - px, ns.z - pz) < 175 : false;
+    const k = (nearCam ? 30 : 24) + Math.min(22, jmp * 0.32);
+    let alpha = Math.min(nearCam ? 0.82 : 0.72, 1 - Math.exp(-k * dt));
     ns.x += (ip.x - ns.x) * alpha;
     ns.z += (ip.z - ns.z) * alpha;
     let dry = ip.ry - ns.ry;
