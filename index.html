@@ -19738,7 +19738,11 @@ function removeRemotePeer(lid) {
   G.remotePlayerStories.delete(lidN);
   try {
     const op = G.otherPlayers.get(lidN);
-    if (op) op._snapHist = null;
+    if (op) {
+      op._snapHist = null;
+      op._snapInterpTickBase = null;
+      op._snapInterpMsBase = null;
+    }
   } catch (e) {}
   G.otherPlayers.delete(lidN);
   if (otherShipGroups.has(lidN)) {
@@ -21440,7 +21444,7 @@ function applyNetStateMessage(msg, opts) {
         let vtx = (px1 - px0) / dtSnap;
         let vtz = (pz1 - pz0) / dtSnap;
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
-        const vcap1 = dNear < 168 ? 118 : 78;
+        const vcap1 = dNear < 168 ? 132 : 90;
         const vm0 = Math.hypot(vtx, vtz);
         if (vm0 > vcap1) {
           const s0 = vcap1 / vm0;
@@ -21454,7 +21458,6 @@ function applyNetStateMessage(msg, opts) {
       if (!Array.isArray(p.crewData) && prevCrew) ex.crewData = prevCrew;
       ex._srvSnapPerfMs = snapWallMs;
       {
-        let recvMs = snapWallMs;
         const rx = Number(ex.x), rz = Number(ex.z);
         const rr =
           ex.rotation != null && Number.isFinite(Number(ex.rotation))
@@ -21462,10 +21465,7 @@ function applyNetStateMessage(msg, opts) {
             : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(ex._snapHist)) ex._snapHist = [];
-          const prevEx = ex._snapHist[ex._snapHist.length - 1];
-          if (prevEx && prevEx.recvMs != null && recvMs <= prevEx.recvMs) {
-            recvMs = prevEx.recvMs + Math.max(0.35, 1000 / NET_SYNC_HZ * 0.22);
-          }
+          const recvMs = computePeerSnapRecvMs(ex, stNum, snapWallMs);
           ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
           while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
         }
@@ -21479,11 +21479,7 @@ function applyNetStateMessage(msg, opts) {
         const rr = nw.rotation != null && Number.isFinite(Number(nw.rotation)) ? Number(nw.rotation) : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(nw._snapHist)) nw._snapHist = [];
-          let recvMs = snapWallMs;
-          const prevNw = nw._snapHist[nw._snapHist.length - 1];
-          if (prevNw && prevNw.recvMs != null && recvMs <= prevNw.recvMs) {
-            recvMs = prevNw.recvMs + Math.max(0.35, 1000 / NET_SYNC_HZ * 0.22);
-          }
+          const recvMs = computePeerSnapRecvMs(nw, stNum, snapWallMs);
           nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
           while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
         }
@@ -30695,6 +30691,11 @@ function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   return Math.max(20, getEffectiveHullSnapInterpDelayMs() - 12);
 }
 
+/** Other captains’ hulls — tighter than generic hull delay but not as aggressive as NPC relay playback (stable spline keys). */
+function getEffectivePeerHullInterpDelayMs() {
+  return Math.max(24, getEffectiveHullSnapInterpDelayMs() - 8);
+}
+
 /** Uniform Catmull–Rom scalar segment — smoother paths than linear lerp between quantized ~60Hz hull keys. */
 function catmullRomScalar(p0, p1, p2, p3, t) {
   const t2 = t * t;
@@ -30833,8 +30834,11 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
   const nowWall =
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-  const delayMsPlay = getEffectiveHullSnapInterpDelayMs();
-  const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
+  const delayMsPlay = getEffectivePeerHullInterpDelayMs();
+  const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, {
+    maxExtrapMs: 52,
+    catmullRom: true
+  });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
     /* Same playback path as DS NPCs: delayed-sample pose only; mesh yaw matches so we don’t stack smoothing. */
     ns.x = ip.x;
@@ -30872,14 +30876,14 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
 
   const err = Math.hypot(ax - ns.x, az - ns.z);
-  if (err > 560) {
+  if (err > 680) {
     ns.x = ax;
     ns.z = az;
     ns.ry = authR;
     return ns;
   }
-  if (err > 240) {
-    const st = Math.min(1, (err > 380 ? 9.2 : 6.4) * dt);
+  if (err > 268) {
+    const st = Math.min(1, (err > 420 ? 8.4 : 5.9) * dt);
     ns.x += (ax - ns.x) * st;
     ns.z += (az - ns.z) * st;
     let drs = authR - ns.ry;
@@ -30896,7 +30900,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const dPeerCam = Math.hypot(ns.x - px, ns.z - pz);
   const nearPeer = dPeerCam < 175;
   if (velPred) {
-    const vcap = nearPeer ? 116 : 76;
+    const vcap = nearPeer ? 130 : 88;
     const vm = Math.hypot(evx, evz);
     const s = vm > vcap ? vcap / vm : 1;
     ns.x += evx * s * dt;
@@ -30924,6 +30928,32 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 /* ============================== GAME LOOP ================================ */
 /** Longer window @ ~60Hz so delayed playback stays inside real samples on jittery links. */
 const REMOTE_SNAP_HIST_MAX = 42;
+
+/** Stable recv timeline for peer hull splines (matches NPC srvTick anchoring; avoids wall-clock burst collapse). */
+function computePeerSnapRecvMs(row, srvTick, wallMs) {
+  const tickMs = 1000 / NET_SYNC_HZ;
+  let recvMs = wallMs;
+  if (srvTick != null && Number.isFinite(srvTick)) {
+    if (row._snapInterpTickBase == null || row._snapInterpMsBase == null) {
+      row._snapInterpTickBase = srvTick;
+      row._snapInterpMsBase = wallMs;
+    } else {
+      const dtick = srvTick - row._snapInterpTickBase;
+      if (dtick > REMOTE_SNAP_HIST_MAX + 140 || dtick < -3) {
+        row._snapInterpTickBase = srvTick;
+        row._snapInterpMsBase = wallMs;
+      }
+      recvMs = row._snapInterpMsBase + (srvTick - row._snapInterpTickBase) * tickMs;
+    }
+  }
+
+  const hist = row._snapHist;
+  const prev = Array.isArray(hist) && hist.length ? hist[hist.length - 1] : null;
+  if (prev && prev.recvMs != null && recvMs <= prev.recvMs + 0.02) {
+    recvMs = prev.recvMs + Math.max(tickMs * 0.94, 2);
+  }
+  return recvMs;
+}
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
