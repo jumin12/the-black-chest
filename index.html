@@ -18040,21 +18040,31 @@ function updateNPCs(dt) {
           npc._npcNetSmVx = ipNpc.vx;
           npc._npcNetSmVz = ipNpc.vz;
         } else {
-          /* Velocity-first: analytic tangent drives motion; light pose correction avoids stair-step teleport on each tick. */
-          const vk = 1 - Math.exp(-26 * dt);
+          /* Simulate continuous sail: smooth spline vel + light PD-style correction (avoids tick-step snaps from hard pose pulls). */
+          const vk = 1 - Math.exp(-15 * dt);
           if (!Number.isFinite(npc._npcNetSmVx)) npc._npcNetSmVx = ipNpc.vx;
           if (!Number.isFinite(npc._npcNetSmVz)) npc._npcNetSmVz = ipNpc.vz;
           npc._npcNetSmVx += (ipNpc.vx - npc._npcNetSmVx) * vk;
           npc._npcNetSmVz += (ipNpc.vz - npc._npcNetSmVz) * vk;
+          const ex = ipNpc.x - npc.x;
+          const ez = ipNpc.z - npc.z;
+          const err = Math.hypot(ex, ez);
+          /* Gentle spring toward delayed spline pose — stable vs snapping `(target-pos)*large_blend` each tick. */
+          const kSpr = err > 120 ? 36 : err > 52 ? 28 : 18;
+          npc._npcNetSmVx += ex * kSpr * dt;
+          npc._npcNetSmVz += ez * kSpr * dt;
           npc.x += npc._npcNetSmVx * dt;
           npc.z += npc._npcNetSmVz * dt;
-          const pk = 1 - Math.exp(-10 * dt);
-          npc.x += (ipNpc.x - npc.x) * pk;
-          npc.z += (ipNpc.z - npc.z) * pk;
+          const vmPost = Math.hypot(npc._npcNetSmVx, npc._npcNetSmVz);
+          if (vmPost > 142 && vmPost > 1e-6) {
+            const scv = 142 / vmPost;
+            npc._npcNetSmVx *= scv;
+            npc._npcNetSmVz *= scv;
+          }
           let dr = ipNpc.ry - npc.rotation;
           while (dr > Math.PI) dr -= Math.PI * 2;
           while (dr < -Math.PI) dr += Math.PI * 2;
-          npc.rotation += dr * (1 - Math.exp(-19 * dt));
+          npc.rotation += dr * (1 - Math.exp(-13 * dt));
         }
       } else {
         npc._npcNetSmVx = npc._npcNetSmVz = undefined;
@@ -30592,13 +30602,34 @@ function interpolateHullHistoryWithVelocity(hist, nowMs, delayMs) {
   let vx = s.vxMs * 1000;
   let vz = s.vzMs * 1000;
   const vm = Math.hypot(vx, vz);
-  const cap = 128;
+  const cap = 138;
   if (vm > cap && vm > 1e-6) {
     const sc = cap / vm;
     vx *= sc;
     vz *= sc;
   }
   return { x: s.x, z: s.z, ry: s.ry, vx, vz };
+}
+
+/** Catmull–Rom scalar — C¹ curve through control points P1→P2 with u∈[0,1]. */
+function catmullRomScalar(p0, p1, p2, p3, u) {
+  const u2 = u * u;
+  const u3 = u2 * u;
+  return 0.5 * (
+    2 * p1 +
+    (-p0 + p2) * u +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * u3
+  );
+}
+/** d/du of Catmull–Rom (chain with du/dt_ms = 1/span for planar velocity). */
+function catmullRomScalarDerivU(p0, p1, p2, p3, u) {
+  const u2 = u * u;
+  return 0.5 * (
+    (-p0 + p2) +
+    2 * (2 * p0 - 5 * p1 + 4 * p2 - p3) * u +
+    3 * (-p0 + 3 * p1 - 3 * p2 + p3) * u2
+  );
 }
 
 /**
@@ -30642,13 +30673,35 @@ function sampleHullHistoryPlanar(hist, tgtMs, delayMsForExtrap) {
       vzMs
     };
   }
-  const a = hist[i - 1], b = hist[i];
-  const t0 = a.recvMs, t1 = b.recvMs;
+  const a = hist[i - 1];
+  const b = hist[i];
+  const t0 = a.recvMs;
+  const t1 = b.recvMs;
   const span = t1 - t0;
   if (!(span > 0.001)) return null;
   let u = (tgtMs - t0) / span;
   if (u < 0) u = 0;
   if (u > 1) u = 1;
+  /* Interior: Catmull–Rom through consecutive samples — smooth velocity across ticks vs linear lerp kinks. */
+  if (hist.length >= 3) {
+    const p0 = i >= 2 ? hist[i - 2] : hist[i - 1];
+    const p1 = hist[i - 1];
+    const p2 = hist[i];
+    const p3 = i + 1 < hist.length ? hist[i + 1] : hist[i];
+    const cx = catmullRomScalar(p0.x, p1.x, p2.x, p3.x, u);
+    const cz = catmullRomScalar(p0.z, p1.z, p2.z, p3.z, u);
+    const dxdU = catmullRomScalarDerivU(p0.x, p1.x, p2.x, p3.x, u);
+    const dzdU = catmullRomScalarDerivU(p0.z, p1.z, p2.z, p3.z, u);
+    const vxMs = dxdU / span;
+    const vzMs = dzdU / span;
+    return {
+      x: cx,
+      z: cz,
+      ry: interpYawShortest(p1.ry, p2.ry, u),
+      vxMs,
+      vzMs
+    };
+  }
   const vxMs = (b.x - a.x) / span;
   const vzMs = (b.z - a.z) / span;
   return {
