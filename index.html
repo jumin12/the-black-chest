@@ -18123,22 +18123,33 @@ function updateNPCs(dt) {
       const useNetInterpNpc = G.npcSimFromServer || (!host && ws && ws.readyState === 1);
       const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const delayNpc = G.npcSimFromServer ? getEffectiveNpcInterpDelayMs() : getEffectiveRemoteInterpDelayMs();
-      const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
+      const ipNpc = useNetInterpNpc
+        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, {
+            reduceDelay: 0.68,
+            smoothSegment: true,
+            npcExtrap: true
+          })
+        : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
         const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-        const nt = delayNpc < 58 ? 78 : delayNpc < 108 ? 58 : delayNpc < 165 ? 42 : 30;
-        const nb = ej > 40 ? (delayNpc < 58 ? 30 : 18) : ej > 8 ? (delayNpc < 58 ? 44 : 30) : 21;
-        const an = Math.min(1, 1 - Math.exp(-(nt + nb) * dt));
+        /* Short time-constant toward already-interpolated/extrapolated target — old double exp() low-pass lagged + snapped on each tick. */
+        const tauPos = ej > 110 ? 0.01 : ej > 38 ? 0.016 : ej > 9 ? 0.026 : 0.038;
+        let an = 1 - Math.exp(-dt / Math.max(1e-4, tauPos));
+        an = Math.min(1, Math.max(an, dt * 36));
         npc.x += (ipNpc.x - npc.x) * an;
         npc.z += (ipNpc.z - npc.z) * an;
         let drn = ipNpc.ry - npc.rotation;
         while (drn > Math.PI) drn -= Math.PI * 2;
         while (drn < -Math.PI) drn += Math.PI * 2;
-        npc.rotation += drn * an;
+        const tauRy = ej > 70 ? 0.014 : 0.024;
+        let aR = 1 - Math.exp(-dt / tauRy);
+        aR = Math.min(1, Math.max(aR, dt * 26));
+        npc.rotation += drn * aR;
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
-      const vsmK = 1 - Math.exp(-26 * dt);
+      const velTrack = useNetInterpNpc ? 38 : 26;
+      const vsmK = 1 - Math.exp(-velTrack * dt);
       if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
         npc._npcVelSmX = Number.isFinite(npc._npcVelSmX) ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * vsmK : npc._npcVelTX;
         npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ) ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * vsmK : npc._npcVelTZ;
@@ -30514,26 +30525,37 @@ function getEffectiveRemoteInterpDelayMs() {
   return Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, d));
 }
 
-/** Tighter buffer than player hulls — DS NPC snapshots already authoritative at TICK_RATE; lower delay reads “alive”. */
+/** Hermite-like ease on [0,1] — softer entry/exit between snapshot samples (less micro-stutter). */
+function interpSmooth01(u) {
+  if (u <= 0) return 0;
+  if (u >= 1) return 1;
+  return u * u * (3 - 2 * u);
+}
+
+/** Tighter playback delay for AI hulls @60Hz — small buffer, heavy extrapolation elsewhere. */
 function getEffectiveNpcInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 75;
-  const d = 18 + r * 0.28;
-  return Math.max(12, Math.min(64, d));
+  const d = 10 + r * 0.18;
+  return Math.max(6, Math.min(48, d));
 }
 
 /**
  * Playback from a short receive-time ring buffer at (now - delay) so motion is sampled between two real
  * server snapshots instead of guessing with conflicting velocity + positional pulls (major rubber-band source).
+ * @param {object} [opts] - optional; `reduceDelay` (0..1) scales delay toward present; `smoothSegment` eases u;
+ *   `npcExtrap` widens tail extrapolation for 60Hz DS/stepper feeds.
  */
-function interpolateHullHistory(hist, nowMs, delayMs) {
+function interpolateHullHistory(hist, nowMs, delayMs, opts) {
+  opts = opts || {};
+  const delayEff = opts.reduceDelay != null ? delayMs * Math.max(0.35, Math.min(1, opts.reduceDelay)) : delayMs;
   if (!hist || hist.length < 2) return null;
   const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
   /* recvMs are wall-clock ms; require non-zero span (duplicates collapse la). */
   if (!(la > 1e-3)) return null;
-  const tgt = nowMs - delayMs;
+  const tgt = nowMs - delayEff;
   const h0 = hist[0];
   if (tgt <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
   let i = 1;
@@ -30546,10 +30568,14 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
     const vx = (last.x - prev.x) / dtm;
     const vz = (last.z - prev.z) / dtm;
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
-    const extrapMax = Math.min(138, Math.max(52, delayMs * 0.4 + 26));
+    let extrapMax = Math.min(138, Math.max(52, delayMs * 0.4 + 26));
+    let ueCap = delayMs >= 128 ? 2.12 : 1.94;
+    if (opts.npcExtrap) {
+      extrapMax = Math.min(280, Math.max(96, delayMs * 0.62 + 72));
+      ueCap = Math.min(2.65, ueCap + 0.55);
+    }
     const over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
     let uex = 1 + over / dtm;
-    const ueCap = delayMs >= 128 ? 2.12 : 1.94;
     if (uex > ueCap) uex = ueCap;
     return {
       x: last.x + vx * over,
@@ -30565,6 +30591,7 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
   let u = (tgt - t0) / dtSeg;
   if (u < 0) u = 0;
   if (u > 1) u = 1;
+  if (opts.smoothSegment) u = interpSmooth01(u);
   return {
     x: a.x + (b.x - a.x) * u,
     z: a.z + (b.z - a.z) * u,
@@ -30696,8 +30723,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 }
 
 /* ============================== GAME LOOP ================================ */
-/** ~360ms sliding window @ ~60Hz for NPC + peer interp. */
-const REMOTE_SNAP_HIST_MAX = 22;
+/** Sliding window @ ~60Hz — NPC interp benefits from a few extra samples for smooth extrapolation. */
+const REMOTE_SNAP_HIST_MAX = 28;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
