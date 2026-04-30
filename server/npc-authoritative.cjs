@@ -480,6 +480,14 @@ function isSpawnFree(wx, wz, shipType, npcs, players, dryLand, edgeClamp) {
   return Math.abs(wx) <= edgeClamp && Math.abs(wz) <= edgeClamp;
 }
 
+/** Match browser `npcBroadsideSideFromNormRel` — no bow/stern magic shots. */
+function npcBroadsideFireSide(normRel, tolRad) {
+  const tol = tolRad != null ? tolRad : 0.38;
+  const bearErr = Math.abs(Math.abs(normRel) - Math.PI / 2);
+  if (bearErr > tol) return 0;
+  return normRel >= 0 ? 1 : -1;
+}
+
 function emitBroadside(broadcastAll, npc, targetX, targetZ, tvx, tvz) {
   const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const cc = Math.max(1, npcSpec.cannonSlots || 2);
@@ -501,9 +509,7 @@ function emitBroadside(broadcastAll, npc, targetX, targetZ, tvx, tvz) {
   const toTargetAngle = Math.atan2(dx, dz);
   const relAngle = toTargetAngle - npc.rotation;
   const normRel = ((relAngle % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-  const absRel = Math.abs(normRel);
-  let side = absRel > Math.PI / 10 && absRel < Math.PI * 0.82 ? Math.sign(normRel) : 0;
-  if (side === 0 && absRel >= Math.PI * 0.82) side = Math.sign(normRel) || 1;
+  const side = npcBroadsideFireSide(normRel, 0.38);
   if (side === 0) return;
 
   const sinR = Math.sin(npc.rotation);

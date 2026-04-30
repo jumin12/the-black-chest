@@ -17333,14 +17333,20 @@ function tutorialRaidPickHeadingWithOffshoreClearance(npc, preferredRad) {
   }
   return any ? bestA : preferredRad;
 }
+/** Broadside battery bears near ±90° off bow — rejects impossible bow/stern snapshots. `tolRad` is slack from perfect beam (~22° default). */
+function npcBroadsideSideFromNormRel(normRel, tolRad) {
+  const tol = tolRad != null ? tolRad : 0.38;
+  const bearErr = Math.abs(Math.abs(normRel) - Math.PI / 2);
+  if (bearErr > tol) return 0;
+  return normRel >= 0 ? 1 : -1;
+}
 /** Returns true iff a staggered battery was scheduled (not muted by aim rules). */
 function npcFireBroadsideAtPlayer(npc, opts) {
   opts = opts || {};
   const tutScript = !!opts.tutorialRaid;
   /* After cinematic reveal, pirate AI still calls without `tutorialRaid` — keep one teaching gun for hull lifetime. */
   const tutOneGun = tutScript || !!npc.tutorialRaidHull;
-  const minBear = tutScript ? Math.PI / 42 : Math.PI / 10;
-  const maxBear = tutScript ? Math.PI * 0.88 : Math.PI * 0.82;
+  const broadTol = tutScript ? 0.46 : 0.38;
   if (G.playerSinking || !G.player || G.player.health <= 0) return false;
   const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const cc = npcEffectiveCannonSlots(npc);
@@ -17367,16 +17373,7 @@ function npcFireBroadsideAtPlayer(npc, opts) {
   const toTargetAngle = Math.atan2(dx, dz);
   const relAngle = toTargetAngle - npc.rotation;
   const normRel = ((relAngle % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-  const absRel = Math.abs(normRel);
-  let side = absRel > minBear && absRel < maxBear ? Math.sign(normRel) : 0;
-  if (side === 0 && absRel >= maxBear) side = Math.sign(normRel) || 1;
-  /* Tutorial: if still ambiguous, choose side by player position vs our heading (avoid silent no-fire). */
-  if (side === 0 && tutScript) {
-    const fx = Math.sin(npc.rotation), fz = Math.cos(npc.rotation);
-    const rbx = px - npc.x, rbz = pz - npc.z;
-    const cross = fz * rbx - fx * rbz;
-    side = cross >= 0 ? 1 : -1;
-  }
+  const side = npcBroadsideSideFromNormRel(normRel, broadTol);
   if (side === 0) return false;
 
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
@@ -17458,9 +17455,7 @@ function npcFireBroadsideAtNpcTarget(npc, targetNpc) {
   const toTargetAngle = Math.atan2(dx, dz);
   const relAngle = toTargetAngle - npc.rotation;
   const normRel = ((relAngle % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-  const absRel = Math.abs(normRel);
-  let side = absRel > Math.PI / 10 && absRel < Math.PI * 0.82 ? Math.sign(normRel) : 0;
-  if (side === 0 && absRel >= Math.PI * 0.82) side = Math.sign(normRel) || 1;
+  const side = npcBroadsideSideFromNormRel(normRel, npc.tutorialRaidHull ? 0.46 : 0.38);
   if (side === 0) return;
   const sinR = Math.sin(npc.rotation), cosR = Math.cos(npc.rotation);
   const npcShipY = npc.mesh?.position.y || worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
@@ -18035,14 +18030,34 @@ function updateNPCs(dt) {
       const delayNpc = useNetInterpNpc
         ? getEffectiveNpcNetObservationInterpDelayMs(!G.npcSimFromServer)
         : getEffectiveHullSnapInterpDelayMs();
-      const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
+      const ipNpc = useNetInterpNpc ? interpolateHullHistoryWithVelocity(npc._snapHist, nowNpc, delayNpc) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
-        /* Follow delayed spline directly — exp-blend toward ip lagged behind real motion (slow/stutter). Hist uses srvTick timeline + multi-drain. */
-        npc.x = ipNpc.x;
-        npc.z = ipNpc.z;
-        npc.rotation = ipNpc.ry;
+        const slip = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
+        if (slip > 420) {
+          npc.x = ipNpc.x;
+          npc.z = ipNpc.z;
+          npc.rotation = ipNpc.ry;
+          npc._npcNetSmVx = ipNpc.vx;
+          npc._npcNetSmVz = ipNpc.vz;
+        } else {
+          const vk = 1 - Math.exp(-46 * dt);
+          if (!Number.isFinite(npc._npcNetSmVx)) npc._npcNetSmVx = ipNpc.vx;
+          if (!Number.isFinite(npc._npcNetSmVz)) npc._npcNetSmVz = ipNpc.vz;
+          npc._npcNetSmVx += (ipNpc.vx - npc._npcNetSmVx) * vk;
+          npc._npcNetSmVz += (ipNpc.vz - npc._npcNetSmVz) * vk;
+          npc.x += npc._npcNetSmVx * dt;
+          npc.z += npc._npcNetSmVz * dt;
+          const pk = 1 - Math.exp(-30 * dt);
+          npc.x += (ipNpc.x - npc.x) * pk;
+          npc.z += (ipNpc.z - npc.z) * pk;
+          let dr = ipNpc.ry - npc.rotation;
+          while (dr > Math.PI) dr -= Math.PI * 2;
+          while (dr < -Math.PI) dr += Math.PI * 2;
+          npc.rotation += dr * (1 - Math.exp(-34 * dt));
+        }
       } else {
-      if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
+        npc._npcNetSmVx = npc._npcNetSmVz = undefined;
+        if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
       const vsmK = 1 - Math.exp(-26 * dt);
       if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
@@ -30564,6 +30579,42 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
     z: a.z + (b.z - a.z) * u,
     ry: interpYawShortest(a.ry, b.ry, u)
   };
+}
+
+/**
+ * Delayed pose plus planar velocity (world units/s) for DS / relay NPCs — integrates between snapshots so hulls
+ * glide instead of stair-stepping on discrete `npc_sync` poses.
+ */
+function interpolateHullHistoryWithVelocity(hist, nowMs, delayMs) {
+  const pose = interpolateHullHistory(hist, nowMs, delayMs);
+  if (!pose) return null;
+  const dtMs = 12;
+  const pLate = interpolateHullHistory(hist, nowMs, delayMs + dtMs);
+  const pEarly = interpolateHullHistory(hist, nowMs, delayMs - dtMs);
+  let vx = 0;
+  let vz = 0;
+  if (
+    pLate && pEarly &&
+    Number.isFinite(pLate.x) && Number.isFinite(pEarly.x) &&
+    Number.isFinite(pLate.z) && Number.isFinite(pEarly.z)
+  ) {
+    vx = ((pEarly.x - pLate.x) / (2 * dtMs)) * 1000;
+    vz = ((pEarly.z - pLate.z) / (2 * dtMs)) * 1000;
+  } else if (hist.length >= 2) {
+    const last = hist[hist.length - 1];
+    const prev = hist[hist.length - 2];
+    const span = Math.max(2, last.recvMs - prev.recvMs);
+    vx = ((last.x - prev.x) / span) * 1000;
+    vz = ((last.z - prev.z) / span) * 1000;
+  }
+  const vm = Math.hypot(vx, vz);
+  const cap = 118;
+  if (vm > cap && vm > 1e-6) {
+    const sc = cap / vm;
+    vx *= sc;
+    vz *= sc;
+  }
+  return { x: pose.x, z: pose.z, ry: pose.ry, vx, vz };
 }
 
 /** Low-pass remote peer velocity so finite-difference noise does not fight the smoother each net tick. */
