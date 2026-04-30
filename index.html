@@ -16148,7 +16148,9 @@ function accelerateTutorialRaidNpcLikePlayer(npc, dt, forwardThrottle, optionalH
       ? Math.max(0.06, Math.min(playerCeil, Number(optionalHullCap)))
       : playerCeil;
   const fwd = Math.max(0, Math.min(1, Number(forwardThrottle) || 0));
-  if (fwd > 0.1) {
+  /* Any positive helm must accelerate — cruise throttle in chase often sits ~0.06–0.09; old `fwd > 0.1` branch
+   * treated that as “release throttle” and coasted speed to zero (tutorial raider frozen in combat). */
+  if (fwd > 0) {
     npc.speed = Math.min(
       npc.speed + 3.25 * dt * speedMult * fwd * PLAYER_BASE_SPEED_MULT,
       maxCeil
@@ -18011,9 +18013,10 @@ function updateNPCs(dt) {
         let fwd = 0.28;
         if (focus) fwd = distToTarget < 120 ? 0.4 : 0.3;
         else if (npc.aggro && distToPlayer < 148) {
-          if (distToPlayer < 102) fwd = 0.065 + 0.1 * Math.min(1, distToPlayer / 102);
-          else if (distToPlayer < 152) fwd = 0.3;
-          else fwd = 0.36;
+          /* Tutorial chase: stay maneuverable but actually flee — low throttle read as “park broadside”. */
+          if (distToPlayer < 102) fwd = 0.24 + 0.28 * Math.min(1, distToPlayer / 102);
+          else if (distToPlayer < 152) fwd = 0.38;
+          else fwd = 0.42;
         }
         accelerateTutorialRaidNpcLikePlayer(npc, dt, Math.min(1, fwd), cruiseCap);
       } else {
@@ -18033,10 +18036,23 @@ function updateNPCs(dt) {
         : getEffectiveHullSnapInterpDelayMs();
       const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
-        /* Single delayed-sample pose — same path for DS + relay so we don’t chase the interpolator (strobing / hop). */
-        npc.x = ipNpc.x;
-        npc.z = ipNpc.z;
-        npc.rotation = ipNpc.ry;
+        /* Track delayed interpolator with a short blend — absorbs recv/tick jitter without stacking a second interp target. */
+        const ix = ipNpc.x, iz = ipNpc.z, iry = ipNpc.ry;
+        const ex = ix - npc.x, ez = iz - npc.z;
+        const es = Math.hypot(ex, ez);
+        if (es > 380) {
+          npc.x = ix;
+          npc.z = iz;
+          npc.rotation = iry;
+        } else {
+          const pk = 1 - Math.exp(-40 * dt);
+          npc.x += ex * pk;
+          npc.z += ez * pk;
+          let dr = iry - npc.rotation;
+          while (dr > Math.PI) dr -= Math.PI * 2;
+          while (dr < -Math.PI) dr += Math.PI * 2;
+          npc.rotation += dr * (1 - Math.exp(-28 * dt));
+        }
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -21131,10 +21147,24 @@ function applyNpcSyncMessage(msg, opts) {
         const rr = nd.r != null && Number.isFinite(Number(nd.r)) ? Number(nd.r) : (npc.rotation || 0);
         if (Number.isFinite(rx) && Number.isFinite(rz) && rMs != null) {
           if (!Array.isArray(npc._snapHist)) npc._snapHist = [];
+          const tickMs = 1000 / NET_SYNC_HZ;
           let histMs = rMs;
+          if (syncSrvTick != null && Number.isFinite(syncSrvTick)) {
+            if (npc._snapInterpTickBase == null || npc._snapInterpMsBase == null) {
+              npc._snapInterpTickBase = syncSrvTick;
+              npc._snapInterpMsBase = rMs;
+            } else {
+              const dtick = syncSrvTick - npc._snapInterpTickBase;
+              if (dtick > REMOTE_SNAP_HIST_MAX + 140 || dtick < -3) {
+                npc._snapInterpTickBase = syncSrvTick;
+                npc._snapInterpMsBase = rMs;
+              }
+              histMs = npc._snapInterpMsBase + (syncSrvTick - npc._snapInterpTickBase) * tickMs;
+            }
+          }
           const prevN = npc._snapHist[npc._snapHist.length - 1];
-          if (prevN && prevN.recvMs != null && histMs <= prevN.recvMs) {
-            histMs = prevN.recvMs + Math.max(0.35, 1000 / NET_SYNC_HZ * 0.22);
+          if (prevN && prevN.recvMs != null && histMs <= prevN.recvMs + 0.02) {
+            histMs = prevN.recvMs + Math.max(0.85, tickMs * 0.35);
           }
           npc._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: histMs });
           while (npc._snapHist.length > REMOTE_SNAP_HIST_MAX) npc._snapHist.shift();
@@ -30705,11 +30735,14 @@ function update(dt) {
   if (G._pendingNpcSyncQueue && G._pendingNpcSyncQueue.length && G.mode === 'playing') {
     const arr = G._pendingNpcSyncQueue;
     while (arr.length > 64) arr.shift();
-    while (arr.length > 1) arr.shift();
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    try {
-      applyNpcSyncMessage(arr.shift(), { snapshotWallMs: perfBase });
-    } catch (e) {}
+    /* Apply several queued npc_sync payloads per frame — collapsing to one discarded intermediate ticks and caused stair-step/stutter. */
+    const nDrain = Math.min(arr.length, 12);
+    for (let di = 0; di < nDrain; di++) {
+      try {
+        applyNpcSyncMessage(arr.shift(), { snapshotWallMs: perfBase });
+      } catch (e) {}
+    }
   }
   if (G.mode !== 'playing') return;
   if (G.netDesyncFrozen) {
@@ -34090,7 +34123,7 @@ function tutorialRaidRevealCombatPhase() {
     npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 28);
     const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.cutter;
     const sm = spec.speed + npcSailBonus(npc);
-    npc._tutorialRaidCruiseCeil = 12 * sm * PLAYER_BASE_SPEED_MULT * 0.5;
+    npc._tutorialRaidCruiseCeil = 12 * sm * PLAYER_BASE_SPEED_MULT * 0.58;
     tr._volleyTriggered = true;
   }
   const past = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1;
@@ -34425,14 +34458,14 @@ function tickTutorialRaidNpcHost(dt, npc) {
       const navBear = tutorialRaidPickHeadingWithOffshoreClearance(npc, rawBear);
       tutorialRaidPlayerLikeYawStep(npc, dt, navBear, 0.42);
     }
-    let fwd = 0.28;
-    if (dPlayer < 102) fwd = 0.055 + 0.095 * Math.min(1, dPlayer / 102);
-    else if (dPlayer < 152) fwd = 0.28;
-    else fwd = 0.34;
+    let fwd = 0.32;
+    if (dPlayer < 102) fwd = 0.2 + 0.22 * Math.min(1, dPlayer / 102);
+    else if (dPlayer < 152) fwd = 0.34;
+    else fwd = 0.38;
     fwd *= Math.min(1.02, Math.max(0.74, windTrim));
     const specR = SHIP_TYPES[npc.type] || SHIP_TYPES.cutter;
     const smR = specR.speed + npcSailBonus(npc);
-    const cruiseCap = 12 * smR * PLAYER_BASE_SPEED_MULT * 0.44;
+    const cruiseCap = 12 * smR * PLAYER_BASE_SPEED_MULT * 0.52;
     accelerateTutorialRaidNpcLikePlayer(npc, dt, Math.min(1, fwd), cruiseCap);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
     if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
