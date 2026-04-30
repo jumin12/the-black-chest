@@ -791,8 +791,8 @@ function buildSyncRows(npcs, portController, ws) {
       }
       const row = {
         id: n.syncId,
-        x: Math.round(n.x * 20) / 20,
-        z: Math.round(n.z * 20) / 20,
+        x: Math.round(n.x * 100) / 100,
+        z: Math.round(n.z * 100) / 100,
         r: Math.round(n.rotation * 1000) / 1000,
         h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
         rg: Math.round(getNpcRiggingHealth(n)),

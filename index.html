@@ -18030,7 +18030,9 @@ function updateNPCs(dt) {
       const delayNpc = useNetInterpNpc
         ? getEffectiveNpcNetObservationInterpDelayMs(!G.npcSimFromServer)
         : getEffectiveHullSnapInterpDelayMs();
-      const poseNet = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
+      const poseNet = useNetInterpNpc
+        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 26 })
+        : null;
       if (poseNet && Number.isFinite(poseNet.x) && Number.isFinite(poseNet.z) && Number.isFinite(poseNet.ry)) {
         /* Same path as remote hulls (`advanceRemoteShipNetSmooth`): delayed spline sample is already smooth — extra low-pass here lagged behind a moving target and read as slow teleport/snapping. */
         npc.x = poseNet.x;
@@ -30506,18 +30508,22 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** NPC playback delay — tight enough to track sailing speed; deep buffer caused targets to crawl vs displayed hull. */
+/** NPC hull playback — match remote captain delay; shorter NPC-only delay sat in extrapolation more often → snaps when each snapshot lands. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
-  const base = getEffectiveHullSnapInterpDelayMs();
-  if (relayObserver) return Math.max(32, Math.min(78, base - 16));
-  return Math.max(40, Math.min(84, base - 8));
+  void relayObserver;
+  return getEffectiveHullSnapInterpDelayMs();
 }
 
 /**
  * Playback from a short receive-time ring buffer at (now - delay) so motion is sampled between two real
  * server snapshots instead of guessing with conflicting velocity + positional pulls (major rubber-band source).
  */
-function interpolateHullHistory(hist, nowMs, delayMs) {
+function interpolateHullHistory(hist, nowMs, delayMs, interpOpts) {
+  interpOpts = interpOpts || {};
+  const maxExtrapMsCap =
+    interpOpts.maxExtrapMs != null && Number.isFinite(Number(interpOpts.maxExtrapMs))
+      ? Math.max(0, Number(interpOpts.maxExtrapMs))
+      : null;
   if (!hist || hist.length < 2) return null;
   const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
   /* ~60Hz ticks ≈16ms apart — old 50ms floor blocked interpolation until ~4 samples, forcing velocity fallback (visible stair-step). */
@@ -30538,7 +30544,8 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
     let extrapMax = Math.min(138, Math.max(52, delayMs * 0.4 + 26));
     extrapMax += Math.min(85, vm * 0.62);
-    const over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
+    let over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
+    if (maxExtrapMsCap != null) over = Math.min(over, maxExtrapMsCap);
     let uex = 1 + over / dtm;
     let ueCap = delayMs >= 128 ? 2.12 : 1.94;
     if (vm > 38) ueCap = Math.min(2.42, ueCap + Math.min(0.38, (vm - 38) * 0.0048));
@@ -30724,9 +30731,10 @@ function update(dt) {
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     /* Apply several queued npc_sync payloads per frame — collapsing to one discarded intermediate ticks and caused stair-step/stutter. */
     const nDrain = Math.min(arr.length, 28);
+    const npcBurstWallStep = (1000 / NET_SYNC_HZ) * 0.09;
     for (let di = 0; di < nDrain; di++) {
       try {
-        applyNpcSyncMessage(arr.shift(), { snapshotWallMs: perfBase });
+        applyNpcSyncMessage(arr.shift(), { snapshotWallMs: perfBase + di * npcBurstWallStep });
       } catch (e) {}
     }
   }
@@ -32227,8 +32235,8 @@ function update(dt) {
       }
       const row = {
         id: n.syncId,
-        x: Math.round(n.x * 20) / 20,
-        z: Math.round(n.z * 20) / 20,
+        x: Math.round(n.x * 100) / 100,
+        z: Math.round(n.z * 100) / 100,
         r: Math.round(n.rotation * 1000) / 1000,
         h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
         rg: Math.round(getNpcRiggingHealth(n)),
