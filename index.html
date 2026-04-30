@@ -3010,8 +3010,12 @@ function clampPlayerIntoWorldBounds() {
   G.player.x = Math.max(-lim, Math.min(lim, G.player.x));
   G.player.z = Math.max(-lim, Math.min(lim, G.player.z));
 }
-/** Authoritative sim + AOI `state` / `npc_sync` rate — must match `server.js` `TICK_RATE`. Higher Hz = smoother remote NPC playback (more samples, smaller steps). */
+/** Authoritative simulation tick; must match `server.js` `TICK_RATE`. Network snapshots are lower-rate and interpolated. */
 const NET_SYNC_HZ = 120;
+/** Client update and server snapshot rates. Physics still runs at NET_SYNC_HZ; the wire is interpolated. */
+const NET_PLAYER_UPDATE_HZ = 60;
+const NET_STATE_HZ = 60;
+const NET_NPC_SYNC_HZ = 30;
 /** Keep AI merchants & pirates inside the playable archipelago (world edge is empty ocean). */
 function clampNpcIntoWorldBounds(npc) {
   if (!npc) return;
@@ -17743,6 +17747,7 @@ function updateNPCs(dt) {
     const localTutorialRaid =
       !!(G.localTutorialRaidNpcSurrogate && npc.syncId === TUTORIAL_RAID_NPC_SYNC);
     const speculativeEligible =
+      !G.npcSimFromServer &&
       netConsumer &&
       !npc.sinking &&
       (!npc.isTradeShip || (npc.isEscortCargo && npc.escortQuestActive));
@@ -19702,11 +19707,16 @@ function removeRemotePeer(lid) {
 /** Queue an authoritative `state` snapshot (WebSocket or WebRTC DataChannel). */
 function enqueueNetStateMessage(msg) {
   if (!msg || msg.type !== 'state') return;
+  const stq = msg.srvTick != null ? Number(msg.srvTick) : null;
+  if (stq != null && Number.isFinite(stq)) {
+    if (G._lastQueuedNetStateSrvTick != null && stq <= G._lastQueuedNetStateSrvTick) return;
+    G._lastQueuedNetStateSrvTick = stq;
+  }
   if (!G._netStateDrainQueue) G._netStateDrainQueue = [];
   G._netStateDrainQueue.push(msg);
   {
     const nowA = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    const nom = 1000 / NET_SYNC_HZ;
+    const nom = 1000 / NET_STATE_HZ;
     if (G._netStatePrevArrivalAt != null && G._netStatePrevArrivalAt > 0) {
       const gap = nowA - G._netStatePrevArrivalAt;
       G._netLastStateGapMs = gap;
@@ -19731,6 +19741,11 @@ function enqueueNpcSyncMessage(msg) {
   if (isMultiplayerHost()) return;
   if (G.myId == null) return;
   if (!Array.isArray(msg.npcs)) return;
+  const stq = msg.srvTick != null ? Number(msg.srvTick) : null;
+  if (stq != null && Number.isFinite(stq)) {
+    if (G._lastQueuedNpcSyncSrvTick != null && stq <= G._lastQueuedNpcSyncSrvTick) return;
+    G._lastQueuedNpcSyncSrvTick = stq;
+  }
   if (!G._pendingNpcSyncQueue) G._pendingNpcSyncQueue = [];
   G._pendingNpcSyncQueue.push(msg);
   const maxNpcQ = 28;
@@ -19868,6 +19883,8 @@ async function connectToServer() {
   G._rtcIceServersFromServer = null;
   G._lastNetStateWT = null;
   G._lastNetStateSrvTick = null;
+  G._lastQueuedNetStateSrvTick = null;
+  G._lastQueuedNpcSyncSrvTick = null;
   G._pendingNpcSyncQueue = [];
   G._netInterpJitterEwma = null;
   G._netStatePrevArrivalAt = null;
@@ -21408,7 +21425,12 @@ function applyNetStateMessage(msg, opts) {
             : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(ex._snapHist)) ex._snapHist = [];
-          ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
+          let recvTs = recvMs;
+          if (ex._snapHist.length) {
+            const prevTs = ex._snapHist[ex._snapHist.length - 1].recvMs;
+            if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
+          }
+          ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
           while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
         }
       }
@@ -21421,7 +21443,12 @@ function applyNetStateMessage(msg, opts) {
         const rr = nw.rotation != null && Number.isFinite(Number(nw.rotation)) ? Number(nw.rotation) : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(nw._snapHist)) nw._snapHist = [];
-          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: snapWallMs });
+          let recvTs = snapWallMs;
+          if (nw._snapHist.length) {
+            const prevTs = nw._snapHist[nw._snapHist.length - 1].recvMs;
+            if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
+          }
+          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
           while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
         }
       }
@@ -30547,14 +30574,15 @@ function interpSmooth01(u) {
   return u * u * (3 - 2 * u);
 }
 
-/** Tighter playback delay for AI hulls — ~1 server tick @120Hz + RTT; speculative mirror + reconcile allows slightly lower delay. */
+/** NPC snapshots arrive below physics rate; keep 2-3 samples buffered for stable interpolation. */
 function getEffectiveNpcInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 75;
-  const d = 12 + r * 0.18;
-  return Math.max(8, Math.min(44, d));
+  const minBufferedMs = (1000 / NET_NPC_SYNC_HZ) * 1.85;
+  const d = Math.max(minBufferedMs, 72 + r * 0.22);
+  return Math.max(minBufferedMs, Math.min(155, d));
 }
 
 /**
@@ -30810,17 +30838,42 @@ function shouldIncludeCrewOnPeriodicNetTick() {
 function update(dt) {
   if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
     const q = G._netStateDrainQueue;
-    while (q.length > 128) q.shift();
-    /** Drop backlog — apply only newest `state` per frame so the world doesn’t stutter through stale snapshots. */
-    while (q.length > 1) q.shift();
+    while (q.length > 18) q.shift();
+    /** Drain a short state backlog so interpolation history keeps real tick spacing without replaying stale floods. */
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     try {
-      applyNetStateMessage(q.shift(), {
-        reconcileSelf: true,
-        runHudRoster: true,
-        applyWildlifeAnchor: true,
-        snapshotWallMs: perfBase
-      });
+      const maxBatch = 5;
+      const nTake = Math.min(q.length, maxBatch);
+      const batch = q.splice(0, nTake);
+      const nom = 1000 / NET_SYNC_HZ;
+      const recvTimes = new Array(nTake);
+      if (nTake === 1) {
+        recvTimes[0] = perfBase;
+      } else {
+        recvTimes[0] = perfBase - (nTake - 1) * nom;
+        for (let bi = 1; bi < nTake; bi++) {
+          let dTick = 1;
+          const ta = batch[bi - 1].srvTick;
+          const tb = batch[bi].srvTick;
+          if (ta != null && tb != null && Number.isFinite(Number(ta)) && Number.isFinite(Number(tb))) {
+            dTick = Math.max(1, Math.min(72, Math.floor(Number(tb) - Number(ta))));
+          }
+          recvTimes[bi] = recvTimes[bi - 1] + dTick * nom;
+        }
+        if (recvTimes[nTake - 1] > perfBase + 0.25) {
+          const over = recvTimes[nTake - 1] - perfBase;
+          for (let j = 0; j < nTake; j++) recvTimes[j] -= over;
+        }
+      }
+      for (let bi = 0; bi < nTake; bi++) {
+        const newest = bi === nTake - 1;
+        applyNetStateMessage(batch[bi], {
+          reconcileSelf: newest,
+          runHudRoster: newest,
+          applyWildlifeAnchor: newest,
+          snapshotWallMs: recvTimes[bi]
+        });
+      }
     } catch (e) {}
   }
   if (G._pendingNpcSyncQueue && G._pendingNpcSyncQueue.length && G.mode === 'playing') {
@@ -32311,9 +32364,7 @@ function update(dt) {
   sendTimer -= dt;
   if (sendTimer <= 0) {
     sendUpdate(shouldIncludeCrewOnPeriodicNetTick());
-    const pvpGrapple = !!(G.boarding && G.boarding.partnerPlayerId != null && G.boarding.npcSyncId == null
-      && (G.boarding.phase === 'pull' || G.boarding.phase === 'fight'));
-    sendTimer = ws?.readyState === 1 ? (pvpGrapple ? (1 / 60) : (1 / NET_SYNC_HZ)) : 0.05;
+    sendTimer = ws?.readyState === 1 ? (1 / NET_PLAYER_UPDATE_HZ) : 0.05;
   }
 
   if (!G._netYawBurstCd) G._netYawBurstCd = 0;

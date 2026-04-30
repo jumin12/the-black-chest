@@ -24,8 +24,13 @@ function getRealmConfig() {
 const MAX_CONCURRENT_CAPTAINS = Math.max(0, Math.floor(Number(process.env.MAX_CONCURRENT_CAPTAINS) || 0));
 /** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
 const SERVER_WORLD_T0_MS = Date.now();
-/** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
+/** Authoritative simulation rate (Hz); keep client NET_SYNC_HZ in sync. */
 const TICK_RATE = 120;
+/** Network snapshots are intentionally lower than physics; clients interpolate between samples. */
+const STATE_BROADCAST_HZ = Math.max(20, Math.min(TICK_RATE, Number(process.env.STATE_BROADCAST_HZ) || 60));
+const NPC_SYNC_HZ = Math.max(10, Math.min(TICK_RATE, Number(process.env.NPC_SYNC_HZ) || 30));
+const STATE_BROADCAST_EVERY = Math.max(1, Math.round(TICK_RATE / STATE_BROADCAST_HZ));
+const NPC_SYNC_EVERY = Math.max(1, Math.round(TICK_RATE / NPC_SYNC_HZ));
 /** Browser↔realm WebRTC DataChannel for gameplay payloads (signaling uses the existing WebSocket). */
 const RTC_GAME_CHANNEL = /^1|true|yes$/i.test(String(process.env.RTC_GAME_CHANNEL || '').trim());
 /** When set, duplicate `state` on WebSocket and DataChannel while DC is open (debug / migration). */
@@ -4214,14 +4219,16 @@ setInterval(() => {
     ensureWorldPolitics().tickEconomy(1 / TICK_RATE);
   } catch (e) {}
   npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
-  try {
-    broadcastGameplayJsonGlobal({
-      type: 'npc_sync',
-      npcs: npcWorld.buildSyncRows(),
-      wind: npcWorld.getWindSample(),
-      srvTick: serverStateTickSeq
-    });
-  } catch (e) {}
+  if (serverStateTickSeq % NPC_SYNC_EVERY === 0) {
+    try {
+      broadcastGameplayJsonGlobal({
+        type: 'npc_sync',
+        npcs: npcWorld.buildSyncRows(),
+        wind: npcWorld.getWindSample(),
+        srvTick: serverStateTickSeq
+      });
+    } catch (e) {}
+  }
   if (serverStateTickSeq % 540 === 0) {
     try {
       const wp = ensureWorldPolitics().snapshot();
@@ -4235,35 +4242,38 @@ setInterval(() => {
       });
     } catch (e) {}
   }
-  const includeCrew = (serverStateTickSeq % 2 === 0);
-  const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
-  const all = Array.from(players.values());
-  for (const client of wss.clients) {
-    if (client.readyState !== 1 || client.playerId == null) continue;
-    const viewer = players.get(client.playerId);
-    if (!viewer) continue;
-    const snap = [];
-    for (const p of all) {
-      if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
-      snap.push(buildStateRow(p, includeCrew || !!p.boarding));
+  if (serverStateTickSeq % STATE_BROADCAST_EVERY === 0) {
+    const crewEveryTicks = Math.max(STATE_BROADCAST_EVERY, Math.round(TICK_RATE / 30));
+    const includeCrew = (serverStateTickSeq % crewEveryTicks === 0);
+    const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
+    const all = Array.from(players.values());
+    for (const client of wss.clients) {
+      if (client.readyState !== 1 || client.playerId == null) continue;
+      const viewer = players.get(client.playerId);
+      if (!viewer) continue;
+      const snap = [];
+      for (const p of all) {
+        if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
+        snap.push(buildStateRow(p, includeCrew || !!p.boarding));
+      }
+      try {
+        const payloadStr = JSON.stringify({
+          type: 'state',
+          players: snap,
+          worldT: tickWorldT,
+          wildlifeWorldT: tickWorldT,
+          srvTick: serverStateTickSeq,
+          aoiR: STATE_AOI_RADIUS
+        });
+        let sentDc = false;
+        if (gameRtc.enabled) {
+          sentDc = !!gameRtc.sendGameplayPayload(client, payloadStr).sentDc;
+        }
+        if (!sentDc || gameRtc.dualStack) {
+          client.send(payloadStr);
+        }
+      } catch (e) {}
     }
-    try {
-      const payloadStr = JSON.stringify({
-        type: 'state',
-        players: snap,
-        worldT: tickWorldT,
-        wildlifeWorldT: tickWorldT,
-        srvTick: serverStateTickSeq,
-        aoiR: STATE_AOI_RADIUS
-      });
-      let sentDc = false;
-      if (gameRtc.enabled) {
-        sentDc = !!gameRtc.sendGameplayPayload(client, payloadStr).sentDc;
-      }
-      if (!sentDc || gameRtc.dualStack) {
-        client.send(payloadStr);
-      }
-    } catch (e) {}
   }
   } catch (e) {
     console.error('[playground] state tick error:', e && e.message ? e.message : e);
@@ -4286,6 +4296,7 @@ server.listen(PORT, '0.0.0.0', () => {
   const ac = antiCheat && antiCheat.cfg;
   if (ac) {
     console.log(`[playground] simulation: authoritative wind + hull integration @ ${TICK_RATE}Hz (simulation-layer.js)`);
+    console.log(`[playground] net snapshots: players @ ~${Math.round(TICK_RATE / STATE_BROADCAST_EVERY)}Hz, NPCs @ ~${Math.round(TICK_RATE / NPC_SYNC_EVERY)}Hz`);
     console.log(`[playground] anticheat: max ${ac.maxUpdatesPerSec}/s updates · Δpos≤${ac.maxPositionJump} · kick after ${ac.violationKickThreshold} violations / ${ac.violationWindowMs}ms (override AC_* env in simulation-layer.js)`);
   }
   const rc = getRealmConfig();
