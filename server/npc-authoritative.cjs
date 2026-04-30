@@ -67,6 +67,33 @@ function shipHullRadius(shipType) {
   return Math.max(3.1, s.hullLen * 0.5 + s.hullW * 0.42);
 }
 
+function shipFootprintOverlapsLand(wx, wz, yaw, shipType, dryLand) {
+  const R = shipHullRadius(shipType || 'sloop') * 1.1;
+  const s = Math.sin(yaw || 0);
+  const c = Math.cos(yaw || 0);
+  const pts = [
+    [wx, wz],
+    [wx + s * R * 0.98, wz + c * R * 0.98],
+    [wx - s * R * 0.62, wz - c * R * 0.62],
+    [wx + c * R * 0.72, wz - s * R * 0.72],
+    [wx - c * R * 0.72, wz + s * R * 0.72],
+    [wx + s * R * 0.45 + c * R * 0.5, wz + c * R * 0.45 - s * R * 0.5],
+    [wx + s * R * 0.45 - c * R * 0.5, wz + c * R * 0.45 + s * R * 0.5]
+  ];
+  for (let i = 0; i < pts.length; i++) {
+    if (dryLand(pts[i][0], pts[i][1])) return true;
+  }
+  return false;
+}
+
+function npcFindClearSpawnYaw(wx, wz, shipType, dryLand) {
+  for (let i = 0; i < 24; i++) {
+    const yaw = (i / 24) * Math.PI * 2;
+    if (!shipFootprintOverlapsLand(wx, wz, yaw, shipType, dryLand)) return yaw;
+  }
+  return null;
+}
+
 function factionFlagPngIdForFaction(fid) {
   return FACTION_FLAG_PNG_IDS[(fid | 0) % FACTION_COUNT] || FACTION_FLAG_PNG_IDS[0];
 }
@@ -200,7 +227,20 @@ function findMerchantSpawnOffCoast(home, rng, shipTypeOpt, dryLand, edgeClamp) {
     const nz = home.dockZ + longZ * along + widZ * lateral;
     const cx = Math.max(-edgeClamp, Math.min(edgeClamp, nx));
     const cz = Math.max(-edgeClamp, Math.min(edgeClamp, nz));
-    if (!dryLand(cx, cz) && hasClear(cx, cz)) return { nx: cx, nz: cz };
+    const stKey = shipTypeOpt || 'brigantine';
+    if (!dryLand(cx, cz) && hasClear(cx, cz) && npcFindClearSpawnYaw(cx, cz, stKey, dryLand) != null) return { nx: cx, nz: cz };
+  }
+  for (let ring = 0; ring < 26; ring++) {
+    const along = along0 + 18 + ring * 8.5;
+    for (let k = 0; k < 22; k++) {
+      const lateral = ((k / 22) - 0.5) * 28;
+      const nx = home.dockX + longX * along + widX * lateral;
+      const nz = home.dockZ + longZ * along + widZ * lateral;
+      const cx = Math.max(-edgeClamp, Math.min(edgeClamp, nx));
+      const cz = Math.max(-edgeClamp, Math.min(edgeClamp, nz));
+      const stKey2 = shipTypeOpt || 'brigantine';
+      if (!dryLand(cx, cz) && hasClear(cx, cz) && npcFindClearSpawnYaw(cx, cz, stKey2, dryLand) != null) return { nx: cx, nz: cz };
+    }
   }
   return null;
 }
@@ -224,12 +264,24 @@ function sampleOpenOceanPointInWorld(rng, dryLand, edgeClamp, hasClearFn) {
     const nz = (rng() * 2 - 1) * lim * bias;
     if (ok(nx, nz)) return { nx, nz };
   }
-  for (let attempt = 0; attempt < 70; attempt++) {
+  for (let attempt = 0; attempt < 120; attempt++) {
     const nx = (rng() * 2 - 1) * lim;
     const nz = (rng() * 2 - 1) * lim;
     if (ok(nx, nz)) return { nx, nz };
   }
-  return { nx: (rng() * 2 - 1) * 600, nz: (rng() * 2 - 1) * 600 };
+  for (let ring = 1; ring <= 220; ring++) {
+    const d = ring * 98;
+    if (d > lim * 1.05) break;
+    const slots = Math.min(48, 10 + ring);
+    for (let i = 0; i < slots; i++) {
+      const ang = (i / slots) * Math.PI * 2 + ring * 0.173;
+      const nx = Math.cos(ang) * d;
+      const nz = Math.sin(ang) * d;
+      if (Math.abs(nx) > lim || Math.abs(nz) > lim) continue;
+      if (ok(nx, nz)) return { nx, nz };
+    }
+  }
+  return { nx: 0, nz: 0 };
 }
 
 function getNpcRiggingHealth(npc) {
@@ -468,8 +520,12 @@ function applyNpcBoardingLocks(npcs, players) {
   }
 }
 
-function isSpawnFree(wx, wz, shipType, npcs, players, dryLand, edgeClamp) {
+function isSpawnFree(wx, wz, shipType, npcs, players, dryLand, edgeClamp, hasMinClearance) {
   if (dryLand(wx, wz)) return false;
+  if (typeof hasMinClearance === 'function') {
+    const need = Math.max(56, shipHullRadius(shipType) * 1.24 + 10);
+    if (!hasMinClearance(wx, wz, need)) return false;
+  }
   const pr = shipHullRadius(shipType);
   for (const p of players.values()) {
     const pR = shipHullRadius(p.shipType || 'sloop');
@@ -713,25 +769,39 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
       const pz = player && Number.isFinite(Number(player.z)) ? Number(player.z) : 0;
       const typePool = ['cutter', 'sloop', 'brigantine', 'galleon'];
       const npcType = typePool[Math.floor(Math.random() * typePool.length)];
+      const dryAt = (x, z) => ctx.dryLandAtWorldPosition(x, z);
       let nx = px;
       let nz = pz;
       let ok = false;
+      let yawH = null;
       for (let attempt = 0; attempt < 55; attempt++) {
         const a = Math.random() * Math.PI * 2;
         const d = 160 + Math.random() * 380 + (attempt % 12) * 8;
         nx = Math.max(-ctx.edgeClamp, Math.min(ctx.edgeClamp, px + Math.cos(a) * d));
         nz = Math.max(-ctx.edgeClamp, Math.min(ctx.edgeClamp, pz + Math.sin(a) * d));
-        if (!ctx.dryLandAtWorldPosition(nx, nz) && ctx.hasMinClearanceFromLand(nx, nz, 80)) {
-          ok = true;
-          break;
+        if (!dryAt(nx, nz) && ctx.hasMinClearanceFromLand(nx, nz, 80)) {
+          yawH = npcFindClearSpawnYaw(nx, nz, npcType, dryAt);
+          if (yawH != null) {
+            ok = true;
+            break;
+          }
         }
       }
-      if (!ok) {
+      if (!ok || yawH == null) {
         const sr = () => Math.random();
-        const pt = sampleOpenOceanPointInWorld(sr, (x, z) => ctx.dryLandAtWorldPosition(x, z), ctx.edgeClamp, (wx, wz, c) => ctx.hasMinClearanceFromLand(wx, wz, c));
-        nx = pt.nx;
-        nz = pt.nz;
+        for (let fb = 0; fb < 80; fb++) {
+          const pt = sampleOpenOceanPointInWorld(sr, dryAt, ctx.edgeClamp, (wx, wz, c) => ctx.hasMinClearanceFromLand(wx, wz, c));
+          const y = npcFindClearSpawnYaw(pt.nx, pt.nz, npcType, dryAt);
+          if (y != null) {
+            nx = pt.nx;
+            nz = pt.nz;
+            yawH = y;
+            ok = true;
+            break;
+          }
+        }
       }
+      if (!ok || yawH == null) continue;
       const chunkX = Math.floor(nx / ctx.CHUNK_SIZE);
       const chunkZ = Math.floor(nz / ctx.CHUNK_SIZE);
       const pirateFaction = (q.huntTargetFaction != null && Number.isFinite(Number(q.huntTargetFaction)))
@@ -741,7 +811,7 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
         syncId: sid,
         x: nx,
         z: nz,
-        rotation: Math.random() * Math.PI * 2,
+        rotation: yawH,
         speed: 0,
         health: 58 + Math.random() * 36,
         type: npcType,
@@ -964,6 +1034,7 @@ function createServerNpcWorld(opts) {
   let ctx = createTerrainContext({ worldSeed: ws, edgeClamp: baseEdgeClamp, worldMapPayload: worldMapPayloadRef });
   let dryLand = (x, z) => ctx.dryLandAtWorldPosition(x, z);
   let edgeClamp = ctx.edgeClamp;
+  const spawnClearanceOk = (wx, wz, c) => ctx.hasMinClearanceFromLand(wx, wz, c);
   let npcs = [];
   let pirateSlotCount = 0;
   const pirateRespawnAt = new Map();
@@ -1002,64 +1073,61 @@ function createServerNpcWorld(opts) {
       s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
       return s / 4294967296;
     };
-    const dest = pickTradeDestination(home, allPorts, sr, ws, politics.portController);
-    if (!dest) return false;
+    if (!pickTradeDestination(home, allPorts, sr, ws, politics.portController)) return false;
     const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
     const st = shipTypes[Math.floor(sr() * shipTypes.length)];
     let nx = 0;
     let nz = 0;
-    let haveSpawn = false;
-    for (let trySp = 0; trySp < 22; trySp++) {
+    for (let trySp = 0; trySp < 28; trySp++) {
       const spawn = findMerchantSpawnOffCoast(home, sr, st, dryLand, edgeClamp);
       if (!spawn) break;
       nx = spawn.nx;
       nz = spawn.nz;
-      if (isSpawnFree(nx, nz, st, npcs, playerMap, dryLand, edgeClamp)) {
-        haveSpawn = true;
-        break;
-      }
+      if (!isSpawnFree(nx, nz, st, npcs, playerMap, dryLand, edgeClamp, spawnClearanceOk)) continue;
+      const sailPick = sr() > 0.55 ? 'silk' : 'basic';
+      const cannonPart = tradeShipCannonForType(st);
+      const homeFac = townFaction(home, politics.portController, ws) % FACTION_COUNT;
+      const npc = {
+        syncId: TRADE_NPC_SYNC_START + tradeSyncIdx,
+        x: nx,
+        z: nz,
+        rotation: 0,
+        speed: 0,
+        health: 48 + sr() * 42,
+        type: st,
+        tradeCannon: cannonPart,
+        name: '',
+        homeFaction: homeFac,
+        flagColor: FACTION_TRADE_COLORS[homeFac],
+        flagAssetId: factionFlagPngIdForFaction(homeFac),
+        isTradeShip: true,
+        aggro: false,
+        homeDockX: home.dockX,
+        homeDockZ: home.dockZ,
+        homeCx: home.cx,
+        homeCz: home.cz,
+        sailPick,
+        sailBonus: sailPick === 'silk' ? 0.44 : 0.14,
+        wanderAngle: 0,
+        wanderTimer: 99,
+        underFireTimer: 0,
+        riggingHealth: 100,
+        fireCooldown: 0
+      };
+      assignTradeRouteFromHome(npc, home, allPorts, sr, ws, politics.portController);
+      npc.homeEmbarkX = nx;
+      npc.homeEmbarkZ = nz;
+      npc.rotation = Math.atan2((npc.tradeDestX || nx) - nx, (npc.tradeDestZ || nz) - nz);
+      if (shipFootprintOverlapsLand(nx, nz, npc.rotation, st, dryLand)) continue;
+      if (!isSpawnFree(nx, nz, st, npcs, playerMap, dryLand, edgeClamp, spawnClearanceOk)) continue;
+      const startUnderWay = sr() < 0.62;
+      npc.tradePhase = startUnderWay ? 'to_dest' : 'loading_home';
+      npc.tradeTimer = startUnderWay ? 0 : (0.35 + sr() * 1.25);
+      if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.72 + sr() * 0.22);
+      npcs.push(npc);
+      return true;
     }
-    if (!haveSpawn) return false;
-    const sailPick = sr() > 0.55 ? 'silk' : 'basic';
-    const cannonPart = tradeShipCannonForType(st);
-    const homeFac = townFaction(home, politics.portController, ws) % FACTION_COUNT;
-    const npc = {
-      syncId: TRADE_NPC_SYNC_START + tradeSyncIdx,
-      x: nx,
-      z: nz,
-      rotation: 0,
-      speed: 0,
-      health: 48 + sr() * 42,
-      type: st,
-      tradeCannon: cannonPart,
-      name: '',
-      homeFaction: homeFac,
-      flagColor: FACTION_TRADE_COLORS[homeFac],
-      flagAssetId: factionFlagPngIdForFaction(homeFac),
-      isTradeShip: true,
-      aggro: false,
-      homeDockX: home.dockX,
-      homeDockZ: home.dockZ,
-      homeCx: home.cx,
-      homeCz: home.cz,
-      sailPick,
-      sailBonus: sailPick === 'silk' ? 0.44 : 0.14,
-      wanderAngle: 0,
-      wanderTimer: 99,
-      underFireTimer: 0,
-      riggingHealth: 100,
-      fireCooldown: 0
-    };
-    assignTradeRouteFromHome(npc, home, allPorts, sr, ws, politics.portController);
-    npc.homeEmbarkX = nx;
-    npc.homeEmbarkZ = nz;
-    npc.rotation = Math.atan2((npc.tradeDestX || nx) - nx, (npc.tradeDestZ || nz) - nz);
-    const startUnderWay = sr() < 0.62;
-    npc.tradePhase = startUnderWay ? 'to_dest' : 'loading_home';
-    npc.tradeTimer = startUnderWay ? 0 : (0.35 + sr() * 1.25);
-    if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.72 + sr() * 0.22);
-    npcs.push(npc);
-    return true;
+    return false;
   }
 
   function spawnPatrol(fid, playerMap) {
@@ -1079,12 +1147,15 @@ function createServerNpcWorld(opts) {
     let nx = 0;
     let nz = 0;
     let haveSpawn = false;
+    let yawPatrol = 0;
     for (let trySp = 0; trySp < 26; trySp++) {
       const spawn = findMerchantSpawnOffCoast(pick, sr, st, dryLand, edgeClamp);
       if (!spawn) break;
       nx = spawn.nx;
       nz = spawn.nz;
-      if (isSpawnFree(nx, nz, st, npcs, playerMap, dryLand, edgeClamp)) {
+      const yTry = npcFindClearSpawnYaw(nx, nz, st, dryLand);
+      if (yTry != null && isSpawnFree(nx, nz, st, npcs, playerMap, dryLand, edgeClamp, spawnClearanceOk)) {
+        yawPatrol = yTry;
         haveSpawn = true;
         break;
       }
@@ -1095,7 +1166,7 @@ function createServerNpcWorld(opts) {
       syncId: pid,
       x: nx,
       z: nz,
-      rotation: sr() * Math.PI * 2,
+      rotation: yawPatrol,
       speed: 0,
       health: 72 + sr() * 48,
       type: st,
@@ -1140,27 +1211,32 @@ function createServerNpcWorld(opts) {
     let nx = 0;
     let nz = 0;
     let placed = false;
+    let yawV = null;
     for (let attempt = 0; attempt < 90; attempt++) {
-      const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, (wx, wz, c) => ctx.hasMinClearanceFromLand(wx, wz, c));
+      const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, spawnClearanceOk);
       nx = pt.nx;
       nz = pt.nz;
-      if (isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp)) {
+      const y = npcFindClearSpawnYaw(nx, nz, npcType, dryLand);
+      if (y != null && isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp, spawnClearanceOk)) {
+        yawV = y;
         placed = true;
         break;
       }
     }
     if (!placed) {
-      for (let attempt = 0; attempt < 40; attempt++) {
-        const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, (wx, wz, c) => ctx.hasMinClearanceFromLand(wx, wz, c));
+      for (let attempt = 0; attempt < 55; attempt++) {
+        const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, spawnClearanceOk);
         nx = pt.nx;
         nz = pt.nz;
-        if (isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp)) {
+        const y = npcFindClearSpawnYaw(nx, nz, npcType, dryLand);
+        if (y != null && isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp, spawnClearanceOk)) {
+          yawV = y;
           placed = true;
           break;
         }
       }
     }
-    if (!placed) return;
+    if (!placed || yawV == null) return;
     const chunkX = Math.floor(nx / ctx.CHUNK_SIZE);
     const chunkZ = Math.floor(nz / ctx.CHUNK_SIZE);
     const pirateFaction = ((chunkX * 31 + chunkZ * 17 + npcSeed * 3 + i * 13) & 0x7fffffff) % FACTION_COUNT;
@@ -1168,7 +1244,7 @@ function createServerNpcWorld(opts) {
       syncId: i,
       x: nx,
       z: nz,
-      rotation: sr() * Math.PI * 2,
+      rotation: yawV,
       speed: 0,
       health: 60 + sr() * 40,
       type: npcType,
@@ -1210,16 +1286,32 @@ function createServerNpcWorld(opts) {
       let nx = 0;
       let nz = 0;
       let placed = false;
+      let yawV = null;
       for (let attempt = 0; attempt < 90; attempt++) {
-        const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, (wx, wz, c) => ctx.hasMinClearanceFromLand(wx, wz, c));
+        const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, spawnClearanceOk);
         nx = pt.nx;
         nz = pt.nz;
-        if (isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp)) {
+        const y = npcFindClearSpawnYaw(nx, nz, npcType, dryLand);
+        if (y != null && isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp, spawnClearanceOk)) {
+          yawV = y;
           placed = true;
           break;
         }
       }
-      if (!placed) continue;
+      if (!placed) {
+        for (let attempt = 0; attempt < 55; attempt++) {
+          const pt = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, spawnClearanceOk);
+          nx = pt.nx;
+          nz = pt.nz;
+          const y = npcFindClearSpawnYaw(nx, nz, npcType, dryLand);
+          if (y != null && isSpawnFree(nx, nz, npcType, npcs, playerMap, dryLand, edgeClamp, spawnClearanceOk)) {
+            yawV = y;
+            placed = true;
+            break;
+          }
+        }
+      }
+      if (!placed || yawV == null) continue;
       const chunkX = Math.floor(nx / ctx.CHUNK_SIZE);
       const chunkZ = Math.floor(nz / ctx.CHUNK_SIZE);
       const pirateFaction = ((chunkX * 31 + chunkZ * 17 + npcSeed * 3 + i * 13) & 0x7fffffff) % FACTION_COUNT;
@@ -1227,7 +1319,7 @@ function createServerNpcWorld(opts) {
         syncId: i,
         x: nx,
         z: nz,
-        rotation: sr() * Math.PI * 2,
+        rotation: yawV,
         speed: 0,
         health: 60 + sr() * 40,
         type: npcType,
