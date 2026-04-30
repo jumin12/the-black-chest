@@ -16150,7 +16150,7 @@ function accelerateTutorialRaidNpcLikePlayer(npc, dt, forwardThrottle, optionalH
   const fwd = Math.max(0, Math.min(1, Number(forwardThrottle) || 0));
   if (fwd > 0.1) {
     npc.speed = Math.min(
-      npc.speed + 4 * dt * speedMult * fwd * PLAYER_BASE_SPEED_MULT,
+      npc.speed + 3.25 * dt * speedMult * fwd * PLAYER_BASE_SPEED_MULT,
       maxCeil
     );
   } else {
@@ -17208,7 +17208,14 @@ function resolveNpcHumanGrudgeAim(npc) {
   }
   return { bx, bz, pvx, pvz };
 }
-/** Scripted raid skips steerNpcAvoidCloseShips — bias hull away from player so the pass crosses clear ahead. */
+/** One rudder budget per frame — scripted raid used to call several yaw helpers and stacked ~3–4× legitimate turn rate (“orbit” speed). */
+function tutorialRaidResetSteerBudget(npc, dt) {
+  if (!npc || !(dt > 0)) return;
+  const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.cutter;
+  const nominalRate = spec.turnRate * 0.44 * 0.48;
+  npc._tutorialRaidYawBudgetRad = nominalRate * dt;
+}
+/** Helm toward `targetRad` at cutter-like yaw rate; shares `_tutorialRaidYawBudgetRad` so raid scripting cannot exceed ~½ rudder per tick total. */
 function tutorialRaidPlayerLikeYawStep(npc, dt, targetRad, urgency) {
   if (!npc || !(dt > 0)) return;
   const ur = urgency != null ? Math.max(0.12, Math.min(1.2, urgency)) : 1;
@@ -17220,10 +17227,16 @@ function tutorialRaidPlayerLikeYawStep(npc, dt, targetRad, urgency) {
   const wayOn = Math.min(1, Math.max(0, spd - 0.1) / 5.25);
   const rudderEff = 0.04 + 0.96 * wayOn * wayOn;
   const maxYaw = spec.turnRate * rudderEff * 0.44 * ur;
-  const step = Math.sign(diff) * Math.min(Math.abs(diff), maxYaw * dt);
+  let step = Math.sign(diff) * Math.min(Math.abs(diff), maxYaw * dt);
+  const bud = npc._tutorialRaidYawBudgetRad;
+  if (bud != null && Number.isFinite(bud)) {
+    const mag = Math.min(Math.abs(step), Math.max(0, bud));
+    step = Math.sign(step) * mag;
+    npc._tutorialRaidYawBudgetRad = Math.max(0, bud - mag);
+  }
   npc.rotation += step;
 }
-/** Scripted raid skips steerNpcAvoidCloseShips — bias hull away from player so the pass crosses clear ahead. */
+/** Tangential bias away from the player’s hull during scripted crossing (narrow band only). */
 function tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer) {
   if (!npc || !G.player) return;
   const pType = G.player.shipType || 'sloop';
@@ -17241,7 +17254,7 @@ function tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer) {
   if (t <= 1e-4) return;
   const rax = npc.x - px, raz = npc.z - pz;
   const away = Math.atan2(rax || 1e-4, raz || 1e-4);
-  tutorialRaidPlayerLikeYawStep(npc, dt, away, (0.42 + t * 0.58) * 1.02);
+  tutorialRaidPlayerLikeYawStep(npc, dt, away, Math.min(0.38, (0.38 + t * 0.52) * 0.72));
 }
 
 /** Flee leg: sail away from the player but score candidate headings by open-water rays (land & reef) like normal NPC clearance. */
@@ -17276,7 +17289,7 @@ function tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, ageWobble) {
       bestAng = a;
     }
   }
-  tutorialRaidPlayerLikeYawStep(npc, dt, bestAng, 0.98);
+  tutorialRaidPlayerLikeYawStep(npc, dt, bestAng, 0.68);
 }
 
 /** Score candidate forward headings for open water + standoff from surf; used by scripted tutorial raid pathing. */
@@ -17316,20 +17329,6 @@ function tutorialRaidPickHeadingWithOffshoreClearance(npc, preferredRad) {
     }
   }
   return any ? bestA : preferredRad;
-}
-/** Broadside yaw toward player's COM for tutorial pass (helps one clean volley). */
-function tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, weight) {
-  const dx = px - npc.x, dz = pz - npc.z;
-  const toP = Math.atan2(dx, dz);
-  const st = toP + Math.PI / 2, po = toP - Math.PI / 2;
-  let dSt = st - npc.rotation;
-  while (dSt > Math.PI) dSt -= Math.PI * 2;
-  while (dSt < -Math.PI) dSt += Math.PI * 2;
-  let dPo = po - npc.rotation;
-  while (dPo > Math.PI) dPo -= Math.PI * 2;
-  while (dPo < -Math.PI) dPo += Math.PI * 2;
-  const tgt = Math.abs(dSt) < Math.abs(dPo) ? st : po;
-  tutorialRaidPlayerLikeYawStep(npc, dt, tgt, (weight || 1) * 0.95);
 }
 /** Returns true iff a staggered battery was scheduled (not muted by aim rules). */
 function npcFireBroadsideAtPlayer(npc, opts) {
@@ -18008,13 +18007,13 @@ function updateNPCs(dt) {
         const cruiseCap =
           npc._tutorialRaidCruiseCeil != null && Number.isFinite(npc._tutorialRaidCruiseCeil)
             ? Math.min(pCeil, npc._tutorialRaidCruiseCeil)
-            : pCeil * 0.62;
-        let fwd = 0.38;
-        if (focus) fwd = distToTarget < 120 ? 0.56 : 0.42;
+            : pCeil * 0.5;
+        let fwd = 0.28;
+        if (focus) fwd = distToTarget < 120 ? 0.4 : 0.3;
         else if (npc.aggro && distToPlayer < 148) {
-          if (distToPlayer < 102) fwd = 0.09 + 0.14 * Math.min(1, distToPlayer / 102);
-          else if (distToPlayer < 152) fwd = 0.42;
-          else fwd = 0.54;
+          if (distToPlayer < 102) fwd = 0.065 + 0.1 * Math.min(1, distToPlayer / 102);
+          else if (distToPlayer < 152) fwd = 0.3;
+          else fwd = 0.36;
         }
         accelerateTutorialRaidNpcLikePlayer(npc, dt, Math.min(1, fwd), cruiseCap);
       } else {
@@ -34104,7 +34103,7 @@ function tutorialRaidRevealCombatPhase() {
     npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 28);
     const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.cutter;
     const sm = spec.speed + npcSailBonus(npc);
-    npc._tutorialRaidCruiseCeil = 12 * sm * PLAYER_BASE_SPEED_MULT * 0.62;
+    npc._tutorialRaidCruiseCeil = 12 * sm * PLAYER_BASE_SPEED_MULT * 0.5;
     tr._volleyTriggered = true;
   }
   const past = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1;
@@ -34405,7 +34404,8 @@ function tickTutorialRaidNpcHost(dt, npc) {
   const dPlayer = Math.hypot(nx - px, nz - pz);
   const wAt = getWindAt(npc.x, npc.z);
   const windDot = Math.cos(wAt.angle - npc.rotation);
-  const windTrim = Math.max(0.22, Math.min(1.06, windDot * 0.35 + 0.65));
+  const windTrim = Math.max(0.22, Math.min(1.02, windDot * 0.35 + 0.65));
+  tutorialRaidResetSteerBudget(npc, dt);
   if (!tr._volleyTriggered) {
     /* Wide beam crossing ahead — lateral offset scales up when closing so we pass around, not through, the player. */
     const sideMag =
@@ -34413,39 +34413,39 @@ function tickTutorialRaidNpcHost(dt, npc) {
     const fwdMag = 36 + Math.min(40, Math.max(0, 142 - dPlayer) * 0.38);
     const tx = px + sinR * fwdMag + sideX * sideMag;
     const tz = pz + cosR * fwdMag + sideZ * sideMag;
-    if (dPlayer >= 52 && dPlayer <= 168) tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, 0.38);
     const dx = tx - nx, dz = tz - nz;
     const distT = Math.hypot(dx, dz);
     const rawToT = Math.atan2(dx, dz);
     const toT = tutorialRaidPickHeadingWithOffshoreClearance(npc, rawToT);
-    tutorialRaidPlayerLikeYawStep(npc, dt, toT, 0.74);
-    tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
     if (!npcForwardRayClear(npc, 66, 13)) {
       tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, tr.age);
+    } else {
+      tutorialRaidPlayerLikeYawStep(npc, dt, toT, 0.44);
+      tutorialRaidSteerClearOfPlayer(npc, dt, px, pz, dPlayer);
     }
-    let fwd = distT > 95 ? 0.48 : 0.34;
+    let fwd = distT > 95 ? 0.32 : 0.22;
     fwd *= windTrim;
-    if (dPlayer < 72) fwd = Math.min(fwd, 0.26);
-    if (dPlayer < 48) fwd = Math.min(fwd, 0.2);
+    if (dPlayer < 72) fwd = Math.min(fwd, 0.18);
+    if (dPlayer < 48) fwd = Math.min(fwd, 0.14);
     accelerateTutorialRaidNpcLikePlayer(npc, dt, Math.min(1, fwd));
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
     if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
   } else {
-    tutorialRaidPreferBroadsideBearing(npc, dt, px, pz, 0.62);
-    const rawBear = Math.atan2(px - nx, pz - nz);
-    const navBear = tutorialRaidPickHeadingWithOffshoreClearance(npc, rawBear);
-    tutorialRaidPlayerLikeYawStep(npc, dt, navBear, 0.62);
     if (!npcForwardRayClear(npc, 94, 16)) {
       tutorialRaidFleeTowardOpenSea(npc, dt * 0.82, px, pz, tr.age + dPlayer * 0.004);
+    } else {
+      const rawBear = Math.atan2(px - nx, pz - nz);
+      const navBear = tutorialRaidPickHeadingWithOffshoreClearance(npc, rawBear);
+      tutorialRaidPlayerLikeYawStep(npc, dt, navBear, 0.42);
     }
-    let fwd = 0.42;
-    if (dPlayer < 102) fwd = 0.085 + 0.14 * Math.min(1, dPlayer / 102);
-    else if (dPlayer < 152) fwd = 0.4;
-    else fwd = 0.52;
-    fwd *= Math.min(1.05, Math.max(0.82, windTrim));
+    let fwd = 0.28;
+    if (dPlayer < 102) fwd = 0.055 + 0.095 * Math.min(1, dPlayer / 102);
+    else if (dPlayer < 152) fwd = 0.28;
+    else fwd = 0.34;
+    fwd *= Math.min(1.02, Math.max(0.74, windTrim));
     const specR = SHIP_TYPES[npc.type] || SHIP_TYPES.cutter;
     const smR = specR.speed + npcSailBonus(npc);
-    const cruiseCap = 12 * smR * PLAYER_BASE_SPEED_MULT * 0.58;
+    const cruiseCap = 12 * smR * PLAYER_BASE_SPEED_MULT * 0.44;
     accelerateTutorialRaidNpcLikePlayer(npc, dt, Math.min(1, fwd), cruiseCap);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
     if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
