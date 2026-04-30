@@ -331,7 +331,8 @@ function npcEffectiveForwardSpeed(npc, windAt) {
 function npcSailingTurnFactor(npc, windAt) {
   const v = npcEffectiveForwardSpeed(npc, windAt);
   const t = Math.min(1, Math.max(0, (v - 0.06) / 5.4));
-  return 0.11 + 0.89 * t * t;
+  /* Match client: higher floor at low speed so patrol/merchant AI can bear away & make way. */
+  return 0.28 + 0.72 * t * t;
 }
 
 function accelerateNpcToward(npc, dt, target) {
@@ -341,7 +342,7 @@ function accelerateNpcToward(npc, dt, target) {
   const t = Math.min(maxF, Math.max(0, target));
   let spd = npc.speed || 0;
   if (spd < t - 0.03) {
-    spd = Math.min(spd + 6.2 * dt * speedMult, t, maxF);
+    spd = Math.min(spd + 9.0 * dt * speedMult, t, maxF);
   } else if (spd > t + 0.03) {
     spd *= (1 - 0.3 * dt);
     if (spd < t) spd = t;
@@ -1705,7 +1706,7 @@ function createServerNpcWorld(opts) {
               let tdiff = targetAngle - npc.rotation;
               while (tdiff > Math.PI) tdiff -= Math.PI * 2;
               while (tdiff < -Math.PI) tdiff += Math.PI * 2;
-              npc.rotation += tdiff * 0.62 * dt * npcSailingTurnFactor(npc, windAt);
+              npc.rotation += tdiff * 0.78 * dt * npcSailingTurnFactor(npc, windAt);
             }
             accelerateNpcToward(npc, dt, tgtC);
           }
@@ -1856,7 +1857,7 @@ function createServerNpcWorld(opts) {
         let diff = npc.wanderAngle - npc.rotation;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        npc.rotation += diff * 0.5 * dt * npcSailingTurnFactor(npc, windAt);
+        npc.rotation += diff * 0.78 * dt * npcSailingTurnFactor(npc, windAt);
       }
     }
     steerNpcClearanceAhead(npc, dt, sharp, windAt, dryLand);
@@ -1865,7 +1866,7 @@ function createServerNpcWorld(opts) {
     /** Match browser host: patrols keep a slightly higher idle cruise; chase harder when damaged or focused. */
     const chasing =
       !!(focus && distToTarget < 132) || (!focus && npc.aggro && near && distToPlayer < aggroBand);
-    const tgtSpd = chasing ? maxF * 0.94 : maxF * (isPatrol ? 0.91 : 0.88);
+    const tgtSpd = chasing ? maxF * 0.94 : maxF * (isPatrol ? 0.94 : 0.92);
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }
