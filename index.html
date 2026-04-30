@@ -18030,47 +18030,43 @@ function updateNPCs(dt) {
       const delayNpc = useNetInterpNpc
         ? getEffectiveNpcNetObservationInterpDelayMs(!G.npcSimFromServer)
         : getEffectiveHullSnapInterpDelayMs();
-      const poseNet = useNetInterpNpc
-        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, {
-            maxExtrapMs: 14,
-            catmullRom: true
-          })
-        : null;
+      let poseNet = null;
+      if (useNetInterpNpc) {
+        const hist = npc._snapHist;
+        if (hist && hist.length >= 2) {
+          const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
+          if (la > 0.012) {
+            const lo = hist[0].recvMs + 0.002;
+            const hi = hist[hist.length - 1].recvMs - 0.002;
+            if (hi > lo) {
+              const idealRecv = nowNpc - delayNpc;
+              if (!Number.isFinite(npc._netPlayRecvMs)) npc._netPlayRecvMs = idealRecv;
+              const prevW = npc._netPlayLastWallMs;
+              npc._netPlayLastWallMs = nowNpc;
+              const dWallSec = prevW != null
+                ? Math.min(0.056, Math.max(1e-4, (nowNpc - prevW) * 0.001))
+                : Math.min(0.056, Math.max(1e-4, dt));
+              npc._netPlayRecvMs += dWallSec * 1000;
+              let skew = idealRecv - npc._netPlayRecvMs;
+              if (Math.abs(skew) > 290) npc._netPlayRecvMs = Math.max(lo, Math.min(hi, idealRecv));
+              else npc._netPlayRecvMs += skew * (1 - Math.exp(-5.8 * dWallSec));
+              npc._netPlayRecvMs = Math.max(lo, Math.min(hi, npc._netPlayRecvMs));
+              poseNet = sampleHullRecvHist(hist, npc._netPlayRecvMs, {
+                catmullRom: true,
+                clampOnly: true,
+                delayHintMs: delayNpc
+              });
+            }
+          }
+        }
+      }
       if (poseNet && Number.isFinite(poseNet.x) && Number.isFinite(poseNet.z) && Number.isFinite(poseNet.ry)) {
-        /* Catmull–Rom + short extrap already soften discrete keys; adaptive low-pass removes residual micro-jitter without fighting steady motion. */
-        if (
-          !Number.isFinite(npc._netHullSmX) ||
-          !Number.isFinite(npc._netHullSmZ) ||
-          !Number.isFinite(npc._netHullSmRy)
-        ) {
-          npc._netHullSmX = poseNet.x;
-          npc._netHullSmZ = poseNet.z;
-          npc._netHullSmRy = poseNet.ry;
-        }
-        const edx = poseNet.x - npc._netHullSmX;
-        const edz = poseNet.z - npc._netHullSmZ;
-        const es = Math.hypot(edx, edz);
-        if (es > 220) {
-          npc._netHullSmX = poseNet.x;
-          npc._netHullSmZ = poseNet.z;
-          npc._netHullSmRy = poseNet.ry;
-        } else {
-          const vm = es / Math.max(dt, 1e-4);
-          const track = Math.min(118, 52 + vm * 0.052 + Math.min(58, es * 0.095));
-          const pk = 1 - Math.exp(-track * dt);
-          npc._netHullSmX += edx * pk;
-          npc._netHullSmZ += edz * pk;
-          let dr = poseNet.ry - npc._netHullSmRy;
-          while (dr > Math.PI) dr -= Math.PI * 2;
-          while (dr < -Math.PI) dr += Math.PI * 2;
-          const rk = 1 - Math.exp(-Math.min(76, 34 + Math.abs(dr) * 10) * dt);
-          npc._netHullSmRy += dr * rk;
-        }
-        npc.x = npc._netHullSmX;
-        npc.z = npc._netHullSmZ;
-        npc.rotation = npc._netHullSmRy;
+        /* Monotonic recv-timeline playback + clamp-only sampling avoids extrapolation snaps; Catmull–Rom softens chord kinks. */
+        npc.x = poseNet.x;
+        npc.z = poseNet.z;
+        npc.rotation = poseNet.ry;
       } else {
-        npc._netHullSmX = npc._netHullSmZ = npc._netHullSmRy = undefined;
+        npc._netPlayRecvMs = npc._netPlayLastWallMs = undefined;
         npc._npcNetSmVx = npc._npcNetSmVz = undefined;
         if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -30560,27 +30556,30 @@ function catmullRomScalar(p0, p1, p2, p3, t) {
 }
 
 /**
- * Playback from a short receive-time ring buffer at (now - delay) so motion is sampled between two real
- * server snapshots instead of guessing with conflicting velocity + positional pulls (major rubber-band source).
+ * Sample `_snapHist` at absolute recv timeline `tgtRecvMs` (same units as each sample’s `recvMs`).
  */
-function interpolateHullHistory(hist, nowMs, delayMs, interpOpts) {
+function sampleHullRecvHist(hist, tgtRecvMs, interpOpts) {
   interpOpts = interpOpts || {};
   const useCatmullRom = !!interpOpts.catmullRom;
   const maxExtrapMsCap =
     interpOpts.maxExtrapMs != null && Number.isFinite(Number(interpOpts.maxExtrapMs))
       ? Math.max(0, Number(interpOpts.maxExtrapMs))
       : null;
+  const clampOnly = !!interpOpts.clampOnly;
   if (!hist || hist.length < 2) return null;
   const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
   /* ~60Hz ticks ≈16ms apart — old 50ms floor blocked interpolation until ~4 samples, forcing velocity fallback (visible stair-step). */
   if (!(la > 0.012)) return null;
-  const tgt = nowMs - delayMs;
+  const tgt = tgtRecvMs;
   const h0 = hist[0];
   if (tgt <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
   let i = 1;
   while (i < hist.length && hist[i].recvMs < tgt) i++;
   const last = hist[hist.length - 1];
   if (i >= hist.length || tgt >= last.recvMs) {
+    if (clampOnly || maxExtrapMsCap === 0) {
+      return { x: last.x, z: last.z, ry: last.ry };
+    }
     if (hist.length < 2) return { x: last.x, z: last.z, ry: last.ry };
     const prev = hist[hist.length - 2];
     const dtm = Math.max(4.5, last.recvMs - prev.recvMs);
@@ -30588,12 +30587,13 @@ function interpolateHullHistory(hist, nowMs, delayMs, interpOpts) {
     const vz = (last.z - prev.z) / dtm;
     const vm = Math.hypot(vx, vz);
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
-    let extrapMax = Math.min(138, Math.max(52, delayMs * 0.4 + 26));
+    let extrapMax = Math.min(138, Math.max(52, (interpOpts.delayHintMs != null ? Number(interpOpts.delayHintMs) : 72) * 0.4 + 26));
     extrapMax += Math.min(85, vm * 0.62);
     let over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
     if (maxExtrapMsCap != null) over = Math.min(over, maxExtrapMsCap);
     let uex = 1 + over / dtm;
-    let ueCap = delayMs >= 128 ? 2.12 : 1.94;
+    const delayHint = interpOpts.delayHintMs != null ? Number(interpOpts.delayHintMs) : 72;
+    let ueCap = delayHint >= 128 ? 2.12 : 1.94;
     if (vm > 38) ueCap = Math.min(2.42, ueCap + Math.min(0.38, (vm - 38) * 0.0048));
     if (uex > ueCap) uex = ueCap;
     return {
@@ -30640,6 +30640,13 @@ function interpolateHullHistory(hist, nowMs, delayMs, interpOpts) {
     z: sz,
     ry: interpYawShortest(a.ry, b.ry, u)
   };
+}
+
+/** Wall-clock delayed playback — forwards to `sampleHullRecvHist` at `nowMs - delayMs`. */
+function interpolateHullHistory(hist, nowMs, delayMs, interpOpts) {
+  interpOpts = interpOpts || {};
+  const io = { ...interpOpts, delayHintMs: delayMs };
+  return sampleHullRecvHist(hist, nowMs - delayMs, io);
 }
 
 /** Low-pass remote peer velocity so finite-difference noise does not fight the smoother each net tick. */
