@@ -18053,15 +18053,26 @@ function updateNPCs(dt) {
           npc._npcPredZ = poseNet.z;
         }
         const hvsm = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ);
-        const vx = hvsm ? npc._npcVelSmX : 0;
-        const vz = hvsm ? npc._npcVelSmZ : 0;
+        let vx = hvsm ? npc._npcVelSmX : 0;
+        let vz = hvsm ? npc._npcVelSmZ : 0;
+        const vmNet = Math.hypot(vx, vz);
+        const spAbs =
+          npc.speed != null && Number.isFinite(Number(npc.speed)) ? Math.abs(Number(npc.speed)) : 0;
+        const hx = Math.sin(poseNet.ry) * spAbs;
+        const hz = Math.cos(poseNet.ry) * spAbs;
+        /* Quantized snapshots often imply ~0 TX/TZ between ticks; synced hull speed + heading keeps steady crawl while net delta catches up. */
+        const spFloor = Math.max(0.06, spAbs);
+        const blendH =
+          vmNet < spFloor * 0.38 ? 0.72 : vmNet < spFloor * 0.78 ? 0.48 : Math.min(0.32, 0.14 + spAbs * 0.022);
+        vx = vx * (1 - blendH) + hx * blendH;
+        vz = vz * (1 - blendH) + hz * blendH;
         npc._npcPredX += vx * dt;
         npc._npcPredZ += vz * dt;
         const ecx = poseNet.x - npc._npcPredX;
         const ecz = poseNet.z - npc._npcPredZ;
-        const corr = 1 - Math.exp(-9.2 * dt);
-        npc._npcPredX += ecx * corr * 0.72;
-        npc._npcPredZ += ecz * corr * 0.72;
+        const corr = 1 - Math.exp(-7 * dt);
+        npc._npcPredX += ecx * corr * 0.34;
+        npc._npcPredZ += ecz * corr * 0.34;
         npc.x = npc._npcPredX;
         npc.z = npc._npcPredZ;
         npc.rotation = poseNet.ry;
@@ -21143,9 +21154,10 @@ function applyNpcSyncMessage(msg, opts) {
         npc._npcVelTX = rdx / dtn;
         npc._npcVelTZ = rdz / dtn;
         const dq = rdx * rdx + rdz * rdz;
-        if (dq < 0.0144) {
-          npc._npcVelTX *= 0.92;
-          npc._npcVelTZ *= 0.92;
+        /* Was damping any tick with Δpos² < 0.0144 (~12cm) — common with coarse sync grid → TX/TZ collapsed → client prediction “wind‑up” stop/go. */
+        if (dq < 1e-7) {
+          npc._npcVelTX *= 0.94;
+          npc._npcVelTZ *= 0.94;
         }
         const vm = Math.hypot(npc._npcVelTX, npc._npcVelTZ);
         const vcap = 132;
