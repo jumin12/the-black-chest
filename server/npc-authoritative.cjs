@@ -325,7 +325,9 @@ function npcWindEffect(npc, windAt) {
 function npcEffectiveForwardSpeed(npc, windAt) {
   const maxF = npcMaxForwardSpeed(npc);
   const v = Math.min(Math.abs(npc.speed || 0), maxF);
-  return v * npcWindEffect(npc, windAt);
+  const wEff = npcWindEffect(npc, windAt);
+  /* Match client: blend hull throttle with wind so AI SOG stays closer to player feel (tutorial caps do this implicitly). */
+  return v * (0.48 + 0.52 * wEff);
 }
 
 function npcSailingTurnFactor(npc, windAt) {
