@@ -17955,16 +17955,23 @@ function updateNPCs(dt) {
       const delayNpc = G.npcSimFromServer ? getEffectiveNpcInterpDelayMs() : getEffectiveRemoteInterpDelayMs();
       const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
-        const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-        const nt = delayNpc < 58 ? 54 : delayNpc < 108 ? 41 : delayNpc < 165 ? 29 : 21;
-        const nb = ej > 40 ? (delayNpc < 58 ? 21 : 12) : ej > 8 ? (delayNpc < 58 ? 31 : 21) : 13;
-        const an = Math.min(1, 1 - Math.exp(-(nt + nb) * dt));
-        npc.x += (ipNpc.x - npc.x) * an;
-        npc.z += (ipNpc.z - npc.z) * an;
-        let drn = ipNpc.ry - npc.rotation;
-        while (drn > Math.PI) drn -= Math.PI * 2;
-        while (drn < -Math.PI) drn += Math.PI * 2;
-        npc.rotation += drn * an;
+        /* Dedicated server / relay: pose is already delayed-sample interpolation (same idea as FPS-style net interp). Extra exponential chase toward ipNpc caused beat-frequency “stutter” at snapshot rate. */
+        if (G.npcSimFromServer) {
+          npc.x = ipNpc.x;
+          npc.z = ipNpc.z;
+          npc.rotation = ipNpc.ry;
+        } else {
+          const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
+          const nt = delayNpc < 58 ? 54 : delayNpc < 108 ? 41 : delayNpc < 165 ? 29 : 21;
+          const nb = ej > 40 ? (delayNpc < 58 ? 21 : 12) : ej > 8 ? (delayNpc < 58 ? 31 : 21) : 13;
+          const an = Math.min(1, 1 - Math.exp(-(nt + nb) * dt));
+          npc.x += (ipNpc.x - npc.x) * an;
+          npc.z += (ipNpc.z - npc.z) * an;
+          let drn = ipNpc.ry - npc.rotation;
+          while (drn > Math.PI) drn -= Math.PI * 2;
+          while (drn < -Math.PI) drn += Math.PI * 2;
+          npc.rotation += drn * an;
+        }
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -30325,14 +30332,14 @@ function getEffectiveRemoteInterpDelayMs() {
   return Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, d));
 }
 
-/** Tighter buffer than player hulls — DS NPC snapshots already authoritative at TICK_RATE; lower delay reads “alive”. */
+/** Tighter buffer than player hulls — DS NPC snapshots already authoritative at TICK_RATE; ~2–3 ticks keeps playback between samples (less extrapolation jitter than ultra-low delay). */
 function getEffectiveNpcInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 75;
-  const d = 30 + r * 0.36;
-  return Math.max(22, Math.min(82, d));
+  const d = 34 + r * 0.38;
+  return Math.max(40, Math.min(88, d));
 }
 
 /**
@@ -33932,7 +33939,7 @@ function tutorialRaidRevealCombatPhase() {
     npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 28);
     /* Full pursuit — old low cruise cap read as “running away” and starved broadside duels. */
     const maxF = npcMaxForwardSpeed(npc);
-    npc._tutorialRaidCruiseCeil = maxF * 0.94;
+    npc._tutorialRaidCruiseCeil = maxF * 0.86;
     tr._volleyTriggered = true;
   }
   const past = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1;
@@ -34132,7 +34139,7 @@ function startTutorialRaidEncounter() {
     notify('Keep a weather eye — you will meet pirates soon enough. Broadsides: Z starboard, X port.', 6200);
     return;
   }
-  npc.speed = tutorialRaidNpcSailSpeedTarget(npc, 0.11);
+  npc.speed = tutorialRaidNpcSailSpeedTarget(npc, 0.092);
   G.tutorialRaidCutscene = {
     active: true,
     cinematicUi: true,
@@ -34160,13 +34167,14 @@ function startTutorialRaidEncounter() {
   } catch (eTut0) {}
 }
 
-/** Tutorial raider stays slightly under player top scalar speed (same order as npc.speed); wind limits travel via npcEffectiveForwardSpeed. */
+/** Tutorial raider stays slightly under player full-ahead ceiling (same ship type baseline); wind/trims still gate motion. */
 function tutorialRaidNpcSailSpeedTarget(npc, fracOfHullMax) {
   const nmax = npcMaxForwardSpeed(npc);
   const sm = playerSpeedMultFromShipParts();
   const playerScalarCeil = 12 * sm * PLAYER_BASE_SPEED_MULT;
   const f = fracOfHullMax != null ? fracOfHullMax : 0.22;
-  return Math.max(0.013, Math.min(nmax * f, playerScalarCeil * 0.91) * 0.25);
+  /* Cap vs player hull ceiling (~82% of player top speed scalar) so the chase stays recoverable. */
+  return Math.max(0.013, Math.min(nmax * f, playerScalarCeil * 0.82) * 0.23);
 }
 
 function tickTutorialRaidCutscene(dt) {
@@ -34261,11 +34269,11 @@ function tickTutorialRaidNpcHost(dt, npc) {
     if (!npcForwardRayClear(npc, 66, 13)) {
       tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, tr.age);
     }
-    let frac = distT > 95 ? 0.19 : 0.13;
+    let frac = distT > 95 ? 0.162 : 0.108;
     frac *= Math.max(0.62, Math.min(1.06, wEff));
     let tgt = tutorialRaidNpcSailSpeedTarget(npc, frac);
-    if (dPlayer < 72) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.1));
-    if (dPlayer < 48) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.068));
+    if (dPlayer < 72) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.086));
+    if (dPlayer < 48) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.058));
     accelerateNpcToward(npc, dt, tgt);
     steerNpcClearanceAhead(npc, dt, sharp);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
@@ -34282,13 +34290,14 @@ function tickTutorialRaidNpcHost(dt, npc) {
       tutorialRaidFleeTowardOpenSea(npc, dt * 0.82, px, pz, tr.age + dPlayer * 0.004);
     }
     const maxF = npcMaxForwardSpeed(npc);
+    const tutSlow = 0.9;
     let tgtSpd;
     if (dPlayer < 102) {
-      tgtSpd = maxF * (0.1 + 0.18 * Math.min(1, dPlayer / 102));
+      tgtSpd = maxF * tutSlow * (0.1 + 0.18 * Math.min(1, dPlayer / 102));
     } else if (dPlayer < 152) {
-      tgtSpd = maxF * 0.48;
+      tgtSpd = maxF * tutSlow * 0.48;
     } else {
-      tgtSpd = maxF * 0.64;
+      tgtSpd = maxF * tutSlow * 0.64;
     }
     accelerateNpcToward(npc, dt, tgtSpd);
     steerNpcClearanceAhead(npc, dt, sharp);
