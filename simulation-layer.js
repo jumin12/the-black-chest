@@ -5,7 +5,7 @@
  * Single tick pipeline: merge validated client deltas → integrate motion with wind (same model as clients).
  */
 
-const DEFAULT_TICK_RATE = 120;
+const DEFAULT_TICK_RATE = 60;
 
 /** Internal hull speed scalar — aligned with client `PLAYER_BASE_SPEED_MULT` and sail/hull caps. */
 const SPEED_ABS_MAX = 16;
@@ -183,11 +183,10 @@ function createGameSimulation(opts) {
     const dz = cz2 - p.z;
     const d = Math.hypot(dx, dz);
     if (d < 0.12) return;
-    /* `validatePlayerUpdate` has already rejected impossible jumps. Use the accepted
-     * client hull sample as authority; partial pulls make remote viewers see a
-     * staircase of server corrections instead of the captain's smooth motion. */
-    p.x = cx2;
-    p.z = cz2;
+    const maxPull = Math.min(28, 3.8 + d * 0.2);
+    const k = Math.min(1, maxPull / d);
+    p.x += dx * k;
+    p.z += dz * k;
   }
 
   return {
@@ -202,7 +201,7 @@ function createGameSimulation(opts) {
 }
 
 const AC_DEFAULTS = {
-  maxUpdatesPerSec: Math.max(40, Number(process.env.AC_MAX_UPDATES_PER_SEC) || 96),
+  maxUpdatesPerSec: Math.max(40, Number(process.env.AC_MAX_UPDATES_PER_SEC) || 72),
   maxPositionJump: Math.max(8, Number(process.env.AC_MAX_POSITION_JUMP) || 28),
   maxRotationDelta: Math.max(0.2, Number(process.env.AC_MAX_ROTATION_DELTA) || 0.85),
   maxHealthDropPerMsg: Math.max(5, Number(process.env.AC_MAX_HEALTH_DROP) || 38),
@@ -210,7 +209,7 @@ const AC_DEFAULTS = {
   maxMoraleSwingPerMsg: Math.max(2, Number(process.env.AC_MAX_MORALE_SWING) || 22),
   violationKickThreshold: Math.max(5, Number(process.env.AC_VIOLATION_KICK) || 22),
   violationWindowMs: Math.max(3000, Number(process.env.AC_VIOLATION_WINDOW_MS) || 14000),
-  rateBurst: Math.max(5, Number(process.env.AC_RATE_BURST) || 36)
+  rateBurst: Math.max(5, Number(process.env.AC_RATE_BURST) || 24)
 };
 
 /**

@@ -10,8 +10,6 @@ const NPC_SPAWN_EXTRA_GAP = 12;
 const PLAYER_BROADSIDE_COOLDOWN = 2.5;
 const CANNONBALL_XY_SPEED = 35;
 const TRADE_DOCK_DIST = 40;
-/** Match client `PLAYER_BASE_SPEED_MULT` — player helm max uses `12 * hullSpeed * this`. */
-const PLAYER_BASE_SPEED_MULT = 0.63;
 const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
 /** Vanilla pirate slots (syncId 0..n-1) respawn this long after removal (matches browser host). */
 const VANILLA_PIRATE_RESPAWN_MS = 180000;
@@ -37,18 +35,18 @@ const PLAYER_FLAG_CHOICE_IDS = (() => {
 const DEFAULT_PLAYER_FLAG_ASSET = 1;
 const FACTION_SHORT_NAMES = ['Britain', 'Netherlands', 'France', 'Spain', 'Portugal'];
 const FACTION_MERCHANT_SHIP_NAMES = [
-  ['HMS Packet Lark', 'King George Trader', 'Crown Transport', 'Britannia Merchant', 'Albion Packet', 'Royal Sovereign Cargo', 'Atlantic Factor', 'Channel Trader', 'North Star Hoy', 'Cape Breton', 'West India Factor', 'Liverpool Pride', 'Bristol Venture', 'Londonderry', 'Clyde Lass', 'Sussex Merchant', 'Kentish Fly', 'Cornwall Packet', 'Yarmouth Lass', 'Severn Trader'],
-  ['VOC Vertrouwen', 'Staten Generaal', 'Nieuw Amsterdam', 'Zeelandia', 'Hollandia Packet', 'Friesland Trader', 'Amsterdam Factor', 'Rotterdam Fly', 'Maas Merchant', 'Texel Hoy', 'Scheldt Packet', 'Utrecht Trader', 'Gouda Factor', 'Delft Fly', 'Haarlem Lass', 'Batavia Return', 'Indische Liefde', 'Oostzee Hoop', 'Noordster', 'Walcheren Packet'],
-  ['Saint Louis', 'Belle Poule Marchande', 'Roi Soleil', 'Fleuron du Roi', 'Dauphin Trader', 'Bretagne Packet', 'Normandie Factor', 'Gascogne Fly', 'Provence Merchant', 'Corse Packet', 'Petit Capitaine', 'Bonne Aventure', 'Lys Royal', 'Fleur de Lys Cargo', 'Charente', 'Garonne Fly', 'Méditerranée', 'Antilles Royale', 'Côte d\'Argent', 'Havre Packet'],
-  ['Nuestra Señora del Rosario', 'San Fernando Merchant', 'Santa Isabel', 'Capitán Real', 'Indias Unidas', 'Galeón Menor', 'Nueva España', 'Carabela Menor', 'San Telmo', 'Virgen del Carmen', 'Rey Católico', 'Plata Trader', 'Oro del Sur', 'Cádiz Packet', 'Sevilla Factor', 'Barcelona Fly', 'Cartagena Lass', 'Bilbao Merchant', 'Coruña Packet', 'Canarias Trader'],
-  ['Nossa Senhora da Boa Viagem', 'São Gabriel Mercante', 'Infante Dom Henrique', 'Lusitânia Packet', 'Tejo Trader', 'Douro Fly', 'Algarve Factor', 'Cascais Merchant', 'Sagres Packet', 'Índia Portuguesa', 'Brasil Return', 'Estreito d\'Hope', 'Corvo Packet', 'Açores Fly', 'Madeira Trader', 'Coimbra Factor', 'Porto Rico Menor', 'Rainha Santa', 'Real Figueira', 'Alentejo Sun']
+  ['HMS Packet Lark', 'Britannia Merchant', 'Atlantic Factor'],
+  ['VOC Vertrouwen', 'Zeelandia', 'Batavia Return'],
+  ['Saint Louis', 'Belle Poule Marchande', 'Roi Soleil'],
+  ['Nuestra Señora del Rosario', 'San Fernando Merchant', 'Rey Católico'],
+  ['Nossa Senhora da Boa Viagem', 'Tejo Trader', 'Índia Portuguesa']
 ];
 const FACTION_PIRATE_SHIP_NAMES = [
-  ['Red Jackal', 'Crown\'s Spite', 'King\'s Ruin', 'Channel Reaver', 'Cornish Spectre', 'Thames Cutlass', 'Irish Sea Fiend', 'Scottish Gale', 'Wessex Wraith', 'Sussex Raider', 'Kentish Devil', 'Liverpool Curse', 'Bristol Bane', 'Plymouth Phantom', 'Yorkshire Hook', 'North Sea Harpy', 'Atlantic Knave', 'British Bastion Broken', 'Albion\'s Shame', 'Empire\'s Leak'],
-  ['Flying Herring', 'Zuider Zee Wolf', 'Texel Terror', 'Amsterdam\'s Debt', 'Rotterdam Rogue', 'VOC\'s Shame', 'Dutch Courage Lost', 'Lowlands Leviathan', 'Scheldt Skulker', 'Friesland Fang', 'Batavian Banshee', 'Holland Hook', 'Maas Marauder', 'Zeeland Zephyr Dark', 'Utrecht Undertow', 'Gouda Ghost', 'Delft Dagger', 'Haarlem Horror', 'Indies Interceptor', 'Nether Night'],
-  ['Sans-Culotte Fury', 'République Noire', 'Belle Mort', 'Girondin Ghost', 'Jacobin Jackal', 'Corsaire du Nord', 'Méditerranée Maudit', 'Bretagne Brûlant', 'Normandie Nuit', 'Marseille Malice', 'Toulon Terror', 'Bordeaux Blade', 'Petit Tonnerre', 'Roi des Vagues Mortes', 'Fleur de Feu', 'Charente Charogne', 'Garonne Grim', 'Antilles Avide', 'Côte Sauvage', 'Paris Plague Sea'],
-  ['Diablo del Plata', 'Rey Negro', 'Fantasma de Cádiz', 'Puta del Mar', 'Carabela Maldita', 'Corsario Católico', 'Sangre del Sol', 'Muerte Española', 'Galeón Fantasma', 'Tiburón Santo', 'Venganza de Colón', 'Barlovento Brujo', 'Costa Oscura', 'Indias Infernales', 'Noche de Sevilla', 'Puñal de Barcelona', 'Calavera de Cartagena', 'Tormenta de Gijón', 'Bruma de Vigo', 'Lobo del Estrecho'],
-  ['Cão do Atlântico', 'Bruxa dos Açores', 'Diabo da Madeira', 'Fantasma do Tejo', 'Navio da Maldição', 'Lobo do Cabo', 'Sangue Português', 'Estrela Negra', 'Vingança de Henry', 'Morto-vivo do Douro', 'Tempestade Lusitana', 'Coração de Ferro', 'Alma Perdida', 'Inferno na Ria', 'Corsário do Sul', 'Sombra de Lagos', 'Faca de Porto', 'Fúria de Faro', 'Espírito Sombrio', 'Medo do Mar']
+  ['Red Jackal', 'Channel Reaver', 'Atlantic Knave', 'Cornish Spectre', 'Thames Cutlass'],
+  ['Flying Herring', 'Texel Terror', 'Holland Hook', 'Scheldt Skulker', 'Batavian Banshee'],
+  ['Sans-Culotte Fury', 'Belle Mort', 'Marseille Malice', 'Jacobin Jackal', 'Petit Tonnerre'],
+  ['Diablo del Plata', 'Rey Negro', 'Costa Oscura', 'Carabela Maldita', 'Muerte Española'],
+  ['Cão do Atlântico', 'Fantasma do Tejo', 'Navio da Maldição', 'Estrela Negra', 'Corsário do Sul']
 ];
 const FACTION_PATROL_SHIP_NAMES = [
   ['HMS Vigilant', 'HMS Crescent', 'HMS Seahorse', 'HMS Kingfisher', 'HMS Sparrowhawk', 'HMS Bold', 'HMS Pallas', 'HMS Active', 'HMS Druid', 'HMS Squirrel', 'HMS Cygnet', 'HMS Rose', 'HMS Lynx', 'HMS Porcupine', 'HMS Rattlesnake', 'HMS Cruizer', 'HMS Scout', 'HMS Swallow', 'HMS Zephyr', 'HMS Falcon'],
@@ -57,78 +55,6 @@ const FACTION_PATROL_SHIP_NAMES = [
   ['Nuestra Señora de Aránzazu', 'Santa Teresa', 'San Julián', 'San Vicente', 'Santa Rufina', 'San Hermenegildo', 'Santa Casilda', 'San Fulgencio', 'Santa Florentina', 'San Leandro', 'La Perla', 'El Rayo', 'La Estrella', 'El Veloz', 'La Brava', 'El Diligente', 'La Fama', 'El Marte', 'La Soledad', 'El Neptuno'],
   ['NRP Príncipe Real', 'NRP Dom João', 'NRP Afonso de Albuquerque', 'NRP Bartolomeu Dias', 'NRP Vasco da Gama', 'NRP Pedro Álvares Cabral', 'NRP Diogo Cão', 'NRP Fernão de Magalhães', 'NRP Sagres', 'NRP Tritão', 'NRP Golfinho', 'NRP Águia', 'NRP Falcão', 'NRP Lince', 'NRP Pantera', 'NRP Leão', 'NRP Tigre', 'NRP Dragão', 'NRP Serpente', 'NRP Estrela do Mar']
 ];
-
-const SHIP_EPITHETS = [
-  'Amber', 'Argent', 'Azure', 'Barren', 'Black', 'Bleak', 'Bold', 'Brave', 'Bright', 'Brine', 'Broken', 'Bronze', 'Crimson', 'Crystal', 'Distant', 'Drifting', 'Eastern', 'Emerald', 'Fair', 'Far', 'Flying', 'Forbidden', 'Forgotten', 'Free', 'Ghost', 'Golden', 'Grey', 'Hidden', 'Honest', 'Hungry', 'Ivory', 'Jolly', 'Keen', 'Last', 'Laughing', 'Lonely', 'Lost', 'Lucky', 'Mad', 'Merciful', 'Merry', 'Midnight', 'Misty', 'Morning', 'Northern', 'Old', 'Pale', 'Patient', 'Pearl', 'Polar', 'Proud', 'Quiet', 'Ragged', 'Raw', 'Red', 'Restless', 'Rolling', 'Rough', 'Royal', 'Rusted', 'Sacred', 'Salt', 'Savage', 'Scarlet', 'Sea', 'Secret', 'Sharp', 'Silent', 'Silver', 'Southern', 'Starlit', 'Steel', 'Storm', 'Strange', 'Summer', 'Swift', 'Tattered', 'Thunder', 'Twin', 'Western', 'White', 'Wild', 'Winter', 'Yellow', 'Young'
-];
-const SHIP_NOUNS = [
-  'Anchor', 'Arrow', 'Barrel', 'Beacon', 'Billow', 'Binnacle', 'Bittern', 'Bonnet', 'Brace', 'Brig', 'Cable', 'Cargo', 'Cormorant', 'Crab', 'Crane', 'Cutter', 'Drift', 'Eagle', 'Egret', 'Fin', 'Foam', 'Frigate', 'Gannet', 'Gull', 'Haddock', 'Halcyon', 'Harbor', 'Heron', 'Hook', 'Hull', 'Islander', 'Jack', 'Keel', 'Kelpie', 'Kingfisher', 'Knot', 'Lantern', 'Lark', 'Lee', 'Ledger', 'Marlin', 'Mate', 'Merchant', 'Minnow', 'Mirror', 'Moon', 'Narwhal', 'Needle', 'Oak', 'Ocean', 'Orca', 'Osprey', 'Otter', 'Packet', 'Pelican', 'Petrel', 'Pilot', 'Plover', 'Porpoise', 'Ram', 'Ray', 'Reef', 'Ripple', 'Roc', 'Runner', 'Sail', 'Salmon', 'Sandpiper', 'Schooner', 'Seal', 'Serpent', 'Shark', 'Shearwater', 'Skip', 'Skua', 'Spark', 'Spray', 'Squall', 'Star', 'Sturgeon', 'Surf', 'Surge', 'Swallow', 'Swift', 'Tanager', 'Thistle', 'Tide', 'Trader', 'Trout', 'Turtle', 'Venture', 'Wake', 'Wave', 'Whale', 'Wind', 'Wing', 'Wood', 'Yawl', 'Zephyr'
-];
-
-function composeMerchantVesselName(fid, syncId, ws) {
-  const f = (fid | 0) % FACTION_COUNT;
-  let h = Math.imul(syncId | 0, 2654435761) ^ (ws >>> 0) ^ Math.imul(f, 374761393);
-  const pool = FACTION_MERCHANT_SHIP_NAMES[f] || FACTION_MERCHANT_SHIP_NAMES[0];
-  const classic = pool[(h >>> 0) % pool.length];
-  h = Math.imul(h, 2246822519) ^ 374761393;
-  const e = SHIP_EPITHETS[(h >>> 0) % SHIP_EPITHETS.length];
-  h = Math.imul(h, 2246822519) ^ 374761393;
-  const n = SHIP_NOUNS[(h >>> 0) % SHIP_NOUNS.length];
-  const roll = (h >>> 8) % 100;
-  const tag = FACTION_SHORT_NAMES[f];
-  if (roll < 34) return classic;
-  if (roll < 62) return `${e} ${n}`;
-  if (roll < 82) return `${tag} ${e}`;
-  return `${classic} ${e}`;
-}
-
-function composePirateVesselName(fid, cx, cz, idx, ws) {
-  const f = (fid | 0) % FACTION_COUNT;
-  let h = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (ws >>> 0) ^ (f * 50261)) >>> 0;
-  const pool = FACTION_PIRATE_SHIP_NAMES[f] || FACTION_PIRATE_SHIP_NAMES[0];
-  const classic = pool[h % pool.length];
-  h = Math.imul(h, 1664525) + 1013904223 >>> 0;
-  const e = SHIP_EPITHETS[h % SHIP_EPITHETS.length];
-  h = Math.imul(h, 1664525) + 1013904223 >>> 0;
-  const n = SHIP_NOUNS[h % SHIP_NOUNS.length];
-  const roll = h % 100;
-  const prefixes = ['The ', '', 'Dirty ', 'Black ', 'Sea ', 'Old ', 'Iron ', 'Blood ', 'Salt ', 'Storm ', 'Ghost ', 'Dead ', 'Cut-throat ', ''];
-  const pre = prefixes[h % prefixes.length];
-  if (roll < 34) return `${pre}${classic}`;
-  if (roll < 66) return `${pre}${e} ${n}`;
-  return `${classic} ${e}`;
-}
-
-function composePatrolVesselName(fid, cx, cz, pid, ws) {
-  const f = (fid | 0) % FACTION_COUNT;
-  let h = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (pid | 0) * 83492791 ^ (ws >>> 0) ^ (f * 50261)) >>> 0;
-  const pool = FACTION_PATROL_SHIP_NAMES[f] || FACTION_PATROL_SHIP_NAMES[0];
-  const classic = pool[h % pool.length];
-  if ((h >>> 5) % 4 !== 0) return classic;
-  h = Math.imul(h, 1664525) + 1013904223 >>> 0;
-  const e = SHIP_EPITHETS[h % SHIP_EPITHETS.length];
-  const facPre = [['HMS ', 'HM ', 'SS '], ['HNLMS ', 'HN ', 'ZS '], ['La ', 'Le ', 'FS '], ['S ', 'NV ', 'BP '], ['NRP ', 'NP ', 'NR ']];
-  const preSet = facPre[f] || facPre[0];
-  return `${preSet[h % preSet.length]}${e}`;
-}
-
-function ensureUniqueRegisteredShipName(registry, baseName, syncId, npc) {
-  if (!registry) return String(baseName || 'Ship').trim().slice(0, 52) || 'Ship';
-  const sid = syncId != null && Number.isFinite(Number(syncId)) ? Math.floor(Number(syncId)) : 0;
-  const prevKey = npc && npc._nameRegKey ? npc._nameRegKey : null;
-  if (prevKey && registry.has(prevKey)) registry.delete(prevKey);
-  let candidate = String(baseName || 'Ship').trim().slice(0, 52) || 'Ship';
-  let key = candidate.toLowerCase();
-  let guard = 0;
-  while (registry.has(key) && guard < 9999) {
-    guard++;
-    candidate = `${String(baseName || '').trim().slice(0, 40)} ·${(sid % 10000) | 0}-${guard}`;
-    key = candidate.toLowerCase();
-  }
-  registry.add(key);
-  if (npc) npc._nameRegKey = key;
-  return candidate.length > 52 ? `${candidate.slice(0, 51)}…` : candidate;
-}
 
 function tradeShipCannonForType(shipType) {
   if (shipType === 'galleon') return 'heavy';
@@ -150,16 +76,25 @@ function randomChoosableFlagRng(rng) {
   return ids[Math.floor(rng() * ids.length)] || DEFAULT_PLAYER_FLAG_ASSET;
 }
 
-function proceduralFactionMerchantShipName(fid, salt, wsSeed) {
-  return composeMerchantVesselName(fid, salt | 0, wsSeed != null ? wsSeed >>> 0 : 42);
+function proceduralFactionMerchantShipName(fid, salt) {
+  const f = (fid | 0) % FACTION_COUNT;
+  const pool = FACTION_MERCHANT_SHIP_NAMES[f] || FACTION_MERCHANT_SHIP_NAMES[0];
+  const th = (Math.imul(salt | 0, 1103515245) + 12345 ^ f * 7919) >>> 0;
+  return pool[th % pool.length];
 }
 
 function proceduralPirateShipName(fid, cx, cz, idx, ws) {
-  return composePirateVesselName(fid, cx, cz, idx, ws);
+  const f = (fid | 0) % FACTION_COUNT;
+  const pool = FACTION_PIRATE_SHIP_NAMES[f] || FACTION_PIRATE_SHIP_NAMES[0];
+  const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (ws | 0) ^ (f * 50261)) >>> 0;
+  return pool[th % pool.length];
 }
 
 function proceduralFactionPatrolShipName(fid, cx, cz, pid, ws) {
-  return composePatrolVesselName(fid, cx, cz, pid, ws);
+  const f = (fid | 0) % FACTION_COUNT;
+  const pool = FACTION_PATROL_SHIP_NAMES[f] || FACTION_PATROL_SHIP_NAMES[0];
+  const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (pid | 0) * 83492791 ^ (ws | 0) ^ (f * 50261)) >>> 0;
+  return pool[th % pool.length];
 }
 
 function makePoliticsMatrix(ws) {
@@ -206,17 +141,16 @@ function pickTradeDestination(home, list, rng, ws, portController) {
   return cand[Math.floor(rng() * cand.length)];
 }
 
-function syncTradeShipName(npc, homeMeta, ws, portController, nameRegistry) {
+function syncTradeShipName(npc, homeMeta, ws, portController) {
   const shortLab = (npc.cargoGood || 'cargo').split(/\s+/)[0];
   const homeFac = townFaction(homeMeta, portController, ws) % FACTION_COUNT;
-  const vessel = composeMerchantVesselName(homeFac, (npc.syncId | 0) ^ ((homeMeta.cx | 0) * 31 + (homeMeta.cz | 0) * 17), ws >>> 0);
+  const vessel = proceduralFactionMerchantShipName(homeFac, (npc.syncId | 0) ^ ((homeMeta.cx | 0) * 31 + (homeMeta.cz | 0) * 17));
   let tradeName = `${vessel} · ${shortLab}`;
-  tradeName = ensureUniqueRegisteredShipName(nameRegistry, tradeName, npc.syncId, npc);
-  if (tradeName.length > 34) tradeName = `${tradeName.slice(0, 33)}…`;
+  if (tradeName.length > 28) tradeName = tradeName.slice(0, 27) + '…';
   npc.name = tradeName;
 }
 
-function assignTradeRouteFromHome(npc, homeMeta, list, rng, ws, portController, nameRegistry) {
+function assignTradeRouteFromHome(npc, homeMeta, list, rng, ws, portController) {
   npc.homeDockX = homeMeta.dockX;
   npc.homeDockZ = homeMeta.dockZ;
   npc.homeCx = homeMeta.cx;
@@ -227,17 +161,16 @@ function assignTradeRouteFromHome(npc, homeMeta, list, rng, ws, portController, 
     const others = list.filter(p => p.cx !== homeMeta.cx || p.cz !== homeMeta.cz);
     if (others.length) dest = others[Math.floor(rng() * others.length)];
   }
-  if (!dest) return false;
+  if (!dest) return;
   npc.destCx = dest.cx;
   npc.destCz = dest.cz;
   npc.tradeDestX = dest.dockX;
   npc.tradeDestZ = dest.dockZ;
   npc.cargoUnits = 10 + ((Math.floor(rng() * 10) | 0));
-  syncTradeShipName(npc, homeMeta, ws, portController, nameRegistry);
+  syncTradeShipName(npc, homeMeta, ws, portController);
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta, portController, ws) % FACTION_COUNT];
   npc.targetCruise = null;
   npc.tradeCruiseSpeed = null;
-  return true;
 }
 
 function findMerchantSpawnOffCoast(home, rng, shipTypeOpt, dryLand, edgeClamp) {
@@ -326,25 +259,14 @@ function npcWindEffect(npc, windAt) {
 
 function npcEffectiveForwardSpeed(npc, windAt) {
   const maxF = npcMaxForwardSpeed(npc);
-  const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const v = Math.min(Math.abs(npc.speed || 0), maxF);
-  const wEff = npcWindEffect(npc, windAt);
-  const blended = v * (0.72 + 0.28 * wEff);
-  const playerHullCeil = 12 * spec.speed * PLAYER_BASE_SPEED_MULT;
-  const thr = Math.min(1, v / Math.max(1e-4, maxF));
-  const mix = 0.45 + 0.55 * wEff;
-  const floorSog =
-    v > 0.55
-      ? Math.min(maxF * 0.98, playerHullCeil * mix * (0.42 + 0.58 * thr))
-      : blended;
-  return Math.min(maxF * 1.08, Math.max(blended, floorSog));
+  return v * npcWindEffect(npc, windAt);
 }
 
 function npcSailingTurnFactor(npc, windAt) {
   const v = npcEffectiveForwardSpeed(npc, windAt);
   const t = Math.min(1, Math.max(0, (v - 0.06) / 5.4));
-  /* Match client: higher floor at low speed so patrol/merchant AI can bear away & make way. */
-  return 0.28 + 0.72 * t * t;
+  return 0.11 + 0.89 * t * t;
 }
 
 function accelerateNpcToward(npc, dt, target) {
@@ -354,7 +276,7 @@ function accelerateNpcToward(npc, dt, target) {
   const t = Math.min(maxF, Math.max(0, target));
   let spd = npc.speed || 0;
   if (spd < t - 0.03) {
-    spd = Math.min(spd + 14.0 * dt * speedMult, t, maxF);
+    spd = Math.min(spd + 6.2 * dt * speedMult, t, maxF);
   } else if (spd > t + 0.03) {
     spd *= (1 - 0.3 * dt);
     if (spd < t) spd = t;
@@ -424,8 +346,7 @@ function steerNpcClearanceAhead(npc, dt, turnSharp, windAt, dryLand) {
       cand.push(a);
     }
   }
-  /** Trade hulls need slightly lower bar + quicker heading commits — strict scoring left many coast-hugging merchants with no valid arc (speed → 0 “stuck”). */
-  const needScore = npc.isTradeShip ? 3 : offshore ? 3 : 2;
+  const needScore = npc.isTradeShip ? 4 : offshore ? 3 : 2;
   if (bestScore < needScore || !cand.length) return;
   let bestAng = cand[0];
   if (cand.length > 1) {
@@ -445,8 +366,7 @@ function steerNpcClearanceAhead(npc, dt, turnSharp, windAt, dryLand) {
   let diff = bestAng - npc.rotation;
   while (diff > Math.PI) diff -= Math.PI * 2;
   while (diff < -Math.PI) diff += Math.PI * 2;
-  const tradeTurnBoost = npc.isTradeShip ? 1.14 : 1;
-  npc.rotation += diff * turn * dt * turnMul * tradeTurnBoost * npcSailingTurnFactor(npc, windAt);
+  npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc, windAt);
   npc.wanderAngle = npc.rotation;
 }
 
@@ -824,8 +744,8 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
         riggingHealth: 100,
         flagPosition: 'mast',
         isHuntContract: true,
-        independentPirate: true,
-        flagColor: '#5a0808',
+        factionId: pirateFaction,
+        flagColor: FACTION_TRADE_COLORS[pirateFaction],
         flagAssetId: randomChoosableFlagRng(Math.random),
         sailBonus: 0.1,
         attackNpcSyncId: null,
@@ -845,50 +765,14 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
   }
 }
 
-function npcIncludedForViewer(n, viewer, radiusSq) {
-  if (!viewer || !Number.isFinite(Number(radiusSq))) return true;
-  const viewerId = Number.isFinite(Number(viewer.id)) ? Math.floor(Number(viewer.id)) : null;
-  if (viewerId != null && n.missionOwnerPlayerId != null && Math.floor(Number(n.missionOwnerPlayerId)) === viewerId) return true;
-  const b = viewer.boarding && typeof viewer.boarding === 'object' ? viewer.boarding : null;
-  if (b && b.sid != null && Number.isFinite(Number(b.sid))) {
-    const sid = Math.floor(Number(b.sid));
-    if (sid < 0 && -(sid + 1) === (n.syncId | 0)) return true;
-  }
-  const vx = Number(viewer.x);
-  const vz = Number(viewer.z);
-  const nx = Number(n.x);
-  const nz = Number(n.z);
-  if (!Number.isFinite(vx) || !Number.isFinite(vz) || !Number.isFinite(nx) || !Number.isFinite(nz)) return true;
-  const dx = nx - vx;
-  const dz = nz - vz;
-  return dx * dx + dz * dz <= Number(radiusSq);
-}
-
-function npcSyncVelocity(n, windAt) {
-  if (!n || n.sinking || n._boardLock) return { vx: 0, vz: 0 };
-  const rot = Number.isFinite(Number(n.rotation)) ? Number(n.rotation) : 0;
-  let eff = Number.isFinite(Number(n.speed)) ? Math.abs(Number(n.speed)) : 0;
-  if (typeof windAt === 'function') {
-    try {
-      eff = npcEffectiveForwardSpeed(n, windAt);
-    } catch (e) {}
-  }
-  return {
-    vx: Math.sin(rot) * eff,
-    vz: Math.cos(rot) * eff
-  };
-}
-
-function buildSyncRows(npcs, portController, ws, windAt, filterFn) {
+function buildSyncRows(npcs, portController, ws) {
   return npcs
     .filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       if (n.sinking) return true;
       return h > -900;
     })
-    .filter(n => (typeof filterFn === 'function' ? filterFn(n) : true))
     .map(n => {
-      const isRog = !!(n.independentPirate && !n.isTradeShip && !n.isFactionPatrol);
       const ffi = n.isTradeShip
         ? ((n.homeFaction != null ? n.homeFaction : townFaction({ cx: n.homeCx, cz: n.homeCz, hasTown: true }, portController, ws)) | 0) % FACTION_COUNT
         : ((n.factionId | 0) % FACTION_COUNT);
@@ -899,12 +783,10 @@ function buildSyncRows(npcs, portController, ws, windAt, filterFn) {
         if (n.returnFireSyncId != null && Number.isFinite(Number(n.returnFireSyncId))) atk = Number(n.returnFireSyncId);
         else if (n.attackNpcSyncId != null && Number.isFinite(Number(n.attackNpcSyncId))) atk = Number(n.attackNpcSyncId);
       }
-      const vel = npcSyncVelocity(n, windAt);
       const row = {
         id: n.syncId,
-        /* Was 1/20 = 0.05 — too coarse at 60Hz; sub-tick motion rounded away → hulls crawl on clients. */
-        x: Math.round(n.x * 200) / 200,
-        z: Math.round(n.z * 200) / 200,
+        x: Math.round(n.x * 20) / 20,
+        z: Math.round(n.z * 20) / 20,
         r: Math.round(n.rotation * 1000) / 1000,
         h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
         rg: Math.round(getNpcRiggingHealth(n)),
@@ -916,13 +798,10 @@ function buildSyncRows(npcs, portController, ws, windAt, filterFn) {
         fa: n.flagAssetId != null ? n.flagAssetId : undefined,
         mer: !!n.isTradeShip,
         pat: !!(n.isFactionPatrol && !n.isTradeShip),
+        ffi,
         sp: Math.round((n.speed || 0) * 100) / 100,
-        vx: Math.round(vel.vx * 100) / 100,
-        vz: Math.round(vel.vz * 100) / 100,
         atk: atk != null ? atk : null
       };
-      if (!isRog) row.ffi = ffi;
-      if (isRog) row.rp = 1;
       if (n.missionOwnerPlayerId != null && Number.isFinite(Number(n.missionOwnerPlayerId))) {
         row.mo = Math.floor(Number(n.missionOwnerPlayerId));
       }
@@ -1076,7 +955,6 @@ function createServerNpcWorld(opts) {
   let dryLand = (x, z) => ctx.dryLandAtWorldPosition(x, z);
   let edgeClamp = ctx.edgeClamp;
   let npcs = [];
-  const usedNpcShipNames = new Set();
   let pirateSlotCount = 0;
   const pirateRespawnAt = new Map();
   let nextPatrolId = PATROL_SYNC_MIN;
@@ -1161,14 +1039,13 @@ function createServerNpcWorld(opts) {
       underFireTimer: 0,
       riggingHealth: 100,
       fireCooldown: 0,
-      tradePhase: 'to_dest',
-      tradeTimer: 0
+      tradePhase: 'loading_home',
+      tradeTimer: 6 + sr() * 14
     };
-    if (!assignTradeRouteFromHome(npc, home, allPorts, sr, ws, politics.portController, usedNpcShipNames)) return false;
+    assignTradeRouteFromHome(npc, home, allPorts, sr, ws, politics.portController);
     npc.homeEmbarkX = nx;
     npc.homeEmbarkZ = nz;
     npc.rotation = Math.atan2((npc.tradeDestX || nx) - nx, (npc.tradeDestZ || nz) - nz);
-    npc.speed = npcMaxForwardSpeed(npc) * (0.48 + sr() * 0.22);
     npcs.push(npc);
     return true;
   }
@@ -1201,7 +1078,7 @@ function createServerNpcWorld(opts) {
       }
     }
     if (!haveSpawn) return false;
-    const patrolBase = proceduralFactionPatrolShipName(fid, pick.cx | 0, pick.cz | 0, pid, ws);
+    const patrolName = proceduralFactionPatrolShipName(fid, pick.cx | 0, pick.cz | 0, pid, ws);
     const npc = {
       syncId: pid,
       x: nx,
@@ -1210,7 +1087,7 @@ function createServerNpcWorld(opts) {
       speed: 0,
       health: 72 + sr() * 48,
       type: st,
-      name: '',
+      name: patrolName,
       factionId: fid,
       isFactionPatrol: true,
       patrolCannon: tradeShipCannonForType(st),
@@ -1226,7 +1103,6 @@ function createServerNpcWorld(opts) {
       fireCooldown: 0,
       aggro: false
     };
-    npc.name = ensureUniqueRegisteredShipName(usedNpcShipNames, patrolBase, pid, npc);
     npc.speed = npcMaxForwardSpeed(npc) * (0.52 + sr() * 0.24);
     npcs.push(npc);
     return true;
@@ -1284,7 +1160,7 @@ function createServerNpcWorld(opts) {
       speed: 0,
       health: 60 + sr() * 40,
       type: npcType,
-      name: '',
+      name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws),
       wanderAngle: sr() * Math.PI * 2,
       wanderTimer: 5 + sr() * 10,
       underFireTimer: 0,
@@ -1299,18 +1175,11 @@ function createServerNpcWorld(opts) {
       aggro: false
     });
     const last = npcs[npcs.length - 1];
-    last.name = ensureUniqueRegisteredShipName(
-      usedNpcShipNames,
-      proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws),
-      i,
-      last
-    );
     last.speed = npcMaxForwardSpeed(last) * (0.56 + sr() * 0.22);
   }
 
   function reset(players) {
     npcs = [];
-    usedNpcShipNames.clear();
     nextPatrolId = PATROL_SYNC_MIN;
     const playerMap = players instanceof Map ? players : new Map();
     const npcSeed = (ws | 0) * 7 + 13;
@@ -1350,13 +1219,13 @@ function createServerNpcWorld(opts) {
         speed: 0,
         health: 60 + sr() * 40,
         type: npcType,
-        name: '',
+        name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws),
         wanderAngle: sr() * Math.PI * 2,
         wanderTimer: 5 + sr() * 10,
         underFireTimer: 0,
         riggingHealth: 100,
-        independentPirate: true,
-        flagColor: '#5a0808',
+        factionId: pirateFaction,
+        flagColor: FACTION_TRADE_COLORS[pirateFaction],
         flagAssetId: randomChoosableFlagRng(sr),
         sailBonus: 0.1,
         attackNpcSyncId: null,
@@ -1365,12 +1234,6 @@ function createServerNpcWorld(opts) {
         aggro: false
       });
       const last = npcs[npcs.length - 1];
-      last.name = ensureUniqueRegisteredShipName(
-        usedNpcShipNames,
-        proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws),
-        i,
-        last
-      );
       last.speed = npcMaxForwardSpeed(last) * (0.56 + sr() * 0.22);
     }
     const allPorts = collectAllPorts();
@@ -1413,8 +1276,7 @@ function createServerNpcWorld(opts) {
     npc._huntAcc = (npc._huntAcc || 0) + 0.022;
     if (npc._huntAcc < 0.65) return;
     npc._huntAcc = 0;
-    const rogue = !!(npc.independentPirate && !npc.isFactionPatrol && !npc.isTradeShip);
-    const myF = rogue ? 0 : ((npc.factionId | 0) % FACTION_COUNT);
+    const myF = (npc.factionId | 0) % FACTION_COUNT;
     const near = nearestCaptain(npc.x, npc.z, players);
     if (near && near.d < 95 && npc.aggro) return;
     if (npc.attackNpcSyncId != null) {
@@ -1429,14 +1291,6 @@ function createServerNpcWorld(opts) {
       if (m === npc || m.sinking || (m.health != null && m.health <= 0)) continue;
       const d = Math.hypot(m.x - npc.x, m.z - npc.z);
       if (d > 540) continue;
-      if (isPatrol && m.independentPirate && !m.isTradeShip && !m.isFactionPatrol) {
-        const score = 1340 - d;
-        if (score > bestScore) {
-          bestScore = score;
-          bestId = m.syncId;
-        }
-        continue;
-      }
       if (m.isTradeShip) {
         const mf = townFaction({ cx: m.homeCx, cz: m.homeCz, hasTown: true }, politics.portController, ws) % FACTION_COUNT;
         if (isPatrol) {
@@ -1447,7 +1301,7 @@ function createServerNpcWorld(opts) {
             bestId = m.syncId;
           }
         } else {
-          const war = rogue ? true : factionsConsideredAtWar(myF, mf, politics.matrix);
+          const war = factionsConsideredAtWar(myF, mf, politics.matrix);
           if (!war && huntRoll > 0.072) continue;
           const score = (war ? 1200 : 140) - d;
           if (score > bestScore) {
@@ -1455,44 +1309,20 @@ function createServerNpcWorld(opts) {
             bestId = m.syncId;
           }
         }
-      } else if (m.isFactionPatrol) {
-        const of = (m.factionId | 0) % FACTION_COUNT;
-        if (isPatrol) {
-          if (of === myF) continue;
-          if (!factionsConsideredAtWar(myF, of, politics.matrix) && huntRoll > 0.07) continue;
-          const score = 950 - d;
-          if (score > bestScore) {
-            bestScore = score;
-            bestId = m.syncId;
-          }
-        } else if (rogue) {
-          const score = 1265 - d;
-          if (score > bestScore) {
-            bestScore = score;
-            bestId = m.syncId;
-          }
-        }
-      } else if (m.independentPirate && !m.isTradeShip && !m.isFactionPatrol) {
-        if (isPatrol) continue;
-        if (!rogue) {
-          const score = 910 - d;
-          if (score > bestScore) {
-            bestScore = score;
-            bestId = m.syncId;
-          }
-        } else {
-          if (huntRoll > 0.3) continue;
-          const score = 340 - d;
-          if (score > bestScore) {
-            bestScore = score;
-            bestId = m.syncId;
-          }
-        }
-      } else if (!rogue && !m.isFactionPatrol && m.factionId != null && !m.isTradeShip) {
+      } else if (!m.isFactionPatrol && m.factionId != null && !m.isTradeShip) {
         const of = (m.factionId | 0) % FACTION_COUNT;
         if (of === myF) continue;
         if (!factionsConsideredAtWar(myF, of, politics.matrix) && huntRoll > 0.045) continue;
         const score = 900 - d;
+        if (score > bestScore) {
+          bestScore = score;
+          bestId = m.syncId;
+        }
+      } else if (m.isFactionPatrol && isPatrol) {
+        const of = (m.factionId | 0) % FACTION_COUNT;
+        if (of === myF) continue;
+        if (!factionsConsideredAtWar(myF, of, politics.matrix) && huntRoll > 0.07) continue;
+        const score = 950 - d;
         if (score > bestScore) {
           bestScore = score;
           bestId = m.syncId;
@@ -1532,52 +1362,6 @@ function createServerNpcWorld(opts) {
     return false;
   }
 
-  /** When a merchant stops closing on its dock waypoint, force a heading / cruise tweak so routes don’t stall in avoidance dead-zones. */
-  function bumpMerchantIfTradeRouteStalled(npc, dt) {
-    if (!npc.isTradeShip || npc.sinking) return;
-    const ph = npc.tradePhase || 'to_dest';
-    if (ph !== 'to_dest' && ph !== 'to_home') {
-      npc._merStuckT = 0;
-      return;
-    }
-    const dockTx = npc.tradeDestX;
-    const dockTz = npc.tradeDestZ;
-    if (dockTx == null || dockTz == null) return;
-    const dNow = Math.hypot(dockTx - npc.x, dockTz - npc.z);
-    const prev = npc._merDockDistPrev;
-    npc._merDockDistPrev = dNow;
-    if (prev == null || !Number.isFinite(prev)) return;
-    const closing = dNow < prev - 0.55;
-    if (closing || dNow < TRADE_DOCK_DIST + 55 || (npc.speed || 0) > 0.52) {
-      npc._merStuckT = 0;
-      return;
-    }
-    npc._merStuckT = (npc._merStuckT || 0) + dt;
-    if (npc._merStuckT < 4.8) return;
-    npc._merStuckT = 0;
-    npc.rotation += (Math.random() < 0.5 ? -1 : 1) * (1.05 + Math.random() * 0.85);
-    npc.wanderAngle = npc.rotation;
-    npc.targetCruise = npcMaxForwardSpeed(npc) * (0.58 + Math.random() * 0.2);
-  }
-
-  /** When trade routing fails (<2 ports, meta gaps), sail toward open ocean instead of freezing at dock_home. */
-  function merchantFallbackOceanTradeLeg(npc) {
-    let s = ((npc.syncId | 0) * 1103515245 + 12345) >>> 0;
-    const sr = () => {
-      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-      return s / 4294967296;
-    };
-    const ocean = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, null);
-    npc.tradeDestX = ocean.nx;
-    npc.tradeDestZ = ocean.nz;
-    npc.destCx = npc.homeCx | 0;
-    npc.destCz = npc.homeCz | 0;
-    npc.tradePhase = 'to_dest';
-    npc.tradeTimer = 0;
-    npc.speed = 0;
-    npc.targetCruise = npcMaxForwardSpeed(npc) * (0.58 + sr() * 0.22);
-  }
-
   function updateMerchantThreat(npc) {
     if (!npc.isTradeShip || npc.sinking) return;
     npc._merThreatAcc = (npc._merThreatAcc || 0) + 0.022;
@@ -1594,11 +1378,6 @@ function createServerNpcWorld(opts) {
       }
       const d = Math.hypot(p.x - npc.x, p.z - npc.z);
       if (d > 85) continue;
-      if (p.independentPirate && !p.isTradeShip && !p.isFactionPatrol) {
-        npc.returnFireSyncId = p.syncId;
-        npc.underFireTimer = Math.max(npc.underFireTimer || 0, 4.25);
-        return;
-      }
       const pf = p.factionId != null ? (p.factionId | 0) % FACTION_COUNT : -1;
       if (pf >= 0 && factionsConsideredAtWar(mf, pf, politics.matrix)) {
         npc.returnFireSyncId = p.syncId;
@@ -1637,7 +1416,7 @@ function createServerNpcWorld(opts) {
     if (npc.aggro && (distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) npc.aggro = false;
     const fighting = npc.aggro && distToPlayer < 135;
     const fightingNpc = !!atkShip && Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 128;
-    const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.97;
+    const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.96;
     if (fightingNpc) {
       const sharp = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 92 ? 2.55 : 2.12;
       if (!npc.escapeMode) {
@@ -1698,9 +1477,6 @@ function createServerNpcWorld(opts) {
       applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
     } else {
       const phase = npc.tradePhase || 'to_dest';
-      if ((phase === 'to_dest' || phase === 'to_home') && (npc.tradeDestX == null || npc.tradeDestZ == null || !Number.isFinite(Number(npc.tradeDestX)) || !Number.isFinite(Number(npc.tradeDestZ)))) {
-        merchantFallbackOceanTradeLeg(npc);
-      }
       const dockTx = npc.tradeDestX;
       const dockTz = npc.tradeDestZ;
       let tx = dockTx;
@@ -1735,7 +1511,6 @@ function createServerNpcWorld(opts) {
           npc.x += (hx - npc.x) * Math.min(1, 5 * dt);
           npc.z += (hz - npc.z) * Math.min(1, 5 * dt);
         }
-        if (dryLand(npc.x, npc.z)) nudgeNpcOffIsland(npc, dryLand, edgeClamp);
         if (npc.tradeTimer <= 0) {
           npc.tradePhase = 'to_dest';
           npc.targetCruise = npcMaxForwardSpeed(npc) * (0.6 + Math.random() * 0.22);
@@ -1757,7 +1532,7 @@ function createServerNpcWorld(opts) {
               let tdiff = targetAngle - npc.rotation;
               while (tdiff > Math.PI) tdiff -= Math.PI * 2;
               while (tdiff < -Math.PI) tdiff += Math.PI * 2;
-              npc.rotation += tdiff * 0.78 * dt * npcSailingTurnFactor(npc, windAt);
+              npc.rotation += tdiff * 0.62 * dt * npcSailingTurnFactor(npc, windAt);
             }
             accelerateNpcToward(npc, dt, tgtC);
           }
@@ -1782,31 +1557,25 @@ function createServerNpcWorld(opts) {
             const homeM = ctx.getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
             if (homeM && homeM.hasTown) {
               npc.cargoGood = portExportsGood(homeM, ws);
-              syncTradeShipName(npc, homeM, ws, politics.portController, usedNpcShipNames);
+              syncTradeShipName(npc, homeM, ws, politics.portController);
             }
           } else {
             const homeFull = ctx.getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
             const list = collectAllPorts();
-            if (list.length >= 2 && homeFull && assignTradeRouteFromHome(npc, homeFull, list, Math.random, ws, politics.portController, usedNpcShipNames)) {
+            if (list.length >= 2 && homeFull) {
+              assignTradeRouteFromHome(npc, homeFull, list, Math.random, ws, politics.portController);
               npc.homeEmbarkX = npc.x;
               npc.homeEmbarkZ = npc.z;
               npc.tradePhase = 'loading_home';
-              npc.tradeTimer = 2 + Math.random() * 5;
+              npc.tradeTimer = 5 + Math.random() * 10;
               npc.speed = 0;
-            } else {
-              merchantFallbackOceanTradeLeg(npc);
             }
           }
         }
       }
-      /* Use live phase — `phase` captured above can lag same-tick transitions; worse, sailing physics must not run during dock/load scripted motion (was fighting embark slip → “stuck” merchants). */
-      const phNow = npc.tradePhase || 'to_dest';
-      if (phNow === 'to_dest' || phNow === 'to_home') {
-        steerNpcClearanceAhead(npc, dt, 2.45, windAt, dryLand);
-        nudgeNpcOffIsland(npc, dryLand, edgeClamp);
-        applyNpcMoveWithIslandEscape(npc, dt, 2.45, windAt, dryLand, edgeClamp);
-      }
-      bumpMerchantIfTradeRouteStalled(npc, dt);
+      if (phase === 'to_dest' || phase === 'to_home') steerNpcClearanceAhead(npc, dt, 2.45, windAt, dryLand);
+      nudgeNpcOffIsland(npc, dryLand, edgeClamp);
+      applyNpcMoveWithIslandEscape(npc, dt, 2.45, windAt, dryLand, edgeClamp);
     }
   }
 
@@ -1835,29 +1604,21 @@ function createServerNpcWorld(opts) {
     const aimz = focus ? focus.z : near ? near.p.z : 0;
     const distToTarget = focus ? Math.hypot(focus.x - npc.x, focus.z - npc.z) : distToPlayer;
     const nid = near && near.p && near.p.id != null ? Math.floor(Number(near.p.id)) : null;
-    if (!focus && near && nid != null && distToPlayer < (isPatrol ? 188 : 162)) {
+    if (!focus && near && nid != null && distToPlayer < 118) {
       const underAttack = npc.underFireTimer != null && npc.underFireTimer > 0.05;
       const pirateFreeForAll = !isPatrol;
       const patrolOk = isPatrol ? factionPatrolMayAttackPlayer(npc, nid, near.p) : false;
       if (underAttack || pirateFreeForAll || patrolOk) {
         npc.aggro = true;
-        npc.underFireTimer = Math.max(npc.underFireTimer || 0, underAttack ? 2.9 : 1.22);
+        npc.underFireTimer = Math.max(npc.underFireTimer || 0, 2.9);
       }
     }
-    if (!focus && isPatrol && near && nid != null && npc.aggro && distToPlayer <= 218) {
+    if (!focus && isPatrol && near && nid != null && npc.aggro && distToPlayer <= 175) {
       const ua = npc.underFireTimer != null && npc.underFireTimer > 0.05;
       if (!ua && !factionPatrolMayAttackPlayer(npc, nid, near.p)) npc.aggro = false;
     }
-    const aggroDropDist = isPatrol ? 248 : 208;
-    if (!focus && (!near || distToPlayer > aggroDropDist)) npc.aggro = false;
-    const combatCommitted = npc.underFireTimer != null && npc.underFireTimer > 0.05;
-    const combatDrive = !!(focus || combatCommitted);
-    const aggroBand = combatDrive ? 168 : (isPatrol ? 138 : 112);
-    const sharp =
-      (focus && distToTarget < 118) ||
-      (!focus && npc.aggro && near && distToPlayer < (combatDrive ? 130 : isPatrol ? 118 : 108))
-        ? 2.55
-        : 2.05;
+    if (!focus && (!near || distToPlayer > 175)) npc.aggro = false;
+    const sharp = (focus && distToTarget < 115) || (!focus && npc.aggro && distToPlayer < 110) ? 2.55 : 2.05;
     if (!npc.escapeMode) {
       if (focus) {
         const dx = focus.x - npc.x;
@@ -1871,15 +1632,14 @@ function createServerNpcWorld(opts) {
         let diff = targetAngle - npc.rotation;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        const mul = combatDrive ? (npc.underFireTimer > 0 ? 2.12 : 1.52) : npc.underFireTimer > 0 ? 1.95 : 1.35;
-        npc.rotation += diff * mul * dt * npcSailingTurnFactor(npc, windAt);
-        if (npc.fireCooldown <= 0 && distToTarget < (combatDrive ? 82 : 74)) {
+        npc.rotation += diff * (npc.underFireTimer > 0 ? 1.95 : 1.35) * dt * npcSailingTurnFactor(npc, windAt);
+        if (npc.fireCooldown <= 0 && distToTarget < 74) {
           const tvx = Math.sin(focus.rotation) * (focus.speed || 0);
           const tvz = Math.cos(focus.rotation) * (focus.speed || 0);
           emitBroadside(broadcastAll, npc, focus.x, focus.z, tvx, tvz);
           npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
         }
-      } else if (npc.aggro && near && distToPlayer < aggroBand) {
+      } else if (npc.aggro && near && distToPlayer < 110) {
         const dx = near.p.x - npc.x;
         const dz = near.p.z - npc.z;
         const toPlayer = Math.atan2(dx, dz);
@@ -1891,9 +1651,8 @@ function createServerNpcWorld(opts) {
         let diff = targetAngle - npc.rotation;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        const mul = combatDrive ? (npc.underFireTimer > 0 ? 2.08 : 1.58) : npc.underFireTimer > 0 ? 1.95 : 1.35;
-        npc.rotation += diff * mul * dt * npcSailingTurnFactor(npc, windAt);
-        if (npc.fireCooldown <= 0 && distToPlayer < (combatDrive ? 88 : 72)) {
+        npc.rotation += diff * (npc.underFireTimer > 0 ? 1.95 : 1.35) * dt * npcSailingTurnFactor(npc, windAt);
+        if (npc.fireCooldown <= 0 && distToPlayer < 72) {
           const pvx = Math.sin(near.p.rotation || 0) * (near.p.speed || 0);
           const pvz = Math.cos(near.p.rotation || 0) * (near.p.speed || 0);
           emitBroadside(broadcastAll, npc, near.p.x, near.p.z, pvx, pvz);
@@ -1908,16 +1667,14 @@ function createServerNpcWorld(opts) {
         let diff = npc.wanderAngle - npc.rotation;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        npc.rotation += diff * 0.78 * dt * npcSailingTurnFactor(npc, windAt);
+        npc.rotation += diff * 0.5 * dt * npcSailingTurnFactor(npc, windAt);
       }
     }
     steerNpcClearanceAhead(npc, dt, sharp, windAt, dryLand);
     nudgeNpcOffIsland(npc, dryLand, edgeClamp);
     const maxF = npcMaxForwardSpeed(npc);
-    /** Match browser host: patrols keep a slightly higher idle cruise; chase harder when damaged or focused. */
-    const chasing =
-      !!(focus && distToTarget < 132) || (!focus && npc.aggro && near && distToPlayer < aggroBand);
-    const tgtSpd = chasing ? maxF * 0.98 : maxF * (isPatrol ? 0.97 : 0.96);
+    /** Align cruise/aggression caps with browser AI (`updateNpcs`) so DS pirates don’t sail visibly slower. */
+    const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 110) ? maxF * 0.94 : maxF * 0.88;
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }
@@ -1981,14 +1738,7 @@ function createServerNpcWorld(opts) {
     setWorldMapPayload,
     reset,
     step,
-    buildSyncRows: () => buildSyncRows(npcs, politics.portController, ws, windAt),
-    buildSyncRowsForViewer: (viewer, radiusSq) => buildSyncRows(
-      npcs,
-      politics.portController,
-      ws,
-      windAt,
-      n => npcIncludedForViewer(n, viewer, radiusSq)
-    ),
+    buildSyncRows: () => buildSyncRows(npcs, politics.portController, ws),
     getWindSample,
     getNpcs,
     applyPlayerCannonHitClaim,

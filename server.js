@@ -24,13 +24,8 @@ function getRealmConfig() {
 const MAX_CONCURRENT_CAPTAINS = Math.max(0, Math.floor(Number(process.env.MAX_CONCURRENT_CAPTAINS) || 0));
 /** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
 const SERVER_WORLD_T0_MS = Date.now();
-/** Authoritative simulation rate (Hz); keep client NET_SYNC_HZ in sync. */
-const TICK_RATE = 120;
-/** Network snapshots are intentionally lower than physics; clients interpolate between samples. */
-const STATE_BROADCAST_HZ = Math.max(20, Math.min(TICK_RATE, Number(process.env.STATE_BROADCAST_HZ) || 60));
-const NPC_SYNC_HZ = Math.max(10, Math.min(TICK_RATE, Number(process.env.NPC_SYNC_HZ) || 30));
-const STATE_BROADCAST_EVERY = Math.max(1, Math.round(TICK_RATE / STATE_BROADCAST_HZ));
-const NPC_SYNC_EVERY = Math.max(1, Math.round(TICK_RATE / NPC_SYNC_HZ));
+/** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
+const TICK_RATE = 60;
 /** Browser↔realm WebRTC DataChannel for gameplay payloads (signaling uses the existing WebSocket). */
 const RTC_GAME_CHANNEL = /^1|true|yes$/i.test(String(process.env.RTC_GAME_CHANNEL || '').trim());
 /** When set, duplicate `state` on WebSocket and DataChannel while DC is open (debug / migration). */
@@ -84,12 +79,9 @@ function applyNavigatorDevPlayerUpdate(p, msg) {
 /** Per-client interest radius (world units). Larger default keeps allied captains mutual visibility stable vs npc_sync broadcast (bandwidth still AOI-scoped vs full roster). Override STATE_AOI_RADIUS to tune. */
 const STATE_AOI_RADIUS = Math.max(800, Math.min(20000, Number(process.env.STATE_AOI_RADIUS) || 7800));
 const STATE_AOI_RADIUS_SQ = STATE_AOI_RADIUS * STATE_AOI_RADIUS;
-/** NPC sync is heavier than player state; stream only nearby AI hulls plus mission/boarding-critical hulls. */
-const NPC_AOI_RADIUS = Math.max(1000, Math.min(20000, Number(process.env.NPC_AOI_RADIUS) || Math.min(STATE_AOI_RADIUS, 4200)));
-const NPC_AOI_RADIUS_SQ = NPC_AOI_RADIUS * NPC_AOI_RADIUS;
 
 /** Dedicated VM / process managers / horizontal realms: see docs/MULTIPLAYER-DEPLOYMENT.md and multiplayer-server.example.env (not geographic multi-region). */
-/** Authoritative wind + movement validation (see simulation-layer.js). */
+/** Authoritative wind + motion integration (see simulation-layer.js). */
 let gameSim = null;
 let antiCheat = null;
 /** Full NPC AI + spawn loop (server/npc-authoritative.cjs); snapshots broadcast as `npc_sync`. */
@@ -152,8 +144,6 @@ function buildStateRow(p, includeCrew) {
     z: p.z,
     rotation: p.rotation,
     speed: p.speed,
-    vx: Number.isFinite(Number(p.netVx)) ? Math.round(Number(p.netVx) * 1000) / 1000 : null,
-    vz: Number.isFinite(Number(p.netVz)) ? Math.round(Number(p.netVz) * 1000) / 1000 : null,
     health: p.health,
     name: p.name,
     color: p.color,
@@ -2186,23 +2176,28 @@ function broadcastAll(data) {
 }
 
 /** Same payload to every captain; prefers WebRTC DataChannel when negotiated (same envelope as WebSocket JSON). */
-function sendGameplayJsonToClient(client, jsonStr) {
-  if (!client || client.readyState !== 1) return;
-  let sentDc = false;
-  if (gameRtc.enabled) {
-    sentDc = !!gameRtc.sendGameplayPayload(client, jsonStr).sentDc;
-  }
-  if (!sentDc || gameRtc.dualStack) {
-    try {
-      client.send(jsonStr);
-    } catch (e) {}
-  }
-}
-
 function broadcastGameplayJsonGlobal(payloadObj) {
   const jsonStr = JSON.stringify(payloadObj);
+  if (!gameRtc.enabled) {
+    wss.clients.forEach(client => {
+      if (client.readyState === 1) {
+        try {
+          client.send(jsonStr);
+        } catch (e) {}
+      }
+    });
+    return;
+  }
+  const dual = gameRtc.dualStack;
   for (const client of wss.clients) {
-    sendGameplayJsonToClient(client, jsonStr);
+    if (client.readyState !== 1) continue;
+    let sentDc = false;
+    sentDc = !!gameRtc.sendGameplayPayload(client, jsonStr).sentDc;
+    if (!sentDc || dual) {
+      try {
+        client.send(jsonStr);
+      } catch (e) {}
+    }
   }
 }
 
@@ -2508,9 +2503,6 @@ wss.on('connection', (ws, req) => {
     clientIp,
     rtt: null,
     lastNetSeq: 0,
-    netVx: 0,
-    netVz: 0,
-    lastClientSampleMs: Date.now(),
     hullBanner: null,
     sailBanner: null,
     npcEnsignFaction: null
@@ -2622,46 +2614,10 @@ wss.on('connection', (ws, req) => {
             const cx = Number(msg.x);
             const cz = Number(msg.z);
             if (Number.isFinite(cx) && Number.isFinite(cz) && (p.docked || !ac.denyPositionHint)) {
-              const prevX = Number(p.x);
-              const prevZ = Number(p.z);
-              const prevSampleMs = Number(p.lastClientSampleMs);
-              const sampleMs = Date.now();
               gameSim.applyClientPositionHint(p, cx, cz);
-              const nextX = Number(p.x);
-              const nextZ = Number(p.z);
-              if (Number.isFinite(prevX) && Number.isFinite(prevZ) && Number.isFinite(nextX) && Number.isFinite(nextZ)) {
-                const dist = Math.hypot(nextX - prevX, nextZ - prevZ);
-                if (dist > 180) {
-                  p.netVx = 0;
-                  p.netVz = 0;
-                } else if (Number.isFinite(prevSampleMs) && prevSampleMs > 0 && sampleMs > prevSampleMs) {
-                  const sdt = Math.max(1 / TICK_RATE, Math.min(0.25, (sampleMs - prevSampleMs) / 1000));
-                  let vx = (nextX - prevX) / sdt;
-                  let vz = (nextZ - prevZ) / sdt;
-                  const vm = Math.hypot(vx, vz);
-                  const cap = 160;
-                  if (vm > cap && vm > 1e-6) {
-                    const sc = cap / vm;
-                    vx *= sc;
-                    vz *= sc;
-                  }
-                  p.netVx = vx;
-                  p.netVz = vz;
-                } else {
-                  const sp = Number.isFinite(Number(p.speed)) ? Number(p.speed) : 0;
-                  const rr = Number.isFinite(Number(p.rotation)) ? Number(p.rotation) : 0;
-                  p.netVx = Math.sin(rr) * sp;
-                  p.netVz = Math.cos(rr) * sp;
-                }
-                p.lastClientSampleMs = sampleMs;
-              }
             }
           }
           if (msg.docked !== undefined) p.docked = !!msg.docked;
-          if (p.docked) {
-            p.netVx = 0;
-            p.netVz = 0;
-          }
           if (msg.dockX !== undefined) p.dockX = msg.dockX;
           if (msg.dockZ !== undefined) p.dockZ = msg.dockZ;
           if (msg.dockAngle !== undefined) p.dockAngle = msg.dockAngle;
@@ -3219,9 +3175,7 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'loot_spawn': {
-          let lid = msg.id != null ? msg.id : null;
-          if (lid === '' || lid === undefined) lid = null;
-          if (lid == null) lid = nextLootNetId++;
+          const lid = nextLootNetId++;
           broadcastAll({
             type: 'loot_spawn',
             id: lid,
@@ -4247,9 +4201,7 @@ setInterval(() => {
   }
   serverStateTickSeq++;
   ensureSimulationLayer();
-  /* Player hulls are client-authoritative after anticheat validation. Do not wind-integrate them here:
-   * clients already integrate locally, and server-side prediction between accepted samples creates sawtooth
-   * authority positions for every other player. */
+  gameSim.stepAll(players);
   ensureNpcWorld();
   if (!npcWorldHadPlayers) {
     npcWorld.setWorldSeed(WORLD_SEED >>> 0);
@@ -4260,24 +4212,14 @@ setInterval(() => {
     ensureWorldPolitics().tickEconomy(1 / TICK_RATE);
   } catch (e) {}
   npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
-  if (serverStateTickSeq % NPC_SYNC_EVERY === 0) {
-    try {
-      const wind = npcWorld.getWindSample();
-      for (const client of wss.clients) {
-        if (client.readyState !== 1 || client.playerId == null) continue;
-        const viewer = players.get(client.playerId);
-        if (!viewer) continue;
-        const payloadStr = JSON.stringify({
-          type: 'npc_sync',
-          npcs: npcWorld.buildSyncRowsForViewer(viewer, NPC_AOI_RADIUS_SQ),
-          wind,
-          srvTick: serverStateTickSeq,
-          aoiR: NPC_AOI_RADIUS
-        });
-        sendGameplayJsonToClient(client, payloadStr);
-      }
-    } catch (e) {}
-  }
+  try {
+    broadcastGameplayJsonGlobal({
+      type: 'npc_sync',
+      npcs: npcWorld.buildSyncRows(),
+      wind: npcWorld.getWindSample(),
+      srvTick: serverStateTickSeq
+    });
+  } catch (e) {}
   if (serverStateTickSeq % 540 === 0) {
     try {
       const wp = ensureWorldPolitics().snapshot();
@@ -4291,38 +4233,35 @@ setInterval(() => {
       });
     } catch (e) {}
   }
-  if (serverStateTickSeq % STATE_BROADCAST_EVERY === 0) {
-    const crewEveryTicks = Math.max(STATE_BROADCAST_EVERY, Math.round(TICK_RATE / 30));
-    const includeCrew = (serverStateTickSeq % crewEveryTicks === 0);
-    const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
-    const all = Array.from(players.values());
-    for (const client of wss.clients) {
-      if (client.readyState !== 1 || client.playerId == null) continue;
-      const viewer = players.get(client.playerId);
-      if (!viewer) continue;
-      const snap = [];
-      for (const p of all) {
-        if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
-        snap.push(buildStateRow(p, includeCrew || !!p.boarding));
-      }
-      try {
-        const payloadStr = JSON.stringify({
-          type: 'state',
-          players: snap,
-          worldT: tickWorldT,
-          wildlifeWorldT: tickWorldT,
-          srvTick: serverStateTickSeq,
-          aoiR: STATE_AOI_RADIUS
-        });
-        let sentDc = false;
-        if (gameRtc.enabled) {
-          sentDc = !!gameRtc.sendGameplayPayload(client, payloadStr).sentDc;
-        }
-        if (!sentDc || gameRtc.dualStack) {
-          client.send(payloadStr);
-        }
-      } catch (e) {}
+  const includeCrew = (serverStateTickSeq % 2 === 0);
+  const tickWorldT = (Date.now() - SERVER_WORLD_T0_MS) / 1000;
+  const all = Array.from(players.values());
+  for (const client of wss.clients) {
+    if (client.readyState !== 1 || client.playerId == null) continue;
+    const viewer = players.get(client.playerId);
+    if (!viewer) continue;
+    const snap = [];
+    for (const p of all) {
+      if (!playerIncludedInSnapshot(viewer, p, STATE_AOI_RADIUS_SQ)) continue;
+      snap.push(buildStateRow(p, includeCrew || !!p.boarding));
     }
+    try {
+      const payloadStr = JSON.stringify({
+        type: 'state',
+        players: snap,
+        worldT: tickWorldT,
+        wildlifeWorldT: tickWorldT,
+        srvTick: serverStateTickSeq,
+        aoiR: STATE_AOI_RADIUS
+      });
+      let sentDc = false;
+      if (gameRtc.enabled) {
+        sentDc = !!gameRtc.sendGameplayPayload(client, payloadStr).sentDc;
+      }
+      if (!sentDc || gameRtc.dualStack) {
+        client.send(payloadStr);
+      }
+    } catch (e) {}
   }
   } catch (e) {
     console.error('[playground] state tick error:', e && e.message ? e.message : e);
@@ -4344,14 +4283,12 @@ server.listen(PORT, '0.0.0.0', () => {
   ensureSimulationLayer();
   const ac = antiCheat && antiCheat.cfg;
   if (ac) {
-    console.log(`[playground] simulation: authoritative wind + validated client hull samples @ ${TICK_RATE}Hz (simulation-layer.js)`);
-    console.log(`[playground] net snapshots: players @ ~${Math.round(TICK_RATE / STATE_BROADCAST_EVERY)}Hz, NPCs @ ~${Math.round(TICK_RATE / NPC_SYNC_EVERY)}Hz`);
+    console.log(`[playground] simulation: authoritative wind + hull integration @ ${TICK_RATE}Hz (simulation-layer.js)`);
     console.log(`[playground] anticheat: max ${ac.maxUpdatesPerSec}/s updates · Δpos≤${ac.maxPositionJump} · kick after ${ac.violationKickThreshold} violations / ${ac.violationWindowMs}ms (override AC_* env in simulation-layer.js)`);
   }
   const rc = getRealmConfig();
   console.log(`[playground] realm: «${rc.name}» (${rc.id}) — REALM_NAME / REALM_ID env`);
   console.log(`[playground] multiplayer AOI radius (world units): ${STATE_AOI_RADIUS} — set STATE_AOI_RADIUS env to tune; per-client state lists only nearby captains (+ boarding partners).`);
-  console.log(`[playground] NPC AOI radius (world units): ${NPC_AOI_RADIUS} — set NPC_AOI_RADIUS env to tune per-client npc_sync payloads.`);
   if (gameRtc.enabled) {
     console.log(`[playground] WebRTC game DataChannel: ON — multiplexed JSON (\`state\`, \`npc_sync\`, …). Dual-stack WS copies: ${gameRtc.dualStack ? 'ON' : 'OFF'}. ICE: ${(gameRtc.publicIceServers || []).join(', ')}`);
   }

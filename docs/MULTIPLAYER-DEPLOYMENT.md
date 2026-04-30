@@ -4,7 +4,7 @@ This complements the in-code comments in `server.js`. It does **not** cover geo-
 
 ## Dedicated VM or VPS
 
-- **Single process** = one realm (`REALM_ID`). The game server is Node.js + WebSockets; each connected client receives interest-filtered `state` and global `npc_sync` below the simulation rate, with client interpolation.
+- **Single process** = one realm (`REALM_ID`). The game server is Node.js + WebSockets; each connected client receives interest-filtered `state` and global `npc_sync` at the simulation rate.
 - **Vertical scaling first:** more CPU reduces per-tick work headroom; more RAM helps WebSocket buffers, player records, and persistence. A practical starting point for tens of concurrent captains is **2 vCPU / 2 GB RAM** on the same network as your static file host, then load-test.
 - **Horizontal scaling (not regional):** run **multiple Node processes** with different `REALM_ID` / `PORT` (or behind a TCP load balancer that pins by port). Each realm is a separate ocean and player cap. Clients point to a realm URL you choose; this is “more servers” in the sense of more game instances, not automatic geographic routing.
 
@@ -22,13 +22,10 @@ Use **systemd**, **PM2**, **Docker**, or your host’s equivalent so the process
 |----------|---------|
 | `MAX_CONCURRENT_CAPTAINS` | Hard cap on simultaneous logins |
 | `STATE_AOI_RADIUS` | World units — larger means more peers per `state` snapshot and more JSON per tick for nearby fights |
-| `STATE_BROADCAST_HZ` | Per-client captain snapshot rate; default 60 Hz |
-| `NPC_SYNC_HZ` | Global NPC snapshot rate; default 30 Hz |
-| `AC_MAX_UPDATES_PER_SEC` | Accepted player `update` messages per second; default 96, sized for 60 Hz input plus bursts |
 | `WS_PING_INTERVAL_MS` | Detect dead tabs; lower = more control traffic |
 | `PORT` | Listen port |
 
-After changing **simulation tick rate** (`TICK_RATE` in `server.js`, default **120**), align the client (`NET_SYNC_HZ` in `index.html`). Tune snapshot smoothness with `STATE_BROADCAST_HZ` and `NPC_SYNC_HZ` instead of raising the physics tick.
+After changing **simulation tick rate** (`TICK_RATE` in `server.js`), you must align the client (`NET_SYNC_HZ` in `index.html`) — so prefer tuning **AOI and player cap** before changing tick rate.
 
 ## Static files
 
