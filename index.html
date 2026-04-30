@@ -16201,11 +16201,19 @@ function npcWindEffect(npc) {
 }
 function npcEffectiveForwardSpeed(npc) {
   const maxF = npcMaxForwardSpeed(npc);
+  const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const v = Math.min(Math.abs(npc.speed), maxF);
   const wEff = npcWindEffect(npc);
-  /* Player SOG uses navigation + stations + morale; AI only had raw wind × throttle → “in irons” crawled while
-   * tutorial hull uses player-matched caps. Blend preserves wind bias but floors SOG closer to hull throttle. */
-  return v * (0.48 + 0.52 * wEff);
+  const blended = v * (0.72 + 0.28 * wEff);
+  /* Same hull scalar as player helm max (× PLAYER_BASE_SPEED_MULT); tutorial raid caps to this — floor SOG so AI convoys keep player-like pace. */
+  const playerHullCeil = 12 * spec.speed * PLAYER_BASE_SPEED_MULT;
+  const thr = Math.min(1, v / Math.max(1e-4, maxF));
+  const mix = 0.45 + 0.55 * wEff;
+  const floorSog =
+    v > 0.55
+      ? Math.min(maxF * 0.98, playerHullCeil * mix * (0.42 + 0.58 * thr))
+      : blended;
+  return Math.min(maxF * 1.08, Math.max(blended, floorSog));
 }
 /** Rudder authority scales with way-on (forward speed through water). Keeps AI turns sail-like, not motorboat-snappy. */
 function npcSailingTurnFactor(npc) {
@@ -16220,7 +16228,7 @@ function accelerateNpcToward(npc, dt, target) {
   const maxF = npcMaxForwardSpeed(npc);
   const t = Math.min(maxF, Math.max(0, target));
   if (npc.speed < t - 0.03) {
-    npc.speed = Math.min(npc.speed + 9.0 * dt * speedMult, t, maxF);
+    npc.speed = Math.min(npc.speed + 14.0 * dt * speedMult, t, maxF);
   } else if (npc.speed > t + 0.03) {
     npc.speed *= (1 - 0.3 * dt);
     if (npc.speed < t) npc.speed = t;
@@ -17755,7 +17763,7 @@ function updateNPCs(dt) {
               while (tdiff < -Math.PI) tdiff += Math.PI * 2;
               npc.rotation += tdiff * 0.76 * dt * npcSailingTurnFactor(npc);
             }
-            const tgtC = npcMaxForwardSpeed(npc) * 0.88;
+            const tgtC = npcMaxForwardSpeed(npc) * 0.92;
             accelerateNpcToward(npc, dt, tgtC);
             steerNpcClearanceAhead(npc, dt, sharp);
             if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
@@ -17864,7 +17872,7 @@ function updateNPCs(dt) {
           npc.wanderAngle = npc.rotation;
         }
         if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
-        const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.94;
+        const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.97;
         const phase = npc.tradePhase || 'to_dest';
         if ((phase === 'to_dest' || phase === 'to_home') && (npc.tradeDestX == null || npc.tradeDestZ == null || !Number.isFinite(Number(npc.tradeDestX)) || !Number.isFinite(Number(npc.tradeDestZ)))) {
           merchantFallbackOceanTradeLeg(npc);
@@ -18102,7 +18110,7 @@ function updateNPCs(dt) {
       if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
       const maxF = npcMaxForwardSpeed(npc);
       const chasingPlayerOrNpc = !!(focus && distToTarget < 132) || (!focus && npc.aggro && distToPlayer < aggroBand);
-      let tgtSpd = chasingPlayerOrNpc ? maxF * 0.94 : maxF * (patrolShip ? 0.94 : 0.92);
+      let tgtSpd = chasingPlayerOrNpc ? maxF * 0.98 : maxF * (patrolShip ? 0.97 : 0.96);
       if (npc.tutorialRaidHull && npc._tutorialRaidCruiseCeil != null && Number.isFinite(npc._tutorialRaidCruiseCeil)) {
         tgtSpd = Math.min(tgtSpd, npc._tutorialRaidCruiseCeil);
       }
@@ -32228,8 +32236,8 @@ function update(dt) {
       }
       const row = {
         id: n.syncId,
-        x: Math.round(n.x * 20) / 20,
-        z: Math.round(n.z * 20) / 20,
+        x: Math.round(n.x * 200) / 200,
+        z: Math.round(n.z * 200) / 200,
         r: Math.round(n.rotation * 1000) / 1000,
         h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
         rg: Math.round(getNpcRiggingHealth(n)),

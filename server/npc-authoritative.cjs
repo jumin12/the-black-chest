@@ -10,6 +10,8 @@ const NPC_SPAWN_EXTRA_GAP = 12;
 const PLAYER_BROADSIDE_COOLDOWN = 2.5;
 const CANNONBALL_XY_SPEED = 35;
 const TRADE_DOCK_DIST = 40;
+/** Match client `PLAYER_BASE_SPEED_MULT` — player helm max uses `12 * hullSpeed * this`. */
+const PLAYER_BASE_SPEED_MULT = 0.63;
 const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood', 'cloth', 'iron', 'rum', 'gunpowder'];
 /** Vanilla pirate slots (syncId 0..n-1) respawn this long after removal (matches browser host). */
 const VANILLA_PIRATE_RESPAWN_MS = 180000;
@@ -324,10 +326,18 @@ function npcWindEffect(npc, windAt) {
 
 function npcEffectiveForwardSpeed(npc, windAt) {
   const maxF = npcMaxForwardSpeed(npc);
+  const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const v = Math.min(Math.abs(npc.speed || 0), maxF);
   const wEff = npcWindEffect(npc, windAt);
-  /* Match client: blend hull throttle with wind so AI SOG stays closer to player feel (tutorial caps do this implicitly). */
-  return v * (0.48 + 0.52 * wEff);
+  const blended = v * (0.72 + 0.28 * wEff);
+  const playerHullCeil = 12 * spec.speed * PLAYER_BASE_SPEED_MULT;
+  const thr = Math.min(1, v / Math.max(1e-4, maxF));
+  const mix = 0.45 + 0.55 * wEff;
+  const floorSog =
+    v > 0.55
+      ? Math.min(maxF * 0.98, playerHullCeil * mix * (0.42 + 0.58 * thr))
+      : blended;
+  return Math.min(maxF * 1.08, Math.max(blended, floorSog));
 }
 
 function npcSailingTurnFactor(npc, windAt) {
@@ -344,7 +354,7 @@ function accelerateNpcToward(npc, dt, target) {
   const t = Math.min(maxF, Math.max(0, target));
   let spd = npc.speed || 0;
   if (spd < t - 0.03) {
-    spd = Math.min(spd + 9.0 * dt * speedMult, t, maxF);
+    spd = Math.min(spd + 14.0 * dt * speedMult, t, maxF);
   } else if (spd > t + 0.03) {
     spd *= (1 - 0.3 * dt);
     if (spd < t) spd = t;
@@ -856,8 +866,9 @@ function buildSyncRows(npcs, portController, ws) {
       }
       const row = {
         id: n.syncId,
-        x: Math.round(n.x * 20) / 20,
-        z: Math.round(n.z * 20) / 20,
+        /* Was 1/20 = 0.05 — too coarse at 60Hz; sub-tick motion rounded away → hulls crawl on clients. */
+        x: Math.round(n.x * 200) / 200,
+        z: Math.round(n.z * 200) / 200,
         r: Math.round(n.rotation * 1000) / 1000,
         h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
         rg: Math.round(getNpcRiggingHealth(n)),
@@ -1588,7 +1599,7 @@ function createServerNpcWorld(opts) {
     if (npc.aggro && (distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) npc.aggro = false;
     const fighting = npc.aggro && distToPlayer < 135;
     const fightingNpc = !!atkShip && Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 128;
-    const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.96;
+    const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.97;
     if (fightingNpc) {
       const sharp = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 92 ? 2.55 : 2.12;
       if (!npc.escapeMode) {
@@ -1868,7 +1879,7 @@ function createServerNpcWorld(opts) {
     /** Match browser host: patrols keep a slightly higher idle cruise; chase harder when damaged or focused. */
     const chasing =
       !!(focus && distToTarget < 132) || (!focus && npc.aggro && near && distToPlayer < aggroBand);
-    const tgtSpd = chasing ? maxF * 0.94 : maxF * (isPatrol ? 0.94 : 0.92);
+    const tgtSpd = chasing ? maxF * 0.98 : maxF * (isPatrol ? 0.97 : 0.96);
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }
