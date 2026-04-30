@@ -19810,22 +19810,56 @@ function applyRtcCandidate(msg) {
 
 function flushCaptainWireJsonParseOrdered() {
   if (!G._wireParseResults) return;
+  const pending = G._wireParsePendingTexts;
   while (G._wireParseResults.has(G._wireParseNextId)) {
-    const msg = G._wireParseResults.get(G._wireParseNextId);
-    G._wireParseResults.delete(G._wireParseNextId);
+    const id = G._wireParseNextId;
+    const msg = G._wireParseResults.get(id);
+    G._wireParseResults.delete(id);
     G._wireParseNextId++;
-    if (msg && msg.__parseError) continue;
+    if (msg && msg.__parseError) {
+      const t = pending && pending.get(id);
+      if (typeof t === 'string' && t.length) {
+        try {
+          dispatchCaptainJsonMessageFromWire(JSON.parse(t));
+        } catch (e) {}
+      }
+      if (pending) pending.delete(id);
+      continue;
+    }
+    if (pending) pending.delete(id);
     dispatchCaptainJsonMessageFromWire(msg);
   }
 }
 
+function failGameplayJsonWorkersAndReplayPending(reason) {
+  try {
+    if (reason) console.warn('[playground] gameplay JSON worker fallback:', reason);
+  } catch (e) {}
+  if (Array.isArray(G._gameplayJsonWorkers)) {
+    for (const w of G._gameplayJsonWorkers) {
+      try { w.terminate(); } catch (e) {}
+    }
+  }
+  G._gameplayJsonWorkers = false;
+  const lo = G._wireParseNextId | 0;
+  const hi = G._wireParseIssued | 0;
+  const pending = G._wireParsePendingTexts;
+  if (G._wireParseResults) G._wireParseResults.clear();
+  for (let id = lo; id < hi; id++) {
+    const t = pending && pending.get(id);
+    if (typeof t === 'string' && t.length) {
+      try {
+        dispatchCaptainJsonMessageFromWire(JSON.parse(t));
+      } catch (e) {}
+    }
+  }
+  if (pending) pending.clear();
+  G._wireParseNextId = hi;
+}
+
 function ensureGameplayJsonWorkerPool() {
-  if (G._gameplayJsonWorkersInit) return;
-  G._gameplayJsonWorkersInit = true;
-  G._wireParseIssued = 0;
-  G._wireParseNextId = 0;
-  G._wireParseResults = new Map();
-  G._wireParseWorkerRR = 0;
+  if (G._gameplayJsonWorkers === false) return;
+  if (Array.isArray(G._gameplayJsonWorkers) && G._gameplayJsonWorkers.length) return;
   if (typeof Worker === 'undefined') {
     G._gameplayJsonWorkers = null;
     return;
@@ -19835,7 +19869,16 @@ function ensureGameplayJsonWorkerPool() {
     const workers = [];
     for (let i = 0; i < 2; i++) {
       const w = new Worker(wUrl);
-      w.onmessage = (ev) => {
+      w.onerror = ev => {
+        try {
+          console.warn(
+            '[playground] gameplay JSON worker failed — is workers/gameplay-json-worker.js deployed next to the page?',
+            (ev && ev.message) || ev
+          );
+        } catch (e) {}
+        failGameplayJsonWorkersAndReplayPending('onerror');
+      };
+      w.onmessage = ev => {
         const d = ev.data;
         if (!d || d.type !== 'parsed') return;
         const id = d.id | 0;
@@ -19852,8 +19895,7 @@ function ensureGameplayJsonWorkerPool() {
 }
 
 function disposeGameplayJsonWorkerPool() {
-  G._gameplayJsonWorkersInit = false;
-  if (G._gameplayJsonWorkers) {
+  if (Array.isArray(G._gameplayJsonWorkers)) {
     for (const w of G._gameplayJsonWorkers) {
       try { w.terminate(); } catch (e) {}
     }
@@ -19862,26 +19904,29 @@ function disposeGameplayJsonWorkerPool() {
   G._wireParseIssued = 0;
   G._wireParseNextId = 0;
   G._wireParseResults = null;
+  G._wireParsePendingTexts = null;
+  G._wireParseWorkerRR = 0;
 }
 
 function submitCaptainWireForOrderedJsonParse(text) {
   if (!text || typeof text !== 'string') return;
+  if (!G._wireParseResults) G._wireParseResults = new Map();
+  if (!G._wireParsePendingTexts) G._wireParsePendingTexts = new Map();
   ensureGameplayJsonWorkerPool();
-  if (!G._gameplayJsonWorkers || !G._gameplayJsonWorkers.length) {
+  if (G._gameplayJsonWorkers === false || !G._gameplayJsonWorkers || !G._gameplayJsonWorkers.length) {
     try {
       dispatchCaptainJsonMessageFromWire(JSON.parse(text));
     } catch (e) {}
     return;
   }
   const id = G._wireParseIssued++;
+  G._wireParsePendingTexts.set(id, text);
   const wi = (G._wireParseWorkerRR | 0) % G._gameplayJsonWorkers.length;
   G._wireParseWorkerRR = wi + 1;
   try {
     G._gameplayJsonWorkers[wi].postMessage({ type: 'parse', id, text });
   } catch (e) {
-    try {
-      dispatchCaptainJsonMessageFromWire(JSON.parse(text));
-    } catch (e2) {}
+    failGameplayJsonWorkersAndReplayPending('postMessage');
   }
 }
 
@@ -20031,6 +20076,12 @@ function dispatchCaptainJsonMessageFromWire(msg) {
         setMultiplayerConnectingOverlay(false);
         G._netDesyncSticky = 0;
         try { setDesyncBlockingOverlay(false); } catch (e) {}
+        try {
+          if (G._mpWireParseWatchdogId) {
+            clearTimeout(G._mpWireParseWatchdogId);
+            G._mpWireParseWatchdogId = null;
+          }
+        } catch (e) {}
         break;
       case 'server_pop':
         applyServerPop(msg);
@@ -20907,6 +20958,12 @@ async function connectToServer() {
   }
   if (ws) {
     try {
+      try {
+        if (G._mpWireParseWatchdogId) {
+          clearTimeout(G._mpWireParseWatchdogId);
+          G._mpWireParseWatchdogId = null;
+        }
+      } catch (e) {}
       disposeGameplayJsonWorkerPool();
       stopRtcGameChannel();
       ws.onclose = null;
@@ -20943,6 +21000,20 @@ async function connectToServer() {
   if (G.mode === 'playing') {
     setMultiplayerConnectingOverlay(true);
     queueMicrotask(() => { try { preloadRealmWhileConnecting(); } catch (e) {} });
+    try {
+      if (G._mpWireParseWatchdogId) clearTimeout(G._mpWireParseWatchdogId);
+      G._mpWireParseWatchdogId = setTimeout(() => {
+        G._mpWireParseWatchdogId = null;
+        if (G.mode !== 'playing') return;
+        if (!ws || ws.readyState !== 1) return;
+        if (G.myId != null) return;
+        const el = document.getElementById('mp-connecting-overlay');
+        if (!el || el.style.display !== 'flex') return;
+        if (Array.isArray(G._gameplayJsonWorkers) && G._gameplayJsonWorkers.length) {
+          failGameplayJsonWorkersAndReplayPending('watchdog: still waiting for init');
+        }
+      }, 9000);
+    } catch (e) {}
   }
   let socket;
   try {
@@ -20987,7 +21058,14 @@ async function connectToServer() {
     }, 680);
   };
   ws.onmessage = (e) => {
-    const text = typeof e.data === 'string' ? e.data : '';
+    let text = '';
+    const d = e.data;
+    if (typeof d === 'string') text = d;
+    else if (typeof ArrayBuffer !== 'undefined' && d instanceof ArrayBuffer) {
+      try {
+        text = new TextDecoder().decode(d);
+      } catch (err) {}
+    }
     if (!text) return;
     submitCaptainWireForOrderedJsonParse(text);
   };
@@ -20999,6 +21077,12 @@ async function connectToServer() {
     }
   };
   ws.onclose = () => {
+    try {
+      if (G._mpWireParseWatchdogId) {
+        clearTimeout(G._mpWireParseWatchdogId);
+        G._mpWireParseWatchdogId = null;
+      }
+    } catch (e) {}
     setMultiplayerConnectingOverlay(false);
     if (wsUserBanned) return;
     if (wsSuppressReconnect) {
