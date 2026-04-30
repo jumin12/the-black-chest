@@ -247,8 +247,8 @@ function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
   const rigF = Math.max(0.26, Math.pow(rm, 1.32));
-  /* ~player-scale top speed (+50% vs legacy tuning). */
-  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.09 * 1.5;
+  /* Sync with browser `npcMaxForwardSpeed`: hull ceiling + rigging; crew folded into constants vs client crew mult. */
+  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.22 * 1.56;
 }
 
 function npcWindEffect(npc, windAt) {
@@ -276,7 +276,7 @@ function accelerateNpcToward(npc, dt, target) {
   const t = Math.min(maxF, Math.max(0, target));
   let spd = npc.speed || 0;
   if (spd < t - 0.03) {
-    spd = Math.min(spd + 6.2 * dt * speedMult, t, maxF);
+    spd = Math.min(spd + 6.95 * dt * speedMult, t, maxF);
   } else if (spd > t + 0.03) {
     spd *= (1 - 0.3 * dt);
     if (spd < t) spd = t;
@@ -667,7 +667,7 @@ function syncStoryBountyNpcs(npcs, playerStories, ctx, ws, edgeClamp) {
           fireCooldown: 0,
           aggro: false
         };
-        newbie.speed = npcMaxForwardSpeed(newbie) * 0.52;
+        newbie.speed = npcMaxForwardSpeed(newbie) * 0.58;
         npcs.push(newbie);
       }
     });
@@ -754,7 +754,7 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
         aggro: false
       });
       const last = npcs[npcs.length - 1];
-      last.speed = npcMaxForwardSpeed(last) * (0.48 + Math.random() * 0.18);
+      last.speed = npcMaxForwardSpeed(last) * (0.54 + Math.random() * 0.22);
     }
   });
   }
@@ -1103,7 +1103,7 @@ function createServerNpcWorld(opts) {
       fireCooldown: 0,
       aggro: false
     };
-    npc.speed = npcMaxForwardSpeed(npc) * (0.52 + sr() * 0.24);
+    npc.speed = npcMaxForwardSpeed(npc) * (0.58 + sr() * 0.28);
     npcs.push(npc);
     return true;
   }
@@ -1175,7 +1175,7 @@ function createServerNpcWorld(opts) {
       aggro: false
     });
     const last = npcs[npcs.length - 1];
-    last.speed = npcMaxForwardSpeed(last) * (0.56 + sr() * 0.22);
+    last.speed = npcMaxForwardSpeed(last) * (0.62 + sr() * 0.24);
   }
 
   function reset(players) {
@@ -1234,7 +1234,7 @@ function createServerNpcWorld(opts) {
         aggro: false
       });
       const last = npcs[npcs.length - 1];
-      last.speed = npcMaxForwardSpeed(last) * (0.56 + sr() * 0.22);
+      last.speed = npcMaxForwardSpeed(last) * (0.62 + sr() * 0.24);
     }
     const allPorts = collectAllPorts();
     if (allPorts.length >= 2) {
@@ -1416,7 +1416,7 @@ function createServerNpcWorld(opts) {
     if (npc.aggro && (distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) npc.aggro = false;
     const fighting = npc.aggro && distToPlayer < 135;
     const fightingNpc = !!atkShip && Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 128;
-    const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.96;
+    const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.992;
     if (fightingNpc) {
       const sharp = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 92 ? 2.55 : 2.12;
       if (!npc.escapeMode) {
@@ -1444,7 +1444,7 @@ function createServerNpcWorld(opts) {
       nudgeNpcOffIsland(npc, dryLand, edgeClamp);
       const maxF = npcMaxForwardSpeed(npc);
       const distAtk = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z);
-      const tgtSpd = npc.underFireTimer > 0 && distAtk < 95 ? maxF * 0.38 : maxF * 0.62;
+      const tgtSpd = npc.underFireTimer > 0 && distAtk < 95 ? maxF * 0.26 : maxF * 0.62;
       accelerateNpcToward(npc, dt, tgtSpd);
       applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
     } else if (fighting && near) {
@@ -1472,7 +1472,7 @@ function createServerNpcWorld(opts) {
       steerNpcClearanceAhead(npc, dt, sharp, windAt, dryLand);
       nudgeNpcOffIsland(npc, dryLand, edgeClamp);
       const maxF = npcMaxForwardSpeed(npc);
-      const tgtSpd = npc.underFireTimer > 0 && distToPlayer < 92 ? maxF * 0.32 : maxF * 0.58;
+      const tgtSpd = npc.underFireTimer > 0 && distToPlayer < 118 ? maxF * 0.36 : maxF * 0.66;
       accelerateNpcToward(npc, dt, tgtSpd);
       applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
     } else {
@@ -1513,7 +1513,7 @@ function createServerNpcWorld(opts) {
         }
         if (npc.tradeTimer <= 0) {
           npc.tradePhase = 'to_dest';
-          npc.targetCruise = npcMaxForwardSpeed(npc) * (0.6 + Math.random() * 0.22);
+          npc.targetCruise = npcMaxForwardSpeed(npc) * (0.74 + Math.random() * 0.2);
         }
       } else if (phase === 'to_dest' || phase === 'to_home') {
         if (tx != null && tz != null && dockTx != null && dockTz != null) {
@@ -1673,8 +1673,8 @@ function createServerNpcWorld(opts) {
     steerNpcClearanceAhead(npc, dt, sharp, windAt, dryLand);
     nudgeNpcOffIsland(npc, dryLand, edgeClamp);
     const maxF = npcMaxForwardSpeed(npc);
-    /** Align cruise/aggression caps with browser AI (`updateNpcs`) so DS pirates don’t sail visibly slower. */
-    const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 110) ? maxF * 0.94 : maxF * 0.88;
+    /** Align cruise/aggression caps with browser AI (`updateNPCs`). */
+    const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF * 0.985 : maxF * 0.935;
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }
