@@ -18038,13 +18038,20 @@ function updateNPCs(dt) {
           npc.z = poseNet.z;
           npc.rotation = poseNet.ry;
         } else {
-          /* Linear delayed sample with uniform tick spacing — direct XZ kills crawl/rubberband from blend-vs-delay; yaw eased only. */
-          npc.x = poseNet.x;
-          npc.z = poseNet.z;
+          /* Low-pass toward delayed linear spline sample — timeline is continuous but discrete keys still step; smoothing sells steady sailing without fighting fixed recvMs spacing. */
+          const edx = poseNet.x - npc.x;
+          const edz = poseNet.z - npc.z;
+          const es = Math.hypot(edx, edz);
+          const spdHint = es / Math.max(dt, 1e-4);
+          const track = Math.min(168, 58 + spdHint * 0.1 + Math.min(52, es * 0.09));
+          const posK = 1 - Math.exp(-track * dt);
+          npc.x += edx * posK;
+          npc.z += edz * posK;
           let dr = poseNet.ry - npc.rotation;
           while (dr > Math.PI) dr -= Math.PI * 2;
           while (dr < -Math.PI) dr += Math.PI * 2;
-          npc.rotation += dr * (1 - Math.exp(-34 * dt));
+          const rk = 1 - Math.exp(-Math.min(78, 36 + Math.abs(dr) * 12) * dt);
+          npc.rotation += dr * rk;
         }
       } else {
         npc._npcNetSmVx = npc._npcNetSmVz = undefined;
