@@ -4191,7 +4191,12 @@ function applyNpcBoardingScuttleSinkVisualLocal(npc) {
 function applyAuthoritativeNpcSinkWorldFx(npc) {
   if (!npc || !G.npcSimFromServer || npc._authSinkFxApplied) return;
   npc._authSinkFxApplied = true;
+  npc._sinkSkipSurfaceDebris = true;
+  const sid = netNpcSyncId(npc.syncId);
+  if (!G._npcAuthSinkLootOnce) G._npcAuthSinkLootOnce = new Set();
+  if (sid != null && G._npcAuthSinkLootOnce.has(sid)) return;
   if (!isLowestConnectedPlayerIdForFx()) return;
+  if (sid != null) G._npcAuthSinkLootOnce.add(sid);
   const wasEscortContractShip = !!npc.isEscortCargo;
   const missionOwner = npc.missionOwnerPlayerId != null ? npc.missionOwnerPlayerId : (npc.isStoryBounty ? G.myId : null);
   const storyMission = !!(npc.isStoryBounty && missionOwner != null);
@@ -4204,7 +4209,8 @@ function applyAuthoritativeNpcSinkWorldFx(npc) {
       const t = lootTypes[Math.floor(Math.random() * lootTypes.length)];
       const c = t === 'gold' ? 8 + Math.floor(Math.random() * 15) : t === 'cannonballs' ? 4 + Math.floor(Math.random() * 8) : t === 'food' ? 6 + Math.floor(Math.random() * 10) : 2 + Math.floor(Math.random() * 5);
       const lx = npc.x + (Math.random() - 0.5) * 8, lz = npc.z + (Math.random() - 0.5) * 8;
-      spawnWorldLootAt(lx, lz, t, c, 0.5);
+      const lid = sid != null ? `ns_${sid}_${li}` : null;
+      spawnWorldLootAt(lx, lz, t, c, 0.5, lid);
     }
   }
   detachNpcCrewAndSpawnBailSwimmers(npc, {});
@@ -9284,16 +9290,35 @@ function syncTradeShipName(npc, homeMeta) {
 }
 function assignNewTradeRoute(npc) {
   const list = collectPortsInArea(npc.x, npc.z, 24000);
-  if (list.length < 2) return;
+  if (list.length < 2) return false;
   let nearest = list[0], nd = Infinity;
   for (const p of list) {
     const d = Math.hypot(npc.x - p.dockX, npc.z - p.dockZ);
     if (d < nd) { nd = d; nearest = p; }
   }
   const sr = () => Math.random();
-  assignTradeRouteFromHome(npc, nearest, list, sr);
+  if (!assignTradeRouteFromHome(npc, nearest, list, sr)) return false;
   npc.tradePhase = 'to_dest';
   npc.tradeTimer = 0;
+  return true;
+}
+/** Host solo merchants: open-ocean waypoint when ports/routes cannot be resolved (matches server fallback). */
+function merchantFallbackOceanTradeLeg(npc) {
+  let s = ((npc.syncId | 0) * 1103515245 + 12345) >>> 0;
+  const sr = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  const pt = sampleOpenOceanPointInWorld(sr);
+  npc.tradeDestX = pt.nx;
+  npc.tradeDestZ = pt.nz;
+  npc.destCx = npc.homeCx | 0;
+  npc.destCz = npc.homeCz | 0;
+  npc.tradePhase = 'to_dest';
+  npc.tradeTimer = 0;
+  npc.speed = 0;
+  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.58 + sr() * 0.22);
+  npc.tradeCruiseSpeed = npc.targetCruise;
 }
 function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   npc.homeDockX = homeMeta.dockX;
@@ -9306,7 +9331,7 @@ function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
     const others = list.filter(p => p.cx !== homeMeta.cx || p.cz !== homeMeta.cz);
     if (others.length) dest = others[Math.floor(sr() * others.length)];
   }
-  if (!dest) return;
+  if (!dest) return false;
   npc.destCx = dest.cx;
   npc.destCz = dest.cz;
   npc.tradeDestX = dest.dockX;
@@ -9316,6 +9341,7 @@ function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta) % FACTION_COUNT];
   npc.targetCruise = npcMaxForwardSpeed(npc) * (0.72 + sr() * 0.22);
   npc.tradeCruiseSpeed = npc.targetCruise;
+  return true;
 }
 
 /** Deterministic 0..1 PRNG for one chunk — island decoration matches across reloads for the same world seed. */
@@ -16733,7 +16759,7 @@ function tryAddMerchantNpcFromHome(home, allPorts, tradeSyncIdx, seedSalt) {
     wanderAngle: 0, wanderTimer: 99, underFireTimer: 0, fireJitter: 0,
     riggingHealth: 100
   };
-  assignTradeRouteFromHome(npc, home, allPorts, sr);
+  if (!assignTradeRouteFromHome(npc, home, allPorts, sr)) return false;
   npc.homeEmbarkX = nx;
   npc.homeEmbarkZ = nz;
   npc.rotation = Math.atan2(npc.tradeDestX - nx, npc.tradeDestZ - nz);
@@ -17851,14 +17877,15 @@ function updateNPCs(dt) {
               npc.cargoGood = portExportsGood({ cx: npc.homeCx, cz: npc.homeCz, hasTown: true });
               const homeFull = getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
               const list = collectPortsInArea(npc.homeDockX, npc.homeDockZ, 32000);
-              if (list.length >= 2 && homeFull) {
-                assignTradeRouteFromHome(npc, homeFull, list, Math.random);
+              if (list.length >= 2 && homeFull && assignTradeRouteFromHome(npc, homeFull, list, Math.random)) {
                 npc.homeEmbarkX = npc.x;
                 npc.homeEmbarkZ = npc.z;
                 npc.tradePhase = 'loading_home';
                 npc.tradeTimer = 5 + Math.random() * 10;
                 npc.speed = 0;
-              } else assignNewTradeRoute(npc);
+              } else if (!assignNewTradeRoute(npc)) {
+                merchantFallbackOceanTradeLeg(npc);
+              }
             }
           }
         }
@@ -18080,8 +18107,10 @@ function updateNPCs(dt) {
       if (npc.mesh) {
         if (!npc._sinkSkipSurfaceDebris && (npc._sinkExtraLootN | 0) < 12 && npc.sinkTimer < 3.85) {
           const spawnSinkSurfaceDebris =
-            isMultiplayerHost() || !ws || ws.readyState !== 1
-            || !!(G.localTutorialRaidNpcSurrogate && npc.syncId === TUTORIAL_RAID_NPC_SYNC);
+            !G.npcSimFromServer &&
+            !npc._sinkSkipSurfaceDebris &&
+            (isMultiplayerHost() || !ws || ws.readyState !== 1
+            || !!(G.localTutorialRaidNpcSurrogate && npc.syncId === TUTORIAL_RAID_NPC_SYNC));
           if (spawnSinkSurfaceDebris) {
             npc._sinkDebrisAcc = (npc._sinkDebrisAcc || 0) + dt;
             const lootTypes = ['wood', 'iron', 'gunpowder', 'food', 'cannonballs'];
@@ -21131,6 +21160,7 @@ function applyNpcSyncMessage(msg, opts) {
     }
     const netHullDead = npc.health != null && npc.health <= 0;
     const sinkFromSync = !!nd.sinking || netHullDead;
+    if (sinkFromSync) npc._sinkSkipSurfaceDebris = true;
     if (G.npcSimFromServer && sinkFromSync) applyAuthoritativeNpcSinkWorldFx(npc);
     if (sinkFromSync && !npc.sinking) {
       if (G.boarding && G.boarding.npcSyncId != null) {
@@ -21151,6 +21181,11 @@ function applyNpcSyncMessage(msg, opts) {
     if ((sid == null || !seen.has(sid)) && !keepLocalRaid) {
       if (npc.mesh) { scene.remove(npc.mesh); npc.mesh = null; }
       G.npcs.splice(j, 1);
+    }
+  }
+  if (G._npcAuthSinkLootOnce && G._npcAuthSinkLootOnce.size > 480) {
+    for (const k of [...G._npcAuthSinkLootOnce]) {
+      if (!seen.has(k)) G._npcAuthSinkLootOnce.delete(k);
     }
   }
 }
@@ -25732,15 +25767,17 @@ function swapCargoSlots(a, b) {
   G.player.cargoSlots[b] = t;
   syncInventoryFromCargoSlots();
 }
-function spawnWorldLootAt(wx, wz, type, count, spread) {
+function spawnWorldLootAt(wx, wz, type, count, spread, netId) {
   const sp = spread == null ? 2.5 : spread;
   const lx = wx + (Math.random() - 0.5) * sp;
   const lz = wz + (Math.random() - 0.5) * sp;
   const cnt = Math.max(1, (count == null || Number.isNaN(Number(count))) ? (type === 'gold' ? 15 : type === 'cannonballs' ? 6 : type === 'food' ? 8 : 4) : Number(count));
   if (ws && ws.readyState === 1) {
-    ws.send(JSON.stringify({ type: 'loot_spawn', x: lx, z: lz, loot: { type, count: cnt } }));
+    const payload = { type: 'loot_spawn', x: lx, z: lz, loot: { type, count: cnt } };
+    if (netId != null) payload.id = netId;
+    ws.send(JSON.stringify(payload));
   } else {
-    addFloatingLootMesh(lx, lz, type, cnt);
+    addFloatingLootMesh(lx, lz, type, cnt, netId);
   }
 }
 /** Drops that cannot fit in the hold — astern so the auto-pickup ring (8u) does not re-grab them the same frame. */

@@ -161,7 +161,7 @@ function assignTradeRouteFromHome(npc, homeMeta, list, rng, ws, portController) 
     const others = list.filter(p => p.cx !== homeMeta.cx || p.cz !== homeMeta.cz);
     if (others.length) dest = others[Math.floor(rng() * others.length)];
   }
-  if (!dest) return;
+  if (!dest) return false;
   npc.destCx = dest.cx;
   npc.destCz = dest.cz;
   npc.tradeDestX = dest.dockX;
@@ -171,6 +171,7 @@ function assignTradeRouteFromHome(npc, homeMeta, list, rng, ws, portController) 
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta, portController, ws) % FACTION_COUNT];
   npc.targetCruise = null;
   npc.tradeCruiseSpeed = null;
+  return true;
 }
 
 function findMerchantSpawnOffCoast(home, rng, shipTypeOpt, dryLand, edgeClamp) {
@@ -1046,7 +1047,7 @@ function createServerNpcWorld(opts) {
       tradePhase: 'loading_home',
       tradeTimer: 6 + sr() * 14
     };
-    assignTradeRouteFromHome(npc, home, allPorts, sr, ws, politics.portController);
+    if (!assignTradeRouteFromHome(npc, home, allPorts, sr, ws, politics.portController)) return false;
     npc.homeEmbarkX = nx;
     npc.homeEmbarkZ = nz;
     npc.rotation = Math.atan2((npc.tradeDestX || nx) - nx, (npc.tradeDestZ || nz) - nz);
@@ -1427,6 +1428,24 @@ function createServerNpcWorld(opts) {
     npc.targetCruise = npcMaxForwardSpeed(npc) * (0.58 + Math.random() * 0.2);
   }
 
+  /** When trade routing fails (<2 ports, meta gaps), sail toward open ocean instead of freezing at dock_home. */
+  function merchantFallbackOceanTradeLeg(npc) {
+    let s = ((npc.syncId | 0) * 1103515245 + 12345) >>> 0;
+    const sr = () => {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+    const ocean = sampleOpenOceanPointInWorld(sr, dryLand, edgeClamp, null);
+    npc.tradeDestX = ocean.nx;
+    npc.tradeDestZ = ocean.nz;
+    npc.destCx = npc.homeCx | 0;
+    npc.destCz = npc.homeCz | 0;
+    npc.tradePhase = 'to_dest';
+    npc.tradeTimer = 0;
+    npc.speed = 0;
+    npc.targetCruise = npcMaxForwardSpeed(npc) * (0.58 + sr() * 0.22);
+  }
+
   function updateMerchantThreat(npc) {
     if (!npc.isTradeShip || npc.sinking) return;
     npc._merThreatAcc = (npc._merThreatAcc || 0) + 0.022;
@@ -1633,13 +1652,14 @@ function createServerNpcWorld(opts) {
           } else {
             const homeFull = ctx.getProceduralIslandMeta(npc.homeCx | 0, npc.homeCz | 0);
             const list = collectAllPorts();
-            if (list.length >= 2 && homeFull) {
-              assignTradeRouteFromHome(npc, homeFull, list, Math.random, ws, politics.portController);
+            if (list.length >= 2 && homeFull && assignTradeRouteFromHome(npc, homeFull, list, Math.random, ws, politics.portController)) {
               npc.homeEmbarkX = npc.x;
               npc.homeEmbarkZ = npc.z;
               npc.tradePhase = 'loading_home';
               npc.tradeTimer = 5 + Math.random() * 10;
               npc.speed = 0;
+            } else {
+              merchantFallbackOceanTradeLeg(npc);
             }
           }
         }

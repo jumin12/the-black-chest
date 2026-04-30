@@ -3175,7 +3175,9 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'loot_spawn': {
-          const lid = nextLootNetId++;
+          let lid = msg.id != null ? msg.id : null;
+          if (lid === '' || lid === undefined) lid = null;
+          if (lid == null) lid = nextLootNetId++;
           broadcastAll({
             type: 'loot_spawn',
             id: lid,
