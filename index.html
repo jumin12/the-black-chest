@@ -18148,20 +18148,9 @@ function updateNPCs(dt) {
           })
         : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
-        const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-        /* Tighter toward delayed sample + velocity dead-reckon above — small-error snap for responsiveness. */
-        const tauPos = ej > 110 ? 0.0095 : ej > 38 ? 0.014 : ej > 9 ? 0.022 : 0.029;
-        let an = 1 - Math.exp(-dt / Math.max(1e-4, tauPos));
-        an = Math.min(1, Math.max(an, dt * 34));
-        npc.x += (ipNpc.x - npc.x) * an;
-        npc.z += (ipNpc.z - npc.z) * an;
-        let drn = ipNpc.ry - npc.rotation;
-        while (drn > Math.PI) drn -= Math.PI * 2;
-        while (drn < -Math.PI) drn += Math.PI * 2;
-        const tauRy = ej > 70 ? 0.016 : 0.026;
-        let aR = 1 - Math.exp(-dt / tauRy);
-        aR = Math.min(1, Math.max(aR, dt * 21));
-        npc.rotation += drn * aR;
+        npc.x = ipNpc.x;
+        npc.z = ipNpc.z;
+        npc.rotation = ipNpc.ry;
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -21233,6 +21222,9 @@ function applyNpcSyncMessage(msg, opts) {
       else if (!npc.isStoryBounty) npc.attackNpcSyncId = null;
     }
     if (nd.sp != null && Number.isFinite(Number(nd.sp))) npc.speed = Number(nd.sp);
+    const ndVx = nd.vx != null && Number.isFinite(Number(nd.vx)) ? Number(nd.vx) : null;
+    const ndVz = nd.vz != null && Number.isFinite(Number(nd.vz)) ? Number(nd.vz) : null;
+    const hasNdVel = ndVx != null && ndVz != null;
     if (!npc.isStoryBounty && (wasMer !== !!npc.isTradeShip || wasPat !== !!npc.isFactionPatrol)) rebuildNPCShipMesh(npc);
     if (nd.mo != null && Number.isFinite(Number(nd.mo))) npc.missionOwnerPlayerId = Math.floor(Number(nd.mo));
     if (nd.fa != null && sanitizeFlagPngId(nd.fa) != null) npc.flagAssetId = sanitizeFlagPngId(nd.fa);
@@ -21264,7 +21256,10 @@ function applyNpcSyncMessage(msg, opts) {
         /* Old code clamped dtn to ≤0.72s while real gaps could be seconds — huge Δx / tiny divisor spiked velocity and “teleport” blends. */
         dtn = Math.max(1 / 120, Math.min(raw, 2.2));
       }
-      if (prevSX != null && prevSZ != null && Number.isFinite(prevSX) && Number.isFinite(prevSZ) && Number.isFinite(nd.x) && Number.isFinite(nd.z)) {
+      if (hasNdVel) {
+        npc._npcVelTX = ndVx;
+        npc._npcVelTZ = ndVz;
+      } else if (prevSX != null && prevSZ != null && Number.isFinite(prevSX) && Number.isFinite(prevSZ) && Number.isFinite(nd.x) && Number.isFinite(nd.z)) {
         const rdx = nd.x - prevSX;
         const rdz = nd.z - prevSZ;
         npc._npcVelTX = rdx / dtn;
@@ -21298,18 +21293,22 @@ function applyNpcSyncMessage(msg, opts) {
             if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
           } else {
             const sp = nd.sp != null && Number.isFinite(Number(nd.sp)) ? Number(nd.sp) : 0;
-            if (Math.abs(sp) > 0.006) {
+            const hvx = hasNdVel ? ndVx : Math.sin(rr) * sp;
+            const hvz = hasNdVel ? ndVz : Math.cos(rr) * sp;
+            if (Math.hypot(hvx, hvz) > 0.006) {
               const dtBack = 1 / NET_NPC_SYNC_HZ;
               hNpc.push({
-                x: rx - Math.sin(rr) * sp * dtBack,
-                z: rz - Math.cos(rr) * sp * dtBack,
+                x: rx - hvx * dtBack,
+                z: rz - hvz * dtBack,
                 ry: rr,
+                vx: hvx,
+                vz: hvz,
                 recvMs: recvTs - dtBack * 1000
               });
             }
           }
           npc._npcSnapRecvPerfMs = recvTs;
-          hNpc.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
+          hNpc.push({ x: rx, z: rz, ry: rr, vx: hasNdVel ? ndVx : npc._npcVelTX, vz: hasNdVel ? ndVz : npc._npcVelTZ, recvMs: recvTs });
           while (hNpc.length > REMOTE_SNAP_HIST_MAX) hNpc.shift();
           if (npcCreatedFromNet && hNpc.length >= 2) {
             const ipInit = interpolateHullHistory(hNpc, recvTs, getEffectiveNpcInterpDelayMs(), { reduceDelay: 0.82, npcExtrap: true });
@@ -21418,10 +21417,16 @@ function applyNetStateMessage(msg, opts) {
     const prevCrew = ex && Array.isArray(ex.crewData) ? ex.crewData : null;
     const patch = { ...p, id: pid };
     if (!Array.isArray(patch.crewData)) delete patch.crewData;
+    const patchVx = patch.vx != null && Number.isFinite(Number(patch.vx)) ? Number(patch.vx) : null;
+    const patchVz = patch.vz != null && Number.isFinite(Number(patch.vz)) ? Number(patch.vz) : null;
+    const hasPatchVel = patchVx != null && patchVz != null;
     if (ex) {
       const px0 = Number(ex.x), pz0 = Number(ex.z);
       const px1 = Number(patch.x), pz1 = Number(patch.z);
-      if (Number.isFinite(px0) && Number.isFinite(pz0) && Number.isFinite(px1) && Number.isFinite(pz1) && dtSnap > 1e-4) {
+      if (hasPatchVel) {
+        ex._netVelTargetX = patchVx;
+        ex._netVelTargetZ = patchVz;
+      } else if (Number.isFinite(px0) && Number.isFinite(pz0) && Number.isFinite(px1) && Number.isFinite(pz1) && dtSnap > 1e-4) {
         let vtx = (px1 - px0) / dtSnap;
         let vtz = (pz1 - pz0) / dtSnap;
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
@@ -21453,17 +21458,21 @@ function applyNetStateMessage(msg, opts) {
             if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
           } else {
             const sp = ex.speed != null && Number.isFinite(Number(ex.speed)) ? Number(ex.speed) : 0;
-            if (Math.abs(sp) > 0.006) {
+            const hvx = hasPatchVel ? patchVx : Math.sin(rr) * sp;
+            const hvz = hasPatchVel ? patchVz : Math.cos(rr) * sp;
+            if (Math.hypot(hvx, hvz) > 0.006) {
               const dtBack = 1 / NET_STATE_HZ;
               ex._snapHist.push({
-                x: rx - Math.sin(rr) * sp * dtBack,
-                z: rz - Math.cos(rr) * sp * dtBack,
+                x: rx - hvx * dtBack,
+                z: rz - hvz * dtBack,
                 ry: rr,
+                vx: hvx,
+                vz: hvz,
                 recvMs: recvTs - dtBack * 1000
               });
             }
           }
-          ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
+          ex._snapHist.push({ x: rx, z: rz, ry: rr, vx: hasPatchVel ? patchVx : ex._netVelTargetX, vz: hasPatchVel ? patchVz : ex._netVelTargetZ, recvMs: recvTs });
           while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
         }
       }
@@ -21472,6 +21481,10 @@ function applyNetStateMessage(msg, opts) {
       const nw = G.otherPlayers.get(pid);
       if (nw) nw._srvSnapPerfMs = snapWallMs;
       if (nw) {
+        if (hasPatchVel) {
+          nw._netVelTargetX = patchVx;
+          nw._netVelTargetZ = patchVz;
+        }
         const rx = Number(nw.x), rz = Number(nw.z);
         const rr = nw.rotation != null && Number.isFinite(Number(nw.rotation)) ? Number(nw.rotation) : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
@@ -21482,17 +21495,21 @@ function applyNetStateMessage(msg, opts) {
             if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
           } else {
             const sp = nw.speed != null && Number.isFinite(Number(nw.speed)) ? Number(nw.speed) : 0;
-            if (Math.abs(sp) > 0.006) {
+            const hvx = hasPatchVel ? patchVx : Math.sin(rr) * sp;
+            const hvz = hasPatchVel ? patchVz : Math.cos(rr) * sp;
+            if (Math.hypot(hvx, hvz) > 0.006) {
               const dtBack = 1 / NET_STATE_HZ;
               nw._snapHist.push({
-                x: rx - Math.sin(rr) * sp * dtBack,
-                z: rz - Math.cos(rr) * sp * dtBack,
+                x: rx - hvx * dtBack,
+                z: rz - hvz * dtBack,
                 ry: rr,
+                vx: hvx,
+                vz: hvz,
                 recvMs: recvTs - dtBack * 1000
               });
             }
           }
-          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
+          nw._snapHist.push({ x: rx, z: rz, ry: rr, vx: hasPatchVel ? patchVx : nw._netVelTargetX, vz: hasPatchVel ? patchVz : nw._netVelTargetZ, recvMs: recvTs });
           while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
         }
       }
@@ -30653,8 +30670,12 @@ function interpolateHullHistory(hist, nowMs, delayMs, opts) {
     if (hist.length < 2) return { x: last.x, z: last.z, ry: last.ry };
     const prev = hist[hist.length - 2];
     const dtm = Math.max(4.5, last.recvMs - prev.recvMs);
-    const vx = (last.x - prev.x) / dtm;
-    const vz = (last.z - prev.z) / dtm;
+    let vx = (last.x - prev.x) / dtm;
+    let vz = (last.z - prev.z) / dtm;
+    if (last.vx != null && last.vz != null && Number.isFinite(Number(last.vx)) && Number.isFinite(Number(last.vz))) {
+      vx = Number(last.vx) / 1000;
+      vz = Number(last.vz) / 1000;
+    }
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
     let extrapMax = Math.min(138, Math.max(52, delayMs * 0.4 + 26));
     let ueCap = delayMs >= 128 ? 2.12 : 1.94;
@@ -30701,19 +30722,9 @@ function reconcileSpeculativeNpcHullToNet(npc, dt) {
     ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { reduceDelay: 0.72, npcExtrap: true })
     : null;
   if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
-    const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-    const tauPos = ej > 95 ? 0.0085 : ej > 32 ? 0.013 : ej > 8 ? 0.018 : 0.024;
-    let an = 1 - Math.exp(-dt / Math.max(1e-4, tauPos));
-    an = Math.min(1, Math.max(an, dt * 42));
-    npc.x += (ipNpc.x - npc.x) * an;
-    npc.z += (ipNpc.z - npc.z) * an;
-    let drn = ipNpc.ry - npc.rotation;
-    while (drn > Math.PI) drn -= Math.PI * 2;
-    while (drn < -Math.PI) drn += Math.PI * 2;
-    const tauRy = ej > 60 ? 0.016 : 0.024;
-    let aR = 1 - Math.exp(-dt / tauRy);
-    aR = Math.min(1, Math.max(aR, dt * 22));
-    npc.rotation += drn * aR;
+    npc.x = ipNpc.x;
+    npc.z = ipNpc.z;
+    npc.rotation = ipNpc.ry;
     return;
   }
   if (npc.syncX != null && npc.syncZ != null && Number.isFinite(npc.syncX) && Number.isFinite(npc.syncZ)) {
@@ -30772,15 +30783,9 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const delayMsPlay = getEffectiveRemoteInterpDelayMs();
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    const jmp = Math.hypot(ip.x - ns.x, ip.z - ns.z);
-    const k = 31 + Math.min(28, jmp * 0.38);
-    let alpha = Math.min(0.72, 1 - Math.exp(-k * dt));
-    ns.x += (ip.x - ns.x) * alpha;
-    ns.z += (ip.z - ns.z) * alpha;
-    let dry = ip.ry - ns.ry;
-    while (dry > Math.PI) dry -= Math.PI * 2;
-    while (dry < -Math.PI) dry += Math.PI * 2;
-    ns.ry += dry * alpha;
+    ns.x = ip.x;
+    ns.z = ip.z;
+    ns.ry = ip.ry;
     return ns;
   }
   smoothRemotePlayerNetVelocity(p, dt);
@@ -32440,7 +32445,7 @@ function update(dt) {
   if (!G.npcSyncTimer) G.npcSyncTimer = 0;
   G.npcSyncTimer -= dt;
   if (isMultiplayerHost() && !G.npcSimFromServer && G.npcSyncTimer <= 0 && ws?.readyState === 1) {
-    G.npcSyncTimer = 1 / NET_SYNC_HZ;
+    G.npcSyncTimer = 1 / NET_NPC_SYNC_HZ;
     const npcData = G.npcs.filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       if (n.sinking) return true;
@@ -32474,6 +32479,8 @@ function update(dt) {
         pat: !!(n.isFactionPatrol && !n.isTradeShip),
         ffi,
         sp: Math.round((n.speed || 0) * 100) / 100,
+        vx: Math.round(Math.sin(n.rotation || 0) * (n.speed || 0) * 100) / 100,
+        vz: Math.round(Math.cos(n.rotation || 0) * (n.speed || 0) * 100) / 100,
         atk: atk != null ? atk : null
       };
       if (n.isTradeShip) {
@@ -32487,7 +32494,7 @@ function update(dt) {
     ws.send(JSON.stringify({
       type: 'npc_sync',
       npcs: npcData,
-      srvTick: G._hostNpcSrvTick = (G._hostNpcSrvTick | 0) + 1
+      srvTick: G._hostNpcSrvTick = (G._hostNpcSrvTick | 0) + Math.max(1, Math.round(NET_SYNC_HZ / NET_NPC_SYNC_HZ))
     }));
   }
 

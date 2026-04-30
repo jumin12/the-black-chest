@@ -845,13 +845,48 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
   }
 }
 
-function buildSyncRows(npcs, portController, ws) {
+function npcIncludedForViewer(n, viewer, radiusSq) {
+  if (!viewer || !Number.isFinite(Number(radiusSq))) return true;
+  const viewerId = Number.isFinite(Number(viewer.id)) ? Math.floor(Number(viewer.id)) : null;
+  if (viewerId != null && n.missionOwnerPlayerId != null && Math.floor(Number(n.missionOwnerPlayerId)) === viewerId) return true;
+  const b = viewer.boarding && typeof viewer.boarding === 'object' ? viewer.boarding : null;
+  if (b && b.sid != null && Number.isFinite(Number(b.sid))) {
+    const sid = Math.floor(Number(b.sid));
+    if (sid < 0 && -(sid + 1) === (n.syncId | 0)) return true;
+  }
+  const vx = Number(viewer.x);
+  const vz = Number(viewer.z);
+  const nx = Number(n.x);
+  const nz = Number(n.z);
+  if (!Number.isFinite(vx) || !Number.isFinite(vz) || !Number.isFinite(nx) || !Number.isFinite(nz)) return true;
+  const dx = nx - vx;
+  const dz = nz - vz;
+  return dx * dx + dz * dz <= Number(radiusSq);
+}
+
+function npcSyncVelocity(n, windAt) {
+  if (!n || n.sinking || n._boardLock) return { vx: 0, vz: 0 };
+  const rot = Number.isFinite(Number(n.rotation)) ? Number(n.rotation) : 0;
+  let eff = Number.isFinite(Number(n.speed)) ? Math.abs(Number(n.speed)) : 0;
+  if (typeof windAt === 'function') {
+    try {
+      eff = npcEffectiveForwardSpeed(n, windAt);
+    } catch (e) {}
+  }
+  return {
+    vx: Math.sin(rot) * eff,
+    vz: Math.cos(rot) * eff
+  };
+}
+
+function buildSyncRows(npcs, portController, ws, windAt, filterFn) {
   return npcs
     .filter(n => {
       const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
       if (n.sinking) return true;
       return h > -900;
     })
+    .filter(n => (typeof filterFn === 'function' ? filterFn(n) : true))
     .map(n => {
       const isRog = !!(n.independentPirate && !n.isTradeShip && !n.isFactionPatrol);
       const ffi = n.isTradeShip
@@ -864,6 +899,7 @@ function buildSyncRows(npcs, portController, ws) {
         if (n.returnFireSyncId != null && Number.isFinite(Number(n.returnFireSyncId))) atk = Number(n.returnFireSyncId);
         else if (n.attackNpcSyncId != null && Number.isFinite(Number(n.attackNpcSyncId))) atk = Number(n.attackNpcSyncId);
       }
+      const vel = npcSyncVelocity(n, windAt);
       const row = {
         id: n.syncId,
         /* Was 1/20 = 0.05 — too coarse at 60Hz; sub-tick motion rounded away → hulls crawl on clients. */
@@ -881,6 +917,8 @@ function buildSyncRows(npcs, portController, ws) {
         mer: !!n.isTradeShip,
         pat: !!(n.isFactionPatrol && !n.isTradeShip),
         sp: Math.round((n.speed || 0) * 100) / 100,
+        vx: Math.round(vel.vx * 100) / 100,
+        vz: Math.round(vel.vz * 100) / 100,
         atk: atk != null ? atk : null
       };
       if (!isRog) row.ffi = ffi;
@@ -1943,7 +1981,14 @@ function createServerNpcWorld(opts) {
     setWorldMapPayload,
     reset,
     step,
-    buildSyncRows: () => buildSyncRows(npcs, politics.portController, ws),
+    buildSyncRows: () => buildSyncRows(npcs, politics.portController, ws, windAt),
+    buildSyncRowsForViewer: (viewer, radiusSq) => buildSyncRows(
+      npcs,
+      politics.portController,
+      ws,
+      windAt,
+      n => npcIncludedForViewer(n, viewer, radiusSq)
+    ),
     getWindSample,
     getNpcs,
     applyPlayerCannonHitClaim,
