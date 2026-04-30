@@ -21146,6 +21146,7 @@ function applyNpcSyncMessage(msg, opts) {
     if (G.localTutorialRaidNpcSurrogate && nid === TUTORIAL_RAID_NPC_SYNC) return;
     seen.add(nid);
     let npc = npcBySyncId.get(nid);
+    let npcCreatedFromNet = false;
     const sbMeta = parseStoryBountyFromSyncId(nid);
     const moNet = nd.mo != null && Number.isFinite(Number(nd.mo)) ? Math.floor(Number(nd.mo)) : (sbMeta ? sbMeta.ownerPlayerId : null);
     if (!npc && sbMeta) {
@@ -21185,6 +21186,7 @@ function applyNpcSyncMessage(msg, opts) {
       scene.add(mesh);
       G.npcs.push(npc);
       npcBySyncId.set(nid, npc);
+      npcCreatedFromNet = true;
     }
     if (!npc && !sbMeta) {
       const built = buildNpcFromNetSyncData(nd, nid);
@@ -21192,6 +21194,7 @@ function applyNpcSyncMessage(msg, opts) {
         npc = built;
         G.npcs.push(npc);
         npcBySyncId.set(nid, npc);
+        npcCreatedFromNet = true;
       }
     }
     if (!npc) return;
@@ -21293,10 +21296,29 @@ function applyNpcSyncMessage(msg, opts) {
             const prevTs = hNpc[hNpc.length - 1].recvMs;
             /* recvMs must strictly increase; use synthetic snapshotWallMs from drain batch (not wall clock). */
             if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
+          } else {
+            const sp = nd.sp != null && Number.isFinite(Number(nd.sp)) ? Number(nd.sp) : 0;
+            if (Math.abs(sp) > 0.006) {
+              const dtBack = 1 / NET_NPC_SYNC_HZ;
+              hNpc.push({
+                x: rx - Math.sin(rr) * sp * dtBack,
+                z: rz - Math.cos(rr) * sp * dtBack,
+                ry: rr,
+                recvMs: recvTs - dtBack * 1000
+              });
+            }
           }
           npc._npcSnapRecvPerfMs = recvTs;
           hNpc.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
           while (hNpc.length > REMOTE_SNAP_HIST_MAX) hNpc.shift();
+          if (npcCreatedFromNet && hNpc.length >= 2) {
+            const ipInit = interpolateHullHistory(hNpc, recvTs, getEffectiveNpcInterpDelayMs(), { reduceDelay: 0.82, npcExtrap: true });
+            if (ipInit && Number.isFinite(ipInit.x) && Number.isFinite(ipInit.z) && Number.isFinite(ipInit.ry)) {
+              npc.x = ipInit.x;
+              npc.z = ipInit.z;
+              npc.rotation = ipInit.ry;
+            }
+          }
         }
       }
     }
@@ -21429,6 +21451,17 @@ function applyNetStateMessage(msg, opts) {
           if (ex._snapHist.length) {
             const prevTs = ex._snapHist[ex._snapHist.length - 1].recvMs;
             if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
+          } else {
+            const sp = ex.speed != null && Number.isFinite(Number(ex.speed)) ? Number(ex.speed) : 0;
+            if (Math.abs(sp) > 0.006) {
+              const dtBack = 1 / NET_STATE_HZ;
+              ex._snapHist.push({
+                x: rx - Math.sin(rr) * sp * dtBack,
+                z: rz - Math.cos(rr) * sp * dtBack,
+                ry: rr,
+                recvMs: recvTs - dtBack * 1000
+              });
+            }
           }
           ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
           while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
@@ -21447,6 +21480,17 @@ function applyNetStateMessage(msg, opts) {
           if (nw._snapHist.length) {
             const prevTs = nw._snapHist[nw._snapHist.length - 1].recvMs;
             if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
+          } else {
+            const sp = nw.speed != null && Number.isFinite(Number(nw.speed)) ? Number(nw.speed) : 0;
+            if (Math.abs(sp) > 0.006) {
+              const dtBack = 1 / NET_STATE_HZ;
+              nw._snapHist.push({
+                x: rx - Math.sin(rr) * sp * dtBack,
+                z: rz - Math.cos(rr) * sp * dtBack,
+                ry: rr,
+                recvMs: recvTs - dtBack * 1000
+              });
+            }
           }
           nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
           while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
@@ -30593,11 +30637,12 @@ function getEffectiveNpcInterpDelayMs() {
  */
 function interpolateHullHistory(hist, nowMs, delayMs, opts) {
   opts = opts || {};
-  const delayEff = opts.reduceDelay != null ? delayMs * Math.max(0.35, Math.min(1, opts.reduceDelay)) : delayMs;
+  let delayEff = opts.reduceDelay != null ? delayMs * Math.max(0.35, Math.min(1, opts.reduceDelay)) : delayMs;
   if (!hist || hist.length < 2) return null;
   const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
   /* recvMs are wall-clock ms; require non-zero span (duplicates collapse la). */
   if (!(la > 1e-3)) return null;
+  if (la < delayEff) delayEff = Math.max(0, la * 0.72);
   const tgt = nowMs - delayEff;
   const h0 = hist[0];
   if (tgt <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
@@ -31556,7 +31601,15 @@ function update(dt) {
       sm.userData.cacheKey = cacheKey;
       sm.userData.crewManifest = pCrew;
       sm.userData.cachedName = shipTitle;
-      sm.userData.netSmooth = carriedNetSmooth || { x: p.x, z: p.z, ry: p.rotation || 0 };
+      let initialNetSmooth = carriedNetSmooth;
+      if (!initialNetSmooth && p._snapHist && p._snapHist.length >= 2) {
+        const nowInit = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+        const ipInit = interpolateHullHistory(p._snapHist, nowInit, getEffectiveRemoteInterpDelayMs());
+        if (ipInit && Number.isFinite(ipInit.x) && Number.isFinite(ipInit.z) && Number.isFinite(ipInit.ry)) {
+          initialNetSmooth = { x: ipInit.x, z: ipInit.z, ry: ipInit.ry };
+        }
+      }
+      sm.userData.netSmooth = initialNetSmooth || { x: p.x, z: p.z, ry: p.rotation || 0 };
       const ns0 = sm.userData.netSmooth;
       const w0 = playerShipWaveAt(ns0.x, ns0.z, ns0.ry);
       const w0d = dampShipWaveTiltRemote(w0.wavePitch, w0.waveRoll);

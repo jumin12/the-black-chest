@@ -183,10 +183,11 @@ function createGameSimulation(opts) {
     const dz = cz2 - p.z;
     const d = Math.hypot(dx, dz);
     if (d < 0.12) return;
-    const maxPull = Math.min(28, 3.8 + d * 0.2);
-    const k = Math.min(1, maxPull / d);
-    p.x += dx * k;
-    p.z += dz * k;
+    /* `validatePlayerUpdate` has already rejected impossible jumps. Use the accepted
+     * client hull sample as authority; partial pulls make remote viewers see a
+     * staircase of server corrections instead of the captain's smooth motion. */
+    p.x = cx2;
+    p.z = cz2;
   }
 
   return {

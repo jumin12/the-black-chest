@@ -17,6 +17,8 @@ Original prompt: Using three.js as a single index.html file with amazing graphic
 
 ## TODOs / Suggestions for next agent
 
+- Multiplayer smoothing pass: server sim stays 120Hz while wire snapshots are player 60Hz / NPC 30Hz; client now preserves short snapshot history, seeds moving entities with a backdated sample, disables client-side speculative NPC AI when server-authoritative, and treats validated client hull samples as authoritative on the server to avoid correction stair-steps.
+- Verification note: `node -c server.js`, `node -c simulation-layer.js`, and module syntax checking for `index.html` passed. Full browser smoke was blocked because Playwright is not installed/resolvable in this repo and the in-app browser context was closed.
 - Add ship-to-ship collision damage
 - Island docking mechanic for better item collection
 - Enemy NPC ships with AI patrol routes
