@@ -1933,7 +1933,9 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/navigator-auth') {
+  const reqPath = String(req.url || '').split('?')[0];
+
+  if (req.method === 'POST' && reqPath === '/api/navigator-auth') {
     readJsonBody(req).then(body => {
       if (!verifyNavigatorPassword(body.password)) {
         res.writeHead(401, { 'Content-Type': 'application/json', ...CORS_HEADERS });
@@ -1952,7 +1954,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/api/world-map') {
+  if (req.method === 'GET' && reqPath === '/api/world-map') {
     if (!WORLD_MAP_PAYLOAD || !WORLD_MAP_REVISION) {
       res.writeHead(404, { 'Content-Type': 'application/json', ...CORS_HEADERS });
       res.end(JSON.stringify({ ok: false, error: 'No world map published' }));
@@ -1963,7 +1965,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/world-map') {
+  if (req.method === 'POST' && reqPath === '/api/world-map') {
     readJsonBody(req, 32 * 1024 * 1024).then(body => {
       pruneAdminSessions();
       const token = body.token;
@@ -1994,7 +1996,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/world-map-revert') {
+  if (req.method === 'POST' && reqPath === '/api/world-map-revert') {
     readJsonBody(req).then(body => {
       pruneAdminSessions();
       const token = body.token;
@@ -2018,7 +2020,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/world-seed') {
+  if (req.method === 'POST' && reqPath === '/api/world-seed') {
     readJsonBody(req).then(body => {
       pruneAdminSessions();
       const token = body.token;
@@ -2044,7 +2046,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.url === '/health') {
+  if (reqPath === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({
       status: 'ok',
@@ -2060,7 +2062,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const reqPath = String(req.url || '').split('?')[0];
   if (req.method === 'GET' && reqPath === '/api/realm') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
     res.end(JSON.stringify({
@@ -2124,7 +2125,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && tryServeGameAssets(reqPath, res)) return;
 
-  if (req.url === '/' || req.url === '/index.html' || req.url.startsWith('/index.html?')) {
+  if (reqPath === '/' || reqPath === '/index.html') {
     fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
@@ -2132,7 +2133,7 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (req.url === '/map-editor.html' || req.url.startsWith('/map-editor.html?')) {
+  if (reqPath === '/map-editor.html') {
     fs.readFile(path.join(__dirname, 'map-editor.html'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html', ...CORS_HEADERS });
@@ -2140,7 +2141,7 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (req.url === '/editor-ship-builders.js' || req.url.startsWith('/editor-ship-builders.js?')) {
+  if (reqPath === '/editor-ship-builders.js') {
     fs.readFile(path.join(__dirname, 'editor-ship-builders.js'), (err, data) => {
       if (err) { res.writeHead(500); res.end('Error'); return; }
       res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', ...CORS_HEADERS });
