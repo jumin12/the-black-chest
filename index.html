@@ -18037,34 +18037,22 @@ function updateNPCs(dt) {
           npc.x = ipNpc.x;
           npc.z = ipNpc.z;
           npc.rotation = ipNpc.ry;
-          npc._npcNetSmVx = ipNpc.vx;
-          npc._npcNetSmVz = ipNpc.vz;
+          npc._npcNetSmVx = npc._npcNetSmVz = undefined;
         } else {
-          /* Simulate continuous sail: smooth spline vel + light PD-style correction (avoids tick-step snaps from hard pose pulls). */
-          const vk = 1 - Math.exp(-15 * dt);
-          if (!Number.isFinite(npc._npcNetSmVx)) npc._npcNetSmVx = ipNpc.vx;
-          if (!Number.isFinite(npc._npcNetSmVz)) npc._npcNetSmVz = ipNpc.vz;
-          npc._npcNetSmVx += (ipNpc.vx - npc._npcNetSmVx) * vk;
-          npc._npcNetSmVz += (ipNpc.vz - npc._npcNetSmVz) * vk;
-          const ex = ipNpc.x - npc.x;
-          const ez = ipNpc.z - npc.z;
-          const err = Math.hypot(ex, ez);
-          /* Gentle spring toward delayed spline pose — stable vs snapping `(target-pos)*large_blend` each tick. */
-          const kSpr = err > 120 ? 36 : err > 52 ? 28 : 18;
-          npc._npcNetSmVx += ex * kSpr * dt;
-          npc._npcNetSmVz += ez * kSpr * dt;
-          npc.x += npc._npcNetSmVx * dt;
-          npc.z += npc._npcNetSmVz * dt;
-          const vmPost = Math.hypot(npc._npcNetSmVx, npc._npcNetSmVz);
-          if (vmPost > 142 && vmPost > 1e-6) {
-            const scv = 142 / vmPost;
-            npc._npcNetSmVx *= scv;
-            npc._npcNetSmVz *= scv;
-          }
+          /* Catmull pose + tangent are already smooth between ticks — chase a short extrapolation (no separate vel/spring = no rubberband creep). */
+          npc._npcNetSmVx = npc._npcNetSmVz = undefined;
+          const vmT = Math.hypot(ipNpc.vx, ipNpc.vz);
+          const leadSec = Math.min(0.055, Math.max(0.014, (delayNpc * 0.001) * 0.42));
+          const tx = ipNpc.x + ipNpc.vx * leadSec;
+          const tz = ipNpc.z + ipNpc.vz * leadSec;
+          const track = Math.min(118, 58 + vmT * 0.72);
+          const posK = 1 - Math.exp(-track * dt);
+          npc.x += (tx - npc.x) * posK;
+          npc.z += (tz - npc.z) * posK;
           let dr = ipNpc.ry - npc.rotation;
           while (dr > Math.PI) dr -= Math.PI * 2;
           while (dr < -Math.PI) dr += Math.PI * 2;
-          npc.rotation += dr * (1 - Math.exp(-13 * dt));
+          npc.rotation += dr * (1 - Math.exp(-36 * dt));
         }
       } else {
         npc._npcNetSmVx = npc._npcNetSmVz = undefined;
@@ -30535,11 +30523,11 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** NPC playback: deeper buffer than hull interp — keeps playback clock inside segment interiors (less extrapolation snap). */
+/** NPC playback delay — tight enough to track sailing speed; deep buffer caused targets to crawl vs displayed hull. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   const base = getEffectiveHullSnapInterpDelayMs();
-  if (relayObserver) return Math.max(40, Math.min(88, base - 4));
-  return Math.max(54, Math.min(98, base + 8));
+  if (relayObserver) return Math.max(32, Math.min(78, base - 16));
+  return Math.max(40, Math.min(84, base - 8));
 }
 
 /**
