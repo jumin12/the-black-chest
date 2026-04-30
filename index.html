@@ -21228,13 +21228,20 @@ function applyNpcSyncMessage(msg, opts) {
       npc._npcSyncWallT = (typeof performance !== 'undefined' && performance.now) ? performance.now() * 0.001 : Date.now() * 0.001;
       npc._npcSnapRecvPerfMs = recvWallNpc;
       {
-        const rMs = npc._npcSnapRecvPerfMs;
         const rx = Number(nd.x), rz = Number(nd.z);
         const rr = nd.r != null && Number.isFinite(Number(nd.r)) ? Number(nd.r) : (npc.rotation || 0);
-        if (Number.isFinite(rx) && Number.isFinite(rz) && rMs != null) {
+        if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(npc._snapHist)) npc._snapHist = [];
-          npc._snapHist.push({ x: rx, z: rz, ry: rr, recvMs: rMs });
-          while (npc._snapHist.length > REMOTE_SNAP_HIST_MAX) npc._snapHist.shift();
+          let recvTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          const hNpc = npc._snapHist;
+          if (hNpc.length) {
+            const prevTs = hNpc[hNpc.length - 1].recvMs;
+            /* Same-frame double-apply / perf quantization — recvMs must strictly increase for interpolator segments. */
+            if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.05;
+          }
+          npc._npcSnapRecvPerfMs = recvTs;
+          hNpc.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
+          while (hNpc.length > REMOTE_SNAP_HIST_MAX) hNpc.shift();
         }
       }
     }
@@ -30512,7 +30519,8 @@ function getEffectiveNpcInterpDelayMs() {
 function interpolateHullHistory(hist, nowMs, delayMs) {
   if (!hist || hist.length < 2) return null;
   const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
-  if (!(la > 0.05)) return null;
+  /* recvMs are wall-clock ms; require non-zero span (duplicates collapse la). */
+  if (!(la > 1e-3)) return null;
   const tgt = nowMs - delayMs;
   const h0 = hist[0];
   if (tgt <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
@@ -30539,8 +30547,10 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
   }
   const a = hist[i - 1], b = hist[i];
   const t0 = a.recvMs, t1 = b.recvMs;
-  if (!(t1 > t0 + 0.22)) return null;
-  let u = (tgt - t0) / (t1 - t0);
+  const dtSeg = t1 - t0;
+  /* Degenerate segment → divide-by-zero / jitter spikes; extrapolation path handles tails. */
+  if (!(dtSeg > 1e-4)) return null;
+  let u = (tgt - t0) / dtSeg;
   if (u < 0) u = 0;
   if (u > 1) u = 1;
   return {
