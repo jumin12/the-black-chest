@@ -25,7 +25,7 @@ Use **systemd**, **PM2**, **Docker**, or your host’s equivalent so the process
 | `WS_PING_INTERVAL_MS` | Detect dead tabs; lower = more control traffic |
 | `PORT` | Listen port |
 
-After changing **simulation tick rate** (`TICK_RATE` in `server.js`, default **90**), align the client (`NET_SYNC_HZ` in `index.html`) — higher Hz yields smoother remote NPC interpolation at the cost of more bandwidth/CPU.
+After changing **simulation tick rate** (`TICK_RATE` in `server.js`, default **120**), align the client (`NET_SYNC_HZ` in `index.html`) — higher Hz yields smoother remote NPC interpolation at the cost of more bandwidth/CPU.
 
 ## Static files
 
