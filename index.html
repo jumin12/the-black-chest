@@ -16225,9 +16225,9 @@ function accelerateNpcToward(npc, dt, target) {
   const t = Math.min(maxF, Math.max(0, target));
   const accel =
     npc.tutorialRaidHull ? 4.15 :
-    npc.isFactionPatrol ? 13.85 :
-    npc.isTradeShip ? 12.85 :
-    10.45;
+    npc.isFactionPatrol ? 14.55 :
+    npc.isTradeShip ? 13.45 :
+    11.05;
   if (npc.speed < t - 0.03) {
     npc.speed = Math.min(npc.speed + accel * dt * speedMult, t, maxF);
   } else if (npc.speed > t + 0.03) {
@@ -17930,7 +17930,7 @@ function updateNPCs(dt) {
             const q = npc.cargoUnits != null ? npc.cargoUnits : TRADE_DELIVERY_UNITS;
             subtractTownStockpile(hk, npc.cargoGood, q);
             npc.tradePhase = 'to_dest';
-            npc.targetCruise = npcMaxForwardSpeed(npc) * (0.91 + sr() * 0.085);
+            npc.targetCruise = npcMaxForwardSpeed(npc) * (0.91 + Math.random() * 0.085);
             npc.tradeCruiseSpeed = npc.targetCruise;
           }
         } else if (phase === 'to_dest' || phase === 'to_home') {
@@ -18170,10 +18170,10 @@ function updateNPCs(dt) {
         : getEffectiveHullSnapInterpDelayMs();
       /* Velocity prediction + weak pull toward delayed spline anchor — stepping raw anchor alone reads as stutter. */
       const poseNet = useNetInterpNpc
-        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 36 })
+        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 52, catmullRom: true })
         : null;
       if (poseNet && Number.isFinite(poseNet.x) && Number.isFinite(poseNet.z) && Number.isFinite(poseNet.ry)) {
-        const pvk = 1 - Math.exp(-24 * dt);
+        const pvk = 1 - Math.exp(-32 * dt);
         if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
           npc._npcVelSmX = Number.isFinite(npc._npcVelSmX)
             ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * pvk
@@ -18201,16 +18201,16 @@ function updateNPCs(dt) {
         /* Quantized snapshots often imply ~0 TX/TZ between ticks; synced hull speed + heading keeps steady crawl while net delta catches up. */
         const spFloor = Math.max(0.06, spAbs);
         const blendH =
-          vmNet < spFloor * 0.38 ? 0.72 : vmNet < spFloor * 0.78 ? 0.48 : Math.min(0.32, 0.14 + spAbs * 0.022);
+          vmNet < spFloor * 0.38 ? 0.78 : vmNet < spFloor * 0.78 ? 0.52 : Math.min(0.34, 0.14 + spAbs * 0.022);
         vx = vx * (1 - blendH) + hx * blendH;
         vz = vz * (1 - blendH) + hz * blendH;
         npc._npcPredX += vx * dt;
         npc._npcPredZ += vz * dt;
         const ecx = poseNet.x - npc._npcPredX;
         const ecz = poseNet.z - npc._npcPredZ;
-        const corr = 1 - Math.exp(-7 * dt);
-        npc._npcPredX += ecx * corr * 0.34;
-        npc._npcPredZ += ecz * corr * 0.34;
+        const corr = 1 - Math.exp(-9.5 * dt);
+        npc._npcPredX += ecx * corr * 0.44;
+        npc._npcPredZ += ecz * corr * 0.44;
         npc.x = npc._npcPredX;
         npc.z = npc._npcPredZ;
         npc.rotation = poseNet.ry;
@@ -30689,10 +30689,10 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** Anchor ships slightly tighter than peer hulls — same recv buffer, less mushy AI motion vs captains. */
+/** Anchor ships slightly tighter than peer hulls — lower delay + spline sampling reduces “slow/stuttery” AI vs heavy hull smoothing. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   void relayObserver;
-  return Math.max(26, getEffectiveHullSnapInterpDelayMs() - 8);
+  return Math.max(20, getEffectiveHullSnapInterpDelayMs() - 12);
 }
 
 /** Uniform Catmull–Rom scalar segment — smoother paths than linear lerp between quantized ~60Hz hull keys. */

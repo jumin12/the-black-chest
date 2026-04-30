@@ -327,7 +327,7 @@ function accelerateNpcToward(npc, dt, target) {
   const speedMult = spec.speed + npcSailBonus(npc);
   const maxF = npcMaxForwardSpeed(npc);
   const t = Math.min(maxF, Math.max(0, target));
-  const accel = npc.isFactionPatrol ? 13.85 : npc.isTradeShip ? 12.85 : 10.45;
+  const accel = npc.isFactionPatrol ? 14.55 : npc.isTradeShip ? 13.45 : 11.05;
   let spd = npc.speed || 0;
   if (spd < t - 0.03) {
     spd = Math.min(spd + accel * dt * speedMult, t, maxF);
