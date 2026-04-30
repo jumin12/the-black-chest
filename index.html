@@ -18127,24 +18127,25 @@ function updateNPCs(dt) {
       const ipNpc = useNetInterpNpc
         ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, {
             /* smoothSegment (smoothstep) zeros dz/dt at every knot → visible “hitch” each server tick. */
-            reduceDelay: 0.78,
+            reduceDelay: useNetInterpNpc ? 0.92 : 0.78,
             npcExtrap: true
           })
         : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
         const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-        /* Softer chase toward ipNpc — very fast follow amplifies jitter when extrap or new samples move the target. */
-        const tauPos = ej > 110 ? 0.012 : ej > 38 ? 0.018 : ej > 9 ? 0.028 : 0.038;
+        /* Chase interpolated pose: net-driven NPCs need a shorter tau than legacy tuning or they feel sluggish vs locally integrated hulls. */
+        const tauMul = useNetInterpNpc ? 0.5 : 1;
+        const tauPos = (ej > 110 ? 0.012 : ej > 38 ? 0.018 : ej > 9 ? 0.028 : 0.038) * tauMul;
         let an = 1 - Math.exp(-dt / Math.max(1e-4, tauPos));
-        an = Math.min(1, Math.max(an, dt * 28));
+        an = Math.min(1, Math.max(an, dt * (useNetInterpNpc ? 40 : 28)));
         npc.x += (ipNpc.x - npc.x) * an;
         npc.z += (ipNpc.z - npc.z) * an;
         let drn = ipNpc.ry - npc.rotation;
         while (drn > Math.PI) drn -= Math.PI * 2;
         while (drn < -Math.PI) drn += Math.PI * 2;
-        const tauRy = ej > 70 ? 0.02 : 0.032;
+        const tauRy = (ej > 70 ? 0.02 : 0.032) * tauMul;
         let aR = 1 - Math.exp(-dt / tauRy);
-        aR = Math.min(1, Math.max(aR, dt * 18));
+        aR = Math.min(1, Math.max(aR, dt * (useNetInterpNpc ? 26 : 18)));
         npc.rotation += drn * aR;
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
@@ -30533,14 +30534,14 @@ function interpSmooth01(u) {
   return u * u * (3 - 2 * u);
 }
 
-/** Tighter playback delay for AI hulls — ~1.25 server ticks @120Hz + RTT; too low fights extrapolation and stutters. */
+/** Tighter playback delay for AI hulls — ~1 server tick @120Hz + RTT fraction; keep a few ms buffer for jitter without feeling “behind” the player ship. */
 function getEffectiveNpcInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 75;
-  const d = 15 + r * 0.22;
-  return Math.max(10, Math.min(56, d));
+  const d = 11 + r * 0.19;
+  return Math.max(7, Math.min(48, d));
 }
 
 /**
