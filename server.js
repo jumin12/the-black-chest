@@ -76,12 +76,9 @@ function applyNavigatorDevPlayerUpdate(p, msg) {
   return { kick: false, stripped, denyPositionHint: false };
 }
 
-/** Per-client interest radius (world units). Larger default keeps allied captains mutual visibility stable. AI hulls in `npc_sync` use the same base radius × NPC_SYNC_AOI_RADIUS_MULT. Override STATE_AOI_RADIUS / NPC_SYNC_AOI_RADIUS_MULT to tune. */
+/** Per-client interest radius (world units). Larger default keeps allied captains mutual visibility stable vs npc_sync broadcast (bandwidth still AOI-scoped vs full roster). Override STATE_AOI_RADIUS to tune. */
 const STATE_AOI_RADIUS = Math.max(800, Math.min(20000, Number(process.env.STATE_AOI_RADIUS) || 7800));
 const STATE_AOI_RADIUS_SQ = STATE_AOI_RADIUS * STATE_AOI_RADIUS;
-/** Multiplier on STATE_AOI_RADIUS for which AI hulls appear in per-client `npc_sync` (>=1). Slightly >1 reduces edge popping. */
-const NPC_SYNC_AOI_RADIUS_MULT = Math.max(1, Math.min(1.65, Number(process.env.NPC_SYNC_AOI_RADIUS_MULT) || 1.12));
-const NPC_SYNC_AOI_SQ = STATE_AOI_RADIUS_SQ * NPC_SYNC_AOI_RADIUS_MULT * NPC_SYNC_AOI_RADIUS_MULT;
 
 /** Dedicated VM / process managers / horizontal realms: see docs/MULTIPLAYER-DEPLOYMENT.md and multiplayer-server.example.env (not geographic multi-region). */
 /** Authoritative wind + motion integration (see simulation-layer.js). */
@@ -4218,31 +4215,12 @@ setInterval(() => {
   } catch (e) {}
   npcWorld.step(1 / TICK_RATE, players, playerStories, playerQuests);
   try {
-    const windSample = npcWorld.getWindSample();
-    for (const client of wss.clients) {
-      if (client.readyState !== 1 || client.playerId == null) continue;
-      const viewer = players.get(client.playerId);
-      if (!viewer) continue;
-      const rows =
-        npcWorld.buildSyncRowsForViewer && typeof npcWorld.buildSyncRowsForViewer === 'function'
-          ? npcWorld.buildSyncRowsForViewer(viewer, NPC_SYNC_AOI_SQ, players)
-          : npcWorld.buildSyncRows();
-      const payloadStr = JSON.stringify({
-        type: 'npc_sync',
-        npcs: rows,
-        wind: windSample,
-        srvTick: serverStateTickSeq
-      });
-      let sentDc = false;
-      if (gameRtc.enabled) {
-        sentDc = !!gameRtc.sendGameplayPayload(client, payloadStr).sentDc;
-      }
-      if (!sentDc || gameRtc.dualStack) {
-        try {
-          client.send(payloadStr);
-        } catch (e) {}
-      }
-    }
+    broadcastGameplayJsonGlobal({
+      type: 'npc_sync',
+      npcs: npcWorld.buildSyncRows(),
+      wind: npcWorld.getWindSample(),
+      srvTick: serverStateTickSeq
+    });
   } catch (e) {}
   if (serverStateTickSeq % 540 === 0) {
     try {
@@ -4312,7 +4290,7 @@ server.listen(PORT, '0.0.0.0', () => {
   }
   const rc = getRealmConfig();
   console.log(`[playground] realm: «${rc.name}» (${rc.id}) — REALM_NAME / REALM_ID env`);
-  console.log(`[playground] multiplayer AOI radius (world units): ${STATE_AOI_RADIUS} — set STATE_AOI_RADIUS env to tune; per-client state + npc_sync list nearby AI hulls (npc AOI ×${NPC_SYNC_AOI_RADIUS_MULT.toFixed(2)}, env NPC_SYNC_AOI_RADIUS_MULT).`);
+  console.log(`[playground] multiplayer AOI radius (world units): ${STATE_AOI_RADIUS} — set STATE_AOI_RADIUS env to tune; per-client state lists only nearby captains (+ boarding partners).`);
   if (gameRtc.enabled) {
     console.log(`[playground] WebRTC game DataChannel: ON — multiplexed JSON (\`state\`, \`npc_sync\`, …). Dual-stack WS copies: ${gameRtc.dualStack ? 'ON' : 'OFF'}. ICE: ${(gameRtc.publicIceServers || []).join(', ')}`);
   }

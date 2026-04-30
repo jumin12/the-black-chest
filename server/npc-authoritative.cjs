@@ -845,89 +845,60 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
   }
 }
 
-function npcPassesWorldRoster(n) {
-  const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
-  if (n.sinking) return true;
-  return h > -900;
-}
-
-function npcToSyncRow(n, portController, ws) {
-  const isRog = !!(n.independentPirate && !n.isTradeShip && !n.isFactionPatrol);
-  const ffi = n.isTradeShip
-    ? ((n.homeFaction != null ? n.homeFaction : townFaction({ cx: n.homeCx, cz: n.homeCz, hasTown: true }, portController, ws)) | 0) % FACTION_COUNT
-    : ((n.factionId | 0) % FACTION_COUNT);
-  let atk = null;
-  if (n.isTradeShip) {
-    if (n.returnFireSyncId != null && Number.isFinite(Number(n.returnFireSyncId))) atk = Number(n.returnFireSyncId);
-  } else {
-    if (n.returnFireSyncId != null && Number.isFinite(Number(n.returnFireSyncId))) atk = Number(n.returnFireSyncId);
-    else if (n.attackNpcSyncId != null && Number.isFinite(Number(n.attackNpcSyncId))) atk = Number(n.attackNpcSyncId);
-  }
-  const row = {
-    id: n.syncId,
-    /* Was 1/20 = 0.05 — too coarse at 60Hz; sub-tick motion rounded away → hulls crawl on clients. */
-    x: Math.round(n.x * 200) / 200,
-    z: Math.round(n.z * 200) / 200,
-    r: Math.round(n.rotation * 1000) / 1000,
-    h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
-    rg: Math.round(getNpcRiggingHealth(n)),
-    aggro: !!n.aggro,
-    sinking: !!n.sinking,
-    t: n.type,
-    n: n.name,
-    fc: n.flagColor,
-    fa: n.flagAssetId != null ? n.flagAssetId : undefined,
-    mer: !!n.isTradeShip,
-    pat: !!(n.isFactionPatrol && !n.isTradeShip),
-    sp: Math.round((n.speed || 0) * 100) / 100,
-    atk: atk != null ? atk : null
-  };
-  if (!isRog) row.ffi = ffi;
-  if (isRog) row.rp = 1;
-  if (n.missionOwnerPlayerId != null && Number.isFinite(Number(n.missionOwnerPlayerId))) {
-    row.mo = Math.floor(Number(n.missionOwnerPlayerId));
-  }
-  if (n.flagPosition === 'mast' || n.flagPosition === 'side' || n.flagPosition === 'stern') {
-    row.flag = n.flagPosition;
-  }
-  if (n.isTradeShip) {
-    row.hcx = n.homeCx | 0;
-    row.hcz = n.homeCz | 0;
-    if (n.homeDockX != null) row.hdx = Math.round(n.homeDockX * 10) / 10;
-    if (n.homeDockZ != null) row.hdz = Math.round(n.homeDockZ * 10) / 10;
-  }
-  return row;
-}
-
 function buildSyncRows(npcs, portController, ws) {
-  return npcs.filter(npcPassesWorldRoster).map(n => npcToSyncRow(n, portController, ws));
-}
-
-/** Per-viewer AOI (plus mission/boarding hulls) to shrink `npc_sync` vs broadcasting the full roster. */
-function buildSyncRowsForViewer(npcs, portController, ws, viewer, aoiSq, playersMap) {
-  const px = Number(viewer.x);
-  const pz = Number(viewer.z);
-  const vid = Math.floor(Number(viewer.id));
-  if (!Number.isFinite(px) || !Number.isFinite(pz) || !Number.isFinite(vid) || !(aoiSq > 0)) {
-    return buildSyncRows(npcs, portController, ws);
-  }
-  let boardNpcSid = null;
-  if (viewer.boarding && typeof viewer.boarding === 'object' && playersMap && playersMap instanceof Map) {
-    const bsid = Math.floor(Number(viewer.boarding.sid));
-    if (Number.isFinite(bsid) && bsid > 0 && !playersMap.has(bsid)) boardNpcSid = bsid;
-  }
   return npcs
     .filter(n => {
-      if (!npcPassesWorldRoster(n)) return false;
-      if (n.missionOwnerPlayerId != null && Number.isFinite(Number(n.missionOwnerPlayerId)) && Math.floor(Number(n.missionOwnerPlayerId)) === vid) {
-        return true;
-      }
-      if (boardNpcSid != null && (n.syncId | 0) === (boardNpcSid | 0)) return true;
-      const dx = n.x - px;
-      const dz = n.z - pz;
-      return dx * dx + dz * dz <= aoiSq;
+      const h = n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0;
+      if (n.sinking) return true;
+      return h > -900;
     })
-    .map(n => npcToSyncRow(n, portController, ws));
+    .map(n => {
+      const isRog = !!(n.independentPirate && !n.isTradeShip && !n.isFactionPatrol);
+      const ffi = n.isTradeShip
+        ? ((n.homeFaction != null ? n.homeFaction : townFaction({ cx: n.homeCx, cz: n.homeCz, hasTown: true }, portController, ws)) | 0) % FACTION_COUNT
+        : ((n.factionId | 0) % FACTION_COUNT);
+      let atk = null;
+      if (n.isTradeShip) {
+        if (n.returnFireSyncId != null && Number.isFinite(Number(n.returnFireSyncId))) atk = Number(n.returnFireSyncId);
+      } else {
+        if (n.returnFireSyncId != null && Number.isFinite(Number(n.returnFireSyncId))) atk = Number(n.returnFireSyncId);
+        else if (n.attackNpcSyncId != null && Number.isFinite(Number(n.attackNpcSyncId))) atk = Number(n.attackNpcSyncId);
+      }
+      const row = {
+        id: n.syncId,
+        /* Was 1/20 = 0.05 — too coarse at 60Hz; sub-tick motion rounded away → hulls crawl on clients. */
+        x: Math.round(n.x * 200) / 200,
+        z: Math.round(n.z * 200) / 200,
+        r: Math.round(n.rotation * 1000) / 1000,
+        h: Math.round(n.health != null && Number.isFinite(Number(n.health)) ? Number(n.health) : 0),
+        rg: Math.round(getNpcRiggingHealth(n)),
+        aggro: !!n.aggro,
+        sinking: !!n.sinking,
+        t: n.type,
+        n: n.name,
+        fc: n.flagColor,
+        fa: n.flagAssetId != null ? n.flagAssetId : undefined,
+        mer: !!n.isTradeShip,
+        pat: !!(n.isFactionPatrol && !n.isTradeShip),
+        sp: Math.round((n.speed || 0) * 100) / 100,
+        atk: atk != null ? atk : null
+      };
+      if (!isRog) row.ffi = ffi;
+      if (isRog) row.rp = 1;
+      if (n.missionOwnerPlayerId != null && Number.isFinite(Number(n.missionOwnerPlayerId))) {
+        row.mo = Math.floor(Number(n.missionOwnerPlayerId));
+      }
+      if (n.flagPosition === 'mast' || n.flagPosition === 'side' || n.flagPosition === 'stern') {
+        row.flag = n.flagPosition;
+      }
+      if (n.isTradeShip) {
+        row.hcx = n.homeCx | 0;
+        row.hcz = n.homeCz | 0;
+        if (n.homeDockX != null) row.hdx = Math.round(n.homeDockX * 10) / 10;
+        if (n.homeDockZ != null) row.hdz = Math.round(n.homeDockZ * 10) / 10;
+      }
+      return row;
+    });
 }
 
 /** Authoritative hull/rig damage from a player cannon hit (matches client `applyAuthorizedNpcDamageFromPlayerShot` tiers). */
@@ -1973,8 +1944,6 @@ function createServerNpcWorld(opts) {
     reset,
     step,
     buildSyncRows: () => buildSyncRows(npcs, politics.portController, ws),
-    buildSyncRowsForViewer: (viewer, aoiSq, playersMap) =>
-      buildSyncRowsForViewer(npcs, politics.portController, ws, viewer, aoiSq, playersMap),
     getWindSample,
     getNpcs,
     applyPlayerCannonHitClaim,
