@@ -16108,7 +16108,8 @@ function npcWindEffect(npc) {
   const raw = windDot * 0.35 + 0.65;
   /* Tutorial raider matches starter helm wind penalty (player uses ~0.25 floor via `computePlayerSpeedModifiers`). */
   if (npc && npc.tutorialRaidHull) return Math.max(0.2, Math.max(0.25, raw));
-  return Math.max(0.42, raw);
+  /* Slightly higher floor than historic 0.42 so DS NPCs don’t crawl into the wind vs player craft. */
+  return Math.max(0.48, raw);
 }
 function npcEffectiveForwardSpeed(npc) {
   const maxF = npcMaxForwardSpeed(npc);
@@ -16128,7 +16129,7 @@ function accelerateNpcToward(npc, dt, target) {
   const t = Math.min(maxF, Math.max(0, target));
   const accel =
     npc.tutorialRaidHull ? 4.15 :
-    7.55;
+    9.2;
   if (npc.speed < t - 0.03) {
     npc.speed = Math.min(npc.speed + accel * dt * speedMult, t, maxF);
   } else if (npc.speed > t + 0.03) {
@@ -17730,7 +17731,7 @@ function updateNPCs(dt) {
           if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
           const maxF = npcMaxForwardSpeed(npc);
           const distAtk = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z);
-          const tgtSpd = npc.underFireTimer > 0 && distAtk < 95 ? maxF * 0.32 : maxF * 0.72;
+          const tgtSpd = npc.underFireTimer > 0 && distAtk < 95 ? maxF * 0.34 : maxF * 0.78;
           accelerateNpcToward(npc, dt, tgtSpd);
           applyNpcMoveWithIslandEscape(npc, dt, sharp);
           updateNpcEscapeMode(npc, dt);
@@ -17759,7 +17760,7 @@ function updateNPCs(dt) {
           steerNpcClearanceAhead(npc, dt, sharp);
           if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
           const maxF = npcMaxForwardSpeed(npc);
-          const tgtSpd = npc.underFireTimer > 0 && distToPlayer < 118 ? maxF * 0.43 : maxF * 0.76;
+          const tgtSpd = npc.underFireTimer > 0 && distToPlayer < 118 ? maxF * 0.46 : maxF * 0.82;
           accelerateNpcToward(npc, dt, tgtSpd);
           applyNpcMoveWithIslandEscape(npc, dt, sharp);
           updateNpcEscapeMode(npc, dt);
@@ -17774,7 +17775,7 @@ function updateNPCs(dt) {
           npc.wanderAngle = npc.rotation;
         }
         if (npc.tradeDestX == null || npc.tradeDestZ == null || npc.homeDockX == null) assignNewTradeRoute(npc);
-        const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.993;
+        const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.998;
         const phase = npc.tradePhase || 'to_dest';
         const dockTx = npc.tradeDestX, dockTz = npc.tradeDestZ;
         let tx = dockTx, tz = dockTz;
@@ -18021,7 +18022,7 @@ function updateNPCs(dt) {
         accelerateTutorialRaidNpcLikePlayer(npc, dt, Math.min(1, fwd), cruiseCap);
       } else {
         const maxF = npcMaxForwardSpeed(npc);
-        let tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF * 0.992 : maxF * 0.962;
+        let tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF * 0.998 : maxF * 0.99;
         accelerateNpcToward(npc, dt, tgtSpd);
       }
       applyNpcMoveWithIslandEscape(npc, dt, sharp);
@@ -18036,23 +18037,10 @@ function updateNPCs(dt) {
         : getEffectiveHullSnapInterpDelayMs();
       const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
-        /* Track delayed interpolator with a short blend — absorbs recv/tick jitter without stacking a second interp target. */
-        const ix = ipNpc.x, iz = ipNpc.z, iry = ipNpc.ry;
-        const ex = ix - npc.x, ez = iz - npc.z;
-        const es = Math.hypot(ex, ez);
-        if (es > 380) {
-          npc.x = ix;
-          npc.z = iz;
-          npc.rotation = iry;
-        } else {
-          const pk = 1 - Math.exp(-40 * dt);
-          npc.x += ex * pk;
-          npc.z += ez * pk;
-          let dr = iry - npc.rotation;
-          while (dr > Math.PI) dr -= Math.PI * 2;
-          while (dr < -Math.PI) dr += Math.PI * 2;
-          npc.rotation += dr * (1 - Math.exp(-28 * dt));
-        }
+        /* Follow delayed spline directly — exp-blend toward ip lagged behind real motion (slow/stutter). Hist uses srvTick timeline + multi-drain. */
+        npc.x = ipNpc.x;
+        npc.z = ipNpc.z;
+        npc.rotation = ipNpc.ry;
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -30521,11 +30509,11 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** NPC playback delay: relay observers use a shorter buffer; DS uses a slightly tighter delay than peer hulls so `_snapHist` samples land mid-segment more often (smoother sail). */
+/** NPC playback delay: tighter than peer hulls so clients hug authoritative motion without sluggish extrapolation. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   const base = getEffectiveHullSnapInterpDelayMs();
-  if (relayObserver) return Math.max(34, base - 13);
-  return Math.max(44, Math.min(86, base - 6));
+  if (relayObserver) return Math.max(28, base - 18);
+  return Math.max(36, Math.min(76, base - 14));
 }
 
 /**
