@@ -8544,6 +8544,27 @@ function factionHostileToPlayer(fid) {
   if (playerBannedFromFactionPort(f)) return true;
   return playerFactionRelation(f) <= COMBAT_HOSTILE_RELATION;
 }
+/** Squadron patrols: engage under the same rules as the dedicated server (`factionPatrolMayAttackPlayer`). */
+function factionPatrolMayAttackPlayer(npc, playerOpt) {
+  const pl = playerOpt || G.player;
+  if (!npc || !npc.isFactionPatrol || npc.sinking || !pl || pl.docked) return false;
+  const myF = (npc.factionId | 0) % FACTION_COUNT;
+  if (factionHostileToPlayer(myF)) return true;
+  const jf = G.politics.joinedFaction;
+  if (jf != null && Number.isFinite(Number(jf)) && factionsConsideredAtWar(myF, Number(jf))) return true;
+  const mastF = playerMastFactionEnsignIndex(pl);
+  if (mastF != null && factionsConsideredAtWar(myF, mastF)) return true;
+  return false;
+}
+/** Host combat AI: corsairs vs navy eligibility for chasing / broadsiding the local player. */
+function npcHullAggroEligibleVsPlayer(npc) {
+  if (!npc || npc.isTradeShip) return false;
+  if (npc.independentPirate || npc.escortRaider) return true;
+  const fid = npc.factionId != null ? (npc.factionId | 0) % FACTION_COUNT : null;
+  if (fid != null && factionHostileToPlayer(fid)) return true;
+  if (npc.isFactionPatrol && factionPatrolMayAttackPlayer(npc, G.player)) return true;
+  return false;
+}
 function randomChoosableFlagRng(rng) {
   const ids = PLAYER_FLAG_CHOICE_IDS;
   return ids[Math.floor(rng() * ids.length)] || DEFAULT_PLAYER_FLAG_ASSET;
@@ -16798,7 +16819,7 @@ function spawnOneFactionPatrol(factionId) {
     riggingHealth: 100,
     attackNpcSyncId: null
   };
-  npc.speed = npcMaxForwardSpeed(npc) * (0.2 + sr() * 0.12);
+  npc.speed = npcMaxForwardSpeed(npc) * (0.5 + sr() * 0.26);
   const mesh = buildShipMesh(st, { hull: 'basic', sail: 'war', cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, facCol, npc.name, { flagAssetId: npc.flagAssetId });
   npc.crewData = ambientPirateCrewData((tBase + pid * 17) >>> 0, st);
   buildCrewMeshes(mesh, npc.crewData, st);
@@ -17877,15 +17898,21 @@ function updateNPCs(dt) {
       const distToTarget = Math.hypot(aimx - npc.x, aimz - npc.z);
       const distToPlayer = Math.hypot(G.player.x - npc.x, G.player.z - npc.z);
       ensurePolitics();
-      const pirF = npc.factionId != null ? (npc.factionId | 0) % FACTION_COUNT : null;
-      const pirateFactionHostileToPlayer = !!(npc.independentPirate || npc.escortRaider || (pirF != null && factionHostileToPlayer(pirF)));
+      const patrolShip = !!npc.isFactionPatrol;
+      const hullHostile = npcHullAggroEligibleVsPlayer(npc);
+      const combatCommitted = !!(npc.underFireTimer != null && npc.underFireTimer > 0.05);
+      const underHumanFire = !!(npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0.05);
+      const combatDrive = !!(focus || combatCommitted || underHumanFire);
+      const aggroBand = combatDrive ? 172 : (patrolShip ? 142 : 152);
+      const fireDistPlayer = combatDrive ? 108 : (patrolShip ? 94 : 100);
+      const aggroDropDist = patrolShip ? 268 : 292;
       if (npc.aggro && (G.playerSinking || G.player.health <= 0
-        || (!pirateFactionHostileToPlayer && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0))
-        || (npc.underFireTimer <= 0 && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0) && distToPlayer > 280))) {
+        || (!hullHostile && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0))
+        || (npc.underFireTimer <= 0 && (npc.underPlayerFireTimer == null || npc.underPlayerFireTimer <= 0) && distToPlayer > aggroDropDist))) {
         npc.aggro = false;
       }
-      if (!focus && !npc.escortRaider && !G.playerSinking && G.player.health > 0 && distToPlayer < 168) {
-        if (pirateFactionHostileToPlayer || (npc.underPlayerFireTimer != null && npc.underPlayerFireTimer > 0)) {
+      if (!focus && !npc.escortRaider && !G.playerSinking && G.player.health > 0 && distToPlayer < 228) {
+        if (hullHostile || underHumanFire || combatCommitted) {
           npc.aggro = true;
         } else if (!npc.aggro && distToPlayer < 152 && npcCombatPowerEstimate(npc) < playerCombatPowerEstimate() * 0.92) {
           if (!(npc.tutorialRaidHull && G.tutorialRaidCutscene && G.tutorialRaidCutscene._combatPhase)) {
@@ -17899,7 +17926,7 @@ function updateNPCs(dt) {
           }
         }
       }
-      const sharp = (focus && distToTarget < 115) || (!focus && npc.aggro && distToPlayer < 110) ? 2.55 : 2.05;
+      const sharp = (focus && distToTarget < 118) || (!focus && npc.aggro && distToPlayer < (combatDrive ? 132 : 118)) ? 2.55 : 2.05;
 
       if (!npc.escapeMode) {
         if (focus) {
@@ -17921,7 +17948,7 @@ function updateNPCs(dt) {
             npcFireBroadsideAtNpcTarget(npc, focus);
             npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * npcBroadsideCooldownScale(npc);
           }
-        } else if (npc.aggro && distToPlayer < 148) {
+        } else if (npc.aggro && distToPlayer < aggroBand) {
           const dx = G.player.x - npc.x, dz = G.player.z - npc.z;
           const toPlayer = Math.atan2(dx, dz);
           const starboardBroadside = toPlayer + Math.PI / 2;
@@ -17932,12 +17959,12 @@ function updateNPCs(dt) {
           let diff = targetAngle - npc.rotation;
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
-          const turnMul = npc.underFireTimer > 0 ? 2.12 : 1.48;
+          const turnMul = combatDrive ? (npc.underFireTimer > 0 ? 2.28 : 1.62) : (npc.underFireTimer > 0 ? 2.12 : 1.48);
           const brgMis = Math.min(dStar, dPort);
           const angleBoost = 1 + Math.min(0.95, brgMis / (Math.PI * 0.38)) * 0.62;
           npc.rotation += diff * turnMul * angleBoost * dt * npcSailingTurnFactor(npc);
 
-          if (npc.fireCooldown <= 0 && distToPlayer < 100) {
+          if (npc.fireCooldown <= 0 && distToPlayer < fireDistPlayer) {
             npcFireBroadsideAtPlayer(npc);
             npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN * 0.9 * npcBroadsideCooldownScale(npc);
           }
@@ -17957,7 +17984,8 @@ function updateNPCs(dt) {
       steerNpcClearanceAhead(npc, dt, sharp);
       if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
       const maxF = npcMaxForwardSpeed(npc);
-      let tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF * 0.94 : maxF * 0.88;
+      const chasingPlayerOrNpc = !!(focus && distToTarget < 132) || (!focus && npc.aggro && distToPlayer < aggroBand);
+      let tgtSpd = chasingPlayerOrNpc ? maxF * 0.94 : maxF * (patrolShip ? 0.91 : 0.88);
       if (npc.tutorialRaidHull && npc._tutorialRaidCruiseCeil != null && Number.isFinite(npc._tutorialRaidCruiseCeil)) {
         tgtSpd = Math.min(tgtSpd, npc._tutorialRaidCruiseCeil);
       }

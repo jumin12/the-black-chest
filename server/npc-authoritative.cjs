@@ -1680,21 +1680,29 @@ function createServerNpcWorld(opts) {
     const aimz = focus ? focus.z : near ? near.p.z : 0;
     const distToTarget = focus ? Math.hypot(focus.x - npc.x, focus.z - npc.z) : distToPlayer;
     const nid = near && near.p && near.p.id != null ? Math.floor(Number(near.p.id)) : null;
-    if (!focus && near && nid != null && distToPlayer < 118) {
+    if (!focus && near && nid != null && distToPlayer < (isPatrol ? 188 : 162)) {
       const underAttack = npc.underFireTimer != null && npc.underFireTimer > 0.05;
       const pirateFreeForAll = !isPatrol;
       const patrolOk = isPatrol ? factionPatrolMayAttackPlayer(npc, nid, near.p) : false;
       if (underAttack || pirateFreeForAll || patrolOk) {
         npc.aggro = true;
-        npc.underFireTimer = Math.max(npc.underFireTimer || 0, 2.9);
+        npc.underFireTimer = Math.max(npc.underFireTimer || 0, underAttack ? 2.9 : 1.22);
       }
     }
-    if (!focus && isPatrol && near && nid != null && npc.aggro && distToPlayer <= 175) {
+    if (!focus && isPatrol && near && nid != null && npc.aggro && distToPlayer <= 218) {
       const ua = npc.underFireTimer != null && npc.underFireTimer > 0.05;
       if (!ua && !factionPatrolMayAttackPlayer(npc, nid, near.p)) npc.aggro = false;
     }
-    if (!focus && (!near || distToPlayer > 175)) npc.aggro = false;
-    const sharp = (focus && distToTarget < 115) || (!focus && npc.aggro && distToPlayer < 110) ? 2.55 : 2.05;
+    const aggroDropDist = isPatrol ? 248 : 208;
+    if (!focus && (!near || distToPlayer > aggroDropDist)) npc.aggro = false;
+    const combatCommitted = npc.underFireTimer != null && npc.underFireTimer > 0.05;
+    const combatDrive = !!(focus || combatCommitted);
+    const aggroBand = combatDrive ? 168 : (isPatrol ? 138 : 112);
+    const sharp =
+      (focus && distToTarget < 118) ||
+      (!focus && npc.aggro && near && distToPlayer < (combatDrive ? 130 : isPatrol ? 118 : 108))
+        ? 2.55
+        : 2.05;
     if (!npc.escapeMode) {
       if (focus) {
         const dx = focus.x - npc.x;
@@ -1708,14 +1716,15 @@ function createServerNpcWorld(opts) {
         let diff = targetAngle - npc.rotation;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        npc.rotation += diff * (npc.underFireTimer > 0 ? 1.95 : 1.35) * dt * npcSailingTurnFactor(npc, windAt);
-        if (npc.fireCooldown <= 0 && distToTarget < 74) {
+        const mul = combatDrive ? (npc.underFireTimer > 0 ? 2.12 : 1.52) : npc.underFireTimer > 0 ? 1.95 : 1.35;
+        npc.rotation += diff * mul * dt * npcSailingTurnFactor(npc, windAt);
+        if (npc.fireCooldown <= 0 && distToTarget < (combatDrive ? 82 : 74)) {
           const tvx = Math.sin(focus.rotation) * (focus.speed || 0);
           const tvz = Math.cos(focus.rotation) * (focus.speed || 0);
           emitBroadside(broadcastAll, npc, focus.x, focus.z, tvx, tvz);
           npc.fireCooldown = PLAYER_BROADSIDE_COOLDOWN;
         }
-      } else if (npc.aggro && near && distToPlayer < 110) {
+      } else if (npc.aggro && near && distToPlayer < aggroBand) {
         const dx = near.p.x - npc.x;
         const dz = near.p.z - npc.z;
         const toPlayer = Math.atan2(dx, dz);
@@ -1727,8 +1736,9 @@ function createServerNpcWorld(opts) {
         let diff = targetAngle - npc.rotation;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        npc.rotation += diff * (npc.underFireTimer > 0 ? 1.95 : 1.35) * dt * npcSailingTurnFactor(npc, windAt);
-        if (npc.fireCooldown <= 0 && distToPlayer < 72) {
+        const mul = combatDrive ? (npc.underFireTimer > 0 ? 2.08 : 1.58) : npc.underFireTimer > 0 ? 1.95 : 1.35;
+        npc.rotation += diff * mul * dt * npcSailingTurnFactor(npc, windAt);
+        if (npc.fireCooldown <= 0 && distToPlayer < (combatDrive ? 88 : 72)) {
           const pvx = Math.sin(near.p.rotation || 0) * (near.p.speed || 0);
           const pvz = Math.cos(near.p.rotation || 0) * (near.p.speed || 0);
           emitBroadside(broadcastAll, npc, near.p.x, near.p.z, pvx, pvz);
@@ -1749,8 +1759,10 @@ function createServerNpcWorld(opts) {
     steerNpcClearanceAhead(npc, dt, sharp, windAt, dryLand);
     nudgeNpcOffIsland(npc, dryLand, edgeClamp);
     const maxF = npcMaxForwardSpeed(npc);
-    /** Align cruise/aggression caps with browser AI (`updateNpcs`) so DS pirates don’t sail visibly slower. */
-    const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 110) ? maxF * 0.94 : maxF * 0.88;
+    /** Match browser host: patrols keep a slightly higher idle cruise; chase harder when damaged or focused. */
+    const chasing =
+      !!(focus && distToTarget < 132) || (!focus && npc.aggro && near && distToPlayer < aggroBand);
+    const tgtSpd = chasing ? maxF * 0.94 : maxF * (isPatrol ? 0.91 : 0.88);
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }
