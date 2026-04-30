@@ -15,7 +15,6 @@ const PORT_EXPORT_POOL = ['food', 'cannonballs', 'grapeshot', 'chainshot', 'wood
 const VANILLA_PIRATE_RESPAWN_MS = 180000;
 /** Match client `factionHostileToPlayer` — only open combat on strong personal standing penalty. */
 const COMBAT_HOSTILE_STANDING = -42;
-const PLAYER_BASE_SPEED_MULT = 0.63;
 
 const SHIP_TYPES = {
   cutter: { hullLen: 5, hullW: 1.6, speed: 1.75, turnRate: 1.6, cannonSlots: 1 },
@@ -276,11 +275,8 @@ function accelerateNpcToward(npc, dt, target) {
   const maxF = npcMaxForwardSpeed(npc);
   const t = Math.min(maxF, Math.max(0, target));
   let spd = npc.speed || 0;
-  const refCap = 12 * PLAYER_BASE_SPEED_MULT;
-  const risePerSec = 4 * PLAYER_BASE_SPEED_MULT * Math.max(0.82, speedMult);
-  const accel = risePerSec * (maxF / Math.max(refCap, 1e-6));
   if (spd < t - 0.03) {
-    spd = Math.min(spd + accel * dt, t, maxF);
+    spd = Math.min(spd + 6.95 * dt * speedMult, t, maxF);
   } else if (spd > t + 0.03) {
     spd *= (1 - 0.3 * dt);
     if (spd < t) spd = t;
@@ -671,6 +667,7 @@ function syncStoryBountyNpcs(npcs, playerStories, ctx, ws, edgeClamp) {
           fireCooldown: 0,
           aggro: false
         };
+        newbie.speed = npcMaxForwardSpeed(newbie) * 0.58;
         npcs.push(newbie);
       }
     });
@@ -756,6 +753,8 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
         fireCooldown: 0,
         aggro: false
       });
+      const last = npcs[npcs.length - 1];
+      last.speed = npcMaxForwardSpeed(last) * (0.54 + Math.random() * 0.22);
     }
   });
   }
@@ -1041,21 +1040,16 @@ function createServerNpcWorld(opts) {
       wanderTimer: 99,
       underFireTimer: 0,
       riggingHealth: 100,
-      fireCooldown: 0,
-      tradePhase: 'loading_home',
-      tradeTimer: 6 + sr() * 14
+      fireCooldown: 0
     };
     assignTradeRouteFromHome(npc, home, allPorts, sr, ws, politics.portController);
     npc.homeEmbarkX = nx;
     npc.homeEmbarkZ = nz;
     npc.rotation = Math.atan2((npc.tradeDestX || nx) - nx, (npc.tradeDestZ || nz) - nz);
-    if (sr() < 0.74) {
-      npc.tradePhase = 'to_dest';
-      npc.tradeTimer = 0;
-    } else {
-      npc.tradePhase = 'loading_home';
-      npc.tradeTimer = 0.35 + sr() * 1.25;
-    }
+    const startUnderWay = sr() < 0.62;
+    npc.tradePhase = startUnderWay ? 'to_dest' : 'loading_home';
+    npc.tradeTimer = startUnderWay ? 0 : (0.35 + sr() * 1.25);
+    if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.38 + sr() * 0.42);
     npcs.push(npc);
     return true;
   }
@@ -1113,6 +1107,7 @@ function createServerNpcWorld(opts) {
       fireCooldown: 0,
       aggro: false
     };
+    npc.speed = npcMaxForwardSpeed(npc) * (0.58 + sr() * 0.28);
     npcs.push(npc);
     return true;
   }
@@ -1183,6 +1178,8 @@ function createServerNpcWorld(opts) {
       fireCooldown: 0,
       aggro: false
     });
+    const last = npcs[npcs.length - 1];
+    last.speed = npcMaxForwardSpeed(last) * (0.62 + sr() * 0.24);
   }
 
   function reset(players) {
@@ -1240,6 +1237,8 @@ function createServerNpcWorld(opts) {
         fireCooldown: 0,
         aggro: false
       });
+      const last = npcs[npcs.length - 1];
+      last.speed = npcMaxForwardSpeed(last) * (0.62 + sr() * 0.24);
     }
     const allPorts = collectAllPorts();
     if (allPorts.length >= 2) {
