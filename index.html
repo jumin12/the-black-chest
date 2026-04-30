@@ -18031,14 +18031,46 @@ function updateNPCs(dt) {
         ? getEffectiveNpcNetObservationInterpDelayMs(!G.npcSimFromServer)
         : getEffectiveHullSnapInterpDelayMs();
       const poseNet = useNetInterpNpc
-        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 26 })
+        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, {
+            maxExtrapMs: 14,
+            catmullRom: true
+          })
         : null;
       if (poseNet && Number.isFinite(poseNet.x) && Number.isFinite(poseNet.z) && Number.isFinite(poseNet.ry)) {
-        /* Same path as remote hulls (`advanceRemoteShipNetSmooth`): delayed spline sample is already smooth — extra low-pass here lagged behind a moving target and read as slow teleport/snapping. */
-        npc.x = poseNet.x;
-        npc.z = poseNet.z;
-        npc.rotation = poseNet.ry;
+        /* Catmull–Rom + short extrap already soften discrete keys; adaptive low-pass removes residual micro-jitter without fighting steady motion. */
+        if (
+          !Number.isFinite(npc._netHullSmX) ||
+          !Number.isFinite(npc._netHullSmZ) ||
+          !Number.isFinite(npc._netHullSmRy)
+        ) {
+          npc._netHullSmX = poseNet.x;
+          npc._netHullSmZ = poseNet.z;
+          npc._netHullSmRy = poseNet.ry;
+        }
+        const edx = poseNet.x - npc._netHullSmX;
+        const edz = poseNet.z - npc._netHullSmZ;
+        const es = Math.hypot(edx, edz);
+        if (es > 220) {
+          npc._netHullSmX = poseNet.x;
+          npc._netHullSmZ = poseNet.z;
+          npc._netHullSmRy = poseNet.ry;
+        } else {
+          const vm = es / Math.max(dt, 1e-4);
+          const track = Math.min(118, 52 + vm * 0.052 + Math.min(58, es * 0.095));
+          const pk = 1 - Math.exp(-track * dt);
+          npc._netHullSmX += edx * pk;
+          npc._netHullSmZ += edz * pk;
+          let dr = poseNet.ry - npc._netHullSmRy;
+          while (dr > Math.PI) dr -= Math.PI * 2;
+          while (dr < -Math.PI) dr += Math.PI * 2;
+          const rk = 1 - Math.exp(-Math.min(76, 34 + Math.abs(dr) * 10) * dt);
+          npc._netHullSmRy += dr * rk;
+        }
+        npc.x = npc._netHullSmX;
+        npc.z = npc._netHullSmZ;
+        npc.rotation = npc._netHullSmRy;
       } else {
+        npc._netHullSmX = npc._netHullSmZ = npc._netHullSmRy = undefined;
         npc._npcNetSmVx = npc._npcNetSmVz = undefined;
         if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -30514,12 +30546,26 @@ function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
+/** Uniform Catmull–Rom scalar segment — smoother paths than linear lerp between quantized ~60Hz hull keys. */
+function catmullRomScalar(p0, p1, p2, p3, t) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return (
+    0.5 *
+    (2 * p1 +
+      (-p0 + p2) * t +
+      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+      (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+  );
+}
+
 /**
  * Playback from a short receive-time ring buffer at (now - delay) so motion is sampled between two real
  * server snapshots instead of guessing with conflicting velocity + positional pulls (major rubber-band source).
  */
 function interpolateHullHistory(hist, nowMs, delayMs, interpOpts) {
   interpOpts = interpOpts || {};
+  const useCatmullRom = !!interpOpts.catmullRom;
   const maxExtrapMsCap =
     interpOpts.maxExtrapMs != null && Number.isFinite(Number(interpOpts.maxExtrapMs))
       ? Math.max(0, Number(interpOpts.maxExtrapMs))
@@ -30564,9 +30610,34 @@ function interpolateHullHistory(hist, nowMs, delayMs, interpOpts) {
   let u = (tgt - t0) / span;
   if (u < 0) u = 0;
   if (u > 1) u = 1;
+  let sx = a.x + (b.x - a.x) * u;
+  let sz = a.z + (b.z - a.z) * u;
+  if (useCatmullRom) {
+    const p1x = a.x,
+      p1z = a.z,
+      p2x = b.x,
+      p2z = b.z;
+    let p0x, p0z, p3x, p3z;
+    if (i >= 2) {
+      p0x = hist[i - 2].x;
+      p0z = hist[i - 2].z;
+    } else {
+      p0x = p1x + (p1x - p2x);
+      p0z = p1z + (p1z - p2z);
+    }
+    if (i + 1 < hist.length) {
+      p3x = hist[i + 1].x;
+      p3z = hist[i + 1].z;
+    } else {
+      p3x = p2x + (p2x - p1x);
+      p3z = p2z + (p2z - p1z);
+    }
+    sx = catmullRomScalar(p0x, p1x, p2x, p3x, u);
+    sz = catmullRomScalar(p0z, p1z, p2z, p3z, u);
+  }
   return {
-    x: a.x + (b.x - a.x) * u,
-    z: a.z + (b.z - a.z) * u,
+    x: sx,
+    z: sz,
     ry: interpYawShortest(a.ry, b.ry, u)
   };
 }
