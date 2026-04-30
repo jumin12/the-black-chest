@@ -4172,6 +4172,7 @@ function applyLocalNpcKillLootFromNet(msg) {
  */
 function applyNpcBoardingScuttleSinkVisualLocal(npc) {
   if (!npc || npc.sinking) return;
+  npc._sinkOutcomeApplied = true;
   npc._boardingHostLock = false;
   clearNpcBoardingPersist(npc);
   npc.sinking = true;
@@ -4191,6 +4192,7 @@ function applyNpcBoardingScuttleSinkVisualLocal(npc) {
 function applyAuthoritativeNpcSinkWorldFx(npc) {
   if (!npc || !G.npcSimFromServer || npc._authSinkFxApplied) return;
   npc._authSinkFxApplied = true;
+  npc._sinkOutcomeApplied = true;
   if (!isLowestConnectedPlayerIdForFx()) return;
   const wasEscortContractShip = !!npc.isEscortCargo;
   const missionOwner = npc.missionOwnerPlayerId != null ? npc.missionOwnerPlayerId : (npc.isStoryBounty ? G.myId : null);
@@ -4238,8 +4240,16 @@ function setDesyncBlockingOverlay(show, message) {
 
 function detachNpcCrewAndSpawnBailSwimmers(npc, sinkOpts) {
   sinkOpts = sinkOpts || {};
+  if (npc._npcSwimmerBailDone) {
+    if (npc.mesh) removeCrewMeshesFromShipGroup(npc.mesh);
+    return;
+  }
   if (npc.mesh) removeCrewMeshesFromShipGroup(npc.mesh);
-  if (sinkOpts.skipDefaultSwimmers) return;
+  if (sinkOpts.skipDefaultSwimmers) {
+    npc._npcSwimmerBailDone = true;
+    return;
+  }
+  npc._npcSwimmerBailDone = true;
   const crewRaw = Array.isArray(npc.crewData) ? npc.crewData : [];
   const crew = crewRaw.filter(m => m && m.role !== 'prisoner' && m.role !== 'idle');
   const swN = Math.max(2, Math.min(12, crew.length || (4 + Math.floor(Math.random() * 3))));
@@ -4254,6 +4264,8 @@ function detachNpcCrewAndSpawnBailSwimmers(npc, sinkOpts) {
 function runNpcSinkOutcome(npc, killerPlayerId, sinkOpts) {
   sinkOpts = sinkOpts || {};
   if (!npc || npc.sinking) return;
+  if (npc._sinkOutcomeApplied) return;
+  npc._sinkOutcomeApplied = true;
   if (G.boarding && G.boarding.npcSyncId != null && sinkOpts.fromBoardingPrizeUi !== true) {
     const bSid = netNpcSyncId(G.boarding.npcSyncId);
     const nSid = netNpcSyncId(npc.syncId);
@@ -4339,7 +4351,6 @@ function runNpcSinkOutcome(npc, killerPlayerId, sinkOpts) {
   npc.sinking = true;
   npc.sinkTimer = 0;
   npc.speed = 0;
-   
   npc._sinkDebrisAcc = 0;
   npc._sinkExtraLootN = 0;
   /* Single scatter batch from this function; the per-frame sink loop would spawn many extra loot_spawn and felt like duplicates. */
@@ -15140,6 +15151,9 @@ function showBoardingSpoilsModal(won, b) {
           }
           n.sinking = false;
           n.sinkTimer = 0;
+          n._sinkOutcomeApplied = false;
+          n._npcSwimmerBailDone = false;
+          n._authSinkFxApplied = false;
           if (n.mesh) {
             const sy = worldSeaSurfaceY(n.x, n.z) + SHIP_FREEBOARD;
             n.mesh.position.y = sy;
@@ -17050,6 +17064,7 @@ function tickVanillaPirateRespawnsHost() {
 }
 
 function rebuildNPCShipMesh(npc) {
+  if (npc.sinking) return;
   const merchant = !!npc.isTradeShip;
   const patrol = !!npc.isFactionPatrol && !merchant;
   const mercCannon = npcArmedCannonTier(npc);
