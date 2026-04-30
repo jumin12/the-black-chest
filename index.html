@@ -16109,7 +16109,7 @@ function npcWindEffect(npc) {
   /* Tutorial raider matches starter helm wind penalty (player uses ~0.25 floor via `computePlayerSpeedModifiers`). */
   if (npc && npc.tutorialRaidHull) return Math.max(0.2, Math.max(0.25, raw));
   /* Slightly higher floor than historic 0.42 so DS NPCs don’t crawl into the wind vs player craft. */
-  return Math.max(0.48, raw);
+  return Math.max(0.52, raw);
 }
 function npcEffectiveForwardSpeed(npc) {
   const maxF = npcMaxForwardSpeed(npc);
@@ -16129,7 +16129,7 @@ function accelerateNpcToward(npc, dt, target) {
   const t = Math.min(maxF, Math.max(0, target));
   const accel =
     npc.tutorialRaidHull ? 4.15 :
-    9.2;
+    10.45;
   if (npc.speed < t - 0.03) {
     npc.speed = Math.min(npc.speed + accel * dt * speedMult, t, maxF);
   } else if (npc.speed > t + 0.03) {
@@ -18017,7 +18017,7 @@ function updateNPCs(dt) {
         accelerateTutorialRaidNpcLikePlayer(npc, dt, Math.min(1, fwd), cruiseCap);
       } else {
         const maxF = npcMaxForwardSpeed(npc);
-        let tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF * 0.998 : maxF * 0.99;
+        let tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF : maxF * 0.998;
         accelerateNpcToward(npc, dt, tgtSpd);
       }
       applyNpcMoveWithIslandEscape(npc, dt, sharp);
@@ -18040,20 +18040,21 @@ function updateNPCs(dt) {
           npc._npcNetSmVx = ipNpc.vx;
           npc._npcNetSmVz = ipNpc.vz;
         } else {
-          const vk = 1 - Math.exp(-46 * dt);
+          /* Velocity-first: analytic tangent drives motion; light pose correction avoids stair-step teleport on each tick. */
+          const vk = 1 - Math.exp(-26 * dt);
           if (!Number.isFinite(npc._npcNetSmVx)) npc._npcNetSmVx = ipNpc.vx;
           if (!Number.isFinite(npc._npcNetSmVz)) npc._npcNetSmVz = ipNpc.vz;
           npc._npcNetSmVx += (ipNpc.vx - npc._npcNetSmVx) * vk;
           npc._npcNetSmVz += (ipNpc.vz - npc._npcNetSmVz) * vk;
           npc.x += npc._npcNetSmVx * dt;
           npc.z += npc._npcNetSmVz * dt;
-          const pk = 1 - Math.exp(-30 * dt);
+          const pk = 1 - Math.exp(-10 * dt);
           npc.x += (ipNpc.x - npc.x) * pk;
           npc.z += (ipNpc.z - npc.z) * pk;
           let dr = ipNpc.ry - npc.rotation;
           while (dr > Math.PI) dr -= Math.PI * 2;
           while (dr < -Math.PI) dr += Math.PI * 2;
-          npc.rotation += dr * (1 - Math.exp(-34 * dt));
+          npc.rotation += dr * (1 - Math.exp(-19 * dt));
         }
       } else {
         npc._npcNetSmVx = npc._npcNetSmVz = undefined;
@@ -30524,11 +30525,11 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** NPC playback delay: tighter than peer hulls so clients hug authoritative motion without sluggish extrapolation. */
+/** NPC playback: deeper buffer than hull interp — keeps playback clock inside segment interiors (less extrapolation snap). */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   const base = getEffectiveHullSnapInterpDelayMs();
-  if (relayObserver) return Math.max(28, base - 18);
-  return Math.max(36, Math.min(76, base - 14));
+  if (relayObserver) return Math.max(40, Math.min(88, base - 4));
+  return Math.max(54, Math.min(98, base + 8));
 }
 
 /**
@@ -30582,39 +30583,81 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
 }
 
 /**
- * Delayed pose plus planar velocity (world units/s) for DS / relay NPCs — integrates between snapshots so hulls
- * glide instead of stair-stepping on discrete `npc_sync` poses.
+ * Delayed pose plus planar velocity (world units/s) — tangent from spline segment (smooth); avoids ±Δdelay jitter.
  */
 function interpolateHullHistoryWithVelocity(hist, nowMs, delayMs) {
-  const pose = interpolateHullHistory(hist, nowMs, delayMs);
-  if (!pose) return null;
-  const dtMs = 12;
-  const pLate = interpolateHullHistory(hist, nowMs, delayMs + dtMs);
-  const pEarly = interpolateHullHistory(hist, nowMs, delayMs - dtMs);
-  let vx = 0;
-  let vz = 0;
-  if (
-    pLate && pEarly &&
-    Number.isFinite(pLate.x) && Number.isFinite(pEarly.x) &&
-    Number.isFinite(pLate.z) && Number.isFinite(pEarly.z)
-  ) {
-    vx = ((pEarly.x - pLate.x) / (2 * dtMs)) * 1000;
-    vz = ((pEarly.z - pLate.z) / (2 * dtMs)) * 1000;
-  } else if (hist.length >= 2) {
-    const last = hist[hist.length - 1];
-    const prev = hist[hist.length - 2];
-    const span = Math.max(2, last.recvMs - prev.recvMs);
-    vx = ((last.x - prev.x) / span) * 1000;
-    vz = ((last.z - prev.z) / span) * 1000;
-  }
+  const tgt = nowMs - delayMs;
+  const s = sampleHullHistoryPlanar(hist, tgt, delayMs);
+  if (!s) return null;
+  let vx = s.vxMs * 1000;
+  let vz = s.vzMs * 1000;
   const vm = Math.hypot(vx, vz);
-  const cap = 118;
+  const cap = 128;
   if (vm > cap && vm > 1e-6) {
     const sc = cap / vm;
     vx *= sc;
     vz *= sc;
   }
-  return { x: pose.x, z: pose.z, ry: pose.ry, vx, vz };
+  return { x: s.x, z: s.z, ry: s.ry, vx, vz };
+}
+
+/**
+ * Planar pose + tangent (world units per ms) on the hull snapshot spline — stable velocity vs finite-differencing delay.
+ */
+function sampleHullHistoryPlanar(hist, tgtMs, delayMsForExtrap) {
+  if (!hist || hist.length < 2) return null;
+  const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
+  if (!(la > 0.05)) return null;
+  const dm = delayMsForExtrap != null && Number.isFinite(delayMsForExtrap) ? delayMsForExtrap : 70;
+  const h0 = hist[0];
+  if (tgtMs <= h0.recvMs) {
+    const h1 = hist[1];
+    const span0 = Math.max(4.5, h1.recvMs - h0.recvMs);
+    const vxMs = (h1.x - h0.x) / span0;
+    const vzMs = (h1.z - h0.z) / span0;
+    return { x: h0.x, z: h0.z, ry: h0.ry, vxMs, vzMs };
+  }
+  let i = 1;
+  while (i < hist.length && hist[i].recvMs < tgtMs) i++;
+  const last = hist[hist.length - 1];
+  if (i >= hist.length || tgtMs >= last.recvMs) {
+    if (hist.length < 2) return { x: last.x, z: last.z, ry: last.ry, vxMs: 0, vzMs: 0 };
+    const prev = hist[hist.length - 2];
+    const dtm = Math.max(4.5, last.recvMs - prev.recvMs);
+    const vxMs = (last.x - prev.x) / dtm;
+    const vzMs = (last.z - prev.z) / dtm;
+    const vm = Math.hypot(vxMs, vzMs);
+    let extrapMax = Math.min(138, Math.max(52, dm * 0.4 + 26));
+    extrapMax += Math.min(85, vm * 0.62);
+    const over = Math.min(Math.max(0, tgtMs - last.recvMs), extrapMax);
+    let uex = 1 + over / dtm;
+    let ueCap = dm >= 128 ? 2.12 : 1.94;
+    if (vm > 38) ueCap = Math.min(2.42, ueCap + Math.min(0.38, (vm - 38) * 0.0048));
+    if (uex > ueCap) uex = ueCap;
+    return {
+      x: last.x + vxMs * over,
+      z: last.z + vzMs * over,
+      ry: interpYawShortest(prev.ry, last.ry, uex),
+      vxMs,
+      vzMs
+    };
+  }
+  const a = hist[i - 1], b = hist[i];
+  const t0 = a.recvMs, t1 = b.recvMs;
+  const span = t1 - t0;
+  if (!(span > 0.001)) return null;
+  let u = (tgtMs - t0) / span;
+  if (u < 0) u = 0;
+  if (u > 1) u = 1;
+  const vxMs = (b.x - a.x) / span;
+  const vzMs = (b.z - a.z) / span;
+  return {
+    x: a.x + (b.x - a.x) * u,
+    z: a.z + (b.z - a.z) * u,
+    ry: interpYawShortest(a.ry, b.ry, u),
+    vxMs,
+    vzMs
+  };
 }
 
 /** Low-pass remote peer velocity so finite-difference noise does not fight the smoother each net tick. */
@@ -30738,7 +30781,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 
 /* ============================== GAME LOOP ================================ */
 /** Longer window @ ~60Hz so delayed playback stays inside real samples on jittery links. */
-const REMOTE_SNAP_HIST_MAX = 30;
+const REMOTE_SNAP_HIST_MAX = 42;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
@@ -30776,7 +30819,7 @@ function update(dt) {
     while (arr.length > 64) arr.shift();
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     /* Apply several queued npc_sync payloads per frame — collapsing to one discarded intermediate ticks and caused stair-step/stutter. */
-    const nDrain = Math.min(arr.length, 12);
+    const nDrain = Math.min(arr.length, 18);
     for (let di = 0; di < nDrain; di++) {
       try {
         applyNpcSyncMessage(arr.shift(), { snapshotWallMs: perfBase });
