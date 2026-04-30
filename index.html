@@ -3900,7 +3900,6 @@ function spawnEscortRaiderPirates(cargoSyncId, nearPt, count, nameRng) {
       escortRaider: true
     };
     npc.pirateCannon = tradeShipCannonForType(npc.type);
-    npc.speed = npcMaxForwardSpeed(npc) * (0.52 + sr() * 0.32);
     const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: npc.pirateCannon, figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name, { flagAssetId: npc.flagAssetId });
     npc.crewData = ambientPirateCrewData((a * 7919 + (cargoSyncId | 0)) >>> 0, npc.type);
     buildCrewMeshes(mesh, npc.crewData, npc.type);
@@ -4091,7 +4090,6 @@ function spawnHuntMarkNpcForQuest(q) {
   npc.flagAssetId = randomChoosableFlagRng(sr);
   npc.sailBonus = 0.1;
   npc.pirateCannon = tradeShipCannonForType(npc.type);
-  npc.speed = npcMaxForwardSpeed(npc) * (0.52 + sr() * 0.32);
   const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: npc.pirateCannon, figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name, { flagAssetId: npc.flagAssetId });
   npc.crewData = ambientPirateCrewData((sid * 997) >>> 0, npc.type);
   buildCrewMeshes(mesh, npc.crewData, npc.type);
@@ -4767,7 +4765,6 @@ function spawnStoryBountyNpcForOwner(ownerPlayerId, story) {
     riggingHealth: 100
   };
   npc.pirateCannon = tradeShipCannonForType(npc.type);
-  npc.speed = npcMaxForwardSpeed(npc) * (0.54 + sr() * 0.32);
   npc.flagPosition = pickRandomAiFlagPosition(sr());
   const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: npc.pirateCannon, figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
   npc.crewData = storyBountyCrewData(ownerPlayerId, story.step, shipType);
@@ -16105,7 +16102,8 @@ function npcMaxForwardSpeed(npc) {
 function npcWindEffect(npc) {
   const w = getWindAt(npc.x, npc.z);
   const windDot = Math.cos(w.angle - npc.rotation);
-  return Math.max(0.38, windDot * 0.35 + 0.65);
+  /* Match player `computePlayerSpeedModifiers` base wind (before rig/nav stations). */
+  return Math.max(0.25, windDot * 0.35 + 0.65);
 }
 function npcEffectiveForwardSpeed(npc) {
   const maxF = npcMaxForwardSpeed(npc);
@@ -16123,11 +16121,12 @@ function accelerateNpcToward(npc, dt, target) {
   const speedMult = spec.speed + npcSailBonus(npc);
   const maxF = npcMaxForwardSpeed(npc);
   const t = Math.min(maxF, Math.max(0, target));
-  const accel =
-    npc.tutorialRaidHull ? 4.15 :
-    6.95;
+  /* Same rise-time idea as player helm: +4 * PLAYER_BASE_SPEED_MULT * speedMult / sec toward 12 * PLAYER_BASE_SPEED_MULT * speedMult — scaled to this hull's maxF. */
+  const refCap = 12 * PLAYER_BASE_SPEED_MULT;
+  const risePerSec = 4 * PLAYER_BASE_SPEED_MULT * Math.max(0.82, speedMult);
+  const accel = risePerSec * (maxF / Math.max(refCap, 1e-6));
   if (npc.speed < t - 0.03) {
-    npc.speed = Math.min(npc.speed + accel * dt * speedMult, t, maxF);
+    npc.speed = Math.min(npc.speed + accel * dt, t, maxF);
   } else if (npc.speed > t + 0.03) {
     npc.speed *= (1 - 0.3 * dt);
     if (npc.speed < t) npc.speed = t;
@@ -16752,8 +16751,14 @@ function tryAddMerchantNpcFromHome(home, allPorts, tradeSyncIdx, seedSalt) {
   npc.homeEmbarkX = nx;
   npc.homeEmbarkZ = nz;
   npc.rotation = Math.atan2(npc.tradeDestX - nx, npc.tradeDestZ - nz);
-  npc.tradePhase = 'loading_home';
-  npc.tradeTimer = 6 + sr() * 14;
+  /* Most merchants sail immediately; a short loading_home tail avoids every hull popping outbound on the same tick. */
+  if (sr() < 0.74) {
+    npc.tradePhase = 'to_dest';
+    npc.tradeTimer = 0;
+  } else {
+    npc.tradePhase = 'loading_home';
+    npc.tradeTimer = 0.35 + sr() * 1.25;
+  }
   syncTradeShipName(npc, home);
   const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, flagAssetId: npc.flagAssetId });
   npc.crewData = merchantCrewFromRng(sr, npc.type);
@@ -16834,7 +16839,6 @@ function spawnOneFactionPatrol(factionId) {
     riggingHealth: 100,
     attackNpcSyncId: null
   };
-  npc.speed = npcMaxForwardSpeed(npc) * (0.28 + sr() * 0.14);
   const mesh = buildShipMesh(st, { hull: 'basic', sail: 'war', cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, facCol, npc.name, { flagAssetId: npc.flagAssetId });
   npc.crewData = ambientPirateCrewData((tBase + pid * 17) >>> 0, st);
   buildCrewMeshes(mesh, npc.crewData, st);
@@ -16988,7 +16992,6 @@ function spawnNPCs(opts) {
     npc.flagAssetId = randomChoosableFlagRng(sr);
     npc.sailBonus = 0.1;
     npc.pirateCannon = tradeShipCannonForType(npc.type);
-    npc.speed = npcMaxForwardSpeed(npc) * (0.56 + sr() * 0.32);
     const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: npc.pirateCannon, figurehead: 'skull', flag: npc.flagPosition }, npcFlagColor, npc.name, { flagAssetId: npc.flagAssetId });
     npc.crewData = ambientPirateCrewData((npcSeed + i * 997) >>> 0, npc.type);
     buildCrewMeshes(mesh, npc.crewData, npc.type);
@@ -17065,7 +17068,6 @@ function spawnVanillaPirateAtSlotIndex(i) {
   npc.flagAssetId = randomChoosableFlagRng(sr);
   npc.sailBonus = 0.1;
   npc.pirateCannon = tradeShipCannonForType(npc.type);
-  npc.speed = npcMaxForwardSpeed(npc) * (0.56 + sr() * 0.32);
   const mesh = buildShipMesh(npc.type, { hull: 'darkwood', sail: 'war', cannon: npc.pirateCannon, figurehead: 'skull', flag: npc.flagPosition }, npc.flagColor, npc.name, { flagAssetId: npc.flagAssetId });
   npc.crewData = ambientPirateCrewData((npcSeed + i * 997) >>> 0, npc.type);
   buildCrewMeshes(mesh, npc.crewData, npc.type);
@@ -34060,9 +34062,8 @@ function tutorialRaidRevealCombatPhase() {
   if (npc) {
     npc.aggro = true;
     npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 28);
-    /* Full pursuit — old low cruise cap read as “running away” and starved broadside duels. */
-    const maxF = npcMaxForwardSpeed(npc);
-    npc._tutorialRaidCruiseCeil = maxF * 0.66;
+    /* Pursuit cap in hull-speed units — wind-aware so the raider cannot outrun a cutter unfairly when beating upwind. */
+    npc._tutorialRaidCruiseCeil = tutorialRaidNpcHullSpeedForPlayerLikeEffective(npc, 0.58);
     tr._volleyTriggered = true;
   }
   const past = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1;
@@ -34262,7 +34263,6 @@ function startTutorialRaidEncounter() {
     notify('Keep a weather eye — you will meet pirates soon enough. Broadsides: Z starboard, X port.', 6200);
     return;
   }
-  npc.speed = tutorialRaidNpcSailSpeedTarget(npc, 0.058);
   G.tutorialRaidCutscene = {
     active: true,
     cinematicUi: true,
@@ -34290,13 +34290,14 @@ function startTutorialRaidEncounter() {
   } catch (eTut0) {}
 }
 
-/** Tutorial raider stays clearly below player full-ahead; scripted helm uses player-matching yaw caps (`tutorialRaidPlayerLikeYawStep`). */
-function tutorialRaidNpcSailSpeedTarget(npc, fracOfHullMax) {
-  const nmax = npcMaxForwardSpeed(npc);
+/** Tutorial raider hull speed: matches ~`frac` of starter captain max *effective* speed at current wind (wind baked into target so we don’t double-penalize in `accelerateNpcToward`). */
+function tutorialRaidNpcHullSpeedForPlayerLikeEffective(npc, fracOfPlayerEffectiveCap) {
   const sm = playerSpeedMultFromShipParts();
-  const playerScalarCeil = 12 * sm * PLAYER_BASE_SPEED_MULT;
-  const f = fracOfHullMax != null ? fracOfHullMax : 0.22;
-  return Math.max(0.011, Math.min(nmax * f, playerScalarCeil * 0.58) * 0.145);
+  const playerEffCap = 12 * sm * PLAYER_BASE_SPEED_MULT;
+  const wMul = npcWindEffect(npc);
+  const f = fracOfPlayerEffectiveCap != null ? fracOfPlayerEffectiveCap : 0.32;
+  const targetEff = Math.max(0.02, playerEffCap * f);
+  return Math.min(npcMaxForwardSpeed(npc), targetEff / Math.max(0.12, wMul));
 }
 
 function tickTutorialRaidCutscene(dt) {
@@ -34369,8 +34370,6 @@ function tickTutorialRaidNpcHost(dt, npc) {
   const nx = npc.x, nz = npc.z;
   const sharp = 2.05;
   const dPlayer = Math.hypot(nx - px, nz - pz);
-  /** Wind trims requested sail — same effective curve as normal NPC sail (movement multiplies npcWindEffect). */
-  const wEff = npcWindEffect(npc);
   if (!tr._volleyTriggered) {
     /* Wide beam crossing ahead — lateral offset scales up when closing so we pass around, not through, the player. */
     const sideMag =
@@ -34388,11 +34387,10 @@ function tickTutorialRaidNpcHost(dt, npc) {
     if (!npcForwardRayClear(npc, 66, 13)) {
       tutorialRaidFleeTowardOpenSea(npc, dt, px, pz, tr.age);
     }
-    let frac = distT > 95 ? 0.118 : 0.078;
-    frac *= Math.max(0.62, Math.min(1.06, wEff));
-    let tgt = tutorialRaidNpcSailSpeedTarget(npc, frac);
-    if (dPlayer < 72) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.058));
-    if (dPlayer < 48) tgt = Math.min(tgt, tutorialRaidNpcSailSpeedTarget(npc, 0.04));
+    let effFrac = distT > 95 ? 0.11 : 0.072;
+    let tgt = tutorialRaidNpcHullSpeedForPlayerLikeEffective(npc, effFrac);
+    if (dPlayer < 72) tgt = Math.min(tgt, tutorialRaidNpcHullSpeedForPlayerLikeEffective(npc, 0.056));
+    if (dPlayer < 48) tgt = Math.min(tgt, tutorialRaidNpcHullSpeedForPlayerLikeEffective(npc, 0.038));
     accelerateNpcToward(npc, dt, tgt);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
     if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
@@ -34404,16 +34402,11 @@ function tickTutorialRaidNpcHost(dt, npc) {
     if (!npcForwardRayClear(npc, 94, 16)) {
       tutorialRaidFleeTowardOpenSea(npc, dt * 0.82, px, pz, tr.age + dPlayer * 0.004);
     }
-    const maxF = npcMaxForwardSpeed(npc);
-    const tutSlow = 0.72;
-    let tgtSpd;
-    if (dPlayer < 102) {
-      tgtSpd = maxF * tutSlow * (0.085 + 0.14 * Math.min(1, dPlayer / 102));
-    } else if (dPlayer < 152) {
-      tgtSpd = maxF * tutSlow * 0.4;
-    } else {
-      tgtSpd = maxF * tutSlow * 0.52;
-    }
+    let chaseEff = 0.46;
+    if (dPlayer < 102) chaseEff = 0.21 + 0.25 * Math.min(1, dPlayer / 102);
+    else if (dPlayer < 152) chaseEff = 0.39;
+    else chaseEff = 0.48;
+    const tgtSpd = tutorialRaidNpcHullSpeedForPlayerLikeEffective(npc, chaseEff);
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp);
     if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
