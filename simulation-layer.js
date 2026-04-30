@@ -201,7 +201,7 @@ function createGameSimulation(opts) {
 }
 
 const AC_DEFAULTS = {
-  maxUpdatesPerSec: Math.max(40, Number(process.env.AC_MAX_UPDATES_PER_SEC) || 72),
+  maxUpdatesPerSec: Math.max(40, Number(process.env.AC_MAX_UPDATES_PER_SEC) || 128),
   maxPositionJump: Math.max(8, Number(process.env.AC_MAX_POSITION_JUMP) || 28),
   maxRotationDelta: Math.max(0.2, Number(process.env.AC_MAX_ROTATION_DELTA) || 0.85),
   maxHealthDropPerMsg: Math.max(5, Number(process.env.AC_MAX_HEALTH_DROP) || 38),
@@ -209,7 +209,7 @@ const AC_DEFAULTS = {
   maxMoraleSwingPerMsg: Math.max(2, Number(process.env.AC_MAX_MORALE_SWING) || 22),
   violationKickThreshold: Math.max(5, Number(process.env.AC_VIOLATION_KICK) || 22),
   violationWindowMs: Math.max(3000, Number(process.env.AC_VIOLATION_WINDOW_MS) || 14000),
-  rateBurst: Math.max(5, Number(process.env.AC_RATE_BURST) || 24)
+  rateBurst: Math.max(5, Number(process.env.AC_RATE_BURST) || 256)
 };
 
 /**
