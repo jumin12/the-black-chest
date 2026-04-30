@@ -18124,38 +18124,28 @@ function updateNPCs(dt) {
       const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
       /* P2P and DS both consume `npc_sync` snapshots — use AI delay (not remote-captain delay, which is ~2–3× larger and feels stuttery). */
       const delayNpc = getEffectiveNpcInterpDelayMs();
-      const npcHistOpts = {
-        reduceDelay: G.npcSimFromServer ? 0.36 : 0.52,
-        smoothSegment: true,
-        npcExtrap: true
-      };
       const ipNpc = useNetInterpNpc
-        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, npcHistOpts)
+        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, {
+            /* smoothSegment (smoothstep) zeros dz/dt at every knot → visible “hitch” each server tick. */
+            reduceDelay: 0.78,
+            npcExtrap: true
+          })
         : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
         const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
-        /* Short time-constant toward already-interpolated/extrapolated target — old double exp() low-pass lagged + snapped on each tick. */
-        const tauPos = ej > 110 ? 0.008 : ej > 38 ? 0.012 : ej > 9 ? 0.018 : 0.028;
+        /* Softer chase toward ipNpc — very fast follow amplifies jitter when extrap or new samples move the target. */
+        const tauPos = ej > 110 ? 0.012 : ej > 38 ? 0.018 : ej > 9 ? 0.028 : 0.038;
         let an = 1 - Math.exp(-dt / Math.max(1e-4, tauPos));
-        an = Math.min(1, Math.max(an, dt * 48));
+        an = Math.min(1, Math.max(an, dt * 28));
         npc.x += (ipNpc.x - npc.x) * an;
         npc.z += (ipNpc.z - npc.z) * an;
         let drn = ipNpc.ry - npc.rotation;
         while (drn > Math.PI) drn -= Math.PI * 2;
         while (drn < -Math.PI) drn += Math.PI * 2;
-        const tauRy = ej > 70 ? 0.014 : 0.024;
+        const tauRy = ej > 70 ? 0.02 : 0.032;
         let aR = 1 - Math.exp(-dt / tauRy);
-        aR = Math.min(1, Math.max(aR, dt * 26));
+        aR = Math.min(1, Math.max(aR, dt * 18));
         npc.rotation += drn * aR;
-        /* Dedicated realm: small velocity feedforward toward “now” between 120Hz snaps (continuous feel, soft-corrected by next interp). */
-        if (G.npcSimFromServer && Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ)) {
-          const vm = Math.hypot(npc._npcVelSmX, npc._npcVelSmZ);
-          if (vm > 0.022) {
-            const k = Math.min(0.36, 0.072 + vm * 0.005);
-            npc.x += npc._npcVelSmX * dt * k;
-            npc.z += npc._npcVelSmZ * dt * k;
-          }
-        }
       } else {
       if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -21271,7 +21261,7 @@ function applyNpcSyncMessage(msg, opts) {
           if (hNpc.length) {
             const prevTs = hNpc[hNpc.length - 1].recvMs;
             /* recvMs must strictly increase; use synthetic snapshotWallMs from drain batch (not wall clock). */
-            if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.12;
+            if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.55;
           }
           npc._npcSnapRecvPerfMs = recvTs;
           hNpc.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
@@ -30523,22 +30513,15 @@ function interpYawShortest(a, b, u) {
   return v;
 }
 
-/** Remote hull playback delay (ms). Tighter when `G.npcSimFromServer` — Node realm; snapshots are regular. */
+/** Remote hull playback delay (ms): simple RTT-based buffer (~2 ticks @60Hz typical). */
 const REMOTE_HULL_INTERP_DELAY_MIN_MS = 42;
 const REMOTE_HULL_INTERP_DELAY_MAX_MS = 110;
-/** Dedicated realm: captains + AI both driven from authoritative ticks — smaller buffer, still jitter-safe. */
-const REMOTE_HULL_DS_INTERP_DELAY_MIN_MS = 18;
-const REMOTE_HULL_DS_INTERP_DELAY_MAX_MS = 78;
 
 function getEffectiveRemoteInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 75;
-  if (G.npcSimFromServer) {
-    const d = 22 + r * 0.26;
-    return Math.max(REMOTE_HULL_DS_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_DS_INTERP_DELAY_MAX_MS, d));
-  }
   const d = 50 + r * 0.52;
   return Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, d));
 }
@@ -30550,27 +30533,21 @@ function interpSmooth01(u) {
   return u * u * (3 - 2 * u);
 }
 
-/** AI hull playback delay (ms). Dedicated realm (`npcSimFromServer`) uses minimal buffer + vel feedforward between snapshots. */
+/** Tighter playback delay for AI hulls — ~1.25 server ticks @120Hz + RTT; too low fights extrapolation and stutters. */
 function getEffectiveNpcInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 75;
-  if (G.npcSimFromServer) {
-    const d = 4 + r * 0.1;
-    return Math.max(3, Math.min(30, d));
-  }
-  const d = 10 + r * 0.18;
-  return Math.max(6, Math.min(48, d));
+  const d = 15 + r * 0.22;
+  return Math.max(10, Math.min(56, d));
 }
 
 /**
  * Playback from a short receive-time ring buffer at (now - delay) so motion is sampled between two real
  * server snapshots instead of guessing with conflicting velocity + positional pulls (major rubber-band source).
- * Remote entities are still **sampled** authoritative state; we blend + extrapolate + integrate smoothed Δ between
- * samples so motion reads continuous on clients (true lockstep sim would require shipping inputs).
  * @param {object} [opts] - optional; `reduceDelay` (0..1) scales delay toward present; `smoothSegment` eases u;
- *   `npcExtrap` widens tail extrapolation for 60Hz DS/stepper feeds.
+ *   `npcExtrap` widens tail extrapolation for high-rate DS/stepper feeds.
  */
 function interpolateHullHistory(hist, nowMs, delayMs, opts) {
   opts = opts || {};
@@ -30597,10 +30574,6 @@ function interpolateHullHistory(hist, nowMs, delayMs, opts) {
     if (opts.npcExtrap) {
       extrapMax = Math.min(280, Math.max(96, delayMs * 0.62 + 72));
       ueCap = Math.min(2.65, ueCap + 0.55);
-      if (typeof G !== 'undefined' && G.npcSimFromServer) {
-        extrapMax = Math.min(360, extrapMax + 56);
-        ueCap = Math.min(2.95, ueCap + 0.18);
-      }
     }
     const over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
     let uex = 1 + over / dtm;
@@ -30636,9 +30609,7 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
     const near = dm < 160;
-    const nearK = G.npcSimFromServer ? 38 : 26;
-    const farK = G.npcSimFromServer ? 28 : 17;
-    const a = 1 - Math.exp(-(near ? nearK : farK) * dc);
+    const a = 1 - Math.exp(-(near ? 26 : 17) * dc);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -30661,15 +30632,11 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const nowWall =
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
   const delayMsPlay = getEffectiveRemoteInterpDelayMs();
-  const histOpts = G.npcSimFromServer
-    ? { reduceDelay: 0.45, smoothSegment: true, npcExtrap: true }
-    : undefined;
-  const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, histOpts);
+  const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
     const jmp = Math.hypot(ip.x - ns.x, ip.z - ns.z);
     const k = 24 + Math.min(22, jmp * 0.32);
     let alpha = Math.min(0.62, 1 - Math.exp(-k * dt));
-    if (G.npcSimFromServer) alpha = Math.min(0.82, alpha * 1.38);
     ns.x += (ip.x - ns.x) * alpha;
     ns.z += (ip.z - ns.z) * alpha;
     let dry = ip.ry - ns.ry;
@@ -30731,13 +30698,13 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const dPeerCam = Math.hypot(ns.x - px, ns.z - pz);
   const nearPeer = dPeerCam < 175;
   if (velPred) {
-    const vcap = G.npcSimFromServer ? (nearPeer ? 96 : 74) : (nearPeer ? 88 : 60);
+    const vcap = nearPeer ? 88 : 60;
     const vm = Math.hypot(evx, evz);
     const s = vm > vcap ? vcap / vm : 1;
     ns.x += evx * s * dt;
     ns.z += evz * s * dt;
   } else if (Math.abs(v) > 0.006) {
-    const pred = G.npcSimFromServer ? (nearPeer ? 0.9992 : 0.997) : (nearPeer ? 0.9985 : 0.995);
+    const pred = nearPeer ? 0.9985 : 0.995;
     ns.x += Math.sin(th) * v * dt * pred;
     ns.z += Math.cos(th) * v * dt * pred;
   }
@@ -30795,16 +30762,33 @@ function update(dt) {
     const arr = G._pendingNpcSyncQueue;
     while (arr.length > 96) arr.shift();
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    const nom = 1000 / NET_SYNC_HZ;
     try {
-      /* Old path dropped every queued `npc_sync` but the last each frame — killed interpolation (no time span in hist). Apply a small backlog with staggered recv times so hull tracks stay smooth. */
-      const maxBatch = 6;
+      /* Apply a short backlog so _snapHist has span; timestamp each message from srvTick deltas so velocity in the buffer matches real sim steps (uniform perfBase spacing inflated V → extrap stutter). */
+      const maxBatch = 4;
       const nTake = Math.min(arr.length, maxBatch);
       const batch = arr.splice(0, nTake);
-      const step = Math.max(3.5, nom * 0.96);
-      const tStart = perfBase - (batch.length - 1) * step;
-      for (let bi = 0; bi < batch.length; bi++) {
-        applyNpcSyncMessage(batch[bi], { snapshotWallMs: tStart + bi * step });
+      const nom = 1000 / NET_SYNC_HZ;
+      const recvTimes = new Array(nTake);
+      if (nTake === 1) {
+        recvTimes[0] = perfBase;
+      } else {
+        recvTimes[0] = perfBase - (nTake - 1) * nom;
+        for (let bi = 1; bi < nTake; bi++) {
+          let dTick = 1;
+          const ta = batch[bi - 1].srvTick;
+          const tb = batch[bi].srvTick;
+          if (ta != null && tb != null && Number.isFinite(Number(ta)) && Number.isFinite(Number(tb))) {
+            dTick = Math.max(1, Math.min(72, Math.floor(Number(tb) - Number(ta))));
+          }
+          recvTimes[bi] = recvTimes[bi - 1] + dTick * nom;
+        }
+        if (recvTimes[nTake - 1] > perfBase + 0.25) {
+          const over = recvTimes[nTake - 1] - perfBase;
+          for (let j = 0; j < nTake; j++) recvTimes[j] -= over;
+        }
+      }
+      for (let bi = 0; bi < nTake; bi++) {
+        applyNpcSyncMessage(batch[bi], { snapshotWallMs: recvTimes[bi] });
       }
     } catch (e) {}
   }
