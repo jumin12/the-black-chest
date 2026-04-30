@@ -346,7 +346,8 @@ function steerNpcClearanceAhead(npc, dt, turnSharp, windAt, dryLand) {
       cand.push(a);
     }
   }
-  const needScore = npc.isTradeShip ? 4 : offshore ? 3 : 2;
+  /** Trade hulls need slightly lower bar + quicker heading commits — strict scoring left many coast-hugging merchants with no valid arc (speed → 0 “stuck”). */
+  const needScore = npc.isTradeShip ? 3 : offshore ? 3 : 2;
   if (bestScore < needScore || !cand.length) return;
   let bestAng = cand[0];
   if (cand.length > 1) {
@@ -366,7 +367,8 @@ function steerNpcClearanceAhead(npc, dt, turnSharp, windAt, dryLand) {
   let diff = bestAng - npc.rotation;
   while (diff > Math.PI) diff -= Math.PI * 2;
   while (diff < -Math.PI) diff += Math.PI * 2;
-  npc.rotation += diff * turn * dt * turnMul * npcSailingTurnFactor(npc, windAt);
+  const tradeTurnBoost = npc.isTradeShip ? 1.14 : 1;
+  npc.rotation += diff * turn * dt * turnMul * tradeTurnBoost * npcSailingTurnFactor(npc, windAt);
   npc.wanderAngle = npc.rotation;
 }
 
@@ -1362,6 +1364,34 @@ function createServerNpcWorld(opts) {
     return false;
   }
 
+  /** When a merchant stops closing on its dock waypoint, force a heading / cruise tweak so routes don’t stall in avoidance dead-zones. */
+  function bumpMerchantIfTradeRouteStalled(npc, dt) {
+    if (!npc.isTradeShip || npc.sinking) return;
+    const ph = npc.tradePhase || 'to_dest';
+    if (ph !== 'to_dest' && ph !== 'to_home') {
+      npc._merStuckT = 0;
+      return;
+    }
+    const dockTx = npc.tradeDestX;
+    const dockTz = npc.tradeDestZ;
+    if (dockTx == null || dockTz == null) return;
+    const dNow = Math.hypot(dockTx - npc.x, dockTz - npc.z);
+    const prev = npc._merDockDistPrev;
+    npc._merDockDistPrev = dNow;
+    if (prev == null || !Number.isFinite(prev)) return;
+    const closing = dNow < prev - 0.55;
+    if (closing || dNow < TRADE_DOCK_DIST + 55 || (npc.speed || 0) > 0.52) {
+      npc._merStuckT = 0;
+      return;
+    }
+    npc._merStuckT = (npc._merStuckT || 0) + dt;
+    if (npc._merStuckT < 4.8) return;
+    npc._merStuckT = 0;
+    npc.rotation += (Math.random() < 0.5 ? -1 : 1) * (1.05 + Math.random() * 0.85);
+    npc.wanderAngle = npc.rotation;
+    npc.targetCruise = npcMaxForwardSpeed(npc) * (0.58 + Math.random() * 0.2);
+  }
+
   function updateMerchantThreat(npc) {
     if (!npc.isTradeShip || npc.sinking) return;
     npc._merThreatAcc = (npc._merThreatAcc || 0) + 0.022;
@@ -1573,9 +1603,14 @@ function createServerNpcWorld(opts) {
           }
         }
       }
-      if (phase === 'to_dest' || phase === 'to_home') steerNpcClearanceAhead(npc, dt, 2.45, windAt, dryLand);
-      nudgeNpcOffIsland(npc, dryLand, edgeClamp);
-      applyNpcMoveWithIslandEscape(npc, dt, 2.45, windAt, dryLand, edgeClamp);
+      /* Use live phase — `phase` captured above can lag same-tick transitions; worse, sailing physics must not run during dock/load scripted motion (was fighting embark slip → “stuck” merchants). */
+      const phNow = npc.tradePhase || 'to_dest';
+      if (phNow === 'to_dest' || phNow === 'to_home') {
+        steerNpcClearanceAhead(npc, dt, 2.45, windAt, dryLand);
+        nudgeNpcOffIsland(npc, dryLand, edgeClamp);
+        applyNpcMoveWithIslandEscape(npc, dt, 2.45, windAt, dryLand, edgeClamp);
+      }
+      bumpMerchantIfTradeRouteStalled(npc, dt);
     }
   }
 
