@@ -746,8 +746,8 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
         riggingHealth: 100,
         flagPosition: 'mast',
         isHuntContract: true,
-        factionId: pirateFaction,
-        flagColor: FACTION_TRADE_COLORS[pirateFaction],
+        independentPirate: true,
+        flagColor: '#5a0808',
         flagAssetId: randomChoosableFlagRng(Math.random),
         sailBonus: 0.1,
         attackNpcSyncId: null,
@@ -775,6 +775,7 @@ function buildSyncRows(npcs, portController, ws) {
       return h > -900;
     })
     .map(n => {
+      const isRog = !!(n.independentPirate && !n.isTradeShip && !n.isFactionPatrol);
       const ffi = n.isTradeShip
         ? ((n.homeFaction != null ? n.homeFaction : townFaction({ cx: n.homeCx, cz: n.homeCz, hasTown: true }, portController, ws)) | 0) % FACTION_COUNT
         : ((n.factionId | 0) % FACTION_COUNT);
@@ -800,10 +801,11 @@ function buildSyncRows(npcs, portController, ws) {
         fa: n.flagAssetId != null ? n.flagAssetId : undefined,
         mer: !!n.isTradeShip,
         pat: !!(n.isFactionPatrol && !n.isTradeShip),
-        ffi,
         sp: Math.round((n.speed || 0) * 100) / 100,
         atk: atk != null ? atk : null
       };
+      if (!isRog) row.ffi = ffi;
+      if (isRog) row.rp = 1;
       if (n.missionOwnerPlayerId != null && Number.isFinite(Number(n.missionOwnerPlayerId))) {
         row.mo = Math.floor(Number(n.missionOwnerPlayerId));
       }
@@ -1226,8 +1228,8 @@ function createServerNpcWorld(opts) {
         wanderTimer: 5 + sr() * 10,
         underFireTimer: 0,
         riggingHealth: 100,
-        factionId: pirateFaction,
-        flagColor: FACTION_TRADE_COLORS[pirateFaction],
+        independentPirate: true,
+        flagColor: '#5a0808',
         flagAssetId: randomChoosableFlagRng(sr),
         sailBonus: 0.1,
         attackNpcSyncId: null,
@@ -1278,7 +1280,8 @@ function createServerNpcWorld(opts) {
     npc._huntAcc = (npc._huntAcc || 0) + 0.022;
     if (npc._huntAcc < 0.65) return;
     npc._huntAcc = 0;
-    const myF = (npc.factionId | 0) % FACTION_COUNT;
+    const rogue = !!(npc.independentPirate && !npc.isFactionPatrol && !npc.isTradeShip);
+    const myF = rogue ? 0 : ((npc.factionId | 0) % FACTION_COUNT);
     const near = nearestCaptain(npc.x, npc.z, players);
     if (near && near.d < 95 && npc.aggro) return;
     if (npc.attackNpcSyncId != null) {
@@ -1293,6 +1296,14 @@ function createServerNpcWorld(opts) {
       if (m === npc || m.sinking || (m.health != null && m.health <= 0)) continue;
       const d = Math.hypot(m.x - npc.x, m.z - npc.z);
       if (d > 540) continue;
+      if (isPatrol && m.independentPirate && !m.isTradeShip && !m.isFactionPatrol) {
+        const score = 1340 - d;
+        if (score > bestScore) {
+          bestScore = score;
+          bestId = m.syncId;
+        }
+        continue;
+      }
       if (m.isTradeShip) {
         const mf = townFaction({ cx: m.homeCx, cz: m.homeCz, hasTown: true }, politics.portController, ws) % FACTION_COUNT;
         if (isPatrol) {
@@ -1303,7 +1314,7 @@ function createServerNpcWorld(opts) {
             bestId = m.syncId;
           }
         } else {
-          const war = factionsConsideredAtWar(myF, mf, politics.matrix);
+          const war = rogue ? true : factionsConsideredAtWar(myF, mf, politics.matrix);
           if (!war && huntRoll > 0.072) continue;
           const score = (war ? 1200 : 140) - d;
           if (score > bestScore) {
@@ -1311,20 +1322,44 @@ function createServerNpcWorld(opts) {
             bestId = m.syncId;
           }
         }
-      } else if (!m.isFactionPatrol && m.factionId != null && !m.isTradeShip) {
+      } else if (m.isFactionPatrol) {
+        const of = (m.factionId | 0) % FACTION_COUNT;
+        if (isPatrol) {
+          if (of === myF) continue;
+          if (!factionsConsideredAtWar(myF, of, politics.matrix) && huntRoll > 0.07) continue;
+          const score = 950 - d;
+          if (score > bestScore) {
+            bestScore = score;
+            bestId = m.syncId;
+          }
+        } else if (rogue) {
+          const score = 1265 - d;
+          if (score > bestScore) {
+            bestScore = score;
+            bestId = m.syncId;
+          }
+        }
+      } else if (m.independentPirate && !m.isTradeShip && !m.isFactionPatrol) {
+        if (isPatrol) continue;
+        if (!rogue) {
+          const score = 910 - d;
+          if (score > bestScore) {
+            bestScore = score;
+            bestId = m.syncId;
+          }
+        } else {
+          if (huntRoll > 0.3) continue;
+          const score = 340 - d;
+          if (score > bestScore) {
+            bestScore = score;
+            bestId = m.syncId;
+          }
+        }
+      } else if (!rogue && !m.isFactionPatrol && m.factionId != null && !m.isTradeShip) {
         const of = (m.factionId | 0) % FACTION_COUNT;
         if (of === myF) continue;
         if (!factionsConsideredAtWar(myF, of, politics.matrix) && huntRoll > 0.045) continue;
         const score = 900 - d;
-        if (score > bestScore) {
-          bestScore = score;
-          bestId = m.syncId;
-        }
-      } else if (m.isFactionPatrol && isPatrol) {
-        const of = (m.factionId | 0) % FACTION_COUNT;
-        if (of === myF) continue;
-        if (!factionsConsideredAtWar(myF, of, politics.matrix) && huntRoll > 0.07) continue;
-        const score = 950 - d;
         if (score > bestScore) {
           bestScore = score;
           bestId = m.syncId;
@@ -1408,6 +1443,11 @@ function createServerNpcWorld(opts) {
       }
       const d = Math.hypot(p.x - npc.x, p.z - npc.z);
       if (d > 85) continue;
+      if (p.independentPirate && !p.isTradeShip && !p.isFactionPatrol) {
+        npc.returnFireSyncId = p.syncId;
+        npc.underFireTimer = Math.max(npc.underFireTimer || 0, 4.25);
+        return;
+      }
       const pf = p.factionId != null ? (p.factionId | 0) % FACTION_COUNT : -1;
       if (pf >= 0 && factionsConsideredAtWar(mf, pf, politics.matrix)) {
         npc.returnFireSyncId = p.syncId;
@@ -1541,6 +1581,7 @@ function createServerNpcWorld(opts) {
           npc.x += (hx - npc.x) * Math.min(1, 5 * dt);
           npc.z += (hz - npc.z) * Math.min(1, 5 * dt);
         }
+        if (dryLand(npc.x, npc.z)) nudgeNpcOffIsland(npc, dryLand, edgeClamp);
         if (npc.tradeTimer <= 0) {
           npc.tradePhase = 'to_dest';
           npc.targetCruise = npcMaxForwardSpeed(npc) * (0.6 + Math.random() * 0.22);
