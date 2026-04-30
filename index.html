@@ -3010,8 +3010,8 @@ function clampPlayerIntoWorldBounds() {
   G.player.x = Math.max(-lim, Math.min(lim, G.player.x));
   G.player.z = Math.max(-lim, Math.min(lim, G.player.z));
 }
-/** Authoritative sim + AOI `state` / `npc_sync` rate — must match `server.js` `TICK_RATE`. */
-const NET_SYNC_HZ = 60;
+/** Authoritative sim + AOI `state` / `npc_sync` rate — must match `server.js` `TICK_RATE`. Higher Hz = smoother remote NPC playback (more samples, smaller steps). */
+const NET_SYNC_HZ = 90;
 /** Keep AI merchants & pirates inside the playable archipelago (world edge is empty ocean). */
 function clampNpcIntoWorldBounds(npc) {
   if (!npc) return;
@@ -18122,10 +18122,11 @@ function updateNPCs(dt) {
     } else if (!npc.sinking) {
       const useNetInterpNpc = G.npcSimFromServer || (!host && ws && ws.readyState === 1);
       const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      const delayNpc = G.npcSimFromServer ? getEffectiveNpcInterpDelayMs() : getEffectiveRemoteInterpDelayMs();
+      /* P2P and DS both consume `npc_sync` snapshots — use AI delay (not remote-captain delay, which is ~2–3× larger and feels stuttery). */
+      const delayNpc = getEffectiveNpcInterpDelayMs();
       const ipNpc = useNetInterpNpc
         ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, {
-            reduceDelay: 0.68,
+            reduceDelay: 0.52,
             smoothSegment: true,
             npcExtrap: true
           })
@@ -18133,9 +18134,9 @@ function updateNPCs(dt) {
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
         const ej = Math.hypot(ipNpc.x - npc.x, ipNpc.z - npc.z);
         /* Short time-constant toward already-interpolated/extrapolated target — old double exp() low-pass lagged + snapped on each tick. */
-        const tauPos = ej > 110 ? 0.01 : ej > 38 ? 0.016 : ej > 9 ? 0.026 : 0.038;
+        const tauPos = ej > 110 ? 0.008 : ej > 38 ? 0.012 : ej > 9 ? 0.018 : 0.028;
         let an = 1 - Math.exp(-dt / Math.max(1e-4, tauPos));
-        an = Math.min(1, Math.max(an, dt * 36));
+        an = Math.min(1, Math.max(an, dt * 48));
         npc.x += (ipNpc.x - npc.x) * an;
         npc.z += (ipNpc.z - npc.z) * an;
         let drn = ipNpc.ry - npc.rotation;
@@ -21255,12 +21256,12 @@ function applyNpcSyncMessage(msg, opts) {
         const rr = nd.r != null && Number.isFinite(Number(nd.r)) ? Number(nd.r) : (npc.rotation || 0);
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(npc._snapHist)) npc._snapHist = [];
-          let recvTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          let recvTs = recvWallNpc;
           const hNpc = npc._snapHist;
           if (hNpc.length) {
             const prevTs = hNpc[hNpc.length - 1].recvMs;
-            /* Same-frame double-apply / perf quantization — recvMs must strictly increase for interpolator segments. */
-            if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.05;
+            /* recvMs must strictly increase; use synthetic snapshotWallMs from drain batch (not wall clock). */
+            if (Number.isFinite(prevTs) && recvTs <= prevTs) recvTs = prevTs + 0.12;
           }
           npc._npcSnapRecvPerfMs = recvTs;
           hNpc.push({ x: rx, z: rz, ry: rr, recvMs: recvTs });
@@ -30759,11 +30760,19 @@ function update(dt) {
   }
   if (G._pendingNpcSyncQueue && G._pendingNpcSyncQueue.length && G.mode === 'playing') {
     const arr = G._pendingNpcSyncQueue;
-    while (arr.length > 64) arr.shift();
-    while (arr.length > 1) arr.shift();
+    while (arr.length > 96) arr.shift();
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const nom = 1000 / NET_SYNC_HZ;
     try {
-      applyNpcSyncMessage(arr.shift(), { snapshotWallMs: perfBase });
+      /* Old path dropped every queued `npc_sync` but the last each frame — killed interpolation (no time span in hist). Apply a small backlog with staggered recv times so hull tracks stay smooth. */
+      const maxBatch = 6;
+      const nTake = Math.min(arr.length, maxBatch);
+      const batch = arr.splice(0, nTake);
+      const step = Math.max(3.5, nom * 0.96);
+      const tStart = perfBase - (batch.length - 1) * step;
+      for (let bi = 0; bi < batch.length; bi++) {
+        applyNpcSyncMessage(batch[bi], { snapshotWallMs: tStart + bi * step });
+      }
     } catch (e) {}
   }
   if (G.mode !== 'playing') return;

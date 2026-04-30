@@ -5,7 +5,7 @@
  * Single tick pipeline: merge validated client deltas → integrate motion with wind (same model as clients).
  */
 
-const DEFAULT_TICK_RATE = 60;
+const DEFAULT_TICK_RATE = 90;
 
 /** Internal hull speed scalar — aligned with client `PLAYER_BASE_SPEED_MULT` and sail/hull caps. */
 const SPEED_ABS_MAX = 16;

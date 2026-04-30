@@ -25,7 +25,7 @@ const MAX_CONCURRENT_CAPTAINS = Math.max(0, Math.floor(Number(process.env.MAX_CO
 /** Monotonic-ish server seconds for wildlife sync (all clients align fish/shark motion to this). */
 const SERVER_WORLD_T0_MS = Date.now();
 /** World state broadcast rate (Hz); keep client send interval in index.html in sync (~1/TICK_RATE). */
-const TICK_RATE = 60;
+const TICK_RATE = 90;
 /** Browser↔realm WebRTC DataChannel for gameplay payloads (signaling uses the existing WebSocket). */
 const RTC_GAME_CHANNEL = /^1|true|yes$/i.test(String(process.env.RTC_GAME_CHANNEL || '').trim());
 /** When set, duplicate `state` on WebSocket and DataChannel while DC is open (debug / migration). */
