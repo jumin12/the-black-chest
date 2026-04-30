@@ -845,6 +845,8 @@ function applyPlayerCannonHitAuthoritative(npcs, fromPlayerId, npcSyncId, ammoTy
   npc.health = h0 - dh;
   npc.aggro = true;
   npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
+  npc._humanAttackerId = pid;
+  npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
   const hullAfter = Math.max(0, Math.round(npc.health));
   const popName = npc.name || 'ship';
   let popMsg = `−${dh} hull`;

@@ -45,12 +45,16 @@ canvas{display:block;touch-action:none;width:100%;height:100%;-webkit-touch-call
 input,textarea{-webkit-user-select:text;user-select:text;}
 #ui-layer{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:14;display:none;}
 #ui-layer>*{pointer-events:auto;}
+/* Until realm `init` completes, block HUD/game input except the connecting veil itself. */
+body.mp-connecting-active #ui-layer > *:not(#mp-connecting-overlay){ pointer-events:none !important; }
+body.mp-connecting-active #desync-blocking-overlay{ pointer-events:auto !important; }
 #mp-connecting-overlay{
   display:none;position:absolute;inset:0;z-index:12000;flex-direction:column;align-items:center;justify-content:center;gap:18px;
   padding:24px;box-sizing:border-box;text-align:center;touch-action:manipulation;
   background:linear-gradient(180deg, rgba(10,14,22,0.88), rgba(6,8,14,0.92));
   color:var(--parchment);font-family:Georgia,serif;font-size:15px;line-height:1.45;
   pointer-events:auto;
+  cursor:wait;
 }
 #mp-connecting-overlay .mp-connecting-spinner{
   width:44px;height:44px;border-radius:50%;border:3px solid rgba(201,162,74,0.25);border-top-color:var(--brass);
@@ -3680,18 +3684,18 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
   if (isPellet) dh = 4 + Math.floor(Math.random() * 3);
   else if (at === 'grape') dh = 10;
   else if (at === 'chain') dh = 8;
+  const fromPlayerCaptain = !!opts.fromPlayerCaptain;
+  const kid = killerPlayerId != null && Number.isFinite(Number(killerPlayerId)) ? Math.floor(Number(killerPlayerId)) : null;
+  const humanProvoke = kid != null || fromPlayerCaptain;
+
   if (!fxOnly) {
     npc.health -= dh;
     npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
-    const fromPlayerCaptain = !!opts.fromPlayerCaptain;
-    const humanKiller = (killerPlayerId != null && Number.isFinite(Number(killerPlayerId))) || fromPlayerCaptain;
-    if (humanKiller) {
-      if (killerPlayerId != null && Number.isFinite(Number(killerPlayerId))) {
-        npc._humanAttackerId = Math.floor(Number(killerPlayerId));
-      }
+    if (humanProvoke) {
+      if (kid != null) npc._humanAttackerId = kid;
       npc.aggro = true;
       npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
-      if (killerPlayerId != null && Number.isFinite(Number(killerPlayerId))) {
+      if (kid != null) {
         const vf = npcFactionIdForPolitics(npc);
         if (vf != null) {
           const now = typeof G.time === 'number' ? G.time : 0;
@@ -3702,6 +3706,13 @@ function applyAuthorizedNpcDamageFromPlayerShot(npc, killerPlayerId, at, isPelle
         }
       }
     }
+  } else if (humanProvoke) {
+    /* Dedicated server: hull/rig come from `npc_sync`; still mirror tutorial-style provoke locally so merchants &
+       neutral pirates aggro the shooter immediately instead of waiting on friendly-faction cleanup rules. */
+    npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
+    if (kid != null) npc._humanAttackerId = kid;
+    npc.aggro = true;
+    npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
   }
   {
     const specN = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
@@ -4218,6 +4229,14 @@ function setMultiplayerConnectingOverlay(show) {
   const on = !!show;
   el.style.display = on ? 'flex' : 'none';
   el.setAttribute('aria-hidden', on ? 'false' : 'true');
+  try {
+    document.body.classList.toggle('mp-connecting-active', on);
+  } catch (e) {}
+  try {
+    if (typeof renderer !== 'undefined' && renderer && renderer.domElement) {
+      renderer.domElement.style.pointerEvents = on ? 'none' : '';
+    }
+  } catch (e2) {}
 }
 
 function setDesyncBlockingOverlay(show, message) {
@@ -21087,6 +21106,10 @@ function applyNpcSyncMessage(msg, opts) {
     const raidHullLocal = !!(nid === TUTORIAL_RAID_NPC_SYNC && npc.tutorialRaidHull && G.localTutorialRaidNpcSurrogate);
     if (!raidHullLocal && nd.h != null && Number.isFinite(Number(nd.h))) npc.health = Math.round(Number(nd.h));
     npc.aggro = !!nd.aggro;
+    if (npc.aggro) {
+      npc.underPlayerFireTimer = Math.max(npc.underPlayerFireTimer || 0, 14);
+      npc.underFireTimer = Math.max(npc.underFireTimer || 0, 14);
+    }
     if (!raidHullLocal && nd.rg != null) npc.riggingHealth = Math.max(0, Math.min(100, nd.rg));
     if (npc.mesh) {
       const rhNet = getNpcRiggingHealth(npc);
@@ -21180,7 +21203,7 @@ function applyNetStateMessage(msg, opts) {
         let vtx = (px1 - px0) / dtSnap;
         let vtz = (pz1 - pz0) / dtSnap;
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
-        const vcap1 = dNear < 168 ? 92 : 54;
+        const vcap1 = dNear < 168 ? 118 : 78;
         const vm0 = Math.hypot(vtx, vtz);
         if (vm0 > vcap1) {
           const s0 = vcap1 / vm0;
@@ -22878,7 +22901,7 @@ function collectResolvableGameImageUrls() {
   for (let i = 0; i < custom.length; i++) pushRel(custom[i]);
   const ui = [
     'assets/ui/anchor.png', 'assets/ui/caplog1.png', 'assets/ui/caplog2.png', 'assets/ui/caplog3.png', 'assets/ui/caplog4.png', 'assets/ui/caplog5.png',
-    'assets/ui/fpv1.png', 'assets/ui/fpv2.png', 'assets/ui/fpv3.png', 'assets/ui/fpv4.png', 'assets/ui/fpv5.png',
+    'assets/ui/fpv.png', 'assets/ui/fpv1.png', 'assets/ui/fpv2.png', 'assets/ui/fpv3.png', 'assets/ui/fpv4.png', 'assets/ui/fpv5.png',
     'assets/ui/help.png', 'assets/ui/help_0001.png', 'assets/ui/help_0002.png', 'assets/ui/help_0003.png', 'assets/ui/messagebottle.png',
     'assets/ui/sailcon1.png', 'assets/ui/sailcon2.png', 'assets/ui/sailcon3.png', 'assets/ui/sailcon4.png', 'assets/ui/sailcon5.png',
     'assets/ui/settings.png', 'assets/ui/shipcon1.png', 'assets/ui/shipcon2.png', 'assets/ui/shipcon3.png', 'assets/ui/shipcon4.png', 'assets/ui/shipcon5.png'
@@ -22887,6 +22910,80 @@ function collectResolvableGameImageUrls() {
   pushRel('assets/maps/Caribbean_map_blank.png');
   pushRel('assets/maps/Caribbean_map_blank small.png');
   return hrefs;
+}
+
+/** Non-image assets under `assets/` (models, audio, JSON helpers) — warm HTTP cache alongside PNG decode preload. */
+function collectResolvableBinaryGameAssetUrls() {
+  const rels = [
+    'assets/json-parse-worker.js',
+    'assets/multiplayer-server.json',
+    'assets/3d models/buildings/church1.glb',
+    'assets/3d models/buildings/dock1.glb',
+    'assets/3d models/buildings/govres1.glb',
+    'assets/3d models/buildings/house1.glb',
+    'assets/3d models/buildings/house2.glb',
+    'assets/3d models/buildings/tavern.glb',
+    'assets/3d models/decorations/bush1.glb',
+    'assets/3d models/decorations/bush2.glb',
+    'assets/3d models/decorations/tree1.glb',
+    'assets/3d models/decorations/tree2.glb',
+    'assets/3d models/decorations/tree3.glb',
+    'assets/3d models/ships/galleon1.glb',
+    'assets/3d models/ships/galleon2.glb',
+    'assets/3d models/ships/galleon3.glb',
+    'assets/3d models/ships/galleon4.glb',
+    'assets/3d models/ships/pirate-sloop1.glb',
+    'assets/3d models/ships/sloop1.glb',
+    'assets/3d models/ships/sloop2.glb',
+    'assets/3d models/ships/sloop3.glb',
+    'assets/3d models/wildlife/fish1.glb',
+    'assets/3d models/wildlife/fish2.glb',
+    'assets/3d models/wildlife/fish3.glb',
+    'assets/3d models/wildlife/fish4.glb',
+    'assets/3d models/wildlife/seagul1.glb',
+    'assets/3d models/wildlife/seagul2.glb',
+    'assets/3d models/wildlife/shark.glb',
+    'assets/sound/effects/cannon-shot.wav',
+    'assets/sound/effects/captain-fire-yell.wav',
+    'assets/sound/effects/death.mp3',
+    "assets/sound/effects/ElevenLabs_a_6_pound_cannonball_fired_from_a_cannon_50'_away_and_the_sound_echoes_across_the_sea.mp3",
+    'assets/sound/effects/ElevenLabs_Pirate_cursing_in_anger_during_a_storm,_furious.mp3',
+    'assets/sound/effects/ElevenLabs_Pirate_groaning_in_pain_after_a_fall,_dramatic.mp3',
+    'assets/sound/effects/fall.mp3',
+    'assets/sound/effects/seagul.wav',
+    'assets/sound/effects/ship-damage.wav',
+    'assets/sound/effects/ship-traveling.wav',
+    'assets/sound/music/track1.mp3',
+    'assets/sound/music/track2.mp3',
+    'assets/sound/music/track3.mp3',
+    'assets/sound/music/track4.mp3',
+    'assets/sound/music/track5.mp3',
+    'assets/sound/music/track6.mp3'
+  ];
+  const seen = new Set();
+  const hrefs = [];
+  for (let i = 0; i < rels.length; i++) {
+    const rel = rels[i];
+    if (!rel || seen.has(rel)) continue;
+    seen.add(rel);
+    hrefs.push(resolveGameAssetUrl(rel));
+  }
+  return hrefs;
+}
+
+function warmupBinaryGameAssetCache(urls) {
+  if (!urls || !urls.length) return;
+  const chunk = 6;
+  let i = 0;
+  function pump() {
+    const slice = urls.slice(i, i + chunk);
+    i += chunk;
+    for (let j = 0; j < slice.length; j++) {
+      fetch(slice[j], { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' }).catch(() => {});
+    }
+    if (i < urls.length) queueMicrotask(pump);
+  }
+  pump();
 }
 
 let _gameImagePreloadWorker = null;
@@ -22901,6 +22998,11 @@ function preloadToolbarIconStripsOnMainThread() {
     b.src = resolveGameAssetUrl(`assets/ui/fpv${f}.png`);
     void (b.decode && b.decode().catch(() => {}));
   }
+  try {
+    const fp = new Image();
+    fp.src = resolveGameAssetUrl('assets/ui/fpv.png');
+    void (fp.decode && fp.decode().catch(() => {}));
+  } catch (e) {}
 }
 
 /** Decode catalog jacks on the main thread so port / log flag cycling paints immediately after preload. */
@@ -22971,6 +23073,9 @@ function kickOffGameAssetPreload() {
       }
     }
   }
+  try {
+    warmupBinaryGameAssetCache(collectResolvableBinaryGameAssetUrls());
+  } catch (eBin) {}
 }
 
 function ensureSfxBuffer(key, url) {
@@ -30367,11 +30472,14 @@ function interpolateHullHistory(hist, nowMs, delayMs) {
     const dtm = Math.max(4.5, last.recvMs - prev.recvMs);
     const vx = (last.x - prev.x) / dtm;
     const vz = (last.z - prev.z) / dtm;
+    const vm = Math.hypot(vx, vz);
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
-    const extrapMax = Math.min(138, Math.max(52, delayMs * 0.4 + 26));
+    let extrapMax = Math.min(138, Math.max(52, delayMs * 0.4 + 26));
+    extrapMax += Math.min(85, vm * 0.62);
     const over = Math.min(Math.max(0, tgt - last.recvMs), extrapMax);
     let uex = 1 + over / dtm;
-    const ueCap = delayMs >= 128 ? 2.12 : 1.94;
+    let ueCap = delayMs >= 128 ? 2.12 : 1.94;
+    if (vm > 38) ueCap = Math.min(2.42, ueCap + Math.min(0.38, (vm - 38) * 0.0048));
     if (uex > ueCap) uex = ueCap;
     return {
       x: last.x + vx * over,
@@ -30488,7 +30596,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const dPeerCam = Math.hypot(ns.x - px, ns.z - pz);
   const nearPeer = dPeerCam < 175;
   if (velPred) {
-    const vcap = nearPeer ? 88 : 60;
+    const vcap = nearPeer ? 116 : 76;
     const vm = Math.hypot(evx, evz);
     const s = vm > vcap ? vcap / vm : 1;
     ns.x += evx * s * dt;
