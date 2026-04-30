@@ -19808,126 +19808,14 @@ function applyRtcCandidate(msg) {
   } catch (e) {}
 }
 
-function flushCaptainWireJsonParseOrdered() {
-  if (!G._wireParseResults) return;
-  const pending = G._wireParsePendingTexts;
-  while (G._wireParseResults.has(G._wireParseNextId)) {
-    const id = G._wireParseNextId;
-    const msg = G._wireParseResults.get(id);
-    G._wireParseResults.delete(id);
-    G._wireParseNextId++;
-    if (msg && msg.__parseError) {
-      const t = pending && pending.get(id);
-      if (typeof t === 'string' && t.length) {
-        try {
-          dispatchCaptainJsonMessageFromWire(JSON.parse(t));
-        } catch (e) {}
-      }
-      if (pending) pending.delete(id);
-      continue;
-    }
-    if (pending) pending.delete(id);
-    dispatchCaptainJsonMessageFromWire(msg);
-  }
-}
-
-function failGameplayJsonWorkersAndReplayPending(reason) {
-  try {
-    if (reason) console.warn('[playground] gameplay JSON worker fallback:', reason);
-  } catch (e) {}
-  if (Array.isArray(G._gameplayJsonWorkers)) {
-    for (const w of G._gameplayJsonWorkers) {
-      try { w.terminate(); } catch (e) {}
-    }
-  }
-  G._gameplayJsonWorkers = false;
-  const lo = G._wireParseNextId | 0;
-  const hi = G._wireParseIssued | 0;
-  const pending = G._wireParsePendingTexts;
-  if (G._wireParseResults) G._wireParseResults.clear();
-  for (let id = lo; id < hi; id++) {
-    const t = pending && pending.get(id);
-    if (typeof t === 'string' && t.length) {
-      try {
-        dispatchCaptainJsonMessageFromWire(JSON.parse(t));
-      } catch (e) {}
-    }
-  }
-  if (pending) pending.clear();
-  G._wireParseNextId = hi;
-}
-
-function ensureGameplayJsonWorkerPool() {
-  if (G._gameplayJsonWorkers === false) return;
-  if (Array.isArray(G._gameplayJsonWorkers) && G._gameplayJsonWorkers.length) return;
-  if (typeof Worker === 'undefined') {
-    G._gameplayJsonWorkers = null;
-    return;
-  }
-  try {
-    const wUrl = new URL('workers/gameplay-json-worker.js', window.location.href);
-    const workers = [];
-    for (let i = 0; i < 2; i++) {
-      const w = new Worker(wUrl);
-      w.onerror = ev => {
-        try {
-          console.warn(
-            '[playground] gameplay JSON worker failed — is workers/gameplay-json-worker.js deployed next to the page?',
-            (ev && ev.message) || ev
-          );
-        } catch (e) {}
-        failGameplayJsonWorkersAndReplayPending('onerror');
-      };
-      w.onmessage = ev => {
-        const d = ev.data;
-        if (!d || d.type !== 'parsed') return;
-        const id = d.id | 0;
-        if (d.ok) G._wireParseResults.set(id, d.result);
-        else G._wireParseResults.set(id, { __parseError: true });
-        flushCaptainWireJsonParseOrdered();
-      };
-      workers.push(w);
-    }
-    G._gameplayJsonWorkers = workers;
-  } catch (e) {
-    G._gameplayJsonWorkers = null;
-  }
-}
-
-function disposeGameplayJsonWorkerPool() {
-  if (Array.isArray(G._gameplayJsonWorkers)) {
-    for (const w of G._gameplayJsonWorkers) {
-      try { w.terminate(); } catch (e) {}
-    }
-  }
-  G._gameplayJsonWorkers = null;
-  G._wireParseIssued = 0;
-  G._wireParseNextId = 0;
-  G._wireParseResults = null;
-  G._wireParsePendingTexts = null;
-  G._wireParseWorkerRR = 0;
-}
+/** WebSocket/RTC captain JSON: always parse on the main thread so `init` cannot stall behind workers. */
+function disposeGameplayJsonWorkerPool() {}
 
 function submitCaptainWireForOrderedJsonParse(text) {
   if (!text || typeof text !== 'string') return;
-  if (!G._wireParseResults) G._wireParseResults = new Map();
-  if (!G._wireParsePendingTexts) G._wireParsePendingTexts = new Map();
-  ensureGameplayJsonWorkerPool();
-  if (G._gameplayJsonWorkers === false || !G._gameplayJsonWorkers || !G._gameplayJsonWorkers.length) {
-    try {
-      dispatchCaptainJsonMessageFromWire(JSON.parse(text));
-    } catch (e) {}
-    return;
-  }
-  const id = G._wireParseIssued++;
-  G._wireParsePendingTexts.set(id, text);
-  const wi = (G._wireParseWorkerRR | 0) % G._gameplayJsonWorkers.length;
-  G._wireParseWorkerRR = wi + 1;
   try {
-    G._gameplayJsonWorkers[wi].postMessage({ type: 'parse', id, text });
-  } catch (e) {
-    failGameplayJsonWorkersAndReplayPending('postMessage');
-  }
+    dispatchCaptainJsonMessageFromWire(JSON.parse(text));
+  } catch (e) {}
 }
 
 function dispatchCaptainJsonMessageFromWire(msg) {
@@ -20076,12 +19964,6 @@ function dispatchCaptainJsonMessageFromWire(msg) {
         setMultiplayerConnectingOverlay(false);
         G._netDesyncSticky = 0;
         try { setDesyncBlockingOverlay(false); } catch (e) {}
-        try {
-          if (G._mpWireParseWatchdogId) {
-            clearTimeout(G._mpWireParseWatchdogId);
-            G._mpWireParseWatchdogId = null;
-          }
-        } catch (e) {}
         break;
       case 'server_pop':
         applyServerPop(msg);
@@ -20942,7 +20824,21 @@ function dispatchCaptainJsonMessageFromWire(msg) {
         break;
       }
     }
-  } catch (err) {}
+  } catch (err) {
+    try {
+      if (msg && msg.type === 'init') {
+        if (G.mode === 'playing') {
+          G.playWorldAwaitingNetInit = false;
+          if (playWorldNetTimeoutId) {
+            clearTimeout(playWorldNetTimeoutId);
+            playWorldNetTimeoutId = null;
+          }
+        }
+        setMultiplayerConnectingOverlay(false);
+        try { setDesyncBlockingOverlay(false); } catch (e) {}
+      }
+    } catch (e) {}
+  }
 }
 async function connectToServer() {
   if (wsUserBanned) return;
@@ -20958,12 +20854,6 @@ async function connectToServer() {
   }
   if (ws) {
     try {
-      try {
-        if (G._mpWireParseWatchdogId) {
-          clearTimeout(G._mpWireParseWatchdogId);
-          G._mpWireParseWatchdogId = null;
-        }
-      } catch (e) {}
       disposeGameplayJsonWorkerPool();
       stopRtcGameChannel();
       ws.onclose = null;
@@ -21000,20 +20890,6 @@ async function connectToServer() {
   if (G.mode === 'playing') {
     setMultiplayerConnectingOverlay(true);
     queueMicrotask(() => { try { preloadRealmWhileConnecting(); } catch (e) {} });
-    try {
-      if (G._mpWireParseWatchdogId) clearTimeout(G._mpWireParseWatchdogId);
-      G._mpWireParseWatchdogId = setTimeout(() => {
-        G._mpWireParseWatchdogId = null;
-        if (G.mode !== 'playing') return;
-        if (!ws || ws.readyState !== 1) return;
-        if (G.myId != null) return;
-        const el = document.getElementById('mp-connecting-overlay');
-        if (!el || el.style.display !== 'flex') return;
-        if (Array.isArray(G._gameplayJsonWorkers) && G._gameplayJsonWorkers.length) {
-          failGameplayJsonWorkersAndReplayPending('watchdog: still waiting for init');
-        }
-      }, 9000);
-    } catch (e) {}
   }
   let socket;
   try {
@@ -21077,12 +20953,6 @@ async function connectToServer() {
     }
   };
   ws.onclose = () => {
-    try {
-      if (G._mpWireParseWatchdogId) {
-        clearTimeout(G._mpWireParseWatchdogId);
-        G._mpWireParseWatchdogId = null;
-      }
-    } catch (e) {}
     setMultiplayerConnectingOverlay(false);
     if (wsUserBanned) return;
     if (wsSuppressReconnect) {
