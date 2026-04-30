@@ -274,9 +274,10 @@ function accelerateNpcToward(npc, dt, target) {
   const speedMult = spec.speed + npcSailBonus(npc);
   const maxF = npcMaxForwardSpeed(npc);
   const t = Math.min(maxF, Math.max(0, target));
+  const accel = npc.isFactionPatrol ? 13.85 : 10.45;
   let spd = npc.speed || 0;
   if (spd < t - 0.03) {
-    spd = Math.min(spd + 10.45 * dt * speedMult, t, maxF);
+    spd = Math.min(spd + accel * dt * speedMult, t, maxF);
   } else if (spd > t + 0.03) {
     spd *= (1 - 0.3 * dt);
     if (spd < t) spd = t;
@@ -1113,7 +1114,8 @@ function createServerNpcWorld(opts) {
       fireCooldown: 0,
       aggro: false
     };
-    npc.speed = npcMaxForwardSpeed(npc) * (0.58 + sr() * 0.28);
+    /* Match browser host + brisk tutorial-adjacent cruise (was ~58–86%). */
+    npc.speed = npcMaxForwardSpeed(npc) * (0.74 + sr() * 0.2);
     npcs.push(npc);
     return true;
   }
@@ -1684,7 +1686,12 @@ function createServerNpcWorld(opts) {
     nudgeNpcOffIsland(npc, dryLand, edgeClamp);
     const maxF = npcMaxForwardSpeed(npc);
     /** Align cruise/aggression caps with browser AI (`updateNPCs`). */
-    const tgtSpd = (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148) ? maxF : maxF * 0.998;
+    const tgtSpd =
+      (focus && distToTarget < 120) || (!focus && npc.aggro && distToPlayer < 148)
+        ? maxF
+        : isPatrol
+          ? maxF * 0.9995
+          : maxF * 0.998;
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }
