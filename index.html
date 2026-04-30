@@ -17952,7 +17952,7 @@ function updateNPCs(dt) {
     } else if (!npc.sinking) {
       const useNetInterpNpc = G.npcSimFromServer || (!host && ws && ws.readyState === 1);
       const nowNpc = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      const delayNpc = G.npcSimFromServer ? getEffectiveNpcInterpDelayMs() : getEffectiveRemoteInterpDelayMs();
+      const delayNpc = getEffectiveHullSnapInterpDelayMs();
       const ipNpc = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
       if (ipNpc && Number.isFinite(ipNpc.x) && Number.isFinite(ipNpc.z) && Number.isFinite(ipNpc.ry)) {
         /* Dedicated server / relay: pose is already delayed-sample interpolation (same idea as FPS-style net interp). Extra exponential chase toward ipNpc caused beat-frequency “stutter” at snapshot rate. */
@@ -30319,27 +30319,25 @@ function interpYawShortest(a, b, u) {
   return v;
 }
 
-/** Remote hull playback delay (ms): simple RTT-based buffer (~2 ticks @60Hz typical). */
-const REMOTE_HULL_INTERP_DELAY_MIN_MS = 42;
-const REMOTE_HULL_INTERP_DELAY_MAX_MS = 110;
-
-function getEffectiveRemoteInterpDelayMs() {
+/**
+ * Single delayed-playback clock for **both** other captains and DS NPC hulls so motion uses the same ring-buffer sampling.
+ * ~2.75–3 ticks @60Hz typical — sits inside `_snapHist` more often than shorter delays (less extrapolation twitch).
+ */
+function getEffectiveHullSnapInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 75;
-  const d = 50 + r * 0.52;
-  return Math.max(REMOTE_HULL_INTERP_DELAY_MIN_MS, Math.min(REMOTE_HULL_INTERP_DELAY_MAX_MS, d));
+  const d = 40 + r * 0.38;
+  return Math.max(46, Math.min(96, d));
 }
 
-/** Tighter buffer than player hulls — DS NPC snapshots already authoritative at TICK_RATE; ~2–3 ticks keeps playback between samples (less extrapolation jitter than ultra-low delay). */
+function getEffectiveRemoteInterpDelayMs() {
+  return getEffectiveHullSnapInterpDelayMs();
+}
+
 function getEffectiveNpcInterpDelayMs() {
-  const r =
-    G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
-      ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
-      : 75;
-  const d = 34 + r * 0.38;
-  return Math.max(40, Math.min(88, d));
+  return getEffectiveHullSnapInterpDelayMs();
 }
 
 /**
@@ -30420,22 +30418,14 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
   const nowWall =
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-  const delayMsPlay = getEffectiveRemoteInterpDelayMs();
+  const delayMsPlay = getEffectiveHullSnapInterpDelayMs();
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay);
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    const jmp = Math.hypot(ip.x - ns.x, ip.z - ns.z);
-    const px = G.player && Number.isFinite(Number(G.player.x)) ? Number(G.player.x) : null;
-    const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
-    const nearCam =
-      px != null && pz != null ? Math.hypot(ns.x - px, ns.z - pz) < 175 : false;
-    const k = (nearCam ? 30 : 24) + Math.min(22, jmp * 0.32);
-    let alpha = Math.min(nearCam ? 0.82 : 0.72, 1 - Math.exp(-k * dt));
-    ns.x += (ip.x - ns.x) * alpha;
-    ns.z += (ip.z - ns.z) * alpha;
-    let dry = ip.ry - ns.ry;
-    while (dry > Math.PI) dry -= Math.PI * 2;
-    while (dry < -Math.PI) dry += Math.PI * 2;
-    ns.ry += dry * alpha;
+    /* Same playback path as DS NPCs: delayed-sample pose only; mesh yaw matches so we don’t stack smoothing. */
+    ns.x = ip.x;
+    ns.z = ip.z;
+    ns.ry = ip.ry;
+    if (sg.userData) sg.userData.visYaw = ip.ry;
     return ns;
   }
   smoothRemotePlayerNetVelocity(p, dt);
@@ -30517,8 +30507,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 }
 
 /* ============================== GAME LOOP ================================ */
-/** ~360ms sliding window @ ~60Hz for NPC + peer interp. */
-const REMOTE_SNAP_HIST_MAX = 22;
+/** Longer window @ ~60Hz so delayed playback stays inside real samples on jittery links. */
+const REMOTE_SNAP_HIST_MAX = 30;
 /** Tutorial encounter pirate — keep out of procedural pirate index range and trade-band ids. */
 const TUTORIAL_RAID_NPC_SYNC = 90190;
 let lastTime = 0, sendTimer = 0, wildlifePruneAcc = 0, storyBountyEnsureAcc = 0;
