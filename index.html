@@ -18032,27 +18032,10 @@ function updateNPCs(dt) {
         : getEffectiveHullSnapInterpDelayMs();
       const poseNet = useNetInterpNpc ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc) : null;
       if (poseNet && Number.isFinite(poseNet.x) && Number.isFinite(poseNet.z) && Number.isFinite(poseNet.ry)) {
-        const slip = Math.hypot(poseNet.x - npc.x, poseNet.z - npc.z);
-        if (slip > 520) {
-          npc.x = poseNet.x;
-          npc.z = poseNet.z;
-          npc.rotation = poseNet.ry;
-        } else {
-          /* Low-pass toward delayed linear spline sample — timeline is continuous but discrete keys still step; smoothing sells steady sailing without fighting fixed recvMs spacing. */
-          const edx = poseNet.x - npc.x;
-          const edz = poseNet.z - npc.z;
-          const es = Math.hypot(edx, edz);
-          const spdHint = es / Math.max(dt, 1e-4);
-          const track = Math.min(168, 58 + spdHint * 0.1 + Math.min(52, es * 0.09));
-          const posK = 1 - Math.exp(-track * dt);
-          npc.x += edx * posK;
-          npc.z += edz * posK;
-          let dr = poseNet.ry - npc.rotation;
-          while (dr > Math.PI) dr -= Math.PI * 2;
-          while (dr < -Math.PI) dr += Math.PI * 2;
-          const rk = 1 - Math.exp(-Math.min(78, 36 + Math.abs(dr) * 12) * dt);
-          npc.rotation += dr * rk;
-        }
+        /* Same path as remote hulls (`advanceRemoteShipNetSmooth`): delayed spline sample is already smooth — extra low-pass here lagged behind a moving target and read as slow teleport/snapping. */
+        npc.x = poseNet.x;
+        npc.z = poseNet.z;
+        npc.rotation = poseNet.ry;
       } else {
         npc._npcNetSmVx = npc._npcNetSmVz = undefined;
         if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
@@ -30537,7 +30520,8 @@ function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
 function interpolateHullHistory(hist, nowMs, delayMs) {
   if (!hist || hist.length < 2) return null;
   const la = hist[hist.length - 1].recvMs - hist[0].recvMs;
-  if (!(la > 0.05)) return null;
+  /* ~60Hz ticks ≈16ms apart — old 50ms floor blocked interpolation until ~4 samples, forcing velocity fallback (visible stair-step). */
+  if (!(la > 0.012)) return null;
   const tgt = nowMs - delayMs;
   const h0 = hist[0];
   if (tgt <= h0.recvMs) return { x: h0.x, z: h0.z, ry: h0.ry };
