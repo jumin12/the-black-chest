@@ -19720,7 +19720,7 @@ function enqueueNpcSyncMessage(msg) {
   if (!Array.isArray(msg.npcs)) return;
   if (!G._pendingNpcSyncQueue) G._pendingNpcSyncQueue = [];
   G._pendingNpcSyncQueue.push(msg);
-  const maxNpcQ = 28;
+  const maxNpcQ = 48;
   if (G._pendingNpcSyncQueue.length > maxNpcQ) {
     G._pendingNpcSyncQueue.splice(0, G._pendingNpcSyncQueue.length - maxNpcQ);
   }
@@ -19728,19 +19728,7 @@ function enqueueNpcSyncMessage(msg) {
 
 /** Single RTC DataChannel multiplexes gameplay JSON (`state`, `npc_sync`, …). */
 function ingestGameplayWireFromRtc(text) {
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (e) {
-    return;
-  }
-  if (!parsed || typeof parsed !== 'object') return;
-  const t = parsed.type;
-  if (t === 'state') {
-    enqueueNetStateMessage(parsed);
-    return;
-  }
-  if (t === 'npc_sync') enqueueNpcSyncMessage(parsed);
+  submitCaptainWireForOrderedJsonParse(typeof text === 'string' ? text : '');
 }
 
 function stopRtcGameChannel() {
@@ -19820,107 +19808,86 @@ function applyRtcCandidate(msg) {
   } catch (e) {}
 }
 
-async function connectToServer() {
-  if (wsUserBanned) return;
-  G.netDesyncFrozen = false;
-  G._netDesyncSticky = 0;
-  try {
-    await ensureServerEndpoints();
-  } catch (e) {}
-  const url = getServerUrl();
-  if (wsReconnectTimer) {
-    clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = null;
+function flushCaptainWireJsonParseOrdered() {
+  if (!G._wireParseResults) return;
+  while (G._wireParseResults.has(G._wireParseNextId)) {
+    const msg = G._wireParseResults.get(G._wireParseNextId);
+    G._wireParseResults.delete(G._wireParseNextId);
+    G._wireParseNextId++;
+    if (msg && msg.__parseError) continue;
+    dispatchCaptainJsonMessageFromWire(msg);
   }
-  if (ws) {
-    try {
-      stopRtcGameChannel();
-      ws.onclose = null;
-      ws.close();
-    } catch (err) {}
-    ws = null;
-    if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
-      for (const sg of G.prizeHullDecoySinks) {
-        try { disposeObject3DSubtree(sg); } catch (e) {}
-        try { scene.remove(sg); } catch (e2) {}
-      }
-      G.prizeHullDecoySinks.length = 0;
-    }
-    for (const opid of Array.from(G.otherPlayers.keys())) {
-      removeRemotePeer(opid);
-    }
-  }
-  G.myId = null;
-  G.serverRtcGameChannel = false;
-  G._rtcIceServersFromServer = null;
-  G._lastNetStateWT = null;
-  G._lastNetStateSrvTick = null;
-  G._pendingNpcSyncQueue = [];
-  G._netInterpJitterEwma = null;
-  G._netStatePrevArrivalAt = null;
-  G._netLastStateGapMs = null;
-  G._netStateDrainQueue = [];
-  try { G.netPeerStaleSince = null; } catch (e) {}
-  G.multiplayerNpcAuthorityId = null;
-  G.npcSimFromServer = false;
-  G.npcSimDelegatedByServer = false;
-  G.iAmMultiplayerNpcStepper = false;
-  try { stopMultiplayerRttLoop(); } catch (e) {}
-  if (G.mode === 'playing') {
-    setMultiplayerConnectingOverlay(true);
-    queueMicrotask(() => { try { preloadRealmWhileConnecting(); } catch (e) {} });
-  }
-  let socket;
-  try {
-    socket = new WebSocket(url);
-  } catch (e) {
-    setMultiplayerConnectingOverlay(false);
+}
+
+function ensureGameplayJsonWorkerPool() {
+  if (G._gameplayJsonWorkersInit) return;
+  G._gameplayJsonWorkersInit = true;
+  G._wireParseIssued = 0;
+  G._wireParseNextId = 0;
+  G._wireParseResults = new Map();
+  G._wireParseWorkerRR = 0;
+  if (typeof Worker === 'undefined') {
+    G._gameplayJsonWorkers = null;
     return;
   }
-  ws = socket;
-  ws.onopen = () => {
-    G._wsOpenedAt = Date.now();
-    wsConnectErrorNotified = false;
-    wsUserBanned = false;
-    G._realmMotdShown = false;
-    knownServerWorldMapRev = 0;
-    serverWorldMapFetchToken++;
-    notify('Connected to server');
-    flushPendingCaptainCareerDelete();
-    const capName = getCaptainDisplayCrew()?.name || 'Pirate';
-    G.myCaptainKey = captainNameStorageKey(capName) || G.myCaptainKey;
-    tryRestoreClanFromLocalSnapshot();
-    const captainToken = getCaptainTokenForResume() || getCaptainTokenForName(capName);
-    ws.send(JSON.stringify({
-      type: 'set_name',
-      name: capName,
-      shipName: G.player.shipName,
-      shipType: G.player.shipType,
-      shipParts: G.player.shipParts,
-      flagColor: DEFAULT_SAIL_TRIM_COLOR,
-      flagAssetId: getNetworkFlagAssetId(),
-      crew: buildCrewSyncPayload(),
-      captainToken,
-      preferLocalVoyage: !!voyageSaveExistsInStorage()
-    }));
-    sendUpdate();
-    syncWorldProgressToServerIfNeeded();
-    setTimeout(() => {
-      if (G.mode !== 'playing' || !G.playWorldAwaitingNetInit) return;
-      const s = (prefetchedServerSeed != null ? Number(prefetchedServerSeed) : G.worldSeed) >>> 0;
-      applySharedWorldFromServerSeed(s, { preservePlayerPosition: voyageSaveExistsInStorage() });
-      notify('World sync recovered.', 3200);
-    }, 680);
-  };
-  ws.onmessage = (e) => {
-    let msg;
-    try {
-      msg = JSON.parse(e.data);
-    } catch (err) {
-      return;
+  try {
+    const wUrl = new URL('workers/gameplay-json-worker.js', window.location.href);
+    const workers = [];
+    for (let i = 0; i < 2; i++) {
+      const w = new Worker(wUrl);
+      w.onmessage = (ev) => {
+        const d = ev.data;
+        if (!d || d.type !== 'parsed') return;
+        const id = d.id | 0;
+        if (d.ok) G._wireParseResults.set(id, d.result);
+        else G._wireParseResults.set(id, { __parseError: true });
+        flushCaptainWireJsonParseOrdered();
+      };
+      workers.push(w);
     }
-    if (!msg || typeof msg !== 'object') return;
+    G._gameplayJsonWorkers = workers;
+  } catch (e) {
+    G._gameplayJsonWorkers = null;
+  }
+}
+
+function disposeGameplayJsonWorkerPool() {
+  G._gameplayJsonWorkersInit = false;
+  if (G._gameplayJsonWorkers) {
+    for (const w of G._gameplayJsonWorkers) {
+      try { w.terminate(); } catch (e) {}
+    }
+  }
+  G._gameplayJsonWorkers = null;
+  G._wireParseIssued = 0;
+  G._wireParseNextId = 0;
+  G._wireParseResults = null;
+}
+
+function submitCaptainWireForOrderedJsonParse(text) {
+  if (!text || typeof text !== 'string') return;
+  ensureGameplayJsonWorkerPool();
+  if (!G._gameplayJsonWorkers || !G._gameplayJsonWorkers.length) {
     try {
+      dispatchCaptainJsonMessageFromWire(JSON.parse(text));
+    } catch (e) {}
+    return;
+  }
+  const id = G._wireParseIssued++;
+  const wi = (G._wireParseWorkerRR | 0) % G._gameplayJsonWorkers.length;
+  G._wireParseWorkerRR = wi + 1;
+  try {
+    G._gameplayJsonWorkers[wi].postMessage({ type: 'parse', id, text });
+  } catch (e) {
+    try {
+      dispatchCaptainJsonMessageFromWire(JSON.parse(text));
+    } catch (e2) {}
+  }
+}
+
+function dispatchCaptainJsonMessageFromWire(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  try {
     switch (msg.type) {
       case 'init':
         G.myId = netPlayerId(msg.id);
@@ -20924,8 +20891,106 @@ async function connectToServer() {
         break;
       }
     }
+  } catch (err) {}
+}
+async function connectToServer() {
+  if (wsUserBanned) return;
+  G.netDesyncFrozen = false;
+  G._netDesyncSticky = 0;
+  try {
+    await ensureServerEndpoints();
+  } catch (e) {}
+  const url = getServerUrl();
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  if (ws) {
+    try {
+      disposeGameplayJsonWorkerPool();
+      stopRtcGameChannel();
+      ws.onclose = null;
+      ws.close();
     } catch (err) {}
-   };
+    ws = null;
+    if (G.prizeHullDecoySinks && G.prizeHullDecoySinks.length) {
+      for (const sg of G.prizeHullDecoySinks) {
+        try { disposeObject3DSubtree(sg); } catch (e) {}
+        try { scene.remove(sg); } catch (e2) {}
+      }
+      G.prizeHullDecoySinks.length = 0;
+    }
+    for (const opid of Array.from(G.otherPlayers.keys())) {
+      removeRemotePeer(opid);
+    }
+  }
+  G.myId = null;
+  G.serverRtcGameChannel = false;
+  G._rtcIceServersFromServer = null;
+  G._lastNetStateWT = null;
+  G._lastNetStateSrvTick = null;
+  G._pendingNpcSyncQueue = [];
+  G._netInterpJitterEwma = null;
+  G._netStatePrevArrivalAt = null;
+  G._netLastStateGapMs = null;
+  G._netStateDrainQueue = [];
+  try { G.netPeerStaleSince = null; } catch (e) {}
+  G.multiplayerNpcAuthorityId = null;
+  G.npcSimFromServer = false;
+  G.npcSimDelegatedByServer = false;
+  G.iAmMultiplayerNpcStepper = false;
+  try { stopMultiplayerRttLoop(); } catch (e) {}
+  if (G.mode === 'playing') {
+    setMultiplayerConnectingOverlay(true);
+    queueMicrotask(() => { try { preloadRealmWhileConnecting(); } catch (e) {} });
+  }
+  let socket;
+  try {
+    socket = new WebSocket(url);
+  } catch (e) {
+    setMultiplayerConnectingOverlay(false);
+    return;
+  }
+  ws = socket;
+  ws.onopen = () => {
+    G._wsOpenedAt = Date.now();
+    wsConnectErrorNotified = false;
+    wsUserBanned = false;
+    G._realmMotdShown = false;
+    knownServerWorldMapRev = 0;
+    serverWorldMapFetchToken++;
+    notify('Connected to server');
+    flushPendingCaptainCareerDelete();
+    const capName = getCaptainDisplayCrew()?.name || 'Pirate';
+    G.myCaptainKey = captainNameStorageKey(capName) || G.myCaptainKey;
+    tryRestoreClanFromLocalSnapshot();
+    const captainToken = getCaptainTokenForResume() || getCaptainTokenForName(capName);
+    ws.send(JSON.stringify({
+      type: 'set_name',
+      name: capName,
+      shipName: G.player.shipName,
+      shipType: G.player.shipType,
+      shipParts: G.player.shipParts,
+      flagColor: DEFAULT_SAIL_TRIM_COLOR,
+      flagAssetId: getNetworkFlagAssetId(),
+      crew: buildCrewSyncPayload(),
+      captainToken,
+      preferLocalVoyage: !!voyageSaveExistsInStorage()
+    }));
+    sendUpdate();
+    syncWorldProgressToServerIfNeeded();
+    setTimeout(() => {
+      if (G.mode !== 'playing' || !G.playWorldAwaitingNetInit) return;
+      const s = (prefetchedServerSeed != null ? Number(prefetchedServerSeed) : G.worldSeed) >>> 0;
+      applySharedWorldFromServerSeed(s, { preservePlayerPosition: voyageSaveExistsInStorage() });
+      notify('World sync recovered.', 3200);
+    }, 680);
+  };
+  ws.onmessage = (e) => {
+    const text = typeof e.data === 'string' ? e.data : '';
+    if (!text) return;
+    submitCaptainWireForOrderedJsonParse(text);
+  };
   ws.onerror = () => {
     setMultiplayerConnectingOverlay(false);
     if (!wsConnectErrorNotified) {
@@ -30761,11 +30826,12 @@ function update(dt) {
   }
   if (G._pendingNpcSyncQueue && G._pendingNpcSyncQueue.length && G.mode === 'playing') {
     const arr = G._pendingNpcSyncQueue;
-    while (arr.length > 96) arr.shift();
+    while (arr.length > 120) arr.shift();
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     try {
       /* Apply a short backlog so _snapHist has span; timestamp each message from srvTick deltas so velocity in the buffer matches real sim steps (uniform perfBase spacing inflated V → extrap stutter). */
-      const maxBatch = 4;
+      const backlog = arr.length;
+      const maxBatch = Math.min(14, Math.max(4, Math.ceil(backlog * 0.34)));
       const nTake = Math.min(arr.length, maxBatch);
       const batch = arr.splice(0, nTake);
       const nom = 1000 / NET_SYNC_HZ;
