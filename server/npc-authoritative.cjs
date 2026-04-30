@@ -169,8 +169,9 @@ function assignTradeRouteFromHome(npc, homeMeta, list, rng, ws, portController) 
   npc.cargoUnits = 10 + ((Math.floor(rng() * 10) | 0));
   syncTradeShipName(npc, homeMeta, ws, portController);
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta, portController, ws) % FACTION_COUNT];
-  npc.targetCruise = null;
-  npc.tradeCruiseSpeed = null;
+  const maxFM = npcMaxForwardSpeed(npc);
+  npc.targetCruise = maxFM * (0.91 + rng() * 0.085);
+  npc.tradeCruiseSpeed = npc.targetCruise;
 }
 
 function findMerchantSpawnOffCoast(home, rng, shipTypeOpt, dryLand, edgeClamp) {
@@ -274,7 +275,7 @@ function accelerateNpcToward(npc, dt, target) {
   const speedMult = spec.speed + npcSailBonus(npc);
   const maxF = npcMaxForwardSpeed(npc);
   const t = Math.min(maxF, Math.max(0, target));
-  const accel = npc.isFactionPatrol ? 13.85 : 10.45;
+  const accel = npc.isFactionPatrol ? 13.85 : npc.isTradeShip ? 12.85 : 10.45;
   let spd = npc.speed || 0;
   if (spd < t - 0.03) {
     spd = Math.min(spd + accel * dt * speedMult, t, maxF);
@@ -1042,7 +1043,7 @@ function createServerNpcWorld(opts) {
       homeCx: home.cx,
       homeCz: home.cz,
       sailPick,
-      sailBonus: sailPick === 'silk' ? 0.3 : 0,
+      sailBonus: sailPick === 'silk' ? 0.44 : 0.14,
       wanderAngle: 0,
       wanderTimer: 99,
       underFireTimer: 0,
@@ -1056,7 +1057,7 @@ function createServerNpcWorld(opts) {
     const startUnderWay = sr() < 0.62;
     npc.tradePhase = startUnderWay ? 'to_dest' : 'loading_home';
     npc.tradeTimer = startUnderWay ? 0 : (0.35 + sr() * 1.25);
-    if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.38 + sr() * 0.42);
+    if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.72 + sr() * 0.22);
     npcs.push(npc);
     return true;
   }
@@ -1114,8 +1115,7 @@ function createServerNpcWorld(opts) {
       fireCooldown: 0,
       aggro: false
     };
-    /* Match browser host + brisk tutorial-adjacent cruise (was ~58–86%). */
-    npc.speed = npcMaxForwardSpeed(npc) * (0.74 + sr() * 0.2);
+    npc.speed = npcMaxForwardSpeed(npc) * (0.78 + sr() * 0.18);
     npcs.push(npc);
     return true;
   }
@@ -1428,7 +1428,8 @@ function createServerNpcWorld(opts) {
     if (npc.aggro && (distToPlayer > 210 || (npc.underFireTimer <= 0 && distToPlayer > 125))) npc.aggro = false;
     const fighting = npc.aggro && distToPlayer < 135;
     const fightingNpc = !!atkShip && Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 128;
-    const tgtC = npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.998;
+    const tgtC =
+      npc.targetCruise != null ? npc.targetCruise : npcMaxForwardSpeed(npc) * 0.9995;
     if (fightingNpc) {
       const sharp = Math.hypot(atkShip.x - npc.x, atkShip.z - npc.z) < 92 ? 2.55 : 2.12;
       if (!npc.escapeMode) {
@@ -1525,7 +1526,8 @@ function createServerNpcWorld(opts) {
         }
         if (npc.tradeTimer <= 0) {
           npc.tradePhase = 'to_dest';
-          npc.targetCruise = npcMaxForwardSpeed(npc) * (0.74 + Math.random() * 0.2);
+          npc.targetCruise = npcMaxForwardSpeed(npc) * (0.91 + Math.random() * 0.085);
+          npc.tradeCruiseSpeed = npc.targetCruise;
         }
       } else if (phase === 'to_dest' || phase === 'to_home') {
         if (tx != null && tz != null && dockTx != null && dockTz != null) {
