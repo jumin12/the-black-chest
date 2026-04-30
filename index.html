@@ -3875,7 +3875,7 @@ function spawnEscortRaiderPirates(cargoSyncId, nearPt, count, nameRng) {
       speed: 0,
       health: 52 + sr() * 38,
       type: npcType,
-      name: proceduralPirateShipName(pirateFaction, Math.floor(nx / CHUNK_SIZE), Math.floor(nz / CHUNK_SIZE), (cargoSyncId | 0) * 17 + a * 3),
+      name: reserveLocalNpcShipStem(sid, proceduralPirateShipName(pirateFaction, Math.floor(nx / CHUNK_SIZE), Math.floor(nz / CHUNK_SIZE), (cargoSyncId | 0) * 17 + a * 3)),
       wanderAngle: sr() * Math.PI * 2, wanderTimer: 8 + sr() * 6,
       underFireTimer: 0, fireJitter: sr(),
       riggingHealth: 100,
@@ -7607,11 +7607,63 @@ const FACTION_PATROL_SHIP_NAMES = [
   ['Nuestra Señora de Aránzazu', 'Santa Teresa', 'San Julián', 'San Vicente', 'Santa Rufina', 'San Hermenegildo', 'Santa Casilda', 'San Fulgencio', 'Santa Florentina', 'San Leandro', 'La Perla', 'El Rayo', 'La Estrella', 'El Veloz', 'La Brava', 'El Diligente', 'La Fama', 'El Marte', 'La Soledad', 'El Neptuno'],
   ['NRP Príncipe Real', 'NRP Dom João', 'NRP Afonso de Albuquerque', 'NRP Bartolomeu Dias', 'NRP Vasco da Gama', 'NRP Pedro Álvares Cabral', 'NRP Diogo Cão', 'NRP Fernão de Magalhães', 'NRP Sagres', 'NRP Tritão', 'NRP Golfinho', 'NRP Águia', 'NRP Falcão', 'NRP Lince', 'NRP Pantera', 'NRP Leão', 'NRP Tigre', 'NRP Dragão', 'NRP Serpente', 'NRP Estrela do Mar']
 ];
+const MERCHANT_SHIP_EPITHETS = [
+  'Fairwind', 'Outbound', 'Homeward', 'Ledger Line', 'Tide Runner', 'Salt Ledger', 'Invoice', 'Golden Cargo', 'Silver Bilge', 'Copper Stern',
+  'Eastbound', 'Westbound', 'Trade Lance', 'Quarterdeck', 'Manifest', 'Bill of Lading', 'Harbor Hop', 'Jetty Runner', 'Roadstead', 'Anchorage',
+  'Spring Tide', 'Neap Tide', 'Trade Reach', 'Cargo Wake', 'Convoy Mate', 'Factor\'s Pride', 'Broker\'s Hope', 'Market Gale', 'Exchange', 'Custom House',
+  'North Reach', 'South Reach', 'Bay Courier', 'Sound Runner', 'Channel Lark', 'Dogger Patch', 'Skerry Hop', 'Trade Mist', 'High Beacon', 'Low Beacon',
+  'Merchant Tide', 'Cargo Mist', 'Profit Wake', 'Venture Foam', 'Ledger Mist', 'Trust Wake', 'Covenant', 'Indenture', 'Portage', 'Carryall'
+];
+const PIRATE_SHIP_EPITHETS = [
+  'Bloodwake', 'Black Froth', 'Salty Knuckle', 'Cut Reef', 'Bone Rudder', 'Rust Grapnel', 'Dead Run', 'Keelhaul', 'Ropeburn', 'Plunderwake',
+  'Storm Hook', 'Sea Ghoul', 'Tide Howl', 'Brine Fang', 'Salt Widow', 'Gallows Surf', 'Hangman Spray', 'Cutlass Froth', 'Musket Foam', 'Powderwake',
+  'Rogue Crest', 'Freebooter', 'Buccaneer', 'Raid Tide', 'Lootwake', 'Buried Fear', 'Crossbones Wake', 'Skull Reef', 'Ghost Froth', 'Shroud Tide',
+  'Cursed Reach', 'Damned Mist', 'Infernal Wake', 'Black Reef', 'Night Rudder', 'Shadow Foam', 'Dark Bilge', 'Wraith Tide', 'Spectre Mist', 'Haunt Foam',
+  'Reaver Crest', 'Marauder', 'Picaroon', 'Swashwake', 'Boarding Fear', 'Hawk Rudder', 'Crow Wake', 'Vulture Tide', 'Jackal Foam', 'Sharkwake'
+];
+const PATROL_SHIP_EPITHETS = [
+  'Sentinel', 'Pickett', 'Patrol', 'Coastal Watch', 'Roadstead Guard', 'Harbor Crown', 'Bay Ward', 'Sound Keeper', 'Channel Ward', 'Reef Watch',
+  'Sea Lance', 'Sovereign Wake', 'Crown Patrol', 'Ordinance', 'Quarter Badge', 'Ensign Tide', 'Guard Crest', 'Bulwark', 'Rampart Wake', 'Citadel Tide'
+];
+function resetLocalNpcShipNameRegistry() {
+  G.localNpcShipNamesUsed = new Set();
+  G.localNpcShipStemBySyncId = new Map();
+}
+/** Solo / browser-host NPC hull names — mirrors server `reserveNpcShipStem`. */
+function reserveLocalNpcShipStem(syncId, preferredRaw) {
+  if (!G.localNpcShipNamesUsed) G.localNpcShipNamesUsed = new Set();
+  if (!G.localNpcShipStemBySyncId) G.localNpcShipStemBySyncId = new Map();
+  const sid = syncId != null && Number.isFinite(Number(syncId)) ? Math.floor(Number(syncId)) : null;
+  if (sid != null && G.localNpcShipStemBySyncId.has(sid)) {
+    return G.localNpcShipStemBySyncId.get(sid);
+  }
+  let s = String(preferredRaw || 'Ship').replace(/\s+/g, ' ').trim();
+  if (s.length > 52) s = s.slice(0, 52);
+  if (!s) s = 'Ship';
+  if (!G.localNpcShipNamesUsed.has(s)) {
+    G.localNpcShipNamesUsed.add(s);
+    if (sid != null) G.localNpcShipStemBySyncId.set(sid, s);
+    return s;
+  }
+  const tag = sid != null ? sid : G.localNpcShipNamesUsed.size + 18407;
+  let cand = `${s.slice(0, 44)} (${tag})`;
+  let bump = 0;
+  while (G.localNpcShipNamesUsed.has(cand) && bump < 9000) {
+    bump++;
+    cand = `${s.slice(0, 38)} (${tag}.${bump})`;
+  }
+  G.localNpcShipNamesUsed.add(cand);
+  if (sid != null) G.localNpcShipStemBySyncId.set(sid, cand);
+  return cand;
+}
 function proceduralFactionPatrolShipName(fid, cx, cz, pid) {
   const f = (fid | 0) % FACTION_COUNT;
   const pool = FACTION_PATROL_SHIP_NAMES[f];
-  const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (pid | 0) * 83492791 ^ (G.worldSeed | 0) ^ (f * 50261)) >>> 0;
-  return pool[th % pool.length];
+  let h = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (pid | 0) * 83492791 ^ (G.worldSeed | 0) ^ (f * 50261)) >>> 0;
+  const core = pool[h % pool.length];
+  h = (Math.imul(h, 2654435761) + (pid | 0)) >>> 0;
+  const ep = PATROL_SHIP_EPITHETS[h % PATROL_SHIP_EPITHETS.length];
+  return `${core} ${ep}`;
 }
 /** Deterministic settlement name body from chunk; `prefixFaction` sets colonial flavor (usually controlling power). */
 function proceduralTownNameCore(cx, cz, prefixFaction, worldSeedOpt) {
@@ -8581,14 +8633,20 @@ function factionFlagPngIdForFaction(fid) {
 function proceduralFactionMerchantShipName(fid, salt) {
   const f = (fid | 0) % FACTION_COUNT;
   const pool = FACTION_MERCHANT_SHIP_NAMES[f];
-  const th = (Math.imul(salt | 0, 1103515245) + 12345 ^ (G.worldSeed | 0) ^ (f * 7919)) >>> 0;
-  return pool[th % pool.length];
+  let h = (Math.imul(salt | 0, 1103515245) + 12345 ^ (G.worldSeed >>> 0) ^ (f * 7919)) >>> 0;
+  const core = pool[h % pool.length];
+  h = (Math.imul(h, 1664525) + 1013904223) >>> 0;
+  const ep = MERCHANT_SHIP_EPITHETS[h % MERCHANT_SHIP_EPITHETS.length];
+  return `${core} ${ep}`;
 }
 function proceduralPirateShipName(fid, cx, cz, idx) {
   const f = (fid | 0) % FACTION_COUNT;
   const pool = FACTION_PIRATE_SHIP_NAMES[f];
-  const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (G.worldSeed | 0) ^ (f * 50261)) >>> 0;
-  return pool[th % pool.length];
+  let h = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (G.worldSeed | 0) ^ (f * 50261)) >>> 0;
+  const core = pool[h % pool.length];
+  h = (Math.imul(h, 2246822519) ^ Math.imul(G.worldSeed | 0, 3266489917)) >>> 0;
+  const ep = PIRATE_SHIP_EPITHETS[h % PIRATE_SHIP_EPITHETS.length];
+  return `${core} ${ep}`;
 }
 function playerCombatPowerEstimate() {
   const st = SHIP_TYPES[G.player.shipType || 'sloop'] || SHIP_TYPES.sloop;
@@ -9280,12 +9338,13 @@ function syncTradeShipName(npc, homeMeta) {
   const nm = getItemMeta(npc.cargoGood);
   const shortLab = (nm.name || npc.cargoGood || 'cargo').split(/\s+/)[0];
   const homeFac = townFaction(homeMeta) % FACTION_COUNT;
-  const vessel = proceduralFactionMerchantShipName(homeFac, (npc.syncId | 0) ^ ((homeMeta.cx | 0) * 31 + (homeMeta.cz | 0) * 17));
-  let tradeName = `${vessel} · ${shortLab}`;
-  if (tradeName.length > 28) tradeName = tradeName.slice(0, 27) + '…';
+  const rawVessel = proceduralFactionMerchantShipName(homeFac, (npc.syncId | 0) ^ ((homeMeta.cx | 0) * 31 + (homeMeta.cz | 0) * 17));
+  const vesselStem = reserveLocalNpcShipStem(npc.syncId, rawVessel);
+  let tradeName = `${vesselStem} · ${shortLab}`;
+  if (tradeName.length > 56) tradeName = tradeName.slice(0, 55) + '…';
   npc.name = tradeName;
   if (!npc.name || !String(npc.name).trim()) {
-    npc.name = `${vessel} · ${homeFac}-${(npc.syncId | 0) % 1000}`;
+    npc.name = `${vesselStem} · ${homeFac}-${(npc.syncId | 0) % 1000}`;
   }
 }
 function assignNewTradeRoute(npc) {
@@ -9316,8 +9375,14 @@ function merchantFallbackOceanTradeLeg(npc) {
   npc.destCz = npc.homeCz | 0;
   npc.tradePhase = 'to_dest';
   npc.tradeTimer = 0;
-  npc.speed = 0;
-  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.58 + sr() * 0.22);
+  let s2 = ((npc.syncId | 0) * 1103515245 + 12345) >>> 0;
+  const sr2 = () => {
+    s2 = (Math.imul(s2, 1664525) + 1013904223) >>> 0;
+    return s2 / 4294967296;
+  };
+  const maxSpF = npcMaxForwardSpeed(npc);
+  npc.speed = maxSpF * (0.38 + sr2() * 0.22);
+  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.58 + sr2() * 0.22);
   npc.tradeCruiseSpeed = npc.targetCruise;
 }
 function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
@@ -16130,7 +16195,9 @@ function npcEffectiveForwardSpeed(npc) {
 function npcSailingTurnFactor(npc) {
   const v = npcEffectiveForwardSpeed(npc);
   const t = Math.min(1, Math.max(0, (v - 0.06) / 5.4));
-  return (0.11 + 0.89 * t * t) * npcCrewTurnMult(npc);
+  let b = 0.11 + 0.89 * t * t;
+  if (npc.isTradeShip) b = Math.max(0.48, b);
+  return b * npcCrewTurnMult(npc);
 }
 function accelerateNpcToward(npc, dt, target) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
@@ -16763,8 +16830,11 @@ function tryAddMerchantNpcFromHome(home, allPorts, tradeSyncIdx, seedSalt) {
   npc.homeEmbarkX = nx;
   npc.homeEmbarkZ = nz;
   npc.rotation = Math.atan2(npc.tradeDestX - nx, npc.tradeDestZ - nz);
-  npc.tradePhase = 'loading_home';
-  npc.tradeTimer = 6 + sr() * 14;
+  npc.tradePhase = 'to_dest';
+  npc.tradeTimer = 0;
+  const maxSp0 = npcMaxForwardSpeed(npc);
+  npc.targetCruise = maxSp0 * (0.64 + sr() * 0.22);
+  npc.speed = maxSp0 * (0.38 + sr() * 0.22);
   syncTradeShipName(npc, home);
   const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, flagAssetId: npc.flagAssetId });
   npc.crewData = merchantCrewFromRng(sr, npc.type);
@@ -16822,7 +16892,8 @@ function spawnOneFactionPatrol(factionId) {
   if (!haveSpawn) return false;
   const facCol = FACTION_TRADE_COLORS[fid];
   const cannonPart = tradeShipCannonForType(st);
-  const patrolName = proceduralFactionPatrolShipName(fid, pick.cx | 0, pick.cz | 0, pid);
+  const patrolRaw = proceduralFactionPatrolShipName(fid, pick.cx | 0, pick.cz | 0, pid);
+  const patrolName = reserveLocalNpcShipStem(pid, patrolRaw);
   const npc = {
     syncId: pid,
     x: nx, z: nz,
@@ -16953,6 +17024,7 @@ function spawnNPCs(opts) {
     if (n.mesh) scene.remove(n.mesh);
   });
   G.npcs = keepTutorialRaid ? [keepTutorialRaid] : [];
+  resetLocalNpcShipNameRegistry();
   if (ws && ws.readyState === 1 && G.npcSimFromServer) {
     return;
   }
@@ -16987,7 +17059,7 @@ function spawnNPCs(opts) {
       x: nx, z: nz,
       rotation: sr() * Math.PI * 2, speed: 0,
       health: 60 + sr() * 40, type: npcType,
-      name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i),
+      name: reserveLocalNpcShipStem(i, proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i)),
       wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
       underFireTimer: 0, fireJitter: sr(),
       riggingHealth: 100,
@@ -17064,13 +17136,7 @@ function spawnVanillaPirateAtSlotIndex(i) {
     x: nx, z: nz,
     rotation: sr() * Math.PI * 2, speed: 0,
     health: 60 + sr() * 40, type: npcType,
-    name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i),
-    wanderAngle: sr() * Math.PI * 2, wanderTimer: 5 + sr() * 10,
-    underFireTimer: 0, fireJitter: sr(),
-    riggingHealth: 100,
-    flagPosition: pickRandomAiFlagPosition(sr())
-  };
-  npc.independentPirate = true;
+    name: reserveLocalNpcShipStem(i, proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i)),
   npc.flagColor = '#5a0808';
   npc.flagAssetId = randomChoosableFlagRng(sr);
   npc.sailBonus = 0.1;
@@ -17881,7 +17947,7 @@ function updateNPCs(dt) {
                 npc.homeEmbarkX = npc.x;
                 npc.homeEmbarkZ = npc.z;
                 npc.tradePhase = 'loading_home';
-                npc.tradeTimer = 5 + Math.random() * 10;
+                npc.tradeTimer = 2 + Math.random() * 4;
                 npc.speed = 0;
               } else if (!assignNewTradeRoute(npc)) {
                 merchantFallbackOceanTradeLeg(npc);
@@ -19444,10 +19510,10 @@ function buildNpcFromNetSyncData(nd, nid) {
   const tp = nd.t && SHIP_TYPES[nd.t] ? nd.t : 'sloop';
   const rawN = nd.n != null ? String(nd.n).trim() : '';
   const fallbackNetNpcName = () => {
-    if (isPat) return `${FACTION_SHORT_NAMES[ffiMerPat]} Guard · ${(nid | 0) % 1000}`;
-    if (isMer) return `${proceduralFactionMerchantShipName(ffiMerPat, (nid | 0) ^ 0x5a5a)} · Trade`;
+    if (isPat) return reserveLocalNpcShipStem(nid, `${FACTION_SHORT_NAMES[ffiMerPat]} Guard · ${(nid | 0) % 1000}`);
+    if (isMer) return reserveLocalNpcShipStem(nid, `${proceduralFactionMerchantShipName(ffiMerPat, (nid | 0) ^ 0x5a5a)} · Trade`);
     const cx = Math.floor((nd.x || 0) / CHUNK_SIZE), cz = Math.floor((nd.z || 0) / CHUNK_SIZE);
-    return proceduralPirateShipName(ffiNameRoll, cx, cz, nid);
+    return reserveLocalNpcShipStem(nid, proceduralPirateShipName(ffiNameRoll, cx, cz, nid));
   };
   const nm = rawN || fallbackNetNpcName();
   const fc = nd.fc || (isRog ? '#5a0808' : FACTION_TRADE_COLORS[ffiMerPat]);
@@ -32302,7 +32368,7 @@ function warmTutorialRaidCutsceneMeshesIfEligible() {
     figurehead: pp.figurehead || 'none',
     flag: pp.flag === 'bow' ? 'bow' : 'mast'
   };
-  const meshName = proceduralPirateShipName(pirateFaction, chunkX, chunkZ, (TUTORIAL_RAID_NPC_SYNC ^ (G.worldSeed | 0)) % 997);
+  const meshName = reserveLocalNpcShipStem(TUTORIAL_RAID_NPC_SYNC, proceduralPirateShipName(pirateFaction, chunkX, chunkZ, (TUTORIAL_RAID_NPC_SYNC ^ (G.worldSeed | 0)) % 997));
   let grp = null;
   let success = false;
   try {
@@ -34123,7 +34189,7 @@ function spawnTutorialRaidPirateNearPlayer() {
     speed: 0,
     health: raidHp,
     type: st,
-    name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, (TUTORIAL_RAID_NPC_SYNC ^ (G.worldSeed | 0)) % 997),
+    name: reserveLocalNpcShipStem(TUTORIAL_RAID_NPC_SYNC, proceduralPirateShipName(pirateFaction, chunkX, chunkZ, (TUTORIAL_RAID_NPC_SYNC ^ (G.worldSeed | 0)) % 997)),
     wanderAngle: 0, wanderTimer: 9,
     underFireTimer: 0, fireJitter: 0,
     riggingHealth: 100,
@@ -34438,6 +34504,7 @@ function beginVoyageAfterCharacter() {
   G.remotePlayerStories.clear();
   G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
   G.npcs = [];
+  resetLocalNpcShipNameRegistry();
   G.chunks.clear();
   islandGroup.clear();
   clearSeaReefs();
@@ -35473,6 +35540,7 @@ document.getElementById('start-btn').onclick = () => {
     G.remotePlayerStories.clear();
     G.npcs.forEach(n => { if (n.mesh) scene.remove(n.mesh); });
     G.npcs = [];
+  resetLocalNpcShipNameRegistry();
     G.chunks.clear(); islandGroup.clear(); clearSeaReefs(); G.islands = [];
     G.townFlagMeshes = [];
     destroyAmbientWildlife();

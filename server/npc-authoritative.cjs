@@ -35,18 +35,37 @@ const PLAYER_FLAG_CHOICE_IDS = (() => {
 const DEFAULT_PLAYER_FLAG_ASSET = 1;
 const FACTION_SHORT_NAMES = ['Britain', 'Netherlands', 'France', 'Spain', 'Portugal'];
 const FACTION_MERCHANT_SHIP_NAMES = [
-  ['HMS Packet Lark', 'Britannia Merchant', 'Atlantic Factor'],
-  ['VOC Vertrouwen', 'Zeelandia', 'Batavia Return'],
-  ['Saint Louis', 'Belle Poule Marchande', 'Roi Soleil'],
-  ['Nuestra Señora del Rosario', 'San Fernando Merchant', 'Rey Católico'],
-  ['Nossa Senhora da Boa Viagem', 'Tejo Trader', 'Índia Portuguesa']
+  ['HMS Packet Lark', 'King George Trader', 'Crown Transport', 'Britannia Merchant', 'Albion Packet', 'Royal Sovereign Cargo', 'Atlantic Factor', 'Channel Trader', 'North Star Hoy', 'Cape Breton', 'West India Factor', 'Liverpool Pride', 'Bristol Venture', 'Londonderry', 'Clyde Lass', 'Sussex Merchant', 'Kentish Fly', 'Cornwall Packet', 'Yarmouth Lass', 'Severn Trader'],
+  ['VOC Vertrouwen', 'Staten Generaal', 'Nieuw Amsterdam', 'Zeelandia', 'Hollandia Packet', 'Friesland Trader', 'Amsterdam Factor', 'Rotterdam Fly', 'Maas Merchant', 'Texel Hoy', 'Scheldt Packet', 'Utrecht Trader', 'Gouda Factor', 'Delft Fly', 'Haarlem Lass', 'Batavia Return', 'Indische Liefde', 'Oostzee Hoop', 'Noordster', 'Walcheren Packet'],
+  ['Saint Louis', 'Belle Poule Marchande', 'Roi Soleil', 'Fleuron du Roi', 'Dauphin Trader', 'Bretagne Packet', 'Normandie Factor', 'Gascogne Fly', 'Provence Merchant', 'Corse Packet', 'Petit Capitaine', 'Bonne Aventure', 'Lys Royal', 'Fleur de Lys Cargo', 'Charente', 'Garonne Fly', 'Méditerranée', 'Antilles Royale', 'Côte d\'Argent', 'Havre Packet'],
+  ['Nuestra Señora del Rosario', 'San Fernando Merchant', 'Santa Isabel', 'Capitán Real', 'Indias Unidas', 'Galeón Menor', 'Nueva España', 'Carabela Menor', 'San Telmo', 'Virgen del Carmen', 'Rey Católico', 'Plata Trader', 'Oro del Sur', 'Cádiz Packet', 'Sevilla Factor', 'Barcelona Fly', 'Cartagena Lass', 'Bilbao Merchant', 'Coruña Packet', 'Canarias Trader'],
+  ['Nossa Senhora da Boa Viagem', 'São Gabriel Mercante', 'Infante Dom Henrique', 'Lusitânia Packet', 'Tejo Trader', 'Douro Fly', 'Algarve Factor', 'Cascais Merchant', 'Sagres Packet', 'Índia Portuguesa', 'Brasil Return', 'Estreito d\'Hope', 'Corvo Packet', 'Açores Fly', 'Madeira Trader', 'Coimbra Factor', 'Porto Rico Menor', 'Rainha Santa', 'Real Figueira', 'Alentejo Sun']
 ];
 const FACTION_PIRATE_SHIP_NAMES = [
-  ['Red Jackal', 'Channel Reaver', 'Atlantic Knave', 'Cornish Spectre', 'Thames Cutlass'],
-  ['Flying Herring', 'Texel Terror', 'Holland Hook', 'Scheldt Skulker', 'Batavian Banshee'],
-  ['Sans-Culotte Fury', 'Belle Mort', 'Marseille Malice', 'Jacobin Jackal', 'Petit Tonnerre'],
-  ['Diablo del Plata', 'Rey Negro', 'Costa Oscura', 'Carabela Maldita', 'Muerte Española'],
-  ['Cão do Atlântico', 'Fantasma do Tejo', 'Navio da Maldição', 'Estrela Negra', 'Corsário do Sul']
+  ['Red Jackal', 'Crown\'s Spite', 'King\'s Ruin', 'Channel Reaver', 'Cornish Spectre', 'Thames Cutlass', 'Irish Sea Fiend', 'Scottish Gale', 'Wessex Wraith', 'Sussex Raider', 'Kentish Devil', 'Liverpool Curse', 'Bristol Bane', 'Plymouth Phantom', 'Yorkshire Hook', 'North Sea Harpy', 'Atlantic Knave', 'British Bastion Broken', 'Albion\'s Shame', 'Empire\'s Leak'],
+  ['Flying Herring', 'Zuider Zee Wolf', 'Texel Terror', 'Amsterdam\'s Debt', 'Rotterdam Rogue', 'VOC\'s Shame', 'Dutch Courage Lost', 'Lowlands Leviathan', 'Scheldt Skulker', 'Friesland Fang', 'Batavian Banshee', 'Holland Hook', 'Maas Marauder', 'Zeeland Zephyr Dark', 'Utrecht Undertow', 'Gouda Ghost', 'Delft Dagger', 'Haarlem Horror', 'Indies Interceptor', 'Nether Night'],
+  ['Sans-Culotte Fury', 'République Noire', 'Belle Mort', 'Girondin Ghost', 'Jacobin Jackal', 'Corsaire du Nord', 'Méditerranée Maudit', 'Bretagne Brûlant', 'Normandie Nuit', 'Marseille Malice', 'Toulon Terror', 'Bordeaux Blade', 'Petit Tonnerre', 'Roi des Vagues Mortes', 'Fleur de Feu', 'Charente Charogne', 'Garonne Grim', 'Antilles Avide', 'Côte Sauvage', 'Paris Plague Sea'],
+  ['Diablo del Plata', 'Rey Negro', 'Fantasma de Cádiz', 'Puta del Mar', 'Carabela Maldita', 'Corsario Católico', 'Sangre del Sol', 'Muerte Española', 'Galeón Fantasma', 'Tiburón Santo', 'Venganza de Colón', 'Barlovento Brujo', 'Costa Oscura', 'Indias Infernales', 'Noche de Sevilla', 'Puñal de Barcelona', 'Calavera de Cartagena', 'Tormenta de Gijón', 'Bruma de Vigo', 'Lobo del Estrecho'],
+  ['Cão do Atlântico', 'Bruxa dos Açores', 'Diabo da Madeira', 'Fantasma do Tejo', 'Navio da Maldição', 'Lobo do Cabo', 'Sangue Português', 'Estrela Negra', 'Vingança de Henry', 'Morto-vivo do Douro', 'Tempestade Lusitana', 'Coração de Ferro', 'Alma Perdida', 'Inferno na Ria', 'Corsário do Sul', 'Sombra de Lagos', 'Faca de Porto', 'Fúria de Faro', 'Espírito Sombrio', 'Medo do Mar']
+];
+/** Extra tails multiply combinations (paired with faction cores above). */
+const MERCHANT_SHIP_EPITHETS = [
+  'Fairwind', 'Outbound', 'Homeward', 'Ledger Line', 'Tide Runner', 'Salt Ledger', 'Invoice', 'Golden Cargo', 'Silver Bilge', 'Copper Stern',
+  'Eastbound', 'Westbound', 'Trade Lance', 'Quarterdeck', 'Manifest', 'Bill of Lading', 'Harbor Hop', 'Jetty Runner', 'Roadstead', 'Anchorage',
+  'Spring Tide', 'Neap Tide', 'Trade Reach', 'Cargo Wake', 'Convoy Mate', 'Factor\'s Pride', 'Broker\'s Hope', 'Market Gale', 'Exchange', 'Custom House',
+  'North Reach', 'South Reach', 'Bay Courier', 'Sound Runner', 'Channel Lark', 'Dogger Patch', 'Skerry Hop', 'Trade Mist', 'High Beacon', 'Low Beacon',
+  'Merchant Tide', 'Cargo Mist', 'Profit Wake', 'Venture Foam', 'Ledger Mist', 'Trust Wake', 'Covenant', 'Indenture', 'Portage', 'Carryall'
+];
+const PIRATE_SHIP_EPITHETS = [
+  'Bloodwake', 'Black Froth', 'Salty Knuckle', 'Cut Reef', 'Bone Rudder', 'Rust Grapnel', 'Dead Run', 'Keelhaul', 'Ropeburn', 'Plunderwake',
+  'Storm Hook', 'Sea Ghoul', 'Tide Howl', 'Brine Fang', 'Salt Widow', 'Gallows Surf', 'Hangman Spray', 'Cutlass Froth', 'Musket Foam', 'Powderwake',
+  'Rogue Crest', 'Freebooter', 'Buccaneer', 'Raid Tide', 'Lootwake', 'Buried Fear', 'Crossbones Wake', 'Skull Reef', 'Ghost Froth', 'Shroud Tide',
+  'Cursed Reach', 'Damned Mist', 'Infernal Wake', 'Black Reef', 'Night Rudder', 'Shadow Foam', 'Dark Bilge', 'Wraith Tide', 'Spectre Mist', 'Haunt Foam',
+  'Reaver Crest', 'Marauder', 'Picaroon', 'Swashwake', 'Boarding Fear', 'Hawk Rudder', 'Crow Wake', 'Vulture Tide', 'Jackal Foam', 'Sharkwake'
+];
+const PATROL_SHIP_EPITHETS = [
+  'Sentinel', 'Pickett', 'Patrol', 'Coastal Watch', 'Roadstead Guard', 'Harbor Crown', 'Bay Ward', 'Sound Keeper', 'Channel Ward', 'Reef Watch',
+  'Sea Lance', 'Sovereign Wake', 'Crown Patrol', 'Ordinance', 'Quarter Badge', 'Ensign Tide', 'Guard Crest', 'Bulwark', 'Rampart Wake', 'Citadel Tide'
 ];
 const FACTION_PATROL_SHIP_NAMES = [
   ['HMS Vigilant', 'HMS Crescent', 'HMS Seahorse', 'HMS Kingfisher', 'HMS Sparrowhawk', 'HMS Bold', 'HMS Pallas', 'HMS Active', 'HMS Druid', 'HMS Squirrel', 'HMS Cygnet', 'HMS Rose', 'HMS Lynx', 'HMS Porcupine', 'HMS Rattlesnake', 'HMS Cruizer', 'HMS Scout', 'HMS Swallow', 'HMS Zephyr', 'HMS Falcon'],
@@ -76,25 +95,68 @@ function randomChoosableFlagRng(rng) {
   return ids[Math.floor(rng() * ids.length)] || DEFAULT_PLAYER_FLAG_ASSET;
 }
 
-function proceduralFactionMerchantShipName(fid, salt) {
+const npcShipNameRegistry = {
+  used: new Set(),
+  bySyncId: new Map()
+};
+function resetNpcShipNameRegistry() {
+  npcShipNameRegistry.used.clear();
+  npcShipNameRegistry.bySyncId.clear();
+}
+/** Stable unique hull stem per syncId; avoids duplicates while keeping cargo relabel (`syncTradeShipName`) consistent. */
+function reserveNpcShipStem(syncId, preferredRaw) {
+  const sid = syncId != null && Number.isFinite(Number(syncId)) ? Math.floor(Number(syncId)) : null;
+  if (sid != null && npcShipNameRegistry.bySyncId.has(sid)) {
+    return npcShipNameRegistry.bySyncId.get(sid);
+  }
+  let s = String(preferredRaw || 'Ship').replace(/\s+/g, ' ').trim();
+  if (s.length > 52) s = s.slice(0, 52);
+  if (!s) s = 'Ship';
+  if (!npcShipNameRegistry.used.has(s)) {
+    npcShipNameRegistry.used.add(s);
+    if (sid != null) npcShipNameRegistry.bySyncId.set(sid, s);
+    return s;
+  }
+  const tag = sid != null ? sid : npcShipNameRegistry.used.size + 18407;
+  let cand = `${s.slice(0, 44)} (${tag})`;
+  let bump = 0;
+  while (npcShipNameRegistry.used.has(cand) && bump < 9000) {
+    bump++;
+    cand = `${s.slice(0, 38)} (${tag}.${bump})`;
+  }
+  npcShipNameRegistry.used.add(cand);
+  if (sid != null) npcShipNameRegistry.bySyncId.set(sid, cand);
+  return cand;
+}
+
+function proceduralFactionMerchantShipName(fid, salt, ws) {
   const f = (fid | 0) % FACTION_COUNT;
   const pool = FACTION_MERCHANT_SHIP_NAMES[f] || FACTION_MERCHANT_SHIP_NAMES[0];
-  const th = (Math.imul(salt | 0, 1103515245) + 12345 ^ f * 7919) >>> 0;
-  return pool[th % pool.length];
+  let h = (Math.imul(salt | 0, 1103515245) + 12345 ^ (ws >>> 0) ^ (f * 7919)) >>> 0;
+  const core = pool[h % pool.length];
+  h = (Math.imul(h, 1664525) + 1013904223) >>> 0;
+  const ep = MERCHANT_SHIP_EPITHETS[h % MERCHANT_SHIP_EPITHETS.length];
+  return `${core} ${ep}`;
 }
 
 function proceduralPirateShipName(fid, cx, cz, idx, ws) {
   const f = (fid | 0) % FACTION_COUNT;
   const pool = FACTION_PIRATE_SHIP_NAMES[f] || FACTION_PIRATE_SHIP_NAMES[0];
-  const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (ws | 0) ^ (f * 50261)) >>> 0;
-  return pool[th % pool.length];
+  let h = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (idx | 0) * 83492791 ^ (ws | 0) ^ (f * 50261)) >>> 0;
+  const core = pool[h % pool.length];
+  h = (Math.imul(h, 2246822519) ^ Math.imul(ws | 0, 3266489917)) >>> 0;
+  const ep = PIRATE_SHIP_EPITHETS[h % PIRATE_SHIP_EPITHETS.length];
+  return `${core} ${ep}`;
 }
 
 function proceduralFactionPatrolShipName(fid, cx, cz, pid, ws) {
   const f = (fid | 0) % FACTION_COUNT;
   const pool = FACTION_PATROL_SHIP_NAMES[f] || FACTION_PATROL_SHIP_NAMES[0];
-  const th = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (pid | 0) * 83492791 ^ (ws | 0) ^ (f * 50261)) >>> 0;
-  return pool[th % pool.length];
+  let h = ((cx | 0) * 73856093 ^ (cz | 0) * 19349663 ^ (pid | 0) * 83492791 ^ (ws | 0) ^ (f * 50261)) >>> 0;
+  const core = pool[h % pool.length];
+  h = (Math.imul(h, 2654435761) + (pid | 0)) >>> 0;
+  const ep = PATROL_SHIP_EPITHETS[h % PATROL_SHIP_EPITHETS.length];
+  return `${core} ${ep}`;
 }
 
 function makePoliticsMatrix(ws) {
@@ -144,9 +206,10 @@ function pickTradeDestination(home, list, rng, ws, portController) {
 function syncTradeShipName(npc, homeMeta, ws, portController) {
   const shortLab = (npc.cargoGood || 'cargo').split(/\s+/)[0];
   const homeFac = townFaction(homeMeta, portController, ws) % FACTION_COUNT;
-  const vessel = proceduralFactionMerchantShipName(homeFac, (npc.syncId | 0) ^ ((homeMeta.cx | 0) * 31 + (homeMeta.cz | 0) * 17));
-  let tradeName = `${vessel} · ${shortLab}`;
-  if (tradeName.length > 28) tradeName = tradeName.slice(0, 27) + '…';
+  const rawVessel = proceduralFactionMerchantShipName(homeFac, (npc.syncId | 0) ^ ((homeMeta.cx | 0) * 31 + (homeMeta.cz | 0) * 17), ws);
+  const vesselStem = reserveNpcShipStem(npc.syncId, rawVessel);
+  let tradeName = `${vesselStem} · ${shortLab}`;
+  if (tradeName.length > 56) tradeName = tradeName.slice(0, 55) + '…';
   npc.name = tradeName;
 }
 
@@ -267,7 +330,9 @@ function npcEffectiveForwardSpeed(npc, windAt) {
 function npcSailingTurnFactor(npc, windAt) {
   const v = npcEffectiveForwardSpeed(npc, windAt);
   const t = Math.min(1, Math.max(0, (v - 0.06) / 5.4));
-  return 0.11 + 0.89 * t * t;
+  let b = 0.11 + 0.89 * t * t;
+  if (npc.isTradeShip) b = Math.max(0.48, b);
+  return b;
 }
 
 function accelerateNpcToward(npc, dt, target) {
@@ -1044,13 +1109,16 @@ function createServerNpcWorld(opts) {
       underFireTimer: 0,
       riggingHealth: 100,
       fireCooldown: 0,
-      tradePhase: 'loading_home',
-      tradeTimer: 6 + sr() * 14
+      tradePhase: 'to_dest',
+      tradeTimer: 0
     };
     if (!assignTradeRouteFromHome(npc, home, allPorts, sr, ws, politics.portController)) return false;
     npc.homeEmbarkX = nx;
     npc.homeEmbarkZ = nz;
     npc.rotation = Math.atan2((npc.tradeDestX || nx) - nx, (npc.tradeDestZ || nz) - nz);
+    const maxSp = npcMaxForwardSpeed(npc);
+    npc.targetCruise = maxSp * (0.64 + sr() * 0.22);
+    npc.speed = maxSp * (0.38 + sr() * 0.22);
     npcs.push(npc);
     return true;
   }
@@ -1083,7 +1151,8 @@ function createServerNpcWorld(opts) {
       }
     }
     if (!haveSpawn) return false;
-    const patrolName = proceduralFactionPatrolShipName(fid, pick.cx | 0, pick.cz | 0, pid, ws);
+    const patrolRaw = proceduralFactionPatrolShipName(fid, pick.cx | 0, pick.cz | 0, pid, ws);
+    const patrolName = reserveNpcShipStem(pid, patrolRaw);
     const npc = {
       syncId: pid,
       x: nx,
@@ -1165,7 +1234,7 @@ function createServerNpcWorld(opts) {
       speed: 0,
       health: 60 + sr() * 40,
       type: npcType,
-      name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws),
+      name: reserveNpcShipStem(i, proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws)),
       wanderAngle: sr() * Math.PI * 2,
       wanderTimer: 5 + sr() * 10,
       underFireTimer: 0,
@@ -1184,6 +1253,7 @@ function createServerNpcWorld(opts) {
   }
 
   function reset(players) {
+    resetNpcShipNameRegistry();
     npcs = [];
     nextPatrolId = PATROL_SYNC_MIN;
     const playerMap = players instanceof Map ? players : new Map();
@@ -1224,7 +1294,7 @@ function createServerNpcWorld(opts) {
         speed: 0,
         health: 60 + sr() * 40,
         type: npcType,
-        name: proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws),
+        name: reserveNpcShipStem(i, proceduralPirateShipName(pirateFaction, chunkX, chunkZ, i, ws)),
         wanderAngle: sr() * Math.PI * 2,
         wanderTimer: 5 + sr() * 10,
         underFireTimer: 0,
@@ -1656,7 +1726,7 @@ function createServerNpcWorld(opts) {
               npc.homeEmbarkX = npc.x;
               npc.homeEmbarkZ = npc.z;
               npc.tradePhase = 'loading_home';
-              npc.tradeTimer = 5 + Math.random() * 10;
+              npc.tradeTimer = 2 + Math.random() * 4;
               npc.speed = 0;
             } else {
               merchantFallbackOceanTradeLeg(npc);
