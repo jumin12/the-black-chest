@@ -18030,15 +18030,43 @@ function updateNPCs(dt) {
       const delayNpc = useNetInterpNpc
         ? getEffectiveNpcNetObservationInterpDelayMs(!G.npcSimFromServer)
         : getEffectiveHullSnapInterpDelayMs();
-      /* Linear delayed sample + modest extrap — avoids recv-timeline playback fighting ring-buffer shifts; hull smoothing is mesh-only below. */
+      /* Velocity prediction + weak pull toward delayed spline anchor — stepping raw anchor alone reads as stutter. */
       const poseNet = useNetInterpNpc
-        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 28 })
+        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 36 })
         : null;
       if (poseNet && Number.isFinite(poseNet.x) && Number.isFinite(poseNet.z) && Number.isFinite(poseNet.ry)) {
-        npc.x = poseNet.x;
-        npc.z = poseNet.z;
+        const pvk = 1 - Math.exp(-24 * dt);
+        if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
+          npc._npcVelSmX = Number.isFinite(npc._npcVelSmX)
+            ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * pvk
+            : npc._npcVelTX;
+          npc._npcVelSmZ = Number.isFinite(npc._npcVelSmZ)
+            ? npc._npcVelSmZ + (npc._npcVelTZ - npc._npcVelSmZ) * pvk
+            : npc._npcVelTZ;
+        }
+        if (
+          !Number.isFinite(npc._npcPredX) ||
+          !Number.isFinite(npc._npcPredZ) ||
+          Math.hypot(poseNet.x - npc._npcPredX, poseNet.z - npc._npcPredZ) > 155
+        ) {
+          npc._npcPredX = poseNet.x;
+          npc._npcPredZ = poseNet.z;
+        }
+        const hvsm = Number.isFinite(npc._npcVelSmX) && Number.isFinite(npc._npcVelSmZ);
+        const vx = hvsm ? npc._npcVelSmX : 0;
+        const vz = hvsm ? npc._npcVelSmZ : 0;
+        npc._npcPredX += vx * dt;
+        npc._npcPredZ += vz * dt;
+        const ecx = poseNet.x - npc._npcPredX;
+        const ecz = poseNet.z - npc._npcPredZ;
+        const corr = 1 - Math.exp(-9.2 * dt);
+        npc._npcPredX += ecx * corr * 0.72;
+        npc._npcPredZ += ecz * corr * 0.72;
+        npc.x = npc._npcPredX;
+        npc.z = npc._npcPredZ;
         npc.rotation = poseNet.ry;
       } else {
+        npc._npcPredX = npc._npcPredZ = undefined;
         npc._npcNetSmVx = npc._npcNetSmVz = undefined;
         if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
@@ -18131,50 +18159,7 @@ function updateNPCs(dt) {
         if (npc.sinkTimer > 4) { scene.remove(npc.mesh); npc.mesh = null; npc.health = -999; }
       }
     } else if (npc.mesh) {
-      /* Remote / DS NPC logical x/z can step with net ticks; smooth **display** separately so sails read continuous without fighting sim anchors. */
-      const smoothNetNpcMesh =
-        !npc.sinking &&
-        (G.npcSimFromServer || (!host && !localTutorialRaid && ws && ws.readyState === 1));
-      let dispX = npc.x;
-      let dispZ = npc.z;
-      let dispRy = npc.rotation;
-      if (smoothNetNpcMesh) {
-        if (
-          !Number.isFinite(npc._npcMeshLagX) ||
-          !Number.isFinite(npc._npcMeshLagZ) ||
-          !Number.isFinite(npc._npcMeshLagRy)
-        ) {
-          npc._npcMeshLagX = npc.x;
-          npc._npcMeshLagZ = npc.z;
-          npc._npcMeshLagRy = npc.rotation;
-        }
-        const edx = npc.x - npc._npcMeshLagX;
-        const edz = npc.z - npc._npcMeshLagZ;
-        const es = Math.hypot(edx, edz);
-        if (es > 175) {
-          npc._npcMeshLagX = npc.x;
-          npc._npcMeshLagZ = npc.z;
-          npc._npcMeshLagRy = npc.rotation;
-        } else {
-          const vm = es / Math.max(dt, 1e-4);
-          const band = Math.min(78, 29 + vm * 0.048 + Math.min(42, es * 0.082));
-          const mk = 1 - Math.exp(-band * dt);
-          npc._npcMeshLagX += edx * mk;
-          npc._npcMeshLagZ += edz * mk;
-          let dr = npc.rotation - npc._npcMeshLagRy;
-          while (dr > Math.PI) dr -= Math.PI * 2;
-          while (dr < -Math.PI) dr += Math.PI * 2;
-          const rk = 1 - Math.exp(-Math.min(62, 26 + Math.abs(dr) * 7.5) * dt);
-          npc._npcMeshLagRy += dr * rk;
-        }
-        dispX = npc._npcMeshLagX;
-        dispZ = npc._npcMeshLagZ;
-        dispRy = npc._npcMeshLagRy;
-      } else {
-        npc._npcMeshLagX = npc._npcMeshLagZ = npc._npcMeshLagRy = undefined;
-      }
-
-      const nw = playerShipWaveAt(dispX, dispZ, dispRy);
+      const nw = playerShipWaveAt(npc.x, npc.z, npc.rotation);
       const nt = dampShipWaveTilt(nw.wavePitch, nw.waveRoll);
       /* Slightly softer than player — sharp XZ sync + instant sea height made hull bob look jittery. */
       const tiltK2 = 1 - Math.exp(-4.6 * dt);
@@ -18182,12 +18167,12 @@ function updateNPCs(dt) {
       if (!Number.isFinite(npc._visWaveRoll)) npc._visWaveRoll = nt.waveRoll;
       npc._visWavePitch += (nt.wavePitch - npc._visWavePitch) * tiltK2;
       npc._visWaveRoll += (nt.waveRoll - npc._visWaveRoll) * tiltK2;
-      const targetHullY = worldSeaSurfaceY(dispX, dispZ) + SHIP_FREEBOARD;
+      const targetHullY = worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
       if (!Number.isFinite(npc._npcHullSeaYVis)) npc._npcHullSeaYVis = targetHullY;
       const hullYK = 1 - Math.exp(-28 * dt);
       npc._npcHullSeaYVis += (targetHullY - npc._npcHullSeaYVis) * hullYK;
-      npc.mesh.position.set(dispX, npc._npcHullSeaYVis, dispZ);
-      npc.mesh.rotation.y = dispRy;
+      npc.mesh.position.set(npc.x, npc._npcHullSeaYVis, npc.z);
+      npc.mesh.rotation.y = npc.rotation;
       npc.mesh.rotation.x = npc._visWavePitch;
       npc.mesh.rotation.z = npc._visWaveRoll;
       {
@@ -18204,8 +18189,8 @@ function updateNPCs(dt) {
       }
       const wakeKey = npc.syncId != null ? `npc${npc.syncId}` : `npci${npcIdx}`;
       let effWakeSpd = npc.speed != null ? npc.speed : 0;
-      const wx = smoothNetNpcMesh ? dispX : npc.x;
-      const wz = smoothNetNpcMesh ? dispZ : npc.z;
+      const wx = npc.x;
+      const wz = npc.z;
       if (!host && !localTutorialRaid) {
         const px = npc._wakePrevX;
         const pz = npc._wakePrevZ;
@@ -18214,7 +18199,7 @@ function updateNPCs(dt) {
       }
       npc._wakePrevX = wx;
       npc._wakePrevZ = wz;
-      tickShipWakeSpawner(wakeKey, dispX, dispZ, dispRy, effWakeSpd, dt);
+      tickShipWakeSpawner(wakeKey, npc.x, npc.z, npc.rotation, effWakeSpd, dt);
     }
     if (stepping && !npc.sinking && (npc.health == null || npc.health > 0)
       && !(npc.syncId === TUTORIAL_RAID_NPC_SYNC && G.tutorialRaidCutscene && G.tutorialRaidCutscene.scriptingActive && !G.tutorialRaidCutscene._volleyTriggered)) steerNpcAvoidCloseShips(npc, dt);
@@ -30534,16 +30519,16 @@ function interpYawShortest(a, b, u) {
 }
 
 /**
- * Single delayed-playback clock for **both** other captains and DS NPC hulls so motion uses the same ring-buffer sampling.
- * ~2.75–3 ticks @60Hz typical — sits inside `_snapHist` more often than shorter delays (less extrapolation twitch).
+ * Delayed playback for remote hulls — scales ~weakly with RTT. Lower bound keeps jitter acceptable on LAN;
+ * caps prevent excessive rubber-band on jittery links.
  */
 function getEffectiveHullSnapInterpDelayMs() {
   const r =
     G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
       ? Math.min(520, Math.max(0, Number(G.clientServerRttMs)))
       : 75;
-  const d = 40 + r * 0.38;
-  return Math.max(46, Math.min(96, d));
+  const d = 28 + r * 0.28;
+  return Math.max(34, Math.min(78, d));
 }
 
 function getEffectiveRemoteInterpDelayMs() {
@@ -30554,10 +30539,10 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** NPC hull playback — match remote captain delay; shorter NPC-only delay sat in extrapolation more often → snaps when each snapshot lands. */
+/** Anchor ships slightly tighter than peer hulls — same recv buffer, less mushy AI motion vs captains. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   void relayObserver;
-  return getEffectiveHullSnapInterpDelayMs();
+  return Math.max(26, getEffectiveHullSnapInterpDelayMs() - 8);
 }
 
 /** Uniform Catmull–Rom scalar segment — smoother paths than linear lerp between quantized ~60Hz hull keys. */
