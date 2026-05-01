@@ -3018,6 +3018,40 @@ body.game-help-mobile-minimal #game-help-panel{
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/DRACOLoader.js';
+import { KTX2Loader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/KTX2Loader.js';
+
+/** One shared scenic GLTF bootstrap loader — must support Draco/Basis/Meshopt as used by Blender/Sketchfab exports. */
+const _THREE_CDN_JSM = 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/';
+const _gltfSceneBootstrapLoader = new GLTFLoader();
+let _gltfBootstrapDecodersAttached = false;
+let _townGlbUserAlertShown = false;
+
+/** Wire Draco/KTX2/Meshopt before parsing any scenic `.glb` (called from bootstrap). Uses `renderer` for Basis/transcoder probes. */
+async function attachGltfBootstrapDecoders(webRenderer) {
+  if (_gltfBootstrapDecodersAttached) return;
+  _gltfBootstrapDecodersAttached = true;
+  try {
+    const mod = await import('https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/libs/meshopt_decoder.module.js');
+    const M = mod.MeshoptDecoder != null ? mod.MeshoptDecoder : mod.default;
+    if (M && M.ready != null && typeof M.ready.then === 'function') await M.ready.catch(() => {});
+    if (M && typeof _gltfSceneBootstrapLoader.setMeshoptDecoder === 'function') {
+      _gltfSceneBootstrapLoader.setMeshoptDecoder(M);
+    }
+  } catch (_) {}
+  try {
+    const draco = new DRACOLoader();
+    draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+    try { draco.preload(); } catch (_) {}
+    _gltfSceneBootstrapLoader.setDRACOLoader(draco);
+  } catch (_) {}
+  try {
+    const ktx2 = new KTX2Loader();
+    ktx2.setTranscoderPath(_THREE_CDN_JSM + 'libs/basis/');
+    if (webRenderer) ktx2.detectSupport(webRenderer);
+    _gltfSceneBootstrapLoader.setKTX2Loader(ktx2);
+  } catch (_) {}
+}
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const _deviceMem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : null;
@@ -23859,16 +23893,8 @@ function resolveGameAssetUrl(relPath) {
   if (relPath == null || relPath === '') return relPath;
   const s = String(relPath);
   if (/^https?:\/\//i.test(s) || /^data:/i.test(s) || /^blob:/i.test(s)) return s;
+  /** Let `URL` canonicalize segments (spaces → %20 once). Segment-wise encodeURIComponent can double‑encode `%` paths and confuse glTF sibling texture loads. */
   const clean = s.replace(/^\//, '');
-  /** Encode each path segment (spaces in `3d models`, etc.) so fetches + glTF URI resolution match the static server. */
-  const encoded = clean.split('/').map((seg) => {
-    if (!seg) return seg;
-    try {
-      return encodeURIComponent(decodeURIComponent(seg));
-    } catch (eD) {
-      return encodeURIComponent(seg);
-    }
-  }).join('/');
   try {
     const proto = window.location.protocol;
     let base;
@@ -23877,10 +23903,10 @@ function resolveGameAssetUrl(relPath) {
     } else {
       base = window.location.href;
     }
-    return new URL(encoded, base).href;
+    return new URL(clean, base).href;
   } catch (e) {
     try {
-      return new URL(encoded, window.location.origin + '/').href;
+      return new URL(clean, window.location.origin + '/').href;
     } catch (e2) {
       return s;
     }
@@ -24018,7 +24044,7 @@ function warmupBinaryGameAssetCache(urls) {
 let _sceneGlbBootstrapPromise = null;
 /** After first successful scenic GLB parse, rebuild visible chunks once (init calls `updateChunks` before GLBs finish). */
 let _sceneGlbVisibleChunkRefreshScheduled = false;
-const _gltfSceneBootstrapLoader = new GLTFLoader();
+/** Scenic GLTFLoader instance + Draco/KTX/Meshopt: see module top `_gltfSceneBootstrapLoader` / `attachGltfBootstrapDecoders`. */
 
 /** Git LFS pointer files are tiny text; GLTFLoader cannot use them. */
 function arrayBufferLooksLikeGitLfsPointer(ab) {
@@ -24126,6 +24152,7 @@ function ensureSceneGlbsBootstrapped() {
   if (_sceneGlbBootstrapPromise) return _sceneGlbBootstrapPromise;
   const run = async () => {
     try {
+      await attachGltfBootstrapDecoders(renderer);
       const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
       const maxW = Math.min(16, Math.max(6, _deviceCores || 8));
       const buffers = await fetchGlbArrayBuffersWithWorkerPool(rels, maxW);
@@ -24187,14 +24214,30 @@ function ensureSceneGlbsBootstrapped() {
         try { console.warn('Scene GLB parse failed:', rel, eP); } catch (_) {}
       }
     }
-      const criticalHouseTemplates = [
+      const townBuildingCriticalRels = [
+        'assets/3d models/buildings/church.glb',
+        'assets/3d models/buildings/tavern.glb',
+        'assets/3d models/buildings/govmansion.glb',
         'assets/3d models/buildings/house1.glb',
         'assets/3d models/buildings/house2.glb',
         'assets/3d models/buildings/house3.glb'
       ];
-      const missH = criticalHouseTemplates.filter((hr) => !_gameGlbParsedSceneTemplates[hr]);
-      if (missH.length) {
-        try { console.warn('Town house GLB templates missing (check LFS / deploy):', missH.join(', ')); } catch (_) {}
+      const missTown = townBuildingCriticalRels.filter((hr) => !_gameGlbParsedSceneTemplates[hr]);
+      if (missTown.length) {
+        try { console.warn('Town building GLB templates missing / failed decode (Git LFS, Draco, or Basis):', missTown.join(', ')); } catch (_) {}
+        if (!_townGlbUserAlertShown) {
+          _townGlbUserAlertShown = true;
+          try {
+            setTimeout(() => {
+              try {
+                notify(
+                  'Port buildings did not load. Run `npm run pull-assets` (or `git lfs pull`). Hosts must install Git LFS and pull binaries (see scripts/render-build.sh). Compressed GLBs need network access to Goog CDN + Basis/WASM transcoder.',
+                  16000
+                );
+              } catch (_) {}
+            }, 550);
+          } catch (_) {}
+        }
       }
       if (!_sceneGlbVisibleChunkRefreshScheduled && Object.keys(_gameGlbParsedSceneTemplates).length > 0) {
         _sceneGlbVisibleChunkRefreshScheduled = true;
