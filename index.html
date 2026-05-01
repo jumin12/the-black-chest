@@ -19789,6 +19789,7 @@ function removeRemotePeer(lid) {
       op._snapHist = null;
       op._snapInterpTickBase = null;
       op._snapInterpMsBase = null;
+      op._lastPeerHistSrvTick = null;
       op._peerHullPredX = undefined;
       op._peerHullPredZ = undefined;
       op._peerHullRySm = undefined;
@@ -19809,11 +19810,9 @@ function enqueueNetStateMessage(msg) {
   const stRaw = msg.srvTick;
   if (stRaw != null && Number.isFinite(Number(stRaw))) {
     const st = Math.floor(Number(stRaw));
-    if (!G._stateSrvTickRecent) G._stateSrvTickRecent = [];
-    const r = G._stateSrvTickRecent;
-    if (r.indexOf(st) !== -1) return;
-    r.push(st);
-    if (r.length > 20) r.shift();
+    /* Drop only *consecutive* duplicate tick (dual-stack). A rolling window incorrectly dropped legitimate ticks after ~20 frames. */
+    if (G._netLastEnqueuedStateSrvTick === st) return;
+    G._netLastEnqueuedStateSrvTick = st;
   }
   if (!G._netStateDrainQueue) G._netStateDrainQueue = [];
   G._netStateDrainQueue.push(msg);
@@ -19986,7 +19985,8 @@ async function connectToServer() {
   G._netStatePrevArrivalAt = null;
   G._netLastStateGapMs = null;
   G._netStateDrainQueue = [];
-  G._stateSrvTickRecent = null;
+  G._netLastEnqueuedStateSrvTick = null;
+  G._lastAppliedStateSrvTick = null;
   try { G.netPeerStaleSince = null; } catch (e) {}
   G.multiplayerNpcAuthorityId = null;
   G.npcSimFromServer = false;
@@ -21466,27 +21466,47 @@ function applyNetStateMessage(msg, opts) {
     opts.snapshotWallMs != null && Number.isFinite(opts.snapshotWallMs) ? opts.snapshotWallMs : perfWall;
   if (!msg || typeof msg !== 'object') return;
   const wT = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
-  if (wT != null && applyWildlifeAnchor && !peerMergeOnly) anchorWildlifeClockFromServer(wT);
   if (!Array.isArray(msg.players)) return;
   const myIdForState = netPlayerId(G.myId);
   if (myIdForState == null) return;
+  const stNum = msg.srvTick != null ? Number(msg.srvTick) : null;
+  /**
+   * Out-of-order `state` (WS vs RTC skew, rare reorder) must be dropped whole-frame — applying tick N-1 after N
+   * rewinds authoritative rows and smears Catmull recv timelines (massive teleports). Large backward jump = restart.
+   */
+  if (stNum != null && Number.isFinite(stNum) && G._lastAppliedStateSrvTick != null && Number.isFinite(G._lastAppliedStateSrvTick)) {
+    if (stNum < G._lastAppliedStateSrvTick) {
+      const back = G._lastAppliedStateSrvTick - stNum;
+      if (back < 400) return;
+      try {
+        for (const op of G.otherPlayers.values()) {
+          if (!op) continue;
+          op._snapInterpTickBase = null;
+          op._snapInterpMsBase = null;
+          op._lastPeerHistSrvTick = null;
+        }
+      } catch (e) {}
+      G._lastAppliedStateSrvTick = null;
+      G._lastNetStateSrvTick = null;
+    }
+  }
   /** When the self-row is omitted (ordering bug or one bad tick), still merge AOI peers — old early-return stalled everyone. */
   const selfSnapPresent = msg.players.some(p => netPlayerId(p.id) === myIdForState);
+  if (wT != null && applyWildlifeAnchor && !peerMergeOnly) anchorWildlifeClockFromServer(wT);
   const wtNum = Number(wT);
   /* Fallback matches server TICK_RATE. Prefer srvTick delta when present — stable vs clock jitter. */
   let dtSnap = 1 / NET_SYNC_HZ;
   if (G._lastNetStateWT != null && Number.isFinite(wtNum) && Number.isFinite(G._lastNetStateWT)) {
     dtSnap = Math.max(1 / (NET_SYNC_HZ * 2), Math.min(0.48, wtNum - G._lastNetStateWT));
   }
-  const stNum = msg.srvTick != null ? Number(msg.srvTick) : null;
-  if (stNum != null && Number.isFinite(stNum) && G._lastNetStateSrvTick != null && Number.isFinite(G._lastNetStateSrvTick)) {
-    const dTick = stNum - G._lastNetStateSrvTick;
+  const prevStateSrvTick = G._lastNetStateSrvTick;
+  if (stNum != null && Number.isFinite(stNum) && prevStateSrvTick != null && Number.isFinite(prevStateSrvTick)) {
+    const dTick = stNum - prevStateSrvTick;
     if (dTick > 0 && dTick <= 128) {
       dtSnap = Math.max(1 / (NET_SYNC_HZ * 2), Math.min(0.48, dTick / NET_SYNC_HZ));
     }
   }
   if (Number.isFinite(wtNum)) G._lastNetStateWT = wtNum;
-  if (stNum != null && Number.isFinite(stNum)) G._lastNetStateSrvTick = stNum;
   let selfRow = null;
   const activeRemote = new Set();
   msg.players.forEach(p => {
@@ -21536,9 +21556,21 @@ function applyNetStateMessage(msg, opts) {
             : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(ex._snapHist)) ex._snapHist = [];
-          const recvMs = computePeerSnapRecvMs(ex, stNum, snapWallMs);
-          ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
-          while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
+          let doPush = true;
+          if (
+            stNum != null &&
+            Number.isFinite(stNum) &&
+            ex._lastPeerHistSrvTick != null &&
+            stNum <= ex._lastPeerHistSrvTick
+          ) {
+            doPush = false;
+          }
+          if (doPush) {
+            const recvMs = computePeerSnapRecvMs(ex, stNum, snapWallMs);
+            ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
+            while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
+            if (stNum != null && Number.isFinite(stNum)) ex._lastPeerHistSrvTick = stNum;
+          }
         }
       }
     } else {
@@ -21550,9 +21582,21 @@ function applyNetStateMessage(msg, opts) {
         const rr = nw.rotation != null && Number.isFinite(Number(nw.rotation)) ? Number(nw.rotation) : 0;
         if (Number.isFinite(rx) && Number.isFinite(rz)) {
           if (!Array.isArray(nw._snapHist)) nw._snapHist = [];
-          const recvMs = computePeerSnapRecvMs(nw, stNum, snapWallMs);
-          nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
-          while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
+          let doPushN = true;
+          if (
+            stNum != null &&
+            Number.isFinite(stNum) &&
+            nw._lastPeerHistSrvTick != null &&
+            stNum <= nw._lastPeerHistSrvTick
+          ) {
+            doPushN = false;
+          }
+          if (doPushN) {
+            const recvMs = computePeerSnapRecvMs(nw, stNum, snapWallMs);
+            nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
+            while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
+            if (stNum != null && Number.isFinite(stNum)) nw._lastPeerHistSrvTick = stNum;
+          }
         }
       }
     }
@@ -21582,6 +21626,10 @@ function applyNetStateMessage(msg, opts) {
   }
   if (reconcileSelf && selfRow && selfSnapPresent && G.mode === 'playing') try { reconcileLocalPlayerFromServerState(selfRow); } catch (e) {}
   if (runHudRoster && G.chatChannel === 'players') renderActivePlayersRoster();
+  if (stNum != null && Number.isFinite(stNum)) {
+    G._lastNetStateSrvTick = stNum;
+    G._lastAppliedStateSrvTick = stNum;
+  }
 }
 
 /** Server-authoritative last session snapshot (MMO) — skipped when a local voyage save owns progress. */
@@ -31110,7 +31158,8 @@ function computePeerSnapRecvMs(row, srvTick, wallMs) {
       row._snapInterpMsBase = wallMs;
     } else {
       const dtick = srvTick - row._snapInterpTickBase;
-      if (dtick > REMOTE_SNAP_HIST_MAX + 140 || dtick < -3) {
+      /* Only reset on long stall — negative dtick was rewinding the base against out-of-order ticks and nuked recv timelines. */
+      if (dtick > REMOTE_SNAP_HIST_MAX + 140) {
         row._snapInterpTickBase = srvTick;
         row._snapInterpMsBase = wallMs;
       }
