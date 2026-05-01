@@ -16449,20 +16449,52 @@ function npcCollisionShipType(npc) {
   return (t && SHIP_TYPES[t]) ? t : 'sloop';
 }
 
+/**
+ * Smoothed hull pose used for local physics vs remote peers. Raw `op.x`/`op.z` advance in AOI snapshot steps
+ * while the mesh uses `netSmooth` — resolving overlap against snaps makes both clients “teleport” when close in MP.
+ */
+function getRemotePlayerHullPoseForPhysics(op, remotePlayerId) {
+  if (!op) return null;
+  const sg = remotePlayerId != null && otherShipGroups ? otherShipGroups.get(remotePlayerId) : null;
+  const ns = sg && sg.userData && sg.userData.netSmooth;
+  if (ns && Number.isFinite(ns.x) && Number.isFinite(ns.z) && Number.isFinite(ns.ry)) {
+    return { x: ns.x, z: ns.z, rotation: ns.ry };
+  }
+  const ox = Number(op.x),
+    oz = Number(op.z);
+  if (!Number.isFinite(ox) || !Number.isFinite(oz)) return null;
+  const rr = op.rotation != null && Number.isFinite(Number(op.rotation)) ? Number(op.rotation) : 0;
+  return { x: ox, z: oz, rotation: rr };
+}
+
 /** Land + NPC hull overlap test at a candidate player position (OBB, harbor truce when both in exempt ring). */
 function playerAtSeaPositionClear(tx, tz, yaw, shipType, hullPart) {
   if (shipFootprintOverlapsLand(tx, tz, yaw, shipType)) return false;
-  if (!G.npcs || !G.npcs.length) return true;
   const hp = hullPart != null ? hullPart : (G.player.shipParts && G.player.shipParts.hull);
   const margin = 0.935;
   const st = shipType || 'sloop';
-  for (let i = 0; i < G.npcs.length; i++) {
-    const npc = G.npcs[i];
-    if (npc.sinking || npc.health <= 0) continue;
-    const nt = npcCollisionShipType(npc);
-    if (playerInHarborRamExemptZone(tx, tz, st) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) continue;
-    const sep = obbShipsSeparation(tx, tz, yaw, st, npc.x, npc.z, npc.rotation, nt, margin, hp, npcCollisionHullPart(npc));
-    if (sep) return false;
+  if (G.npcs && G.npcs.length) {
+    for (let i = 0; i < G.npcs.length; i++) {
+      const npc = G.npcs[i];
+      if (npc.sinking || npc.health <= 0) continue;
+      const nt = npcCollisionShipType(npc);
+      if (playerInHarborRamExemptZone(tx, tz, st) && playerInHarborRamExemptZone(npc.x, npc.z, nt)) continue;
+      const sep = obbShipsSeparation(tx, tz, yaw, st, npc.x, npc.z, npc.rotation, nt, margin, hp, npcCollisionHullPart(npc));
+      if (sep) return false;
+    }
+  }
+  if (G.otherPlayers && G.otherPlayers.size) {
+    for (const [pid, peer] of G.otherPlayers) {
+      if (!peer || peer.docked) continue;
+      const mh = peer.health != null ? Number(peer.health) : null;
+      if (mh != null && Number.isFinite(mh) && mh <= 0) continue;
+      const pose = getRemotePlayerHullPoseForPhysics(peer, pid);
+      if (!pose) continue;
+      const pt = peer.shipType || 'sloop';
+      if (playerInHarborRamExemptZone(tx, tz, st) && playerInHarborRamExemptZone(pose.x, pose.z, pt)) continue;
+      const sepP = obbShipsSeparation(tx, tz, yaw, st, pose.x, pose.z, pose.rotation, pt, margin, hp, peer.shipParts && peer.shipParts.hull);
+      if (sepP) return false;
+    }
   }
   return true;
 }
@@ -16580,19 +16612,34 @@ function pushPlayerOutOfShipOverlaps() {
       }
     });
     if (G.otherPlayers && G.otherPlayers.size) {
-      for (const op of G.otherPlayers.values()) {
-        if (op.x == null || op.z == null) continue;
+      for (const [peerId, op] of G.otherPlayers) {
         if (op.docked) continue;
-        if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(op.x, op.z, op.shipType || 'sloop')) continue;
+        const poseOp = getRemotePlayerHullPoseForPhysics(op, peerId);
+        if (!poseOp) continue;
+        const opType = op.shipType || 'sloop';
+        if (playerInHarborRamExemptZone(G.player.x, G.player.z, pTypeEx) && playerInHarborRamExemptZone(poseOp.x, poseOp.z, opType)) continue;
         const opHull = op.shipParts && op.shipParts.hull;
-        const sepOp = obbShipsSeparation(G.player.x, G.player.z, G.player.rotation, G.player.shipType, op.x, op.z, op.rotation || 0, op.shipType || 'sloop', margin, pHull, opHull);
+        const sepOp = obbShipsSeparation(
+          G.player.x,
+          G.player.z,
+          G.player.rotation,
+          G.player.shipType,
+          poseOp.x,
+          poseOp.z,
+          poseOp.rotation,
+          opType,
+          margin,
+          pHull,
+          opHull
+        );
         if (!sepOp) continue;
         {
-          const oid = op.id != null ? op.id : 0;
+          const oid = op.id != null ? op.id : peerId;
           const rKey = G.myId != null ? `me${G.myId}|pl${oid}` : `me|pl${oid}`;
           if (canApplyRamPair(rKey, G.time)) {
             const ov = networkShipVelocityXZ(op);
-            const stP = computeRamStrike(pPos, op, G.player.shipType, op.shipType || 'sloop', G.player.rotation, pv.vx, pv.vz, ov.vx, ov.vz);
+            const attackerStub = { x: poseOp.x, z: poseOp.z };
+            const stP = computeRamStrike(pPos, attackerStub, G.player.shipType, opType, G.player.rotation, pv.vx, pv.vz, ov.vx, ov.vz);
             if (stP.dmg > 0) {
               G.player.health = Math.max(0, G.player.health - stP.dmg);
               {
@@ -16607,7 +16654,7 @@ function pushPlayerOutOfShipOverlaps() {
               notify(`Ram! −${Math.round(stP.dmg)} hull`);
             }
           }
-          const push = sepOp.depth * 0.38;
+          const push = sepOp.depth * (ws && ws.readyState === 1 ? 0.29 : 0.38);
           G.player.x += sepOp.nx * push;
           G.player.z += sepOp.nz * push;
           moved = true;
