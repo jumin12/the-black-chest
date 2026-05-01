@@ -5,6 +5,6 @@ self.onmessage = function (e) {
   for (let i = 0; i < urls.length; i++) {
     const url = urls[i];
     if (!url) continue;
-    fetch(url, { cache: 'force-cache', mode: 'cors', credentials: 'omit', redirect: 'follow', referrerPolicy: 'same-origin' }).catch(function () {});
+    fetch(url, { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' }).catch(function () {});
   }
 };
