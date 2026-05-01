@@ -4373,6 +4373,17 @@ function applyAuthoritativeNpcSinkWorldFx(npc) {
   detachNpcCrewAndSpawnBailSwimmers(npc, {});
 }
 
+/** Full-screen WebGL canvas can sit above stacked UI depending on UA; menus must receive clicks whenever not sailing. */
+function syncPrimaryGameCanvasHitTarget() {
+  try {
+    if (typeof renderer === 'undefined' || !renderer || !renderer.domElement) return;
+    const mpConnecting = document.body.classList.contains('mp-connecting-active');
+    const frozen = !!(typeof G !== 'undefined' && G && G.netDesyncFrozen);
+    const play = !!(typeof G !== 'undefined' && G && G.mode === 'playing');
+    renderer.domElement.style.pointerEvents = play && !mpConnecting && !frozen ? 'auto' : 'none';
+  } catch (_e) {}
+}
+
 function setMultiplayerConnectingOverlay(show) {
   const el = document.getElementById('mp-connecting-overlay');
   if (!el) return;
@@ -4382,11 +4393,7 @@ function setMultiplayerConnectingOverlay(show) {
   try {
     document.body.classList.toggle('mp-connecting-active', on);
   } catch (e) {}
-  try {
-    if (typeof renderer !== 'undefined' && renderer && renderer.domElement) {
-      renderer.domElement.style.pointerEvents = on ? 'none' : '';
-    }
-  } catch (e2) {}
+  syncPrimaryGameCanvasHitTarget();
 }
 
 function setDesyncBlockingOverlay(show, message) {
@@ -4397,6 +4404,7 @@ function setDesyncBlockingOverlay(show, message) {
     G.netDesyncFrozen = false;
     el.style.display = 'none';
     el.setAttribute('aria-hidden', 'true');
+    syncPrimaryGameCanvasHitTarget();
     return;
   }
   const p = document.getElementById('desync-blocking-msg');
@@ -4405,6 +4413,7 @@ function setDesyncBlockingOverlay(show, message) {
   try { setMultiplayerConnectingOverlay(false); } catch (e) {}
   el.style.display = 'flex';
   el.setAttribute('aria-hidden', 'false');
+  syncPrimaryGameCanvasHitTarget();
 }
 
 function detachNpcCrewAndSpawnBailSwimmers(npc, sinkOpts) {
@@ -6206,10 +6215,18 @@ renderer.shadowMap.enabled = !isMobile;
 if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.setClearColor(0x152a45, 1);
 document.body.prepend(renderer.domElement);
+renderer.domElement.id = 'primary-game-gl-canvas';
+renderer.domElement.style.position = 'fixed';
+renderer.domElement.style.top = '0';
+renderer.domElement.style.left = '0';
+renderer.domElement.style.width = '100%';
+renderer.domElement.style.height = '100%';
+renderer.domElement.style.zIndex = '2';
 renderer.domElement.style.background = '#152a45';
 renderer.domElement.style.touchAction = 'none';
 renderer.domElement.tabIndex = 0;
 renderer.domElement.style.outline = 'none';
+try { syncPrimaryGameCanvasHitTarget(); } catch (_eGl) {}
 let _webglReloadScheduled = false;
 renderer.domElement.addEventListener('webglcontextlost', e => {
   try { e.preventDefault(); } catch (err) {}
@@ -35683,6 +35700,7 @@ function beginVoyageAfterCharacter() {
   ensurePolitics();
   G.townStockpiles = {};
   G.mode = 'playing';
+  try { syncPrimaryGameCanvasHitTarget(); } catch (_eCg) {}
   kickOffGameAssetPreload();
   G.player.speed = 1;
   G.fallbackWorldSeed = CANONICAL_DEFAULT_WORLD_SEED >>> 0;
@@ -35875,6 +35893,7 @@ function exitGameToMainMenu() {
     saveProgress();
   } catch (e) {}
   G.mode = 'start';
+  try { syncPrimaryGameCanvasHitTarget(); } catch (_eEx) {}
   G.player.speed = 0;
   G.playWorldAwaitingNetInit = false;
   try {
@@ -36640,34 +36659,33 @@ function menuRender() {
   }
   document.body.classList.add('game-boot-active');
   try { kickOffGameAssetPreload(); } catch (e) {}
-  if (sub) sub.textContent = 'Caching 3D voyages…';
-  const BOOT_GLTF_CEILING_MS = 14000;
-  void (async () => {
-    try {
-      await Promise.race([
-        ensureGameGltfTemplatesLoaded(),
-        new Promise(resolve => setTimeout(resolve, BOOT_GLTF_CEILING_MS))
-      ]);
-    } catch (_ge) {}
-    let frames = 0;
-    function step() {
-      frames++;
-      if (sub && frames === 3) sub.textContent = 'Warming water, sky, and main menu…';
-      if (frames < 5) {
-        requestAnimationFrame(step);
-        return;
-      }
-      if (sub) sub.textContent = 'Ready.';
-      setTimeout(() => {
-        if (el) {
-          el.style.display = 'none';
-          el.setAttribute('aria-hidden', 'true');
-        }
-        document.body.classList.remove('game-boot-active');
-      }, 120);
+  if (sub) sub.textContent = 'Caching charts & 3D models…';
+  try { void ensureGameGltfTemplatesLoaded(); } catch (_ePre) {}
+  let frames = 0;
+  function step() {
+    frames++;
+    if (sub && frames === 3) sub.textContent = 'Warming water, sky, and main menu…';
+    if (frames < 5) {
+      requestAnimationFrame(step);
+      return;
     }
-    requestAnimationFrame(step);
-  })();
+    if (sub) sub.textContent = 'Ready.';
+    setTimeout(() => {
+      if (el) {
+        el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
+      }
+      document.body.classList.remove('game-boot-active');
+    }, 120);
+  }
+  requestAnimationFrame(step);
+  setTimeout(() => {
+    document.body.classList.remove('game-boot-active');
+    if (el) {
+      el.style.display = 'none';
+      el.setAttribute('aria-hidden', 'true');
+    }
+  }, 20000);
 })();
 menuRender();
 
@@ -36759,6 +36777,7 @@ if (_menuStartBtn) _menuStartBtn.onclick = () => {
     }
     document.getElementById('create-screen').style.display = 'none';
     G.mode = 'playing';
+    try { syncPrimaryGameCanvasHitTarget(); } catch (_eRs) {}
     kickOffGameAssetPreload();
     G.player.speed = Math.max(G.player.speed, 1);
     G.fallbackWorldSeed = CANONICAL_DEFAULT_WORLD_SEED >>> 0;
