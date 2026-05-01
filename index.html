@@ -3018,6 +3018,7 @@ body.game-help-mobile-minimal #game-help-panel{
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/DRACOLoader.js';
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const _deviceMem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : null;
@@ -23843,7 +23844,24 @@ function warmupBinaryGameAssetCache(urls) {
 }
 
 let _worldGlbLoadPromise = null;
-let _worldGlbLoadFailed = false;
+/** True after a full fetch+parse attempt finished (individual files may have failed); further awaits resolve immediately. */
+let _worldGlbHydrationFinished = false;
+/** @type {GLTFLoader | null} */
+let _sharedWorldGltfLoader = null;
+
+function getSharedWorldGLTFLoader() {
+  if (!_sharedWorldGltfLoader) {
+    const loader = new GLTFLoader();
+    try {
+      const draco = new DRACOLoader();
+      draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/libs/draco/');
+      loader.setDRACOLoader(draco);
+    } catch (e) {}
+    _sharedWorldGltfLoader = loader;
+  }
+  return _sharedWorldGltfLoader;
+}
+
 /** @type {Map<string, THREE.Object3D>} */
 const _worldGlbTemplates = new Map();
 const WORLD_GLB_FETCH_WORKERS = Math.max(
@@ -23855,7 +23873,6 @@ const WORLD_GLB_FETCH_WORKERS = Math.max(
 );
 
 function worldGlbTemplatesReady() {
-  if (_worldGlbLoadFailed) return false;
   const rels = GAME_WORLD_GLB_REL_PATHS;
   for (let i = 0; i < rels.length; i++) {
     if (!_worldGlbTemplates.has(rels[i])) return false;
@@ -23864,7 +23881,7 @@ function worldGlbTemplatesReady() {
 }
 
 function getWorldGlbTemplate(relPath) {
-  if (_worldGlbLoadFailed || relPath == null) return null;
+  if (relPath == null) return null;
   return _worldGlbTemplates.get(String(relPath)) || null;
 }
 
@@ -23966,51 +23983,57 @@ function fetchGlbBuffersWithWorkerPool(absoluteUrls, onSliceDone) {
 }
 
 async function ensureWorldGlbModelsLoaded(statusOpt) {
-  if (_worldGlbLoadFailed || worldGlbTemplatesReady()) return;
-  if (_worldGlbLoadPromise) return _worldGlbLoadPromise;
+  if (_worldGlbHydrationFinished) return;
+  if (_worldGlbLoadPromise) {
+    await _worldGlbLoadPromise;
+    return;
+  }
   const rels = GAME_WORLD_GLB_REL_PATHS;
   const subEl = statusOpt && statusOpt.subEl;
   _worldGlbLoadPromise = (async () => {
-    if (rels.length === 0) return;
+    if (rels.length === 0) {
+      _worldGlbHydrationFinished = true;
+      return;
+    }
     if (subEl) subEl.textContent = 'Loading 3D world models (' + rels.length + ')…';
     const urls = rels.map((r) => resolveGameAssetUrl(r));
-    let buffers;
-    try {
-      buffers = await fetchGlbBuffersWithWorkerPool(urls, (done, tot) => {
-        if (subEl) subEl.textContent = 'Fetching 3D models… ' + done + ' / ' + tot;
-      });
-    } catch (eFetch) {
-      throw eFetch;
-    }
-    const loader = new GLTFLoader();
+    const buffers = await fetchGlbBuffersWithWorkerPool(urls, (done, tot) => {
+      if (subEl) subEl.textContent = 'Fetching 3D models… ' + done + ' / ' + tot;
+    });
+    const loader = getSharedWorldGLTFLoader();
     if (subEl) subEl.textContent = 'Parsing 3D models…';
     for (let i = 0; i < rels.length; i++) {
-      const gltf = await new Promise((resolve, reject) => {
+      try {
+        const gltf = await new Promise((resolve, reject) => {
+          try {
+            loader.parse(
+              buffers[i],
+              '',
+              (g) => resolve(g),
+              (err) => reject(err || new Error('gltf parse'))
+            );
+          } catch (e2) {
+            reject(e2);
+          }
+        });
+        annotateWorldGlbTemplateShadows(gltf.scene);
+        _worldGlbTemplates.set(rels[i], gltf.scene);
+      } catch (pe) {
         try {
-          loader.parse(
-            buffers[i],
-            '',
-            (g) => resolve(g),
-            (err) => reject(err || new Error('gltf parse'))
-          );
-        } catch (e2) {
-          reject(e2);
-        }
-      });
-      annotateWorldGlbTemplateShadows(gltf.scene);
-      _worldGlbTemplates.set(rels[i], gltf.scene);
+          console.warn('World GLB parse failed:', rels[i], pe);
+        } catch (e3) {}
+      }
       if (subEl) subEl.textContent = 'Parsing 3D models… ' + (i + 1) + ' / ' + rels.length;
     }
     if (subEl) subEl.textContent = '3D scenery ready.';
+    _worldGlbHydrationFinished = true;
   })();
   try {
     await _worldGlbLoadPromise;
   } catch (e) {
     _worldGlbLoadPromise = null;
-    _worldGlbLoadFailed = true;
-    _worldGlbTemplates.clear();
     try {
-      console.warn('World GLB pack failed:', e);
+      console.warn('World GLB pack fetch failed:', e);
     } catch (e2) {}
     throw e;
   }
@@ -35327,6 +35350,26 @@ function buildTutorialSteps() {
 
 let _pendingTutorialAfterHelp = false;
 
+/** After the help modal has been closed once, hide "Skip HUD tour" on later opens. */
+const GAME_HELP_ALREADY_OPENED_LS = 'pirates_game_help_already_opened_v1';
+
+function syncGameHelpSkipTutorialHudVisibility() {
+  const sb = document.getElementById('game-help-skip-tutorial-hud');
+  if (!sb) return;
+  let openedBefore = false;
+  try {
+    openedBefore = localStorage.getItem(GAME_HELP_ALREADY_OPENED_LS) === '1';
+  } catch (e) {}
+  sb.style.display = openedBefore ? 'none' : '';
+}
+
+function markGameHelpModalOpenedForSkipButton() {
+  try {
+    localStorage.setItem(GAME_HELP_ALREADY_OPENED_LS, '1');
+  } catch (e) {}
+  syncGameHelpSkipTutorialHudVisibility();
+}
+
 function gameHelpSetTab(tab) {
   document.querySelectorAll('#game-help-modal .game-help-tab').forEach(b => {
     const on = b.getAttribute('data-help-tab') === tab;
@@ -35356,6 +35399,7 @@ function openGameHelpModal(opts = {}) {
   root.style.display = 'flex';
   root.setAttribute('aria-hidden', 'false');
   document.getElementById('btn-help')?.classList.add('active');
+  syncGameHelpSkipTutorialHudVisibility();
   requestAnimationFrame(() => {
     syncGameHelpScrollbarThumb();
     requestAnimationFrame(() => syncGameHelpScrollbarThumb());
@@ -35367,6 +35411,7 @@ function closeGameHelpModal(options = {}) {
   const skipHudStartRaid = !!options.skipTutorialHudStartRaidAfterClose;
   const root = document.getElementById('game-help-modal');
   if (!root || root.style.display !== 'flex') return;
+  markGameHelpModalOpenedForSkipButton();
   root.style.display = 'none';
   root.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('game-help-mobile-minimal');
@@ -35387,6 +35432,7 @@ function dismissGameHelpForMainMenu() {
   document.getElementById('btn-help')?.classList.remove('help-welcome-pulse');
   document.getElementById('btn-help')?.classList.remove('active');
   const gh = document.getElementById('game-help-modal');
+  if (gh && gh.style.display === 'flex') markGameHelpModalOpenedForSkipButton();
   if (gh) {
     gh.style.display = 'none';
     gh.setAttribute('aria-hidden', 'true');
@@ -35876,7 +35922,7 @@ document.getElementById('tutorial-skip')?.addEventListener('click', () => {
   restoreMobileGameControls();
 });
 
-function beginVoyageAfterCharacter() {
+async function beginVoyageAfterCharacter() {
   if (!acquireGameTabLockOrExplain()) {
     resetDuplicateSessionOverlayCopy();
     showDuplicateSessionOverlay();
@@ -35923,6 +35969,11 @@ function beginVoyageAfterCharacter() {
   G.player.riggingHealth = 100;
   G.player.morale = 100;
   trimCrewAndPrisonersToShipLimits();
+  try {
+    await ensureWorldGlbModelsLoaded();
+  } catch (eGl) {
+    try { console.warn('Voyage GLB preload', eGl); } catch (e1) {}
+  }
   updateChunks();
   initTownStockpiles();
   spawnNPCs();
@@ -35972,7 +36023,7 @@ function launchGame() {
     if (r) r.checked = true;
     if (pick) pick.style.display = 'flex';
   } else {
-    beginVoyageAfterCharacter();
+    void beginVoyageAfterCharacter();
   }
 }
 
@@ -35980,7 +36031,7 @@ document.getElementById('mobile-layout-confirm')?.addEventListener('click', () =
   const r = document.querySelector('input[name="mob-scheme"]:checked');
   G.mobileControlScheme = r ? Math.max(0, Math.min(3, parseInt(r.value, 10))) : 0;
   try { localStorage.setItem('pirates_mobile_scheme', String(G.mobileControlScheme)); } catch (e) {}
-  beginVoyageAfterCharacter();
+  void beginVoyageAfterCharacter();
 });
 
 document.getElementById('quest-toggle-btn')?.addEventListener('click', () => {
@@ -36972,6 +37023,7 @@ function drawMenuBg() {
 
 document.getElementById('start-btn').onclick = () => {
   if (voyageSaveExistsInStorage()) {
+    void (async () => {
     if (!acquireGameTabLockOrExplain()) {
       resetDuplicateSessionOverlayCopy();
       showDuplicateSessionOverlay();
@@ -36996,6 +37048,11 @@ document.getElementById('start-btn').onclick = () => {
     destroyAmbientWildlife();
     noise = new SimplexNoise(G.worldSeed >>> 0);
     clampPlayerIntoWorldBounds();
+    try {
+      await ensureWorldGlbModelsLoaded();
+    } catch (eGl) {
+      try { console.warn('Continue voyage GLB preload', eGl); } catch (e0) {}
+    }
     updateChunks();
     {
       const st = G.player.shipType || 'sloop';
@@ -37028,6 +37085,7 @@ document.getElementById('start-btn').onclick = () => {
       syncMusicAndTravelVolume();
       notify('Progress restored');
     });
+    })();
   } else {
     document.getElementById('start-screen').style.display = 'none';
     document.getElementById('create-screen').style.display = 'block';
