@@ -2012,7 +2012,8 @@ function tryServeRepoRootStatic(method, reqPath, res) {
     res.writeHead(200, {
       'Content-Type': mimeTypeForFile(fp),
       'Cache-Control': 'public, max-age=86400',
-      ...CORS_HEADERS
+      ...CORS_HEADERS,
+      ...STATIC_CROSS_ORIGIN_HEADERS
     });
     res.end(data);
   });
