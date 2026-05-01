@@ -17,11 +17,11 @@ const VANILLA_PIRATE_RESPAWN_MS = 180000;
 const COMBAT_HOSTILE_STANDING = -42;
 
 const SHIP_TYPES = {
-  cutter: { hullLen: 6.55, hullW: 2.1, speed: 1.75, turnRate: 1.6, cannonSlots: 1 },
-  sloop: { hullLen: 9.17, hullW: 2.88, speed: 1.5, turnRate: 1.3, cannonSlots: 2 },
-  brigantine: { hullLen: 13.1, hullW: 4.19, speed: 1.25, turnRate: 1.0, cannonSlots: 4 },
-  galleon: { hullLen: 18.35, hullW: 5.9, speed: 0.94, turnRate: 0.7, cannonSlots: 6 },
-  warship: { hullLen: 23.6, hullW: 7.2, speed: 0.69, turnRate: 0.5, cannonSlots: 10 }
+  cutter: { hullLen: 7, hullW: 2.2, speed: 1.75, turnRate: 1.6, cannonSlots: 1 },
+  sloop: { hullLen: 10, hullW: 3.05, speed: 1.5, turnRate: 1.3, cannonSlots: 2 },
+  brigantine: { hullLen: 14, hullW: 4.4, speed: 1.25, turnRate: 1.0, cannonSlots: 4 },
+  galleon: { hullLen: 20, hullW: 6.35, speed: 0.94, turnRate: 0.7, cannonSlots: 6 },
+  warship: { hullLen: 25, hullW: 7.75, speed: 0.69, turnRate: 0.5, cannonSlots: 10 }
 };
 
 const FACTION_TRADE_COLORS = ['#c8102e', '#e87722', '#0055a4', '#e6bc0c', '#1a7a3e'];

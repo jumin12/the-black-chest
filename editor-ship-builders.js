@@ -4,26 +4,11 @@
 import * as THREE from 'three';
 
 export const SHIP_TYPES_ME = {
-  cutter: {
-    name: 'Cutter', desc: 'Shoal-draft courier — razor entry, single lofty mast',
-    hullLen: 6.55, hullW: 2.1, hullH: 1.31, masts: 1, cannonSlots: 1, bowStyle: 'pointed'
-  },
-  sloop: {
-    name: 'Sloop', desc: 'Low freeboard predator — blade bow under one huge spread',
-    hullLen: 9.17, hullW: 2.88, hullH: 1.71, masts: 1, cannonSlots: 2, bowStyle: 'pointed'
-  },
-  brigantine: {
-    name: 'Brigantine', desc: 'Square-forward brig rig — muscular waist built for cargoes',
-    hullLen: 13.1, hullW: 4.19, hullH: 2.23, masts: 2, cannonSlots: 4, bowStyle: 'wide'
-  },
-  galleon: {
-    name: 'Galleon', desc: 'High-poop Iberian lump — bee-hive stern and laden hold',
-    hullLen: 18.35, hullW: 5.9, hullH: 3.05, masts: 3, cannonSlots: 6, bowStyle: 'wide'
-  },
-  warship: {
-    name: 'Man-o-War', desc: 'Three-deck thunder — bluff bows, castles, stepped broadsides',
-    hullLen: 23.6, hullW: 7.2, hullH: 3.68, masts: 3, cannonSlots: 10, bowStyle: 'blunt'
-  }
+  cutter: { name: 'Cutter', desc: 'Single-masted dispatch — sharp entry, lean waterline', hullLen: 7, hullW: 2.2, hullH: 1.45, masts: 1, cannonSlots: 1, bowStyle: 'pointed' },
+  sloop: { name: 'Sloop', desc: 'Fore-and-aft raider — long bow, speed over cargo', hullLen: 10, hullW: 3.05, hullH: 1.82, masts: 1, cannonSlots: 2, bowStyle: 'pointed' },
+  brigantine: { name: 'Brigantine', desc: 'Two-masted workhorse — square driver, wide midships', hullLen: 14, hullW: 4.4, hullH: 2.35, masts: 2, cannonSlots: 4, bowStyle: 'wide' },
+  galleon: { name: 'Galleon', desc: 'Bulging hold — towering sterncastle, three tall masts', hullLen: 20, hullW: 6.35, hullH: 3.35, masts: 3, cannonSlots: 6, bowStyle: 'wide' },
+  warship: { name: 'Man-o-War', desc: 'Line-of-battle hull — gunports, armored quarters, ram bow', hullLen: 25, hullW: 7.75, hullH: 4.05, masts: 3, cannonSlots: 10, bowStyle: 'blunt' }
 };
 
 export const SHIP_PARTS_ME = {
@@ -55,58 +40,6 @@ export const SHIP_PARTS_ME = {
   ]
 };
 
-function buildShipHullPlanShapeME(type, hw, hl) {
-  const shape = new THREE.Shape();
-  if (type === 'cutter') {
-    shape.moveTo(-hw * 0.92, -hl);
-    shape.lineTo(-hw * 1.04, -hl * 0.24); shape.lineTo(-hw * 0.82, hl * 0.46); shape.lineTo(-hw * 0.46, hl * 0.86);
-    shape.lineTo(0, hl * 0.94); shape.lineTo(hw * 0.46, hl * 0.86); shape.lineTo(hw * 0.82, hl * 0.46);
-    shape.lineTo(hw * 1.04, -hl * 0.24); shape.lineTo(hw * 0.92, -hl); shape.lineTo(0, -hl * 1.06);
-    shape.closePath();
-  } else if (type === 'sloop') {
-    shape.moveTo(-hw * 0.94, -hl);
-    shape.lineTo(-hw * 1.08, -hl * 0.29); shape.lineTo(-hw * 0.9, hl * 0.52); shape.lineTo(-hw * 0.55, hl * 0.9);
-    shape.lineTo(0, hl); shape.lineTo(hw * 0.55, hl * 0.9); shape.lineTo(hw * 0.9, hl * 0.52);
-    shape.lineTo(hw * 1.08, -hl * 0.29); shape.lineTo(hw * 0.94, -hl); shape.lineTo(0, -hl * 1.05);
-    shape.closePath();
-  } else if (type === 'brigantine') {
-    shape.moveTo(-hw, -hl);
-    shape.lineTo(-hw * 1.16, -hl * 0.34); shape.lineTo(-hw * 1.04, hl * 0.22); shape.lineTo(-hw, hl * 0.53);
-    shape.lineTo(-hw * 0.58, hl * 0.92); shape.lineTo(0, hl); shape.lineTo(hw * 0.58, hl * 0.92);
-    shape.lineTo(hw, hl * 0.53); shape.lineTo(hw * 1.04, hl * 0.22); shape.lineTo(hw * 1.16, -hl * 0.34); shape.lineTo(hw, -hl);
-    shape.lineTo(0, -hl * 1.06); shape.closePath();
-  } else if (type === 'galleon') {
-    shape.moveTo(-hw * 0.98, -hl);
-    shape.lineTo(-hw * 1.22, -hl * 0.38); shape.lineTo(-hw * 1.1, hl * 0.12); shape.lineTo(-hw * 0.98, hl * 0.52);
-    shape.lineTo(-hw * 0.62, hl * 0.94); shape.lineTo(0, hl * 0.995); shape.lineTo(hw * 0.62, hl * 0.94);
-    shape.lineTo(hw * 0.98, hl * 0.52); shape.lineTo(hw * 1.1, hl * 0.12); shape.lineTo(hw * 1.22, -hl * 0.38); shape.lineTo(hw * 0.98, -hl);
-    shape.lineTo(0, -hl * 1.02); shape.closePath();
-  } else if (type === 'warship') {
-    shape.moveTo(-hw * 1.02, -hl * 0.97);
-    shape.lineTo(-hw * 1.05, -hl * 0.18); shape.lineTo(-hw * 0.96, hl * 0.38); shape.lineTo(-hw * 0.64, hl * 0.88);
-    shape.lineTo(0, hl * 0.988); shape.lineTo(hw * 0.64, hl * 0.88); shape.lineTo(hw * 0.96, hl * 0.38);
-    shape.lineTo(hw * 1.05, -hl * 0.18); shape.lineTo(hw * 1.02, -hl * 0.97); shape.lineTo(0, -hl);
-    shape.closePath();
-  } else {
-    shape.moveTo(-hw, -hl); shape.lineTo(-hw * 1.1, -hl * 0.3); shape.lineTo(-hw, hl * 0.5);
-    shape.lineTo(-hw * 0.6, hl * 0.9); shape.lineTo(0, hl); shape.lineTo(hw * 0.6, hl * 0.9);
-    shape.lineTo(hw, hl * 0.5); shape.lineTo(hw * 1.1, -hl * 0.3); shape.lineTo(hw, -hl);
-    shape.lineTo(0, -hl * 1.05); shape.closePath();
-  }
-  return shape;
-}
-
-function shipClassMastHeightMulME(shipType) {
-  switch (shipType) {
-    case 'cutter': return 0.63;
-    case 'sloop': return 0.69;
-    case 'brigantine': return 0.745;
-    case 'galleon': return 0.785;
-    case 'warship': return 0.825;
-    default: return 0.72;
-  }
-}
-
 export function normalizeShipPartsME(parts) {
   const d = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   if (!parts || typeof parts !== 'object') return { ...d };
@@ -121,23 +54,9 @@ export function normalizeShipPartsME(parts) {
   };
 }
 
-function resolveShipVisualClassME(spec) {
-  if (!spec || !SHIP_TYPES_ME) return 'sloop';
-  let best = 'sloop', bd = Infinity;
-  for (const k of Object.keys(SHIP_TYPES_ME)) {
-    const s = SHIP_TYPES_ME[k];
-    const d = Math.abs((spec.hullLen || 0) - s.hullLen) + Math.abs((spec.hullW || 0) - s.hullW) * 0.45;
-    if (d < bd) {
-      bd = d;
-      best = k;
-    }
-  }
-  return best;
-}
-
 function attachPirateFlagToShipME(g, spec, flagColor, flagPlace, mastRigForMastFlag) {
   const poleMat = new THREE.MeshLambertMaterial({ color: 0x3d2e1a });
-  const mH = spec.hullLen * shipClassMastHeightMulME(resolveShipVisualClassME(spec));
+  const mH = spec.hullLen * 0.7;
   const mastIdx = Math.max(0, spec.masts - 1);
   const mZ = (mastIdx - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
   const mastBaseY = spec.hullH * 0.6;
@@ -179,6 +98,77 @@ function attachPirateFlagToShipME(g, spec, flagColor, flagPlace, mastRigForMastF
   parent.add(flagRig);
 }
 
+function buildShipDeckOutlineShapeME(shipKey, hw, hl) {
+  const shape = new THREE.Shape();
+  if (shipKey === 'cutter') {
+    shape.moveTo(0, -hl * 1.06);
+    shape.lineTo(-hw * 0.9, -hl * 0.92);
+    shape.lineTo(-hw * 1.02, -hl * 0.22);
+    shape.lineTo(-hw * 0.82, hl * 0.48);
+    shape.lineTo(-hw * 0.48, hl * 0.88);
+    shape.lineTo(0, hl);
+    shape.lineTo(hw * 0.48, hl * 0.88);
+    shape.lineTo(hw * 0.82, hl * 0.48);
+    shape.lineTo(hw * 1.02, -hl * 0.22);
+    shape.lineTo(hw * 0.9, -hl * 0.92);
+    shape.lineTo(0, -hl * 1.06);
+  } else if (shipKey === 'brigantine') {
+    shape.moveTo(0, -hl * 1.04);
+    shape.lineTo(-hw * 0.98, -hl * 0.94);
+    shape.lineTo(-hw * 1.12, -hl * 0.26);
+    shape.lineTo(-hw * 0.94, hl * 0.2);
+    shape.lineTo(-hw * 1.02, hl * 0.58);
+    shape.lineTo(-hw * 0.58, hl * 0.94);
+    shape.lineTo(0, hl * 1.02);
+    shape.lineTo(hw * 0.58, hl * 0.94);
+    shape.lineTo(hw * 1.02, hl * 0.58);
+    shape.lineTo(hw * 0.94, hl * 0.2);
+    shape.lineTo(hw * 1.12, -hl * 0.26);
+    shape.lineTo(hw * 0.98, -hl * 0.94);
+    shape.lineTo(0, -hl * 1.04);
+  } else if (shipKey === 'galleon') {
+    shape.moveTo(0, -hl * 1.02);
+    shape.lineTo(-hw * 0.92, -hl * 0.96);
+    shape.lineTo(-hw * 1.08, -hl * 0.34);
+    shape.lineTo(-hw * 1.02, hl * 0.12);
+    shape.lineTo(-hw * 0.88, hl * 0.52);
+    shape.lineTo(-hw * 0.52, hl * 0.88);
+    shape.lineTo(0, hl * 1.05);
+    shape.lineTo(hw * 0.52, hl * 0.88);
+    shape.lineTo(hw * 0.88, hl * 0.52);
+    shape.lineTo(hw * 1.02, hl * 0.12);
+    shape.lineTo(hw * 1.08, -hl * 0.34);
+    shape.lineTo(hw * 0.92, -hl * 0.96);
+    shape.lineTo(0, -hl * 1.02);
+  } else if (shipKey === 'warship') {
+    const uw = hw * 0.88;
+    shape.moveTo(0, -hl * 1.03);
+    shape.lineTo(-uw * 0.95, -hl * 0.94);
+    shape.lineTo(-uw, -hl * 0.32);
+    shape.lineTo(-uw * 0.96, hl * 0.45);
+    shape.lineTo(-uw * 0.62, hl * 0.86);
+    shape.lineTo(0, hl * 1.03);
+    shape.lineTo(uw * 0.62, hl * 0.86);
+    shape.lineTo(uw * 0.96, hl * 0.45);
+    shape.lineTo(uw, -hl * 0.32);
+    shape.lineTo(uw * 0.95, -hl * 0.94);
+    shape.lineTo(0, -hl * 1.03);
+  } else {
+    shape.moveTo(-hw, -hl);
+    shape.lineTo(-hw * 1.1, -hl * 0.3);
+    shape.lineTo(-hw, hl * 0.5);
+    shape.lineTo(-hw * 0.6, hl * 0.9);
+    shape.lineTo(0, hl * 1.02);
+    shape.lineTo(hw * 0.6, hl * 0.9);
+    shape.lineTo(hw, hl * 0.5);
+    shape.lineTo(hw * 1.1, -hl * 0.3);
+    shape.lineTo(hw, -hl);
+    shape.lineTo(0, -hl * 1.06);
+  }
+  shape.closePath();
+  return shape;
+}
+
 export function buildShipMeshME(type, parts, flagColor, meshOpts) {
   meshOpts = meshOpts || {};
   parts = normalizeShipPartsME(parts);
@@ -191,53 +181,58 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
   }
   const g = new THREE.Group();
   const spec = SHIP_TYPES_ME[type] || SHIP_TYPES_ME.sloop;
+  const slotCap = spec.cannonSlots | 0;
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
   else if (parts.hull === 'darkwood') hc = 0x2a1a0a;
 
+  const hullKey = type in SHIP_TYPES_ME ? type : 'sloop';
   const hw = spec.hullW / 2, hl = spec.hullLen / 2;
-  const hullShape = buildShipHullPlanShapeME(type, hw, hl);
-  const bm = Math.min(0.095, Math.max(0.06, Math.min(spec.hullW, spec.hullLen) * 0.016));
+  const shape = buildShipDeckOutlineShapeME(hullKey, hw, hl);
+  const bv = Math.max(0.06, Math.min(0.2, spec.hullH * 0.045));
+
   const hull = new THREE.Mesh(
-    new THREE.ExtrudeGeometry(hullShape, { depth: spec.hullH, bevelEnabled: true, bevelThickness: bm, bevelSize: bm * 0.94, bevelSegments: 2 }),
-    new THREE.MeshPhongMaterial({ color: hc, shininess: type === 'warship' ? 14 : type === 'galleon' ? 18 : 20 })
+    new THREE.ExtrudeGeometry(shape, {
+      depth: spec.hullH,
+      bevelEnabled: true,
+      bevelThickness: bv,
+      bevelSize: bv * 0.92,
+      bevelSegments: type === 'galleon' || type === 'warship' ? 3 : 2
+    }),
+    new THREE.MeshPhongMaterial({ color: hc, shininess: type === 'warship' ? 28 : type === 'galleon' ? 18 : 22 })
   );
   hull.geometry.rotateX(-Math.PI / 2); hull.castShadow = true; hull.receiveShadow = true;
   hull.position.y = -spec.hullH * 0.3; g.add(hull);
 
-  const dg = new THREE.PlaneGeometry(spec.hullW * 0.85, spec.hullLen * 0.9); dg.rotateX(-Math.PI / 2);
-  const deck = new THREE.Mesh(dg, new THREE.MeshLambertMaterial({ color: 0xa0825a }));
+  const dg = new THREE.PlaneGeometry(spec.hullW * 0.86, spec.hullLen * 0.92); dg.rotateX(-Math.PI / 2);
+  const deckCol = type === 'galleon' || type === 'brigantine' ? 0x9a7958 : type === 'warship' ? 0x8c704c : 0xa0825a;
+  const deck = new THREE.Mesh(dg, new THREE.MeshLambertMaterial({ color: deckCol }));
   deck.position.y = spec.hullH * 0.65; deck.receiveShadow = true; g.add(deck);
 
-  if (type === 'brigantine' || type === 'galleon' || type === 'warship') {
-    const wMat = new THREE.MeshPhongMaterial({ color: 0x493324, shininess: 24 });
-    for (let sgn = -1; sgn <= 1; sgn += 2) {
-      const wale = new THREE.Mesh(new THREE.BoxGeometry(0.11, spec.hullH * 0.068, spec.hullLen * 0.875), wMat);
-      wale.position.set(sgn * spec.hullW * 0.443, spec.hullH * 0.566, spec.hullLen * 0.015);
-      wale.castShadow = true; g.add(wale);
-    }
-  }
+  const railMat = new THREE.MeshLambertMaterial({ color: 0x5a3820 });
+  const railH = Math.max(0.11, spec.hullH * 0.068);
+  const railT = Math.max(0.04, spec.hullW * 0.016);
+  const railL = spec.hullLen * 0.88;
+  const railY = spec.hullH * 0.65 + railH * 0.5;
+  const rZ = spec.hullLen * 0.02;
+  const railP = new THREE.Mesh(new THREE.BoxGeometry(railT, railH, railL), railMat);
+  railP.position.set(spec.hullW * 0.41, railY, rZ); g.add(railP);
+  const railS = new THREE.Mesh(new THREE.BoxGeometry(railT, railH, railL), railMat);
+  railS.position.set(-spec.hullW * 0.41, railY, rZ); g.add(railS);
 
-  const rg = new THREE.BoxGeometry(0.085, Math.max(0.36, spec.hullH * 0.32), spec.hullLen * 0.82);
+  const rg = new THREE.BoxGeometry(0.08, 0.4, spec.hullLen * 0.8);
   const rm = new THREE.MeshLambertMaterial({ color: 0x5a3a1a });
   const rl = new THREE.Mesh(rg, rm); rl.position.set(-spec.hullW * 0.42, spec.hullH * 0.85, 0); g.add(rl);
   const rr = new THREE.Mesh(rg.clone(), rm); rr.position.set(spec.hullW * 0.42, spec.hullH * 0.85, 0); g.add(rr);
 
-  const qDeckScale =
-    type === 'cutter'
-      ? { h: 0.52, len: 0.62, w: 0.82 }
-      : type === 'sloop'
-        ? { h: 0.78, len: 0.84, w: 0.92 }
-        : { h: 1, len: 1, w: 1 };
-  const qdH = spec.hullH * 0.55 * qDeckScale.h;
-  const qdLen = spec.hullLen * 0.25 * qDeckScale.len;
+  const qdH = spec.hullH * 0.55, qdLen = spec.hullLen * 0.25;
   const qdMat = new THREE.MeshPhongMaterial({ color: 0x5a3010, shininess: 12 });
-  const qDeck = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.88 * qDeckScale.w, qdH, qdLen), qdMat);
+  const qDeck = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.88, qdH, qdLen), qdMat);
   qDeck.position.set(0, spec.hullH * 0.65 + qdH / 2, -spec.hullLen * 0.38); qDeck.castShadow = true; g.add(qDeck);
-  const qdFloor = new THREE.Mesh(new THREE.PlaneGeometry(spec.hullW * 0.8 * qDeckScale.w, qdLen * 0.9), new THREE.MeshLambertMaterial({ color: 0x8a6a40 }));
+  const qdFloor = new THREE.Mesh(new THREE.PlaneGeometry(spec.hullW * 0.8, qdLen * 0.9), new THREE.MeshLambertMaterial({ color: 0x8a6a40 }));
   qdFloor.rotation.x = -Math.PI / 2; qdFloor.position.set(0, spec.hullH * 0.65 + qdH + 0.02, -spec.hullLen * 0.38); g.add(qdFloor);
   for (let si = 0; si < 3; si++) {
-    const step = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.4 * qDeckScale.w, 0.08, 0.2), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+    const step = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.4, 0.08, 0.2), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
     step.position.set(0, spec.hullH * 0.65 + si * (qdH / 3), -spec.hullLen * 0.24 - si * 0.15); g.add(step);
   }
   const wheelPost = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.8, 6), rm);
@@ -250,24 +245,57 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
     spoke.position.set(Math.sin(spokeA) * 0.14, spec.hullH * 0.65 + qdH + 0.8, -spec.hullLen * 0.42 + Math.cos(spokeA) * 0.04);
     spoke.rotation.z = spokeA; g.add(spoke);
   }
-  const sternWall = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.88 * qDeckScale.w, spec.hullH * 0.5 + qdH, spec.hullLen * 0.06),
+  const sternWall = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.88, spec.hullH * 0.5 + qdH, spec.hullLen * 0.06),
     new THREE.MeshPhongMaterial({ color: 0x4a2810, shininess: 10 }));
   sternWall.position.set(0, spec.hullH * 0.4 + qdH * 0.3, -spec.hullLen * 0.49); sternWall.castShadow = true; g.add(sternWall);
+
+  if (type === 'galleon') {
+    const scHull = new THREE.MeshPhongMaterial({ color: 0x3d2414, shininess: 26 });
+    const scH = spec.hullH * 1.05;
+    const scD = spec.hullLen * 0.3;
+    const castle = new THREE.Mesh(new THREE.BoxGeometry(spec.hullW * 0.76, scH, scD), scHull);
+    castle.position.set(0, spec.hullH * 0.55 + scH * 0.48, -spec.hullLen * 0.35);
+    castle.castShadow = true; g.add(castle);
+    const balc = new THREE.Mesh(
+      new THREE.BoxGeometry(spec.hullW * 0.88, Math.max(0.12, spec.hullH * 0.055), spec.hullLen * 0.062),
+      new THREE.MeshPhongMaterial({ color: 0x4a3218, shininess: 14 })
+    );
+    balc.position.set(0, spec.hullH * 0.62 + scH + 0.05, -spec.hullLen * 0.32);
+    balc.castShadow = true; g.add(balc);
+  }
+  if (type === 'warship') {
+    const portMat = new THREE.MeshBasicMaterial({ color: 0x0a0c0f });
+    const perSide = Math.max(4, Math.min(7, Math.ceil((slotCap || 6) / 2)));
+    const z0 = -spec.hullLen * 0.34;
+    const zSpan = spec.hullLen * 0.56;
+    const ph = Math.max(0.12, spec.hullH * 0.065);
+    const pw = Math.max(0.1, spec.hullW * 0.026);
+    const pd = Math.max(0.055, spec.hullLen * 0.017);
+    for (let gi = 0; gi < perSide; gi++) {
+      const pz = z0 + (gi + 0.5) * (zSpan / perSide);
+      [-1, 1].forEach(side => {
+        const gp = new THREE.Mesh(new THREE.BoxGeometry(pw, ph, pd), portMat);
+        gp.position.set(side * spec.hullW * 0.47, spec.hullH * 0.27, pz);
+        g.add(gp);
+      });
+    }
+  }
 
   let sc = 0xf5f0e0;
   if (parts.sail === 'silk') sc = 0xfff8e8;
   else if (parts.sail === 'war') sc = 0x2a2a2a;
 
   let lastMainMastRig = null;
-  const mhMulME = shipClassMastHeightMulME(type);
-  const mastRb = Math.max(0.055, Math.min(0.11, hw * 0.11));
   for (let m = 0; m < spec.masts; m++) {
-    const mH = spec.hullLen * mhMulME, mZ = (m - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
+    const aftShort = type === 'brigantine' && spec.masts > 1 && m > 0 ? 0.87 : 1;
+    const mH = spec.hullLen * 0.7 * aftShort;
+    const mTh = Math.max(0.08, spec.hullW * 0.034);
+    const mZ = (m - (spec.masts - 1) / 2) * (spec.hullLen * 0.3);
     const mastRig = new THREE.Group();
     mastRig.position.set(0, spec.hullH * 0.6, mZ);
     mastRig.userData.isMastRig = true;
     mastRig.userData.mastLeanSign = m % 2 === 0 ? 1 : -1;
-    const mast = new THREE.Mesh(new THREE.CylinderGeometry(mastRb * 0.92, mastRb + 0.036, mH, 6), rm);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(mTh * 0.62, mTh, mH, type === 'warship' ? 8 : 6), rm);
     mast.userData.isMast = true;
     mast.userData.mastLeanSign = mastRig.userData.mastLeanSign;
     mast.position.set(0, mH / 2, 0);
@@ -303,12 +331,9 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
   }
 
   if (spec.bowStyle === 'blunt') {
-    const bw = type === 'warship' ? 0.8 : 0.7;
-    const bh = type === 'warship' ? 0.74 : 0.6;
-    const bz = type === 'warship' ? 0.1 : 0.08;
-    const bowGeo = new THREE.BoxGeometry(spec.hullW * bw, spec.hullH * bh, spec.hullLen * bz);
+    const bowGeo = new THREE.BoxGeometry(spec.hullW * 0.7, spec.hullH * 0.6, spec.hullLen * 0.08);
     const bow = new THREE.Mesh(bowGeo, new THREE.MeshPhongMaterial({ color: hc, shininess: 15 }));
-    bow.position.set(0, spec.hullH * 0.24, spec.hullLen * 0.48); bow.castShadow = true; g.add(bow);
+    bow.position.set(0, spec.hullH * 0.2, spec.hullLen * 0.48); bow.castShadow = true; g.add(bow);
   }
 
   if (type === 'warship') {
@@ -320,13 +345,6 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
       const win = new THREE.Mesh(wg, new THREE.MeshBasicMaterial({ color: 0x888844 }));
       win.position.set(0, spec.hullH * 0.3, -spec.hullLen * (0.1 + wi * 0.12)); g.add(win);
     }
-    const fcME = new THREE.Mesh(
-      new THREE.BoxGeometry(spec.hullW * 0.64, spec.hullH * 0.5, spec.hullLen * 0.14),
-      new THREE.MeshPhongMaterial({ color: 0x4d3018, shininess: 12 })
-    );
-    fcME.position.set(0, spec.hullH * 0.74, spec.hullLen * 0.38);
-    fcME.castShadow = true;
-    g.add(fcME);
   }
 
   if (type === 'galleon' || type === 'warship') {
@@ -335,35 +353,23 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
     crows.position.set(0, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.95, 0); g.add(crows);
   }
 
-  if (type === 'galleon') {
-    const galaME = new THREE.Mesh(
-      new THREE.BoxGeometry(spec.hullW * 0.64, spec.hullH * 0.13, spec.hullLen * 0.21),
-      new THREE.MeshPhongMaterial({ color: 0x3e2818, shininess: 28 })
-    );
-    galaME.position.set(0, spec.hullH * 0.4, -spec.hullLen * 0.46);
-    galaME.castShadow = true;
-    g.add(galaME);
-  }
-
   if (cannonTier && cannonTier !== 'none') {
     let cc = spec.cannonSlots || 2;
     if (cc < 1) cc = 1;
     const visualCount = cc === 1 ? 2 : cc;
     const barrelScale = cc === 1 ? 0.88 : 1;
-    const cg = new THREE.CylinderGeometry(0.1 * barrelScale, 0.15 * barrelScale, 1.15 * barrelScale, 6); cg.rotateZ(Math.PI / 2);
+    const gunPitch = Math.max(1.38, spec.hullLen * 0.206);
+    const cg = new THREE.CylinderGeometry(0.1 * barrelScale, 0.15 * barrelScale, 1.15 * barrelScale * Math.max(1, spec.hullW / 3.05), 6); cg.rotateZ(Math.PI / 2);
     const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
-    const gunAlongME = Math.max(1.48, spec.hullLen * 0.064);
     for (let c = 0; c < visualCount; c++) {
       const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
       const cn = new THREE.Mesh(c === 0 ? cg : cg.clone(), cm);
-      cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * gunAlongME);
+      cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * gunPitch);
       cn.castShadow = true; g.add(cn);
     }
   }
 
-  const fmHM =
-    type === 'cutter' ? 0.41 : type === 'sloop' ? 0.43 : type === 'brigantine' ? 0.448 : type === 'galleon' ? 0.465 : 0.475;
-  const fmH = spec.hullLen * fmHM;
+  const fmH = spec.hullLen * (type === 'cutter' ? 0.52 : type === 'galleon' ? 0.4 : 0.45);
   const foreRig = new THREE.Group();
   foreRig.position.set(0, spec.hullH * 0.5, spec.hullLen * 0.35);
   foreRig.userData.isMastRig = true;
@@ -394,7 +400,9 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
   jibPivot.add(jib);
   foreRig.add(jibPivot);
   g.add(foreRig);
-  const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, spec.hullLen * 0.35, 4), rm);
+  const bowspritLen = spec.hullLen * (type === 'cutter' ? 0.42 : type === 'sloop' ? 0.38 : 0.33);
+  const bsR = Math.max(0.032, spec.hullW * 0.013);
+  const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(bsR * 0.82, bsR * 1.08, bowspritLen, 5), rm);
   bowsprit.position.set(0, spec.hullH * 0.35, spec.hullLen * 0.55);
   bowsprit.rotation.x = 0.45; g.add(bowsprit);
 
