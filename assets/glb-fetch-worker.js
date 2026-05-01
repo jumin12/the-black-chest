@@ -1,6 +1,6 @@
 /**
- * Fetches `.glb` binaries in parallel threads; transfers ArrayBuffers to the main thread.
- * Used alongside GLTFLoader.parse() on main (Three.js parsers are not threaded here).
+ * Legacy dedicated worker — GLB scenic bootstrap uses main-thread concurrent `fetch()` instead
+ * (see `fetchGlbArrayBuffersConcurrent` in index.html). File kept so existing URLs still 404-clean.
  */
 self.onmessage = async (evt) => {
   const msg = evt.data || {};
