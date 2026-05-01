@@ -3026,6 +3026,7 @@ const _THREE_CDN_JSM = 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/
 const _gltfSceneBootstrapLoader = new GLTFLoader();
 let _gltfBootstrapDecodersAttached = false;
 let _townGlbUserAlertShown = false;
+let _sceneGlbWildlifeUserAlertShown = false;
 
 /** Wire Draco/KTX2/Meshopt before parsing any scenic `.glb` (called from bootstrap). Uses `renderer` for Basis/transcoder probes. */
 async function attachGltfBootstrapDecoders(webRenderer) {
@@ -9587,6 +9588,19 @@ function cloneParsedGlbTree(relPath) {
   }
 }
 
+/** If the requested species GLB missed decode, reuse any loaded fish mesh so schools stay consistent. */
+function cloneFishGlbOrAnyLoaded(preferredRel) {
+  const p = cloneParsedGlbTree(preferredRel);
+  if (p) return p;
+  for (let i = 0; i < _WILDLIFE_FISH_GLB_RELS.length; i++) {
+    const alt = _WILDLIFE_FISH_GLB_RELS[i];
+    if (alt === preferredRel) continue;
+    const c = cloneParsedGlbTree(alt);
+    if (c) return c;
+  }
+  return null;
+}
+
 /** Per-asset euler (radians) applied to cloned glTF before footprint fitting. Town GLBs assume Y-up — add keys only when an asset needs yaw/pitch tweaks. */
 const GAME_GLB_EULER_BIAS_RAD_BEFORE_FOOTPRINT = Object.freeze({});
 
@@ -11500,7 +11514,7 @@ function spawnFish(wx, wz, count, rng) {
     const fishPick = Math.floor(swimmerStreamHash(wx * 1007 + i * 0.13, wz * 791 - i * 0.077, 0x71f0 ^ (i << 7)) * _WILDLIFE_FISH_GLB_RELS.length);
     const fishRel = _WILDLIFE_FISH_GLB_RELS[(fishPick + Math.floor(swimmerStreamHash(wx, wz, 960 + i) * 997)) % _WILDLIFE_FISH_GLB_RELS.length];
     const fg = new THREE.Group();
-    const tpl = cloneParsedGlbTree(fishRel);
+    const tpl = cloneFishGlbOrAnyLoaded(fishRel);
     if (tpl) {
       applyIslandGlbPresentation(tpl);
       tpl.updateMatrixWorld(true);
@@ -24042,8 +24056,21 @@ function warmupBinaryGameAssetCache(urls) {
 }
 
 let _sceneGlbBootstrapPromise = null;
-/** After first successful scenic GLB parse, rebuild visible chunks once (init calls `updateChunks` before GLBs finish). */
-let _sceneGlbVisibleChunkRefreshScheduled = false;
+/** Coalesce many parse completions into one terrain/wildlife rebuild (cheap vs unloading per file). */
+let _sceneGlbIslandRefreshDebounce = null;
+
+function scheduleDebouncedRefreshVisibleIslandsForSceneGlbs(ms) {
+  const delay = Number(ms);
+  const dly = Number.isFinite(delay) && delay >= 0 ? delay : 200;
+  if (_sceneGlbIslandRefreshDebounce) clearTimeout(_sceneGlbIslandRefreshDebounce);
+  _sceneGlbIslandRefreshDebounce = setTimeout(() => {
+    _sceneGlbIslandRefreshDebounce = null;
+    try {
+      if (!Object.keys(_gameGlbParsedSceneTemplates).length) return;
+      refreshVisibleIslandChunksAfterGlbReady();
+    } catch (_) {}
+  }, dly);
+}
 /** Scenic GLTFLoader instance + Draco/KTX/Meshopt: see module top `_gltfSceneBootstrapLoader` / `attachGltfBootstrapDecoders`. */
 
 /** Git LFS pointer files are tiny text; GLTFLoader cannot use them. */
@@ -24076,11 +24103,14 @@ function arrayBufferLooksLikeBinaryGlb(ab) {
  *
  * Parsing stays on main thread (GLTFLoader); only the byte download was ever parallelised.
  */
-async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent) {
+async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent, fetchOptsOverride) {
   const out = Object.create(null);
   if (!rels || !rels.length) return out;
   const list = rels.map((rel) => ({ rel, url: resolveGameAssetUrl(rel) }));
-  const fetchOpts = { cache: 'force-cache', mode: 'cors', credentials: 'omit', redirect: 'follow' };
+  const fetchOpts =
+    fetchOptsOverride && typeof fetchOptsOverride === 'object'
+      ? fetchOptsOverride
+      : { cache: 'default', mode: 'cors', credentials: 'omit', redirect: 'follow' };
   let qi = 0;
   const pump = async () => {
     while (true) {
@@ -24090,7 +24120,7 @@ async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent) {
       try {
         const res = await fetch(t.url, fetchOpts);
         if (res.ok) out[t.rel] = await res.arrayBuffer();
-        else try { console.warn('GLB HTTP', t.rel, res.status); } catch (_) {}
+        else try { console.warn('GLB HTTP', t.rel, res.status, res.statusText || ''); } catch (_) {}
       } catch (eM) {
         try { console.warn('GLB fetch error', t.rel, eM); } catch (_) {}
       }
@@ -24100,6 +24130,67 @@ async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent) {
   const nRuns = Math.min(Math.max(2, Number.isFinite(cap) ? Math.floor(cap) : 8), 16, Math.max(1, list.length));
   await Promise.all(Array.from({ length: nRuns }, () => pump()));
   return out;
+}
+
+/**
+ * Parse one boot-list GLB into `_gameGlbParsedSceneTemplates`. Schedules debounced island refresh on success.
+ * @returns {Promise<boolean>}
+ */
+async function parseSceneGlbIntoTemplates(rel, ab) {
+  if (!ab) return false;
+  if (arrayBufferLooksLikeGitLfsPointer(ab)) {
+    try { console.warn('Scene GLB is a Git LFS pointer, not a model file:', rel); } catch (_) {}
+    return false;
+  }
+  if (!arrayBufferLooksLikeBinaryGlb(ab)) {
+    try { console.warn('Scene GLB does not look like binary glTF (.glb magic):', rel, 'bytes', ab.byteLength); } catch (_) {}
+    return false;
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const PARSE_MS = 90000;
+      const parseTo = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error('GLTF parse timeout: ' + rel));
+      }, PARSE_MS);
+      try {
+        _gltfSceneBootstrapLoader.parse(
+          ab,
+          glbExternalResourceBaseUrl(rel),
+          (gltf) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(parseTo);
+            if (gltf && gltf.scene) {
+              _gameGlbParsedSceneTemplates[rel] = gltf.scene;
+              scheduleDebouncedRefreshVisibleIslandsForSceneGlbs();
+              resolve();
+            } else {
+              reject(new Error('Empty glTF ' + rel));
+            }
+          },
+          (err) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(parseTo);
+            reject(err || new Error('parse ' + rel));
+          }
+        );
+      } catch (pe) {
+        if (!settled) {
+          settled = true;
+          window.clearTimeout(parseTo);
+          reject(pe);
+        }
+      }
+    });
+    return true;
+  } catch (eP) {
+    try { console.warn('Scene GLB parse failed:', rel, eP); } catch (_) {}
+    return false;
+  }
 }
 
 function ensureSceneGlbsBootstrapped() {
@@ -24117,57 +24208,26 @@ function ensureSceneGlbsBootstrapped() {
           try { console.warn('Scene GLB missing (no buffer)', rel); } catch (_) {}
           continue;
         }
-        if (arrayBufferLooksLikeGitLfsPointer(ab)) {
-          try { console.warn('Scene GLB is a Git LFS pointer, not a model file:', rel); } catch (_) {}
-          continue;
-        }
-        if (!arrayBufferLooksLikeBinaryGlb(ab)) {
-          try { console.warn('Scene GLB does not look like binary glTF (.glb magic):', rel, 'bytes', ab.byteLength); } catch (_) {}
-          continue;
-        }
+        await parseSceneGlbIntoTemplates(rel, ab);
+      }
+      const missingAfterFirst = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
+      if (missingAfterFirst.length) {
         try {
-          await new Promise((resolve, reject) => {
-            let settled = false;
-            const PARSE_MS = 90000;
-            const parseTo = window.setTimeout(() => {
-              if (settled) return;
-              settled = true;
-              reject(new Error('GLTF parse timeout: ' + rel));
-            }, PARSE_MS);
-            try {
-              _gltfSceneBootstrapLoader.parse(
-                ab,
-                glbExternalResourceBaseUrl(rel),
-                (gltf) => {
-                  if (settled) return;
-                  settled = true;
-                  window.clearTimeout(parseTo);
-                  if (gltf && gltf.scene) {
-                    _gameGlbParsedSceneTemplates[rel] = gltf.scene;
-                    resolve();
-                  } else {
-                    reject(new Error('Empty glTF ' + rel));
-                  }
-                },
-                (err) => {
-                  if (settled) return;
-                  settled = true;
-                  window.clearTimeout(parseTo);
-                  reject(err || new Error('parse ' + rel));
-                }
-              );
-            } catch (pe) {
-              if (!settled) {
-                settled = true;
-                window.clearTimeout(parseTo);
-                reject(pe);
-              }
-            }
-          });
-        } catch (eP) {
-          try { console.warn('Scene GLB parse failed:', rel, eP); } catch (_) {}
+          console.warn('[Scene GLB] Retrying fetch/parse for', missingAfterFirst.length, 'asset(s) (cache reload)…');
+        } catch (_) {}
+        const reloadOpts = { cache: 'reload', mode: 'cors', credentials: 'omit', redirect: 'follow' };
+        const bufRetry = await fetchGlbArrayBuffersConcurrent(missingAfterFirst, Math.min(8, Math.max(2, Math.floor(maxW / 2))), reloadOpts);
+        for (let j = 0; j < missingAfterFirst.length; j++) {
+          const rel = missingAfterFirst[j];
+          if (_gameGlbParsedSceneTemplates[rel]) continue;
+          await parseSceneGlbIntoTemplates(rel, bufRetry[rel]);
         }
       }
+      const stillMissing = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
+      const okN = rels.length - stillMissing.length;
+      try {
+        console.warn('[Scene GLB] bootstrap summary:', okN + '/' + rels.length, 'templates ready;', stillMissing.length ? 'missing: ' + stillMissing.join(', ') : '');
+      } catch (_) {}
       const townBuildingCriticalRels = [
         'assets/3d models/buildings/church.glb',
         'assets/3d models/buildings/tavern.glb',
@@ -24185,23 +24245,36 @@ function ensureSceneGlbsBootstrapped() {
             setTimeout(() => {
               try {
                 notify(
-                  'Port buildings did not load. Run `npm run pull-assets` (or `git lfs pull`). Hosts must install Git LFS and pull binaries (see scripts/render-build.sh). Compressed GLBs need network access to Goog CDN + Basis/WASM transcoder.',
-                  16000
+                  'Some port buildings did not load (' + missTown.length + ' missing). Run `npm run pull-assets` (or `git lfs pull`). Deploy must serve real binaries, not LFS pointers. Draco/KTX/Basis needs CDN + WASM (see DevTools Network/Console). Check console for "[Scene GLB] bootstrap summary".',
+                  18000
                 );
               } catch (_) {}
             }, 550);
           } catch (_) {}
         }
       }
-      if (!_sceneGlbVisibleChunkRefreshScheduled && Object.keys(_gameGlbParsedSceneTemplates).length > 0) {
-        _sceneGlbVisibleChunkRefreshScheduled = true;
+      const wildlifeRels = rels.filter((rr) => rr.indexOf('/wildlife/') !== -1);
+      const missWild = wildlifeRels.filter((wr) => !_gameGlbParsedSceneTemplates[wr]);
+      if (missWild.length) {
         try {
-          requestAnimationFrame(() => {
-            try { refreshVisibleIslandChunksAfterGlbReady(); } catch (eRf) {}
-          });
-        } catch (eRf2) {
-          try { refreshVisibleIslandChunksAfterGlbReady(); } catch (_) {}
-        }
+          console.warn('Wildlife / scenic GLB templates missing:', missWild.join(', '));
+        } catch (_) {}
+      }
+      if (missWild.length >= 3 && !_sceneGlbWildlifeUserAlertShown) {
+        _sceneGlbWildlifeUserAlertShown = true;
+        try {
+          setTimeout(() => {
+            try {
+              notify(
+                'Some wildlife 3D models did not load (' + missWild.length + '/' + wildlifeRels.length + '). Fish reuse any loaded variant when possible; check console "[Scene GLB] bootstrap summary" and Network for 403/404 or LFS pointer bytes.',
+                16000
+              );
+            } catch (_) {}
+          }, 820);
+        } catch (_) {}
+      }
+      if (Object.keys(_gameGlbParsedSceneTemplates).length > 0) {
+        scheduleDebouncedRefreshVisibleIslandsForSceneGlbs(220);
       }
     } catch (eu) {
       try { console.warn('Scene GLB bootstrap fatal:', eu); } catch (_) {}
@@ -37090,7 +37163,7 @@ function menuRender() {
   void (async () => {
     let bootDone = false;
     const BOOT_ABORT_MS = 85000;
-    const GLB_RACE_MS = 70000;
+    const GLB_RACE_MS = 180000;
     const finishBoot = (msg) => {
       if (bootDone) return;
       bootDone = true;
