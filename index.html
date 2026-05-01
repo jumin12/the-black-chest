@@ -9577,9 +9577,10 @@ function decoRand(rng) {
 
 /** Island decoration: GLB tree clones (falls back to palms if models are not ready). */
 function addGameplayGltfTreeAt(worldX, landY, worldZ, rng) {
-  if (!_gameGltfLoadComplete) return null;
   const r = decoRand(rng);
-  const rel = GAME_GLB_TREES[Math.floor(r() * GAME_GLB_TREES.length) % GAME_GLB_TREES.length];
+  const pool = GAME_GLB_TREES.filter(rr => !!_gltfTemplateRoots[rr]);
+  if (!pool.length) return null;
+  const rel = pool[Math.floor(r() * pool.length) % pool.length];
   const m = cloneGameplayGltfRel(rel);
   if (!m) return null;
   m.traverse(o => {
@@ -9687,9 +9688,10 @@ function createRock(x, y, z, s, rng) {
 }
 
 function addGameplayGltfBushAt(x, y, z, s, rng) {
-  if (!_gameGltfLoadComplete) return null;
   const r = decoRand(rng);
-  const rel = GAME_GLB_BUSHES[Math.floor(r() * GAME_GLB_BUSHES.length) % GAME_GLB_BUSHES.length];
+  const pool = GAME_GLB_BUSHES.filter(rr => !!_gltfTemplateRoots[rr]);
+  if (!pool.length) return null;
+  const rel = pool[Math.floor(r() * pool.length) % pool.length];
   const m = cloneGameplayGltfRel(rel);
   if (!m) return null;
   m.traverse(o => {
@@ -9889,12 +9891,12 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
   if (!landOk(bx - cornerE, bz + cornerE)) return false;
   if (!landOk(bx + cornerE, bz + cornerE)) return false;
   const baseY = SEA_LEVEL + gyMin + 0.04;
-  if (_gameGltfLoadComplete) {
+  {
     const rel = type === 'church' ? GAME_GLB_TOWN.church
       : type === 'tavern' ? GAME_GLB_TOWN.tavern
         : type === 'governor' ? GAME_GLB_TOWN.governor
           : (decoRand(rng)() < 0.5 ? GAME_GLB_TOWN.houseA : GAME_GLB_TOWN.houseB);
-    const model = cloneGameplayGltfRel(rel);
+    const model = rel ? cloneGameplayGltfRel(rel) : null;
     if (model) {
       model.traverse(o => {
         if (o.isMesh) {
@@ -10450,29 +10452,27 @@ function generateIsland(cx, cz) {
     dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
     group.add(dock);
     let useDockGlb = false;
-    if (_gameGltfLoadComplete) {
-      const dModel = cloneGameplayGltfRel(GAME_GLB_DOCK_PIER);
-      if (dModel) {
-        useDockGlb = true;
-        dock.visible = false;
-        dModel.traverse(o => {
-          if (o.isMesh) {
-            o.castShadow = true;
-            o.receiveShadow = true;
-          }
-        });
-        const box0 = new THREE.Box3().setFromObject(dModel);
-        const sz0 = box0.getSize(new THREE.Vector3());
-        const sx = PIER_DECK_WIDTH / Math.max(0.001, sz0.x);
-        const szl = PIER_TOTAL_LEN / Math.max(0.001, sz0.z);
-        const sc = 0.94 * Math.min(sx, szl);
-        dModel.scale.multiplyScalar(sc);
-        const box1 = new THREE.Box3().setFromObject(dModel);
-        const midY = (box1.min.y + box1.max.y) * 0.5;
-        dModel.position.set(dockX, dockCenterY - midY, dockZ);
-        dModel.rotation.y = dockAngle;
-        group.add(dModel);
-      }
+    const dModel = cloneGameplayGltfRel(GAME_GLB_DOCK_PIER);
+    if (dModel) {
+      useDockGlb = true;
+      dock.visible = false;
+      dModel.traverse(o => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+      const box0 = new THREE.Box3().setFromObject(dModel);
+      const sz0 = box0.getSize(new THREE.Vector3());
+      const sx = PIER_DECK_WIDTH / Math.max(0.001, sz0.x);
+      const szl = PIER_TOTAL_LEN / Math.max(0.001, sz0.z);
+      const sc = 0.94 * Math.min(sx, szl);
+      dModel.scale.multiplyScalar(sc);
+      const box1 = new THREE.Box3().setFromObject(dModel);
+      const midY = (box1.min.y + box1.max.y) * 0.5;
+      dModel.position.set(dockX, dockCenterY - midY, dockZ);
+      dModel.rotation.y = dockAngle;
+      group.add(dModel);
     }
     group.userData.dockAngle = dockAngle;
 
@@ -10687,7 +10687,7 @@ function nudgeSharkPairMidpointToOpenSea(mA, mB, yOff) {
 
 function makePredatorSharkMesh(scale) {
   const s = Number(scale) || 1;
-  if (_gameGltfLoadComplete) {
+  {
     const m = cloneGameplayGltfRel(GAME_GLB_SHARK);
     if (m) {
       m.traverse(o => {
@@ -11198,7 +11198,7 @@ function spawnSeagulls(wx, wz, count, rng) {
     const sg = new THREE.Group();
     const relPick = GAME_GLB_SEAGULLS[(Math.floor(wx * 0.07) ^ i ^ Math.floor(wz * 0.09)) % Math.max(GAME_GLB_SEAGULLS.length, 1)];
     let usedGlb = false;
-    if (_gameGltfLoadComplete && GAME_GLB_SEAGULLS.length && relPick) {
+    if (_gltfTemplateRoots[relPick] && GAME_GLB_SEAGULLS.length && relPick) {
       const b = buildGameplayScaledGlbVisual(relPick, 0.52 + r() * 0.42, 0);
       if (b) {
         sg.add(b.wrap);
@@ -11350,7 +11350,7 @@ function spawnFish(wx, wz, count, rng) {
       ? GAME_GLB_FISH[((spIdx >= 0 ? spIdx : 0) + i + (h(506) & 3)) % GAME_GLB_FISH.length]
       : null;
     let usedFishGlb = false;
-    if (_gameGltfLoadComplete && fishRel) {
+    if (fishRel && _gltfTemplateRoots[fishRel]) {
       const b = buildGameplayScaledGlbVisual(fishRel, Math.max(0.14, species.len * 0.92), Math.PI * 0.5);
       if (b) {
         fg.add(b.wrap);
@@ -11813,7 +11813,7 @@ function ensureGameGltfTemplatesLoaded() {
             const url = resolveGameAssetUrl(rel);
             _GAME_GLTF_LOADER.load(url, res, undefined, rej);
           }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('glb-timeout')), 18000))
+          new Promise((_, rej) => setTimeout(() => rej(new Error('glb-timeout')), 45000))
         ]);
       await Promise.all(
         GAME_GLTF_MODEL_RELS.map(async rel => {
@@ -11826,7 +11826,10 @@ function ensureGameGltfTemplatesLoaded() {
           }
         })
       );
-      _gameGltfLoadComplete = Object.keys(_gltfTemplateRoots).length >= GAME_GLTF_MODEL_RELS.length;
+      const sloopsLoaded = GAME_GLB_SLOOPS.some(r => !!_gltfTemplateRoots[r]);
+      const gallsLoaded = GAME_GLB_GALLEONS.some(r => !!_gltfTemplateRoots[r]);
+      /* Old logic required every file — one timeout/zero-byte response hid all authored models. Partial load is OK. */
+      _gameGltfLoadComplete = !!(sloopsLoaded || gallsLoaded);
     } catch (e) {
       try { console.warn('ensureGameGltfTemplatesLoaded', e); } catch (_) {}
       _gameGltfLoadComplete = false;
@@ -11870,13 +11873,14 @@ function glbModelMaxHorizontalExtent(root) {
 }
 /** Instanced ship hull shell from authored GLB rigs; aligns length to tuning `spec`. */
 function attachGameGlbShipShellIfReady(g, type, shipName, spec) {
-  if (!_gameGltfLoadComplete) return false;
   const list = type === 'galleon' ? GAME_GLB_GALLEONS : GAME_GLB_SLOOPS;
   if (!list || !list.length) return false;
+  const avail = list.filter(r => !!_gltfTemplateRoots[r]);
+  if (!avail.length) return false;
   let h = 2166136261 >>> 0;
   const key = String(type) + '|' + String(shipName || '');
   for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
-  const rel = list[Math.abs(h | 0) % list.length];
+  const rel = avail[Math.abs(h | 0) % avail.length];
   const model = cloneGameplayGltfRel(rel);
   if (!model) return false;
   model.traverse(o => {
@@ -23701,7 +23705,18 @@ function resolveGameAssetUrl(relPath) {
   if (relPath == null || relPath === '') return relPath;
   const s = String(relPath);
   if (/^https?:\/\//i.test(s) || /^data:/i.test(s) || /^blob:/i.test(s)) return s;
-  const clean = s.replace(/^\//, '');
+  const clean = s.replace(/^\//, '').replace(/\\/g, '/');
+  const pathEncoded = clean
+    .split('/')
+    .map(seg => {
+      if (seg === '') return '';
+      try {
+        return encodeURIComponent(decodeURIComponent(seg));
+      } catch (_de) {
+        return encodeURIComponent(seg);
+      }
+    })
+    .join('/');
   try {
     const proto = window.location.protocol;
     let base;
@@ -23710,10 +23725,10 @@ function resolveGameAssetUrl(relPath) {
     } else {
       base = window.location.href;
     }
-    return new URL(clean, base).href;
+    return new URL(pathEncoded, base).href;
   } catch (e) {
     try {
-      return new URL(clean, window.location.origin + '/').href;
+      return new URL(pathEncoded, window.location.origin + '/').href;
     } catch (e2) {
       return s;
     }
