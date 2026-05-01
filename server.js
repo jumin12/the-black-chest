@@ -1902,6 +1902,7 @@ function mimeTypeForFile(filePath) {
     '.js': 'application/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.ico': 'image/x-icon',
+    '.webmanifest': 'application/manifest+json; charset=utf-8',
     '.md': 'text/markdown; charset=utf-8'
   };
   return map[ext] || 'application/octet-stream';
@@ -1967,6 +1968,33 @@ function tryServeGameAssets(reqPath, res) {
       return;
     }
     sendAssetFile(resolved, res);
+  });
+  return true;
+}
+
+/** Manifest + Workers at repo root (`index.html` links here; not under `/assets/`). */
+const REPO_ROOT_STATIC_GET = {
+  '/site.webmanifest': 'site.webmanifest',
+  '/image-preload-worker.js': 'image-preload-worker.js'
+};
+function tryServeRepoRootStatic(method, reqPath, res) {
+  if (method !== 'GET') return false;
+  const base = REPO_ROOT_STATIC_GET[reqPath];
+  if (!base) return false;
+  const fp = path.join(__dirname, base);
+  if (path.basename(fp) !== base) return false;
+  fs.readFile(fp, (err, data) => {
+    if (err || !data || !data.length) {
+      res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
+      res.end('Not found');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': mimeTypeForFile(fp),
+      'Cache-Control': 'public, max-age=86400',
+      ...CORS_HEADERS
+    });
+    res.end(data);
   });
   return true;
 }
@@ -2167,6 +2195,8 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+
+  if (req.method === 'GET' && tryServeRepoRootStatic(req.method, reqPath, res)) return;
 
   if (req.method === 'GET' && tryServeGameAssets(reqPath, res)) return;
 
