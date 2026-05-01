@@ -21449,6 +21449,38 @@ function applyNpcSyncMessage(msg, opts) {
 }
 
 /**
+ * Insert optional midpoint between last hull key and `(rx,rz)` when a fast tick spans a large chord — Hermite then
+ * crosses two sub-segments instead of one teleported span.
+ */
+function appendPeerHullHistSample(row, rx, rz, rr, recvMs, stNum, spdAbs) {
+  if (!Array.isArray(row._snapHist)) row._snapHist = [];
+  const prev = row._snapHist.length ? row._snapHist[row._snapHist.length - 1] : null;
+  if (prev && prev.recvMs != null && Number.isFinite(recvMs)) {
+    const jump = Math.hypot(rx - prev.x, rz - prev.z);
+    const dtRecv = recvMs - prev.recvMs;
+    const tickMs = 1000 / NET_SYNC_HZ;
+    const spdE =
+      spdAbs != null && Number.isFinite(Number(spdAbs)) && Number(spdAbs) > 0.09
+        ? Math.abs(Number(spdAbs))
+        : jump / Math.max(1e-3, dtRecv);
+    const nomStep = Math.max(3.4, spdE * (tickMs / 1000) * 2.05);
+    if (jump > nomStep * 1.38 && dtRecv > tickMs * 0.46 && dtRecv > 5.5) {
+      const uMid = 0.5;
+      const midRecv = prev.recvMs + dtRecv * uMid;
+      row._snapHist.push({
+        x: prev.x + (rx - prev.x) * uMid,
+        z: prev.z + (rz - prev.z) * uMid,
+        ry: interpYawShortest(prev.ry, rr, uMid),
+        recvMs: midRecv
+      });
+    }
+  }
+  row._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
+  while (row._snapHist.length > REMOTE_SNAP_HIST_MAX) row._snapHist.shift();
+  if (stNum != null && Number.isFinite(stNum)) row._lastPeerHistSrvTick = stNum;
+}
+
+/**
  * Authoritative AOI `state` snapshot(s). Incoming messages queue in `_netStateDrainQueue`; `update` drains
  * up to **eighteen** snapshots per frame (oldest→newest) with staggered `snapshotWallMs`, matching `npc_sync` burst
  * handling so `_snapHist` gets intermediate poses instead of one giant teleport. Wildlife anchor, stale-peer prune,
@@ -21541,7 +21573,7 @@ function applyNetStateMessage(msg, opts) {
           vtz = (pz1 - pz0) / dtSnap;
         }
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
-        const vcap1 = dNear < 210 ? 162 : 112;
+        const vcap1 = dNear < 210 ? 248 : 168;
         const vm0 = Math.hypot(vtx, vtz);
         if (vm0 > vcap1) {
           const s0 = vcap1 / vm0;
@@ -21573,9 +21605,7 @@ function applyNetStateMessage(msg, opts) {
           }
           if (doPush) {
             const recvMs = computePeerSnapRecvMs(ex, stNum, snapWallMs);
-            ex._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
-            while (ex._snapHist.length > REMOTE_SNAP_HIST_MAX) ex._snapHist.shift();
-            if (stNum != null && Number.isFinite(stNum)) ex._lastPeerHistSrvTick = stNum;
+            appendPeerHullHistSample(ex, rx, rz, rr, recvMs, stNum, spdPatch);
           }
         }
       }
@@ -21597,11 +21627,11 @@ function applyNetStateMessage(msg, opts) {
           ) {
             doPushN = false;
           }
+          const spdNH =
+            patch.speed != null && Number.isFinite(Number(patch.speed)) ? Math.abs(Number(patch.speed)) : null;
           if (doPushN) {
             const recvMs = computePeerSnapRecvMs(nw, stNum, snapWallMs);
-            nw._snapHist.push({ x: rx, z: rz, ry: rr, recvMs });
-            while (nw._snapHist.length > REMOTE_SNAP_HIST_MAX) nw._snapHist.shift();
-            if (stNum != null && Number.isFinite(stNum)) nw._lastPeerHistSrvTick = stNum;
+            appendPeerHullHistSample(nw, rx, rz, rr, recvMs, stNum, spdNH);
           }
         }
       }
@@ -30849,8 +30879,9 @@ function getAdaptivePeerHullPlaybackDelayMs(row, nowWallMs) {
   const tickMs = 1000 / NET_SYNC_HZ;
   const playT = nowWallMs - base;
   const ahead = last.recvMs - playT;
-  const wantLo = tickMs * 2.05;
-  const wantHi = tickMs * 5.75;
+  const spRow = row.speed != null && Number.isFinite(Number(row.speed)) ? Math.abs(Number(row.speed)) : 0;
+  const wantLo = tickMs * (2.02 + Math.min(0.55, spRow * 0.009));
+  const wantHi = tickMs * (5.85 + Math.min(2.05, spRow * 0.015));
   let dly = base;
   if (ahead < wantLo) dly = base + (wantLo - ahead) * 0.88;
   else if (ahead > wantHi) dly = base - Math.min(16, (ahead - wantHi) * 0.38);
@@ -30858,10 +30889,10 @@ function getAdaptivePeerHullPlaybackDelayMs(row, nowWallMs) {
 }
 
 /**
- * Remote mesh must not sail past the latest realm sample other players received (double integration + spline extrap).
- * Clamps bow-ahead component and extreme lateral separation vs `p.x`,`p.z`.
+ * Remote mesh — allow modest ahead-of-snap slack so tail extrapolation is not rubber-banded every frame.
+ * `extrapBowAllow` meters added along bow (from speed * extrapolate seconds).
  */
-function clampPeerHullPredToAuthoritative(predX, predZ, authX, authZ, authR, spAbs) {
+function clampPeerHullPredToAuthoritative(predX, predZ, authX, authZ, authR, spAbs, extrapBowAllow) {
   if (
     !Number.isFinite(predX) ||
     !Number.isFinite(predZ) ||
@@ -30877,18 +30908,20 @@ function clampPeerHullPredToAuthoritative(predX, predZ, authX, authZ, authR, spA
   const fz = Math.cos(authR);
   const bow = dxf * fx + dzf * fz;
   const spd = Math.abs(spAbs != null && Number.isFinite(Number(spAbs)) ? Number(spAbs) : 0);
-  const maxBow = 6.5 + Math.min(22, spd * 0.26);
+  const extra =
+    extrapBowAllow != null && Number.isFinite(Number(extrapBowAllow)) ? Math.max(0, Number(extrapBowAllow)) : 0;
+  const maxBow = 12 + Math.min(88, spd * 0.62) + extra;
   let x = predX;
   let z = predZ;
   if (bow > maxBow) {
-    const ex = bow - maxBow;
+    const ex = (bow - maxBow) * 0.78;
     x -= fx * ex;
     z -= fz * ex;
     dxf = x - authX;
     dzf = z - authZ;
   }
   const lat = Math.abs(dxf * -fz + dzf * fx);
-  const maxLat = 92;
+  const maxLat = Math.min(178, 108 + spd * 0.52);
   if (lat > maxLat) {
     const sc = maxLat / lat;
     x = authX + dxf * sc;
@@ -30957,10 +30990,10 @@ function sampleHullRecvHist(hist, tgtRecvMs, interpOpts) {
     let vz = (last.z - prev.z) / dtm;
     const capSp = interpOpts.peerTailSpeedCap;
     if (capSp != null && Number.isFinite(Number(capSp)) && Number(capSp) >= 0) {
-      const cap = Math.max(0.55, Number(capSp) * 1.18 + 0.45);
-      const vmCap = Math.hypot(vx, vz);
-      if (vmCap > cap && vmCap > 1e-4) {
-        const s = cap / vmCap;
+      const vm0 = Math.hypot(vx, vz);
+      const cap = Math.max(12, Number(capSp) * 1.62 + 3.4, vm0 * 1.03);
+      if (vm0 > cap && vm0 > 1e-4) {
+        const s = cap / vm0;
         vx *= s;
         vz *= s;
       }
@@ -31015,9 +31048,9 @@ function sampleHullRecvHist(hist, tgtRecvMs, interpOpts) {
     }
     const capSp = interpOpts.peerTailSpeedCap;
     const vRef =
-      capSp != null && Number.isFinite(Number(capSp)) ? Math.max(0.85, Number(capSp) * 1.32 + 0.55) : null;
+      capSp != null && Number.isFinite(Number(capSp)) ? Math.max(1.1, Number(capSp) * 1.58 + 1.35) : null;
     const dSeg = Math.hypot(b.x - a.x, b.z - a.z) / Math.max(T, 1e-3);
-    const limV = Math.max(dSeg * 2.15, vRef != null ? vRef : dSeg * 2.9);
+    const limV = Math.max(dSeg * 2.45, vRef != null ? vRef : dSeg * 3.2, dSeg * 3.55);
     const clampV = (vx, vz) => {
       const vm = Math.hypot(vx, vz);
       if (vm > limV && vm > 1e-4) {
@@ -31133,9 +31166,13 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
   const delayMsPlay = getAdaptivePeerHullPlaybackDelayMs(p, nowWall);
   const spAbsHint = p.speed != null && Number.isFinite(Number(p.speed)) ? Math.abs(Number(p.speed)) : 0;
-  /* Hermite between 60 Hz keys + adaptive delay keeps playhead on real segments; small tail extrap + speed cap + bow clamp. */
+  const peerMaxExtrap = Math.round(
+    Math.min(125, Math.max(52, delayMsPlay * 0.48 + 22 + spAbsHint * 0.55))
+  );
+  const extrapBowAllow = spAbsHint * (peerMaxExtrap / 1000) * 1.16;
+  /* Hermite between dense hull keys; extrap budget scales with speed/delay so fast ships don’t stair-step then snap. */
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, {
-    maxExtrapMs: 34,
+    maxExtrapMs: peerMaxExtrap,
     catmullRom: false,
     hermiteXZ: true,
     delayHintMs: delayMsPlay,
@@ -31156,11 +31193,23 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
       p._peerDispZ = ip.z;
     } else {
       const gap = Math.hypot(ip.x - p._peerDispX, ip.z - p._peerDispZ);
-      if (gap > 210) {
+      const hardSnap = Math.max(235, 98 + spAbsHint * 3.85);
+      if (gap > hardSnap) {
         p._peerDispX = ip.x;
         p._peerDispZ = ip.z;
       } else {
-        const rate = gap > 105 ? 29 : gap > 46 ? 21 : 15.5;
+        const rate =
+          spAbsHint > 42
+            ? gap > 118
+              ? 36
+              : gap > 52
+                ? 26
+                : 19
+            : gap > 105
+              ? 29
+              : gap > 46
+                ? 21
+                : 15.5;
         const sm = 1 - Math.exp(-rate * dt);
         p._peerDispX += (ip.x - p._peerDispX) * sm;
         p._peerDispZ += (ip.z - p._peerDispZ) * sm;
@@ -31169,7 +31218,15 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     const authX = Number(p.x);
     const authZ = Number(p.z);
     const spAbs = spAbsHint;
-    const cl = clampPeerHullPredToAuthoritative(p._peerDispX, p._peerDispZ, authX, authZ, authR, spAbs);
+    const cl = clampPeerHullPredToAuthoritative(
+      p._peerDispX,
+      p._peerDispZ,
+      authX,
+      authZ,
+      authR,
+      spAbs,
+      extrapBowAllow
+    );
     p._peerHullPredX = cl.x;
     p._peerHullPredZ = cl.z;
     p._peerDispX = cl.x;
@@ -31285,8 +31342,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 }
 
 /* ============================== GAME LOOP ================================ */
-/** Longer window @ ~60Hz so delayed playback stays inside real samples on jittery links. */
-const REMOTE_SNAP_HIST_MAX = 52;
+/** Longer window @ ~60Hz so delayed playback stays inside real samples on jittery links + midpoint inserts. */
+const REMOTE_SNAP_HIST_MAX = 64;
 
 /**
  * Peer hull `recvMs` — **server tick timeline** (same idea as `applyNpcSyncMessage`), aligned to `performance.now()` playback.
