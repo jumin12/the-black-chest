@@ -36,13 +36,6 @@ const gameRtc = createGameRtcBridge({
 });
 /** Match client `WORLD_EDGE_CLAMP` (7 * 270 + 135) — reject runaway coordinates from glitched clients. */
 const PLAYER_WORLD_EDGE_CLAMP = 7 * 270 + 135;
-function normalizePlayerShipType(t) {
-  const s = String(t == null ? '' : t).toLowerCase().trim();
-  if (s === 'galleon') return 'galleon';
-  if (s === 'warship' || s === 'brigantine' || s === 'cutter') return s === 'cutter' ? 'sloop' : 'galleon';
-  if (s === 'sloop') return 'sloop';
-  return 'sloop';
-}
 function clampPlayerWorldX(x) {
   const v = Number(x);
   if (!Number.isFinite(v)) return null;
@@ -1729,7 +1722,7 @@ function persistCaptainWorldPresenceFromPlayer(captainKey, p) {
     dockZ: p.dockZ != null ? p.dockZ : null,
     dockAngle: p.dockAngle != null ? p.dockAngle : null,
     dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
-    shipType: normalizePlayerShipType(p.shipType != null ? String(p.shipType).slice(0, 24) : 'sloop'),
+    shipType: p.shipType != null ? String(p.shipType).slice(0, 24) : 'sloop',
     shipName: p.shipName != null ? String(p.shipName).slice(0, 28) : '',
     shipParts: p.shipParts && typeof p.shipParts === 'object' ? { ...p.shipParts } : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     health: p.health,
@@ -1763,7 +1756,7 @@ function tryApplyWorldPresenceToPlayer(captainKey, p) {
   if (raw.dockBerthIndex !== undefined) p.dockBerthIndex = raw.dockBerthIndex;
   if (raw.shipType) {
     const st = String(raw.shipType).trim().slice(0, 24);
-    if (st) p.shipType = normalizePlayerShipType(st);
+    if (st) p.shipType = st;
   }
   if (raw.shipName != null) p.shipName = String(raw.shipName).slice(0, 28);
   if (raw.shipParts && typeof raw.shipParts === 'object') {
@@ -2657,7 +2650,7 @@ wss.on('connection', (ws, req) => {
           if (msg.morale !== undefined) p.morale = Math.max(0, Math.min(100, Number(msg.morale) || 0));
           if (msg.shipType !== undefined && msg.shipType !== null) {
             const st = String(msg.shipType).trim().slice(0, 24);
-            if (st) p.shipType = normalizePlayerShipType(st);
+            if (st) p.shipType = st;
           }
           if (msg.shipName !== undefined) p.shipName = String(msg.shipName || '').slice(0, 28);
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
@@ -2851,7 +2844,7 @@ wss.on('connection', (ws, req) => {
           if (msg.shipName) p.shipName = String(msg.shipName).slice(0, 28);
           if (msg.shipType !== undefined && msg.shipType !== null) {
             const st = String(msg.shipType).trim().slice(0, 24);
-            if (st) p.shipType = normalizePlayerShipType(st);
+            if (st) p.shipType = st;
           }
           if (msg.flagColor !== undefined) p.flagColor = String(msg.flagColor || '').slice(0, 32);
           if (msg.flagAssetId !== undefined) {
@@ -2917,7 +2910,7 @@ wss.on('connection', (ws, req) => {
         case 'ship_update': {
           const p = players.get(id);
           if (!p) break;
-          if (msg.shipType) p.shipType = normalizePlayerShipType(String(msg.shipType).trim().slice(0, 24));
+          if (msg.shipType) p.shipType = msg.shipType;
           if (msg.shipParts) p.shipParts = { ...p.shipParts, ...msg.shipParts };
           broadcast({ type: 'ship_update', id, shipType: p.shipType, shipParts: p.shipParts }, id);
           break;
@@ -3313,7 +3306,7 @@ wss.on('connection', (ws, req) => {
           if (!Number.isFinite(targetId) || !players.has(targetId) || targetId === id) break;
           const tws = findWsByPlayerId(targetId);
           if (!tws || tws.readyState !== 1) break;
-          const st = normalizePlayerShipType(msg.shipType != null ? String(msg.shipType).slice(0, 24) : 'sloop');
+          const st = msg.shipType != null ? String(msg.shipType).slice(0, 24) : 'sloop';
           const slots = Array.isArray(msg.cargoSlots) ? msg.cargoSlots.slice(0, 48) : [];
           const inv = Array.isArray(msg.inventory) ? msg.inventory.slice(0, 64) : [];
           try {
@@ -3391,7 +3384,7 @@ wss.on('connection', (ws, req) => {
                 x: Number.isFinite(Number(atk.x)) ? Number(atk.x) : 0,
                 z: Number.isFinite(Number(atk.z)) ? Number(atk.z) : 0,
                 rotation: Number.isFinite(Number(atk.rotation)) ? Number(atk.rotation) : 0,
-                shipType: normalizePlayerShipType(atk.shipType != null ? String(atk.shipType).slice(0, 24) : 'sloop'),
+                shipType: atk.shipType != null ? String(atk.shipType).slice(0, 24) : 'sloop',
                 shipParts: atk.shipParts && typeof atk.shipParts === 'object'
                   ? { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...atk.shipParts }
                   : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
@@ -3414,7 +3407,7 @@ wss.on('connection', (ws, req) => {
                 x: Number.isFinite(Number(vic.x)) ? Number(vic.x) : 0,
                 z: Number.isFinite(Number(vic.z)) ? Number(vic.z) : 0,
                 rotation: Number.isFinite(Number(vic.rotation)) ? Number(vic.rotation) : 0,
-                shipType: normalizePlayerShipType(vic.shipType != null ? String(vic.shipType).slice(0, 24) : 'sloop'),
+                shipType: vic.shipType != null ? String(vic.shipType).slice(0, 24) : 'sloop',
                 shipParts: vic.shipParts && typeof vic.shipParts === 'object'
                   ? { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast', ...vic.shipParts }
                   : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
@@ -3425,7 +3418,7 @@ wss.on('connection', (ws, req) => {
             if (atk && vic) {
               const baseParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
               const vParts = vic.shipParts && typeof vic.shipParts === 'object' ? vic.shipParts : {};
-              atk.shipType = normalizePlayerShipType(vic.shipType != null ? String(vic.shipType).slice(0, 24) : String(atk.shipType || 'sloop'));
+              atk.shipType = vic.shipType != null ? String(vic.shipType).slice(0, 24) : atk.shipType;
               atk.shipParts = { ...baseParts, ...(atk.shipParts && typeof atk.shipParts === 'object' ? atk.shipParts : {}), ...vParts };
               if (vic.shipName != null) atk.shipName = String(vic.shipName).slice(0, 28);
               if (vic.flagAssetId !== undefined) {

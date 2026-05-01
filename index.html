@@ -3007,11 +3007,85 @@ body.game-help-mobile-minimal #game-help-panel{
 </div>
 
 <script type="importmap">
-{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/examples/jsm/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js"}}
 </script>
 <script type="module">
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/utils/SkeletonUtils.js';
+
+const _gltfTemplateRoots = Object.create(null);
+let _gameGltfLoadComplete = false;
+let _gameGltfTemplatesPromise = null;
+const _GAME_GLTF_LOADER = new GLTFLoader();
+const GAME_GLTF_MODEL_RELS = [
+  'assets/3d models/buildings/church1.glb',
+  'assets/3d models/buildings/dock1.glb',
+  'assets/3d models/buildings/govres1.glb',
+  'assets/3d models/buildings/house1.glb',
+  'assets/3d models/buildings/house2.glb',
+  'assets/3d models/buildings/tavern.glb',
+  'assets/3d models/decorations/bush1.glb',
+  'assets/3d models/decorations/bush2.glb',
+  'assets/3d models/decorations/tree1.glb',
+  'assets/3d models/decorations/tree2.glb',
+  'assets/3d models/decorations/tree3.glb',
+  'assets/3d models/ships/galleon1.glb',
+  'assets/3d models/ships/galleon2.glb',
+  'assets/3d models/ships/galleon3.glb',
+  'assets/3d models/ships/galleon4.glb',
+  'assets/3d models/ships/pirate-sloop1.glb',
+  'assets/3d models/ships/sloop1.glb',
+  'assets/3d models/ships/sloop2.glb',
+  'assets/3d models/ships/sloop3.glb',
+  'assets/3d models/wildlife/fish1.glb',
+  'assets/3d models/wildlife/fish2.glb',
+  'assets/3d models/wildlife/fish3.glb',
+  'assets/3d models/wildlife/fish4.glb',
+  'assets/3d models/wildlife/seagul1.glb',
+  'assets/3d models/wildlife/seagul2.glb',
+  'assets/3d models/wildlife/shark.glb'
+];
+const GAME_GLB_SLOOPS = [
+  'assets/3d models/ships/sloop1.glb',
+  'assets/3d models/ships/sloop2.glb',
+  'assets/3d models/ships/sloop3.glb',
+  'assets/3d models/ships/pirate-sloop1.glb'
+];
+const GAME_GLB_GALLEONS = [
+  'assets/3d models/ships/galleon1.glb',
+  'assets/3d models/ships/galleon2.glb',
+  'assets/3d models/ships/galleon3.glb',
+  'assets/3d models/ships/galleon4.glb'
+];
+const GAME_GLB_TOWN = {
+  church: 'assets/3d models/buildings/church1.glb',
+  tavern: 'assets/3d models/buildings/tavern.glb',
+  governor: 'assets/3d models/buildings/govres1.glb',
+  houseA: 'assets/3d models/buildings/house1.glb',
+  houseB: 'assets/3d models/buildings/house2.glb'
+};
+const GAME_GLB_BUILDING_BASE_Y = {
+  church: 0.52,
+  tavern: 1.12,
+  governor: 1.25,
+  house: 1.0
+};
+const GAME_GLB_TREES = [
+  'assets/3d models/decorations/tree1.glb',
+  'assets/3d models/decorations/tree2.glb',
+  'assets/3d models/decorations/tree3.glb'
+];
+const GAME_GLB_BUSHES = ['assets/3d models/decorations/bush1.glb', 'assets/3d models/decorations/bush2.glb'];
+const GAME_GLB_FISH = [
+  'assets/3d models/wildlife/fish1.glb',
+  'assets/3d models/wildlife/fish2.glb',
+  'assets/3d models/wildlife/fish3.glb',
+  'assets/3d models/wildlife/fish4.glb'
+];
+const GAME_GLB_DOCK_PIER = 'assets/3d models/buildings/dock1.glb';
+const GAME_GLB_SHARK = 'assets/3d models/wildlife/shark.glb';
+const GAME_GLB_SEAGULLS = ['assets/3d models/wildlife/seagul1.glb', 'assets/3d models/wildlife/seagul2.glb'];
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const _deviceMem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : null;
@@ -3400,7 +3474,7 @@ const G = {
   myCaptainKey: null,
   /** Player ids (numbers) whose remote ship must stay in sinking animation until removed (sync across crew mesh rebuilds). */
   pendingRemoteShipSink: new Set(),
-  /** Detached meshes: seized hull sinks (PvP keep-ship) while the captain respawns in a sloop. */
+  /** Detached meshes: seized hull sinks (PvP keep-ship) while the captain respawns in a cutter. */
   prizeHullDecoySinks: [],
   chunks: new Map(),
   islands: [],
@@ -4308,7 +4382,11 @@ function setMultiplayerConnectingOverlay(show) {
   try {
     document.body.classList.toggle('mp-connecting-active', on);
   } catch (e) {}
-  try { syncMainCanvasPointerEvents(); } catch (e2) {}
+  try {
+    if (typeof renderer !== 'undefined' && renderer && renderer.domElement) {
+      renderer.domElement.style.pointerEvents = on ? 'none' : '';
+    }
+  } catch (e2) {}
 }
 
 function setDesyncBlockingOverlay(show, message) {
@@ -4496,12 +4574,8 @@ function updateAmmoTypeBarLabels() {
   }
 }
 
-/** Main story: defeat two notorious pirates (sloop then galleon). */
+/** Main story marks: first a sloop captain, then a galleon. */
 const STORY_SHIP_ORDER = ['sloop', 'galleon'];
-const STORY_BOUNTY_CAPTAIN_POOLS = {
-  sloop: ['Silas "Shiv" Rackham', 'Nessa "Needle" Croft', 'Jory "Ripcurl" Marsh', 'Edda Saltjaw', 'Pike Runnel', 'Mara Duskwind', 'Finn Crowsbeak', 'Isara Thornwave', 'Rook Baleine', 'Tamsin Greywake'],
-  galleon: ['Iron Tom Corsair', 'Bram Blackjib', 'Kira Stormwright', 'Orlo "Grimhoist" Vane', 'Sable Rackford', 'Vex Blackwater', 'Cordelia Ashprow', 'Magnus Deephaul', 'Yara "Widowline" Stenn', 'Rafe Copperkeel', 'Admiral Scarlett Graves', 'Commodore Jareth Pike', 'Vice-Admiral Miren Cole', 'Lord Harrow "Ironwake" Dunne', 'Captain Thrace Redbay']
-};
 /** Per-captain story targets use high net ids so each player’s mark is unique (merchants from 200, vanilla pirates 0–7). */
 const STORY_BOUNTY_SYNC_MIN = 62000;
 const STORY_BOUNTY_SYNC_SPAN = 32;
@@ -4521,6 +4595,11 @@ function parseStoryBountyFromSyncId(sid) {
   if (ownerPlayerId < 1) return null;
   return { ownerPlayerId, step };
 }
+/** Rotating notorious captains per ship class (deterministic per owner + step). */
+const STORY_BOUNTY_CAPTAIN_POOLS = {
+  sloop: ['Silas "Shiv" Rackham', 'Nessa "Needle" Croft', 'Jory "Ripcurl" Marsh', 'Mara Duskwind', 'Finn Crowsbeak'],
+  galleon: ['Vex Blackwater', 'Iron Tom Corsair', 'Admiral Scarlett Graves', 'Kira Stormwright', 'Captain Thrace Redbay']
+};
 const STORY_PIRATE_NAMES = Object.fromEntries(Object.entries(STORY_BOUNTY_CAPTAIN_POOLS).map(([k, v]) => [k, v[0]]));
 function pickStoryBountyCaptainName(shipType, ownerPlayerId, step) {
   const pool = STORY_BOUNTY_CAPTAIN_POOLS[shipType];
@@ -4568,7 +4647,7 @@ function storyBountyCrewData(ownerPlayerId, step, shipType) {
   return crew;
 }
 function ambientPirateCrewData(seed, shipType) {
-  const st = normalizeClientShipType(shipType);
+  const st = shipType && SHIP_TYPES[shipType] ? shipType : 'sloop';
   const spec = SHIP_TYPES[st] || SHIP_TYPES.sloop;
   let h = (seed >>> 0) || 1;
   const roll = () => { h = (Math.imul(h, 1664525) + 1013904223) >>> 0; return h; };
@@ -4616,7 +4695,7 @@ function ambientPirateCrewData(seed, shipType) {
   return out;
 }
 function merchantCrewFromRng(sr, shipType) {
-  const st = normalizeClientShipType(shipType);
+  const st = shipType && SHIP_TYPES[shipType] ? shipType : 'sloop';
   const spec = SHIP_TYPES[st] || SHIP_TYPES.sloop;
   const maxC = Math.max(3, spec.maxCrew | 0);
   const target = Math.max(3, Math.min(maxC, Math.floor(2 + maxC * (0.26 + sr() * 0.34))));
@@ -4817,7 +4896,7 @@ function spawnStoryBountyNpcForOwner(ownerPlayerId, story) {
   if (!isWorldPositionFreeForNpcSpawn(bx, bz, shipType, bountyYaw)) return;
   const name = pickStoryBountyCaptainName(shipType, ownerPlayerId, story.step);
   const sr = () => Math.random();
-  const hp = shipType === 'galleon' ? 108 : 74;
+  const hp = shipType === 'galleon' ? 118 : 78;
   const sid = storyBountySyncId(ownerPlayerId, story.step);
   const npc = {
     syncId: sid,
@@ -4992,15 +5071,17 @@ function storyBountyRerollLocal() {
 }
 
 const SHIP_TYPES = {
-  sloop: { name: 'Sloop', desc: 'Fast starter hull', hullLen: 7, hullW: 2.2, hullH: 1.3, masts: 1, maxCrew: 5, maxPrisoners: 4, speed: 1.5, turnRate: 1.3, cannonSlots: 2, cargoSlots: 10, bowStyle: 'pointed' },
-  galleon: { name: 'Galleon', desc: 'Heavy war and cargo ship', hullLen: 15, hullW: 4.8, hullH: 2.5, masts: 3, maxCrew: 22, maxPrisoners: 20, speed: 0.82, turnRate: 0.62, cannonSlots: 8, cargoSlots: 22, bowStyle: 'wide' }
+  /** Smaller vessel — starter hull; fast and agile. Visuals come from cloned GLB rigs. */
+  sloop: { name: 'Sloop', desc: 'Swift corsair hull', hullLen: 7, hullW: 2.2, hullH: 1.35, masts: 1, maxCrew: 6, maxPrisoners: 5, speed: 1.48, turnRate: 1.28, cannonSlots: 2, cargoSlots: 11, bowStyle: 'pointed' },
+  /** Largest playable class — heavier broadside and hold. All former heavy classes map here. */
+  galleon: { name: 'Galleon', desc: 'Great ship of cargo and war', hullLen: 16, hullW: 5.0, hullH: 2.55, masts: 3, maxCrew: 22, maxPrisoners: 20, speed: 0.78, turnRate: 0.62, cannonSlots: 8, cargoSlots: 22, bowStyle: 'wide' }
 };
-/** Legacy hull names from saves / server map to the two playable classes. */
-function normalizeClientShipType(t) {
-  const s = String(t == null ? '' : t).toLowerCase().trim();
+function normalizeShipType(t) {
+  const s = String(t || '').trim().toLowerCase();
   if (s === 'galleon') return 'galleon';
-  if (s === 'warship' || s === 'brigantine' || s === 'cutter') return s === 'cutter' ? 'sloop' : 'galleon';
   if (s === 'sloop') return 'sloop';
+  /* Retired archetypes collapse into the two playable classes. */
+  if (s === 'warship' || s === 'brigantine') return 'galleon';
   return 'sloop';
 }
 /** Fish, dolphins, and sharks stay beyond island surf by at least five sloop hull lengths. */
@@ -5042,11 +5123,11 @@ function nudgeWildlifeXZAwayFromIslands(x, z, refX, refZ) {
 }
 
 function shipHullRadius(shipType) {
-  const s = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
+  const s = SHIP_TYPES[normalizeShipType(shipType)] || SHIP_TYPES.sloop;
   return Math.max(3.1, s.hullLen * 0.5 + s.hullW * 0.42);
 }
 function shipRamMass(shipType) {
-  const s = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
+  const s = SHIP_TYPES[normalizeShipType(shipType)] || SHIP_TYPES.sloop;
   return Math.max(1.15, s.hullLen * 0.62 + s.hullW * 0.38);
 }
 function playerSpeedMultFromShipParts() {
@@ -5221,10 +5302,10 @@ function obbShipsSeparation(cxA, czA, yawA, typeA, cxB, czB, yawB, typeB, margin
   return { depth: minOverlap, nx: mtdNx, nz: mtdNz };
 }
 
-const SHIP_PURCHASE_PRICE = { sloop: 125, galleon: 395 };
-const SHIP_TRADEIN_HULL_BASE = { sloop: 70, galleon: 200 };
+const SHIP_PURCHASE_PRICE = { sloop: 125, galleon: 420 };
+const SHIP_TRADEIN_HULL_BASE = { sloop: 70, galleon: 215 };
 function computePlayerShipTradeInGold() {
-  const st = normalizeClientShipType(G.player.shipType);
+  const st = G.player.shipType;
   const base = SHIP_TRADEIN_HULL_BASE[st] != null ? SHIP_TRADEIN_HULL_BASE[st] : 60;
   let parts = 0;
   const partsObj = G.player.shipParts || {};
@@ -6129,14 +6210,6 @@ renderer.domElement.style.background = '#152a45';
 renderer.domElement.style.touchAction = 'none';
 renderer.domElement.tabIndex = 0;
 renderer.domElement.style.outline = 'none';
-/** Main canvas is full-screen; keep it from swallowing clicks on the main menu / create flow. */
-function syncMainCanvasPointerEvents() {
-  if (typeof renderer === 'undefined' || !renderer || !renderer.domElement) return;
-  const menuBlocksCanvas = typeof G !== 'undefined' && G && G.mode !== 'playing';
-  const mpVeil = typeof document !== 'undefined' && document.body && document.body.classList.contains('mp-connecting-active');
-  renderer.domElement.style.pointerEvents = menuBlocksCanvas || mpVeil ? 'none' : '';
-}
-syncMainCanvasPointerEvents();
 let _webglReloadScheduled = false;
 renderer.domElement.addEventListener('webglcontextlost', e => {
   try { e.preventDefault(); } catch (err) {}
@@ -9347,7 +9420,7 @@ function isWorldPositionFreeForNpcSpawn(wx, wz, shipType, yawOpt) {
  */
 function findMerchantSpawnOffCoast(home, sr, shipTypeOpt) {
   if (!home || home.dockX == null) return null;
-  const spec = SHIP_TYPES[shipTypeOpt || 'galleon'] || SHIP_TYPES.sloop;
+  const spec = SHIP_TYPES[normalizeShipType(shipTypeOpt || 'galleon')] || SHIP_TYPES.sloop;
   const da = home.dockAngle || 0;
   const longX = Math.sin(da), longZ = Math.cos(da);
   const widX = Math.cos(da), widZ = -Math.sin(da);
@@ -9360,7 +9433,7 @@ function findMerchantSpawnOffCoast(home, sr, shipTypeOpt) {
     const nz = home.dockZ + longZ * along + widZ * lateral;
     const cx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nx));
     const cz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nz));
-    if (!isSeaObstructed(cx, cz) && hasMinClearanceFromLand(cx, cz, landClear) && npcFindClearSpawnYaw(cx, cz, shipTypeOpt || 'galleon') != null) {
+    if (!isSeaObstructed(cx, cz) && hasMinClearanceFromLand(cx, cz, landClear) && npcFindClearSpawnYaw(cx, cz, normalizeShipType(shipTypeOpt || 'galleon')) != null) {
       return { nx: cx, nz: cz };
     }
   }
@@ -9372,7 +9445,7 @@ function findMerchantSpawnOffCoast(home, sr, shipTypeOpt) {
       const nz = home.dockZ + longZ * along + widZ * lateral;
       const cx = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nx));
       const cz = Math.max(-WORLD_EDGE_CLAMP, Math.min(WORLD_EDGE_CLAMP, nz));
-      if (!isSeaObstructed(cx, cz) && hasMinClearanceFromLand(cx, cz, landClear - 6) && npcFindClearSpawnYaw(cx, cz, shipTypeOpt || 'galleon') != null) return { nx: cx, nz: cz };
+      if (!isSeaObstructed(cx, cz) && hasMinClearanceFromLand(cx, cz, landClear - 6) && npcFindClearSpawnYaw(cx, cz, normalizeShipType(shipTypeOpt || 'galleon')) != null) return { nx: cx, nz: cz };
     }
   }
   return null;
@@ -9478,21 +9551,29 @@ function decoRand(rng) {
   return typeof rng === 'function' ? rng : Math.random;
 }
 
+/** Island decoration: GLB tree clones (falls back to palms if models are not ready). */
+function addGameplayGltfTreeAt(worldX, landY, worldZ, rng) {
+  if (!_gameGltfLoadComplete) return null;
+  const r = decoRand(rng);
+  const rel = GAME_GLB_TREES[Math.floor(r() * GAME_GLB_TREES.length) % GAME_GLB_TREES.length];
+  const m = cloneGameplayGltfRel(rel);
+  if (!m) return null;
+  m.traverse(o => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  const tgt = 2.35 + r() * 1.65;
+  const ext = glbModelMaxHorizontalExtent(m);
+  m.scale.multiplyScalar(tgt / Math.max(0.001, ext));
+  const box = new THREE.Box3().setFromObject(m);
+  m.position.set(worldX, SEA_LEVEL + landY + 0.06 - box.min.y, worldZ);
+  m.rotation.y = r() * Math.PI * 2;
+  return m;
+}
 function createPalmTree(x, y, z, rng, yawOverride) {
   const r = decoRand(rng);
-  {
-    const rel = GAME_GLB_TREE_RELS[Math.floor(Math.abs(Math.sin(x * 0.21 + z * 0.17 + (r() - 0.5)) * 4133)) % GAME_GLB_TREE_RELS.length];
-    const glb = cloneGameGltfFromRel(rel);
-    if (glb) {
-      const scl = 0.38 + r() * 0.18;
-      glb.scale.setScalar(scl);
-      glb.position.set(x, y, z);
-      glb.rotation.y = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
-        ? Number(yawOverride)
-        : (r() * Math.PI * 2);
-      return glb;
-    }
-  }
   const g = new THREE.Group();
   const height = 4.35 + r() * 2.65;
   const pts = [];
@@ -9581,19 +9662,29 @@ function createRock(x, y, z, s, rng) {
   const rock = new THREE.Mesh(geo, matRock); rock.position.set(x, y, z); rock.castShadow = true; rock.receiveShadow = true; return rock;
 }
 
+function addGameplayGltfBushAt(x, y, z, s, rng) {
+  if (!_gameGltfLoadComplete) return null;
+  const r = decoRand(rng);
+  const rel = GAME_GLB_BUSHES[Math.floor(r() * GAME_GLB_BUSHES.length) % GAME_GLB_BUSHES.length];
+  const m = cloneGameplayGltfRel(rel);
+  if (!m) return null;
+  m.traverse(o => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  const tgt = Math.max(0.35, s * 7.5);
+  const ext = glbModelMaxHorizontalExtent(m);
+  m.scale.multiplyScalar(tgt / Math.max(0.001, ext));
+  const box = new THREE.Box3().setFromObject(m);
+  m.position.set(x, y - box.min.y, z);
+  m.rotation.y = r() * Math.PI * 2;
+  return m;
+}
+
 function createBush(x, y, z, s, rng) {
   const r = decoRand(rng);
-  {
-    const rel = GAME_GLB_BUSH_RELS[Math.floor(r() * GAME_GLB_BUSH_RELS.length)];
-    const glb = cloneGameGltfFromRel(rel);
-    if (glb) {
-      const scl = (0.55 + r() * 0.35) * Math.max(0.35, s);
-      glb.scale.setScalar(scl);
-      glb.position.set(x, y, z);
-      glb.rotation.y = r() * Math.PI * 2;
-      return glb;
-    }
-  }
   const g = new THREE.Group();
   const mat = new THREE.MeshLambertMaterial({ color: [0x2d5016, 0x3a6b28, 0x25603a, 0x3d6b2a][Math.floor(r() * 4)] });
   for (let i = 0; i < 4; i++) {
@@ -9774,9 +9865,29 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
   if (!landOk(bx - cornerE, bz + cornerE)) return false;
   if (!landOk(bx + cornerE, bz + cornerE)) return false;
   const baseY = SEA_LEVEL + gyMin + 0.04;
-  if (tryAddTownLandmarkFromGlb(group, type, bx, bz, baseY, rng, footprintR)) {
-    if (footprints) footprints.push({ x: bx, z: bz, r: footprintR });
-    return true;
+  if (_gameGltfLoadComplete) {
+    const rel = type === 'church' ? GAME_GLB_TOWN.church
+      : type === 'tavern' ? GAME_GLB_TOWN.tavern
+        : type === 'governor' ? GAME_GLB_TOWN.governor
+          : (decoRand(rng)() < 0.5 ? GAME_GLB_TOWN.houseA : GAME_GLB_TOWN.houseB);
+    const model = cloneGameplayGltfRel(rel);
+    if (model) {
+      model.traverse(o => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+      const targetFoot = Math.max(bW, bD, 2.2);
+      const ext0 = glbModelMaxHorizontalExtent(model);
+      model.scale.multiplyScalar(targetFoot / Math.max(0.001, ext0));
+      const box = new THREE.Box3().setFromObject(model);
+      model.position.set(bx, baseY - box.min.y, bz);
+      model.rotation.y = r() * Math.PI * 2;
+      group.add(model);
+      if (footprints) footprints.push({ x: bx, z: bz, r: footprintR });
+      return true;
+    }
   }
   addTownBuildingFootprint(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
   if (type === 'church') {
@@ -9985,9 +10096,16 @@ function generateCustomMapChunk(cx, cz) {
     const er0 = decoRand(er);
     if (e.type === 'tree') {
       const yAw = e.rot != null && Number.isFinite(Number(e.rot)) ? Number(e.rot) : undefined;
-      group.add(createPalmTree(e.x, surf + 0.08, e.z, er, yAw));
+      const landH = surf - SEA_LEVEL;
+      const glbT = addGameplayGltfTreeAt(e.x, landH, e.z, er);
+      if (glbT && yAw != null) glbT.rotation.y = yAw;
+      group.add(glbT || createPalmTree(e.x, surf + 0.08, e.z, er, yAw));
     }
-    else if (e.type === 'bush') group.add(createBush(e.x, surf + 0.02, e.z, 0.35 + er0() * 0.35, er));
+    else if (e.type === 'bush') {
+      const ss = 0.35 + er0() * 0.35;
+      const bu = addGameplayGltfBushAt(e.x, surf + 0.02, e.z, ss, er);
+      group.add(bu || createBush(e.x, surf + 0.02, e.z, ss, er));
+    }
     else if (e.type === 'building') {
       const bH = e.buildH != null ? Number(e.buildH) : (2.5 + er0() * 1.5);
       const bW = e.buildW != null ? Number(e.buildW) : (2.5 + er0() * 2);
@@ -10032,14 +10150,11 @@ function generateCustomMapChunk(cx, cz) {
       group.add(hg);
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
-      const deckY = surf + 0.52;
-      if (!tryAddDockFromGlb(group, e.x, deckY, e.z, ang)) {
-        const dock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.45, PIER_TOTAL_LEN), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
-        dock.position.set(e.x, surf + 0.45, e.z);
-        dock.rotation.y = ang;
-        dock.receiveShadow = true; dock.castShadow = true;
-        group.add(dock);
-      }
+      const dock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.45, PIER_TOTAL_LEN), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+      dock.position.set(e.x, surf + 0.45, e.z);
+      dock.rotation.y = ang;
+      dock.receiveShadow = true; dock.castShadow = true;
+      group.add(dock);
     } else if (e.type === 'flagpole') {
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 9, 8), new THREE.MeshLambertMaterial({ color: 0x4a3a28 }));
       pole.position.set(e.x, surf + 4.5, e.z);
@@ -10198,7 +10313,10 @@ function generateIsland(cx, cz) {
     const d = proceduralIslandNormDistCore(tx, tz, worldX, worldZ, islandRadius, islandNoise);
     if (d > 0.93) continue;
     const ty = sampleIslandLandHeight(tx, tz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
-    if (ty > 0.35 && ty < islandHeight * 0.74) group.add(createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.06, worldZ + tz, rng));
+    if (ty > 0.35 && ty < islandHeight * 0.74) {
+      const tr = addGameplayGltfTreeAt(worldX + tx, ty, worldZ + tz, rng);
+      group.add(tr || createPalmTree(worldX + tx, SEA_LEVEL + ty + 0.06, worldZ + tz, rng));
+    }
   }
 
   const bushCount = Math.floor((7 + h * 30) * decorScale);
@@ -10210,7 +10328,9 @@ function generateIsland(cx, cz) {
     if (d > 0.94 || d < 0.22) continue;
     const by = sampleIslandLandHeight(bx, bz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
     if (by < 0.48 || by > islandHeight * 0.78) continue;
-    group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, 0.28 + rng() * 0.42, rng));
+    const ss = 0.28 + rng() * 0.42;
+    const bu = addGameplayGltfBushAt(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, ss, rng);
+    group.add(bu || createBush(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, ss, rng));
   }
 
   const rockCount = Math.floor((3 + h * 15) * decorScale);
@@ -10297,19 +10417,45 @@ function generateIsland(cx, cz) {
       terrainYWorld(dockX, dockZ)
     );
     const dockGround = dockYLand > 0 ? dockYLand : 0;
+    const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.4, PIER_TOTAL_LEN);
+    const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
+    const dock = new THREE.Mesh(dockGeo, dockMat);
     const dockDeckClear = 0.52;
     const dockCenterY = SEA_LEVEL + dockGround + dockDeckClear;
+    dock.position.set(dockX, dockCenterY, dockZ);
+    dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
+    group.add(dock);
+    let useDockGlb = false;
+    if (_gameGltfLoadComplete) {
+      const dModel = cloneGameplayGltfRel(GAME_GLB_DOCK_PIER);
+      if (dModel) {
+        useDockGlb = true;
+        dock.visible = false;
+        dModel.traverse(o => {
+          if (o.isMesh) {
+            o.castShadow = true;
+            o.receiveShadow = true;
+          }
+        });
+        const box0 = new THREE.Box3().setFromObject(dModel);
+        const sz0 = box0.getSize(new THREE.Vector3());
+        const sx = PIER_DECK_WIDTH / Math.max(0.001, sz0.x);
+        const szl = PIER_TOTAL_LEN / Math.max(0.001, sz0.z);
+        const sc = 0.94 * Math.min(sx, szl);
+        dModel.scale.multiplyScalar(sc);
+        const box1 = new THREE.Box3().setFromObject(dModel);
+        const midY = (box1.min.y + box1.max.y) * 0.5;
+        dModel.position.set(dockX, dockCenterY - midY, dockZ);
+        dModel.rotation.y = dockAngle;
+        group.add(dModel);
+      }
+    }
     group.userData.dockAngle = dockAngle;
-    if (!tryAddDockFromGlb(group, dockX, dockCenterY, dockZ, dockAngle)) {
-      const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.4, PIER_TOTAL_LEN);
-      const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
-      const dock = new THREE.Mesh(dockGeo, dockMat);
-      dock.position.set(dockX, dockCenterY, dockZ);
-      dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
-      group.add(dock);
-      const dockUndersideY = dockCenterY - 0.2;
-      const postH = 5.8;
-      const postTopY = dockUndersideY - 0.06;
+
+    const dockUndersideY = dockCenterY - 0.2;
+    const postH = 5.8;
+    const postTopY = dockUndersideY - 0.06;
+    if (!useDockGlb) {
       const postAlongStep = PIER_TOTAL_LEN / 3.5;
       for (let pi = 0; pi < 8; pi++) {
         const side = pi % 2 === 0 ? 1 : -1;
@@ -10321,8 +10467,6 @@ function generateIsland(cx, cz) {
         post.castShadow = true;
         group.add(post);
       }
-    } else {
-      /* GLB dock includes structure; keep `dockCenterY` for settlement / cleats. */
     }
 
     const toInX = worldX - dockX, toInZ = worldZ - dockZ;
@@ -10519,30 +10663,25 @@ function nudgeSharkPairMidpointToOpenSea(mA, mB, yOff) {
 
 function makePredatorSharkMesh(scale) {
   const s = Number(scale) || 1;
-  {
-    const glb = cloneGameGltfFromRel('assets/3d models/wildlife/shark.glb');
-    if (glb) {
-      const box = new THREE.Box3().setFromObject(glb);
-      const sz = new THREE.Vector3();
-      box.getSize(sz);
-      const ref = Math.max(sz.x, sz.z, 0.001);
-      glb.scale.setScalar((1.15 * s) / ref);
-      box.setFromObject(glb);
-      const ctr = new THREE.Vector3();
-      box.getCenter(ctr);
-      glb.position.sub(ctr);
-      glb.position.y -= box.min.y;
-      const g = new THREE.Group();
-      g.add(glb);
-      let tailGrp = null;
-      glb.traverse(o => {
-        if (o !== glb && /tail/i.test(o.name)) tailGrp = o;
+  if (_gameGltfLoadComplete) {
+    const m = cloneGameplayGltfRel(GAME_GLB_SHARK);
+    if (m) {
+      m.traverse(o => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
       });
-      g.userData.tail = tailGrp;
-      g.userData.pecFinL = null;
-      g.userData.pecFinR = null;
+      const ext = glbModelMaxHorizontalExtent(m);
+      m.scale.multiplyScalar((1.65 * s) / Math.max(0.001, ext));
+      const box = new THREE.Box3().setFromObject(m);
+      m.position.y -= box.min.y;
+      m.rotation.y = Math.PI * 0.5;
+      const g = new THREE.Group();
+      g.add(m);
       g.userData.isPredatorShark = true;
       g.userData.swimPhase = 0;
+      g.userData.glbSharkVisual = m;
       return g;
     }
   }
@@ -10594,6 +10733,13 @@ function applyPredatorSharkSwimMotion(mesh, swimMag, bankZ) {
   const sm = swimMag == null ? 1 : swimMag;
   const ph = mesh.userData.swimPhase || 0;
   const t = getWildlifeWorldTime();
+  if (mesh.userData.glbSharkVisual) {
+    const vis = mesh.userData.glbSharkVisual;
+    vis.rotation.y = Math.PI * 0.5 + Math.sin(t * 2.95 * sm + ph) * 0.11;
+    vis.rotation.x = Math.sin(t * 2.08 * sm + ph * 1.15) * 0.07 * sm;
+    mesh.rotation.z = bankZ != null ? bankZ : 0;
+    return;
+  }
   if (mesh.userData.tail) mesh.userData.tail.rotation.y = Math.sin(t * 2.95 * sm + ph) * 0.55;
   mesh.rotation.x = Math.sin(t * 2.08 * sm + ph * 1.15) * 0.09 * sm;
   if (mesh.userData.pecFinL && mesh.userData.pecFinR) {
@@ -10605,15 +10751,13 @@ function applyPredatorSharkSwimMotion(mesh, swimMag, bankZ) {
 }
 function disposePredatorSharkMesh(root) {
   if (!root) return;
+  if (root.userData && root.userData.glbSharkVisual) {
+    try { disposeObject3DSubtree(root); } catch (_e) {}
+    return;
+  }
   root.traverse(obj => {
     if (obj.geometry) obj.geometry.dispose();
-    const m = obj.material;
-    if (!m) return;
-    if (Array.isArray(m)) {
-      for (let i = 0; i < m.length; i++) {
-        if (m[i] && m[i].dispose) m[i].dispose();
-      }
-    } else if (m.dispose) m.dispose();
+    if (obj.material) obj.material.dispose();
   });
 }
 function spawnAmbientSharkPair(wx, wz, rng) {
@@ -11028,49 +11172,30 @@ function spawnSeagulls(wx, wz, count, rng) {
   const r = decoRand(rng);
   for (let i = 0; i < count; i++) {
     const sg = new THREE.Group();
-    let glbWingL = null;
-    let glbWingR = null;
-    {
-      const rel = GAME_GLB_SEAGULL_RELS[Math.floor(r() * GAME_GLB_SEAGULL_RELS.length)];
-      const mdl = cloneGameGltfFromRel(rel);
-      if (mdl) {
-        const scl = 0.52 + r() * 0.28;
-        mdl.scale.setScalar(scl);
-        sg.add(mdl);
-        mdl.traverse(o => {
-          if (!o.isMesh) return;
-          const n = o.name.toLowerCase();
-          if (n.includes('wing')) {
-            if (n.includes('l') || n.includes('left')) glbWingL = o;
-            else if (n.includes('r') || n.includes('right')) glbWingR = o;
-          }
-        });
-        if (!glbWingL || !glbWingR) {
-          const meshes = [];
-          mdl.traverse(o => { if (o.isMesh) meshes.push(o); });
-          if (meshes.length >= 2) {
-            glbWingL = meshes[0];
-            glbWingR = meshes[1];
-          }
-        }
+    const relPick = GAME_GLB_SEAGULLS[(Math.floor(wx * 0.07) ^ i ^ Math.floor(wz * 0.09)) % Math.max(GAME_GLB_SEAGULLS.length, 1)];
+    let usedGlb = false;
+    if (_gameGltfLoadComplete && GAME_GLB_SEAGULLS.length && relPick) {
+      const b = buildGameplayScaledGlbVisual(relPick, 0.52 + r() * 0.42, 0);
+      if (b) {
+        sg.add(b.wrap);
+        sg.userData.glbSeagullVisual = b.visual;
+        sg.userData.useGlbSeagull = true;
+        usedGlb = true;
       }
     }
-    if (!sg.children.length) {
+    if (!usedGlb) {
       const body = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 3), new THREE.MeshLambertMaterial({ color: 0xeeeeee }));
       body.rotation.x = Math.PI / 2; sg.add(body);
       const wingL = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
       wingL.position.set(-0.2, 0, 0); sg.add(wingL);
       const wingR = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
       wingR.position.set(0.2, 0, 0); sg.add(wingR);
-      glbWingL = wingL;
-      glbWingR = wingR;
+      sg.userData.wingL = wingL; sg.userData.wingR = wingR;
     }
     sg.position.set(wx + (r() - 0.5) * 52, 24 + r() * 10, wz + (r() - 0.5) * 52);
     sg.userData.cx = wx; sg.userData.cz = wz;
     sg.userData.t0Phase = r() * Math.PI * 2;
     sg.userData.radius = 26 + r() * 42; sg.userData.speed = 0.12 + r() * 0.16;
-    sg.userData.wingL = glbWingL;
-    sg.userData.wingR = glbWingR;
     sg.userData.pruneKey = wildlifePruneKey(wx + i * 0.017, wz - i * 0.013, 0x4e67 + i);
     scene.add(sg); seagulls.push(sg);
   }
@@ -11080,10 +11205,35 @@ const fishSchools = [];
 const schoolLeaders = [];
 
 const FISH_SPECIES = [
-  { color: 0x4488bb, size: 0.08, len: 0.3, name: 'tuna', glb: 'assets/3d models/wildlife/fish1.glb' },
-  { color: 0x88bb44, size: 0.06, len: 0.22, name: 'minnow', glb: 'assets/3d models/wildlife/fish2.glb' },
-  { color: 0xcc8833, size: 0.1, len: 0.35, name: 'goldfish', glb: 'assets/3d models/wildlife/fish3.glb' },
-  { color: 0x33bbaa, size: 0.05, len: 0.18, name: 'dart', glb: 'assets/3d models/wildlife/fish4.glb' }
+  { color: 0x4488bb, size: 0.08, len: 0.3, name: 'tuna' },
+  { color: 0x88bb44, size: 0.06, len: 0.22, name: 'minnow' },
+  { color: 0xcc8833, size: 0.1, len: 0.35, name: 'goldfish' },
+  { color: 0x33bbaa, size: 0.05, len: 0.18, name: 'dart' },
+  { color: 0xdd6633, size: 0.12, len: 0.4, name: 'koi' },
+  { color: 0x6666cc, size: 0.07, len: 0.25, name: 'bass' },
+  { color: 0xaaaa44, size: 0.09, len: 0.32, name: 'perch' },
+  { color: 0x44cccc, size: 0.06, len: 0.2, name: 'sardine' },
+  { color: 0xbb5555, size: 0.11, len: 0.38, name: 'snapper' },
+  { color: 0x77aa88, size: 0.08, len: 0.28, name: 'trout' },
+  { color: 0x7799aa, size: 0.25, len: 0.9, name: 'dolphin' },
+  { color: 0x556677, size: 0.3, len: 1.1, name: 'shark' },
+  { color: 0x3388cc, size: 0.2, len: 0.7, name: 'dolphin' },
+  { color: 0x445566, size: 0.35, len: 1.3, name: 'shark' },
+  { color: 0xeecc88, size: 0.065, len: 0.24, name: 'butterfish' },
+  { color: 0x992266, size: 0.055, len: 0.19, name: 'anthias' },
+  { color: 0x2266aa, size: 0.09, len: 0.34, name: 'mackerel' },
+  { color: 0x66aa99, size: 0.07, len: 0.26, name: 'mullet' },
+  { color: 0xaa8844, size: 0.1, len: 0.33, name: 'grouper' },
+  { color: 0x8844cc, size: 0.052, len: 0.17, name: 'wrasse' },
+  { color: 0x3d6b4f, size: 0.075, len: 0.29, name: 'parrotfish' },
+  { color: 0xc9a227, size: 0.11, len: 0.36, name: 'angelfish' },
+  { color: 0x5a7a8c, size: 0.045, len: 0.16, name: 'goby' },
+  { color: 0x8b4513, size: 0.095, len: 0.31, name: 'cod' },
+  { color: 0xff6b4a, size: 0.06, len: 0.21, name: 'cardinal' },
+  { color: 0x2e8b57, size: 0.085, len: 0.3, name: 'needlefish' },
+  { color: 0x6b8e23, size: 0.07, len: 0.23, name: 'herring' },
+  { color: 0x483d8b, size: 0.08, len: 0.27, name: 'tilefish' },
+  { color: 0x20b2aa, size: 0.055, len: 0.2, name: 'pilchard' }
 ];
 
 const WILDLIFE_FISH_CAP = 2800;
@@ -11106,7 +11256,7 @@ function removeFishSchoolByLeader(leader) {
     const f = fishSchools[i];
     if (f.userData.leader === leader) {
       scene.remove(f);
-      try { disposeObject3DSubtree(f); } catch (e) {}
+      disposeObject3DSubtree(f);
       fishSchools.splice(i, 1);
     }
   }
@@ -11126,7 +11276,9 @@ function pruneWildlifeAwayFromPlayer() {
       if (k > dropK) { dropK = k; dropI = idx; }
     });
     if (dropI < 0) break;
-    scene.remove(seagulls[dropI]);
+    const dropSg = seagulls[dropI];
+    scene.remove(dropSg);
+    disposeObject3DSubtree(dropSg);
     seagulls.splice(dropI, 1);
   }
   while (ambientSharkPairs.length > WILDLIFE_SHARK_PAIR_CAP) {
@@ -11167,38 +11319,26 @@ function spawnFish(wx, wz, count, rng) {
     lastOkZ: wz
   };
   schoolLeaders.push(leader);
+  const spIdx = FISH_SPECIES.indexOf(species);
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
-    let useGlbFish = false;
-    if (species.glb) {
-      const mdl = cloneGameGltfFromRel(species.glb);
-      if (mdl) {
-        const tLen = Math.max(0.09, species.len * (0.82 + r() * 0.36));
-        const box = new THREE.Box3().setFromObject(mdl);
-        const sz = new THREE.Vector3();
-        box.getSize(sz);
-        const ref = Math.max(sz.x, sz.z, 0.001);
-        mdl.scale.setScalar(tLen / ref);
-        fg.add(mdl);
-        useGlbFish = true;
-        fg.userData.swimTail = null;
-        mdl.traverse(o => {
-          if (fg.userData.swimTail) return;
-          if (o.isMesh && /tail/i.test(o.name)) fg.userData.swimTail = o;
-        });
-        if (!fg.userData.swimTail) {
-          let lastM = null;
-          mdl.traverse(o => { if (o.isMesh) lastM = o; });
-          fg.userData.swimTail = lastM;
-        }
+    const fishRel = GAME_GLB_FISH.length
+      ? GAME_GLB_FISH[((spIdx >= 0 ? spIdx : 0) + i + (h(506) & 3)) % GAME_GLB_FISH.length]
+      : null;
+    let usedFishGlb = false;
+    if (_gameGltfLoadComplete && fishRel) {
+      const b = buildGameplayScaledGlbVisual(fishRel, Math.max(0.14, species.len * 0.92), Math.PI * 0.5);
+      if (b) {
+        fg.add(b.wrap);
+        fg.userData.glbFishVisual = b.visual;
+        usedFishGlb = true;
       }
     }
-    if (!useGlbFish) {
+    if (!usedFishGlb) {
       const body = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 5), new THREE.MeshBasicMaterial({ color: species.color }));
       body.rotation.x = Math.PI / 2; fg.add(body);
       const tail = new THREE.Mesh(new THREE.PlaneGeometry(species.size * 1.2, species.size), new THREE.MeshBasicMaterial({ color: species.color, side: THREE.DoubleSide }));
       tail.position.set(0, 0, -species.len * 0.55); fg.add(tail);
-      fg.userData.swimTail = tail;
       if (species.name === 'dolphin' || species.name === 'shark') {
         const fin = new THREE.Mesh(new THREE.ConeGeometry(species.size * 0.4, species.size * 1.5, 3), new THREE.MeshBasicMaterial({ color: species.color }));
         fin.position.set(0, species.size * 0.7, -species.len * 0.1); fg.add(fin);
@@ -11283,9 +11423,14 @@ function updateFish(dt) {
     const vz = -Math.sin(a * 0.95) * l.wA * 0.95 * l.amp - Math.sin(b) * l.wB * l.amp * 0.33;
     const schoolYaw = Math.hypot(vx, vz) > 0.018 ? Math.atan2(vx, vz) : f.rotation.y;
     f.rotation.y = schoolYaw + Math.sin(t * 4 + f.userData.wiggle) * 0.07;
-    const tail = f.userData.swimTail;
-    if (tail) tail.rotation.y = Math.sin(t * 8 + f.userData.wiggle) * 0.4;
-    else if (f.children[1]) f.children[1].rotation.y = Math.sin(t * 8 + f.userData.wiggle) * 0.4;
+    const tailMag = Math.sin(t * 8 + f.userData.wiggle) * 0.4;
+    const visFish = f.userData.glbFishVisual;
+    if (visFish) {
+      visFish.rotation.y = Math.PI * 0.5 + tailMag * 0.38 + Math.sin(t * 11 + f.userData.wiggle) * 0.09;
+      visFish.rotation.x = Math.sin(t * 6.2 + f.userData.wiggle) * 0.11;
+    } else if (f.children[1]) {
+      f.children[1].rotation.y = tailMag;
+    }
   });
 }
 
@@ -11300,8 +11445,14 @@ function updateSeagulls(dt) {
     sg.position.y = 22 + Math.sin(p * 2) * 4;
     sg.rotation.y = p + Math.PI / 2;
     const wingFlap = Math.sin(wt * 2.6 + p * 3) * 0.4;
-    sg.userData.wingL.rotation.z = wingFlap;
-    sg.userData.wingR.rotation.z = -wingFlap;
+    if (sg.userData.useGlbSeagull && sg.userData.glbSeagullVisual) {
+      const gv = sg.userData.glbSeagullVisual;
+      gv.rotation.z = wingFlap * 0.52;
+      gv.rotation.x = Math.abs(wingFlap) * 0.26;
+    } else if (sg.userData.wingL && sg.userData.wingR) {
+      sg.userData.wingL.rotation.z = wingFlap;
+      sg.userData.wingR.rotation.z = -wingFlap;
+    }
     sg.visible = isInTerrainStreamChunkRing(sg.position.x, sg.position.z, pcx, pcz);
   });
 }
@@ -11627,12 +11778,103 @@ function attachPirateFlagToShip(g, spec, flagPlace, mastRigForMastFlag, flagAsse
   parent.add(flagRig);
 }
 
+/** Parse all canonical GLB voyages once — safe to await at boot & before MP connect. */
+function ensureGameGltfTemplatesLoaded() {
+  if (_gameGltfTemplatesPromise) return _gameGltfTemplatesPromise;
+  _gameGltfTemplatesPromise = (async () => {
+    try {
+      for (let i = 0; i < GAME_GLTF_MODEL_RELS.length; i++) {
+        const rel = GAME_GLTF_MODEL_RELS[i];
+        if (_gltfTemplateRoots[rel]) continue;
+        const url = resolveGameAssetUrl(rel);
+        const gltf = await new Promise((res, rej) => {
+          _GAME_GLTF_LOADER.load(url, res, undefined, rej);
+        });
+        _gltfTemplateRoots[rel] = gltf.scene;
+      }
+      _gameGltfLoadComplete = Object.keys(_gltfTemplateRoots).length >= GAME_GLTF_MODEL_RELS.length;
+    } catch (e) {
+      try { console.warn('ensureGameGltfTemplatesLoaded', e); } catch (_) {}
+      _gameGltfLoadComplete = false;
+    }
+    return _gameGltfLoadComplete;
+  })();
+  return _gameGltfTemplatesPromise;
+}
+function cloneGameplayGltfRel(rel) {
+  const src = _gltfTemplateRoots[rel];
+  if (!src) return null;
+  return SkeletonUtils.clone(src);
+}
+/** Horizontal extent in XZ for `targetSpanM`; optional Y floor sit; returns wrapper + inner visual for procedural motion. */
+function buildGameplayScaledGlbVisual(rel, targetSpanM, yawFixRad) {
+  const visual = cloneGameplayGltfRel(rel);
+  if (!visual) return null;
+  visual.traverse(o => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  const tgt = Math.max(0.04, Number(targetSpanM) || 0.5);
+  const ext = glbModelMaxHorizontalExtent(visual);
+  const sc = tgt / Math.max(ext, 0.02);
+  visual.scale.multiplyScalar(sc);
+  const box = new THREE.Box3().setFromObject(visual);
+  const c = box.getCenter(new THREE.Vector3());
+  visual.position.sub(c);
+  visual.position.y -= box.min.y;
+  if (yawFixRad) visual.rotation.y = yawFixRad;
+  const wrap = new THREE.Group();
+  wrap.add(visual);
+  return { wrap, visual };
+}
+function glbModelMaxHorizontalExtent(root) {
+  const box = new THREE.Box3().setFromObject(root);
+  const sz = box.getSize(new THREE.Vector3());
+  return Math.max(sz.x, sz.z, 1e-4);
+}
+/** Instanced ship hull shell from authored GLB rigs; aligns length to tuning `spec`. */
+function attachGameGlbShipShellIfReady(g, type, shipName, spec) {
+  if (!_gameGltfLoadComplete) return false;
+  const list = type === 'galleon' ? GAME_GLB_GALLEONS : GAME_GLB_SLOOPS;
+  if (!list || !list.length) return false;
+  let h = 2166136261 >>> 0;
+  const key = String(type) + '|' + String(shipName || '');
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  const rel = list[Math.abs(h | 0) % list.length];
+  const model = cloneGameplayGltfRel(rel);
+  if (!model) return false;
+  model.traverse(o => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  const target = Math.max(spec.hullLen * 1.02, 2.8);
+  const ext = glbModelMaxHorizontalExtent(model);
+  const sc = target / ext;
+  model.scale.multiplyScalar(sc);
+  const box = new THREE.Box3().setFromObject(model);
+  const center = box.getCenter(new THREE.Vector3());
+  model.position.sub(center);
+  model.position.y -= box.min.y;
+  model.position.y += spec.hullH * -0.085;
+  model.rotation.y = Math.PI;
+  const wrap = new THREE.Group();
+  wrap.add(model);
+  wrap.userData.isGameGlbShipHull = true;
+  g.add(wrap);
+  g.userData.shipUsesGlbVisual = true;
+  return true;
+}
+
 function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   meshOpts = meshOpts || {};
   const hideShipNameLabel = !!meshOpts.hideShipNameLabel;
   const hullFlagPngId = meshOpts.flagAssetId != null ? sanitizeFlagPngId(meshOpts.flagAssetId) : null;
   parts = normalizeShipParts(parts);
-  type = normalizeClientShipType(type);
+  type = normalizeShipType(type);
   const spec = SHIP_TYPES[type] || SHIP_TYPES.sloop;
   const flagPlace = parts.flag || 'mast';
   const isMerchantHull = !!meshOpts.merchantHull;
@@ -11654,9 +11896,11 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
   if (cannonTier !== 'none' && slotCap <= 0) cannonTier = 'none';
   const g = new THREE.Group();
   g.userData.bannerComposeGen = meshOpts.bannerComposeGen != null ? meshOpts.bannerComposeGen : ++shipBannerComposeNonce;
-  const useGlbHull = tryInjectShipGlbHull(g, type, spec, meshOpts, shipName);
+  let glbHullAttached = false;
+  try { glbHullAttached = !!attachGameGlbShipShellIfReady(g, type, shipName, spec); } catch (_gle) {}
+
   let lastMainMastRig = null;
-  if (!useGlbHull) {
+  if (!glbHullAttached) {
   let hc = 0x6b3a1f;
   if (parts.hull === 'reinforced') hc = 0x4a4a4a;
   else if (parts.hull === 'darkwood') hc = 0x2a1a0a;
@@ -11759,25 +12003,12 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     bow.position.set(0, spec.hullH * 0.2, spec.hullLen * 0.48); bow.castShadow = true; g.add(bow);
   }
 
-  if (type === 'warship') {
-    const qd = new THREE.BoxGeometry(spec.hullW * 0.85, spec.hullH * 1.0, spec.hullLen * 0.22);
-    const quarter = new THREE.Mesh(qd, new THREE.MeshPhongMaterial({ color: 0x4a2a10, shininess: 15 }));
-    quarter.position.set(0, spec.hullH * 0.7, -spec.hullLen * 0.35); quarter.castShadow = true; g.add(quarter);
-    const wg = new THREE.CylinderGeometry(0.06, 0.06, spec.hullW * 0.6, 4); wg.rotateZ(Math.PI / 2);
-    for (let wi = 0; wi < 3; wi++) {
-      const win = new THREE.Mesh(wg, new THREE.MeshBasicMaterial({ color: 0x888844 }));
-      win.position.set(0, spec.hullH * 0.3, -spec.hullLen * (0.1 + wi * 0.12)); g.add(win);
-    }
-  }
-
-  if (type === 'galleon' || type === 'warship') {
+  if (type === 'galleon') {
     const cb = new THREE.BoxGeometry(spec.hullW * 0.55, spec.hullH * 0.3, spec.hullLen * 0.08);
     const crows = new THREE.Mesh(cb, rm);
     crows.position.set(0, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.95, 0); g.add(crows);
   }
 
-  } else {
-    lastMainMastRig = g.userData._syntheticMastForFlag || null;
   }
 
   if (cannonTier && cannonTier !== 'none') {
@@ -11787,13 +12018,15 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     const barrelScale = cc === 1 ? 0.88 : 1;
     const barrelLen = 1.15 * barrelScale;
     const cg = new THREE.CylinderGeometry(0.1 * barrelScale, 0.15 * barrelScale, barrelLen, 6); cg.rotateZ(Math.PI / 2);
-    const cm = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
+    const cm = glbHullAttached
+      ? new THREE.MeshBasicMaterial({ visible: false })
+      : new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 60 });
     for (let c = 0; c < visualCount; c++) {
       /* Even c → starboard (+1), odd → port (−1); matches fireSide / broadsideReadyInfo / muzzle lookup. */
       const side = c % 2 === 0 ? 1 : -1, idx = Math.floor(c / 2);
       const cn = new THREE.Mesh(c === 0 ? cg : cg.clone(), cm);
       cn.position.set(side * spec.hullW * 0.5, spec.hullH * 0.6, (idx - Math.floor(visualCount / 4) + 0.5) * 1.8);
-      cn.castShadow = true;
+      cn.castShadow = !glbHullAttached;
       cn.userData.isShipCannon = true;
       cn.userData.cannonSide = side;
       cn.userData.cannonIndexOnSide = idx;
@@ -11805,7 +12038,8 @@ function buildShipMesh(type, parts, flagColor, shipName, meshOpts) {
     }
   }
 
-  if (!useGlbHull) {
+  if (!glbHullAttached) {
+
   const fmH = spec.hullLen * 0.45;
   const foreRig = new THREE.Group();
   foreRig.position.set(0, spec.hullH * 0.5, spec.hullLen * 0.35);
@@ -11903,6 +12137,9 @@ function repelCrewFromMastsXZ(px, pz, spec, shipType) {
   if (st === 'galleon') {
     const pb = pushOutOfAabbXZ(x, z, -hw * 0.41, hw * 0.41, -hl * 0.45, -hl * 0.17);
     x = pb.x; z = pb.z;
+  }
+
+  if (st === 'galleon') {
     const pc = pushOutOfCircleXZ(x, z, 0, 0, 0.3, 0.44);
     x = pc.x; z = pc.z;
   }
@@ -11927,6 +12164,7 @@ function buildCrewMeshes(group, crewList, shipType) {
     const ch = group.children[ci];
     if (ch.userData && ch.userData.isCrew) group.remove(ch);
   }
+  shipType = normalizeShipType(shipType);
   const spec = SHIP_TYPES[shipType];
   const sailors = crewList.filter(m => m.role !== 'prisoner' && m.role !== 'idle');
   const brigIdx = { n: 0 };
@@ -14172,7 +14410,7 @@ function cloneCaptainShipPartsFromRow(row) {
 }
 function applyPrizeShipFromRemoteCaptainRow(row) {
   if (!row) return;
-  const st = normalizeClientShipType(row.shipType);
+  const st = row.shipType && SHIP_TYPES[row.shipType] ? row.shipType : 'sloop';
   G.player.shipType = st;
   G.player.shipParts = cloneCaptainShipPartsFromRow(row);
   const nm = row.shipName != null ? String(row.shipName).trim().slice(0, 28) : '';
@@ -17013,8 +17251,7 @@ function resolvePlayerShipCollisionsAfterNpcs() {
 }
 
 function tradeShipCannonForType(shipType) {
-  if (normalizeClientShipType(shipType) === 'galleon') return 'heavy';
-  return 'light';
+  return normalizeShipType(shipType) === 'galleon' ? 'heavy' : 'light';
 }
 function npcArmedCannonTier(npc) {
   if (!npc) return 'light';
@@ -17293,7 +17530,7 @@ function spawnNPCs(opts) {
   for (let i = 0; i < nPirates; i++) {
     let s = npcSeed + i * 997;
     const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
-    const npcType = typePool[Math.floor(sr() * 5)];
+    const npcType = typePool[Math.floor(sr() * typePool.length)];
     let nx = 0, nz = 0;
     let placed = false;
     let yawVanilla = null;
@@ -17382,7 +17619,7 @@ function spawnVanillaPirateAtSlotIndex(i) {
   const typePool = ['sloop', 'galleon'];
   let s = npcSeed + i * 997;
   const sr = () => { s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647; return s / 2147483647; };
-  const npcType = typePool[Math.floor(sr() * 5)];
+  const npcType = typePool[Math.floor(sr() * typePool.length)];
   let nx = 0, nz = 0;
   let placed = false;
   let yawVanilla = null;
@@ -19685,9 +19922,9 @@ function syncCaptainNameToServer() {
 }
 
 function destroyAmbientWildlife() {
-  seagulls.forEach(sg => { scene.remove(sg); });
+  seagulls.forEach(sg => { scene.remove(sg); disposeObject3DSubtree(sg); });
   seagulls.length = 0;
-  fishSchools.forEach(f => { scene.remove(f); });
+  fishSchools.forEach(f => { scene.remove(f); disposeObject3DSubtree(f); });
   fishSchools.length = 0;
   schoolLeaders.length = 0;
   ambientSharkPairs.forEach(sh => {
@@ -20511,7 +20748,7 @@ async function connectToServer() {
         if (sid == null) break;
         const p = G.otherPlayers.get(sid);
         if (p) {
-          p.shipType = msg.shipType;
+          p.shipType = normalizeShipType(msg.shipType);
           p.shipParts = msg.shipParts;
           refreshOtherPlayerShipCacheKey(p);
           if (otherShipGroups.has(sid)) {
@@ -21873,8 +22110,7 @@ function applyWorldResumeFromServer(msg) {
     G.undockingAnim = null;
   }
   if (msg.shipType) {
-    const st = normalizeClientShipType(String(msg.shipType).trim().slice(0, 24));
-    if (st) G.player.shipType = st;
+    G.player.shipType = normalizeShipType(String(msg.shipType).trim().slice(0, 24));
   }
   if (msg.shipName != null) G.player.shipName = String(msg.shipName).slice(0, 28);
   if (msg.shipParts && typeof msg.shipParts === 'object') {
@@ -23489,45 +23725,13 @@ function collectResolvableGameImageUrls() {
   return hrefs;
 }
 
-/** All GLB paths under `assets/3d models/` (ships, towns, props, wildlife). */
-function collectGameGlbAssetRelPaths() {
-  return [
-    'assets/3d models/buildings/church1.glb',
-    'assets/3d models/buildings/dock1.glb',
-    'assets/3d models/buildings/govres1.glb',
-    'assets/3d models/buildings/house1.glb',
-    'assets/3d models/buildings/house2.glb',
-    'assets/3d models/buildings/tavern.glb',
-    'assets/3d models/decorations/bush1.glb',
-    'assets/3d models/decorations/bush2.glb',
-    'assets/3d models/decorations/tree1.glb',
-    'assets/3d models/decorations/tree2.glb',
-    'assets/3d models/decorations/tree3.glb',
-    'assets/3d models/ships/galleon1.glb',
-    'assets/3d models/ships/galleon2.glb',
-    'assets/3d models/ships/galleon3.glb',
-    'assets/3d models/ships/galleon4.glb',
-    'assets/3d models/ships/pirate-sloop1.glb',
-    'assets/3d models/ships/sloop1.glb',
-    'assets/3d models/ships/sloop2.glb',
-    'assets/3d models/ships/sloop3.glb',
-    'assets/3d models/wildlife/fish1.glb',
-    'assets/3d models/wildlife/fish2.glb',
-    'assets/3d models/wildlife/fish3.glb',
-    'assets/3d models/wildlife/fish4.glb',
-    'assets/3d models/wildlife/seagul1.glb',
-    'assets/3d models/wildlife/seagul2.glb',
-    'assets/3d models/wildlife/shark.glb'
-  ];
-}
-
 /** Non-image assets under `assets/` (models, audio, JSON helpers) — warm HTTP cache alongside PNG decode preload. */
 function collectResolvableBinaryGameAssetUrls() {
   const rels = [
     'assets/json-parse-worker.js',
-    'assets/glb-fetch-worker.js',
     'assets/multiplayer-server.json',
-    ...collectGameGlbAssetRelPaths(),
+    'assets/glb-preload-worker.js',
+    ...GAME_GLTF_MODEL_RELS,
     'assets/sound/effects/cannon-shot.wav',
     'assets/sound/effects/captain-fire-yell.wav',
     'assets/sound/effects/death.mp3',
@@ -23571,328 +23775,8 @@ function warmupBinaryGameAssetCache(urls) {
   pump();
 }
 
-const _gameGltfLoader = new GLTFLoader();
-const _gameGltfRootByUrl = new Map();
-let _gameGltfParseReady = false;
-let _gameGltfPreloadPromise = null;
-let _gameGltfParsePromise = null;
-
-const GAME_GLB_SLOOP_RELS = [
-  'assets/3d models/ships/pirate-sloop1.glb',
-  'assets/3d models/ships/sloop1.glb',
-  'assets/3d models/ships/sloop2.glb',
-  'assets/3d models/ships/sloop3.glb'
-];
-const GAME_GLB_GALLEON_RELS = [
-  'assets/3d models/ships/galleon1.glb',
-  'assets/3d models/ships/galleon2.glb',
-  'assets/3d models/ships/galleon3.glb',
-  'assets/3d models/ships/galleon4.glb'
-];
-const GAME_GLB_TREE_RELS = [
-  'assets/3d models/decorations/tree1.glb',
-  'assets/3d models/decorations/tree2.glb',
-  'assets/3d models/decorations/tree3.glb'
-];
-const GAME_GLB_BUSH_RELS = [
-  'assets/3d models/decorations/bush1.glb',
-  'assets/3d models/decorations/bush2.glb'
-];
-const GAME_GLB_FISH_RELS = [
-  'assets/3d models/wildlife/fish1.glb',
-  'assets/3d models/wildlife/fish2.glb',
-  'assets/3d models/wildlife/fish3.glb',
-  'assets/3d models/wildlife/fish4.glb'
-];
-const GAME_GLB_SEAGULL_RELS = [
-  'assets/3d models/wildlife/seagul1.glb',
-  'assets/3d models/wildlife/seagul2.glb'
-];
-
-function collectGameGlbResolveUrls() {
-  const rels = collectGameGlbAssetRelPaths();
-  const hrefs = [];
-  const seen = new Set();
-  for (let i = 0; i < rels.length; i++) {
-    const h = resolveGameAssetUrl(rels[i]);
-    if (seen.has(h)) continue;
-    seen.add(h);
-    hrefs.push(h);
-  }
-  return hrefs;
-}
-function parseGltfArrayBuffer(ab) {
-  return new Promise((resolve, reject) => {
-    try {
-      _gameGltfLoader.parse(ab, '', (gltf) => resolve(gltf), reject);
-    } catch (e) {
-      reject(e);
-    }
-  });
-}
-function cloneGameGltfFromRel(relPath) {
-  const url = resolveGameAssetUrl(relPath);
-  const root = _gameGltfRootByUrl.get(url);
-  if (!root) return null;
-  const c = root.clone(true);
-  c.traverse(o => {
-    if (o.isMesh) {
-      o.castShadow = true;
-      o.receiveShadow = true;
-    }
-  });
-  return c;
-}
-function pickSloopGlbRel(salt) {
-  const arr = GAME_GLB_SLOOP_RELS;
-  return arr[(Math.imul(salt >>> 0, 31337) ^ (salt >>> 15)) % arr.length];
-}
-function pickGalleonGlbRel(salt) {
-  const arr = GAME_GLB_GALLEON_RELS;
-  return arr[(Math.imul(salt >>> 0, 48271) ^ (salt >>> 11)) % arr.length];
-}
-function shipGlbRelForGameType(shipType, salt) {
-  const t = normalizeClientShipType(shipType);
-  return t === 'galleon' ? pickGalleonGlbRel(salt) : pickSloopGlbRel(salt);
-}
-function tryInjectShipGlbHull(group, type, spec, meshOpts, shipName) {
-  let salt = 0;
-  if (meshOpts && meshOpts.glbSalt != null && Number.isFinite(Number(meshOpts.glbSalt))) salt = Number(meshOpts.glbSalt) >>> 0;
-  else {
-    const bn = meshOpts && meshOpts.bannerComposeGen != null ? Number(meshOpts.bannerComposeGen) : 0;
-    const nm = String(shipName || '');
-    for (let i = 0; i < nm.length; i++) salt = ((salt * 31) ^ nm.charCodeAt(i)) >>> 0;
-    salt ^= (bn * 1103) >>> 0;
-    salt ^= String(type || '').length * 911;
-  }
-  const rel = shipGlbRelForGameType(type, salt);
-  const visual = cloneGameGltfFromRel(rel);
-  if (!visual) return false;
-  visual.name = 'glbHullVisual';
-  group.userData.glbHullMode = true;
-  const box = new THREE.Box3().setFromObject(visual);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  const len = Math.max(size.x, size.z, 0.001);
-  const targetLen = spec.hullLen * 1.02;
-  const sc = targetLen / len;
-  visual.scale.setScalar(sc);
-  box.setFromObject(visual);
-  const ctr = new THREE.Vector3();
-  box.getCenter(ctr);
-  visual.position.sub(ctr);
-  visual.position.y -= box.min.y;
-  group.add(visual);
-  const mastRig = new THREE.Group();
-  mastRig.userData.isMastRig = true;
-  mastRig.userData.mastLeanSign = 1;
-  mastRig.position.set(0, Math.max(0.35, spec.hullH * 0.62), 0);
-  group.add(mastRig);
-  group.userData._syntheticMastForFlag = mastRig;
-  return true;
-}
-/** @returns {boolean} true when GLB landmark added (caller records footprint). */
-function tryAddTownLandmarkFromGlb(group, type, bx, bz, baseY, rng, footprintR) {
-  const r = decoRand(rng);
-  let rel;
-  if (type === 'church') rel = 'assets/3d models/buildings/church1.glb';
-  else if (type === 'tavern') rel = 'assets/3d models/buildings/tavern.glb';
-  else if (type === 'governor') rel = 'assets/3d models/buildings/govres1.glb';
-  else rel = r() < 0.5 ? 'assets/3d models/buildings/house1.glb' : 'assets/3d models/buildings/house2.glb';
-  const shell = cloneGameGltfFromRel(rel);
-  if (!shell) return false;
-  const box0 = new THREE.Box3().setFromObject(shell);
-  const sz0 = new THREE.Vector3();
-  box0.getSize(sz0);
-  const span0 = Math.max(sz0.x, sz0.z, 0.001);
-  const target = footprintR * 1.92;
-  const scl = Math.min(4.5, Math.max(0.22, target / span0));
-  shell.scale.setScalar(scl);
-  shell.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(shell);
-  const cx = (box.min.x + box.max.x) * 0.5;
-  const cz = (box.min.z + box.max.z) * 0.5;
-  shell.position.set(bx - cx, baseY - box.min.y, bz - cz);
-  shell.rotation.y = r() * Math.PI * 2;
-  group.add(shell);
-  return true;
-}
-function tryAddDockFromGlb(group, dockX, dockCenterY, dockZ, dockAngle) {
-  const dock = cloneGameGltfFromRel('assets/3d models/buildings/dock1.glb');
-  if (!dock) return false;
-  dock.rotation.order = 'YXZ';
-  dock.rotation.y = dockAngle;
-  const box = new THREE.Box3().setFromObject(dock);
-  const sz = new THREE.Vector3();
-  box.getSize(sz);
-  const spanX = Math.max(sz.x, 0.001);
-  const spanZ = Math.max(sz.z, 0.001);
-  const sx = PIER_DECK_WIDTH / spanX;
-  const szs = PIER_TOTAL_LEN / spanZ;
-  const su = Math.min(sx, szs) * 0.98;
-  dock.scale.set(su, su, su);
-  dock.updateMatrixWorld(true);
-  const b2 = new THREE.Box3().setFromObject(dock);
-  const cy = (b2.min.y + b2.max.y) * 0.5;
-  dock.position.set(dockX, dockCenterY - cy, dockZ);
-  group.add(dock);
-  return true;
-}
-async function fetchGlbArrayBufferCached(url, timeoutMs) {
-  const ms = timeoutMs > 0 ? timeoutMs : 14000;
-  try {
-    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-      const r = await fetch(url, { cache: 'force-cache', mode: 'cors', credentials: 'same-origin', signal: AbortSignal.timeout(ms) });
-      if (!r.ok) return null;
-      return await r.arrayBuffer();
-    }
-  } catch (e) {
-    return null;
-  }
-  const ctrl = new AbortController();
-  const t = setTimeout(() => {
-    try { ctrl.abort(); } catch (e) {}
-  }, ms);
-  try {
-    const r = await fetch(url, { cache: 'force-cache', mode: 'cors', credentials: 'same-origin', signal: ctrl.signal });
-    clearTimeout(t);
-    if (!r.ok) return null;
-    return await r.arrayBuffer();
-  } catch (e) {
-    clearTimeout(t);
-    return null;
-  }
-}
-async function fetchGameGlbBuffersWithWorker(urls, onProgress) {
-  const buffers = new Map();
-  const total = urls.length;
-  let reported = 0;
-  const report = () => {
-    reported++;
-    if (onProgress) onProgress(Math.min(reported, total), total);
-  };
-
-  await new Promise((resolveOuter) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      resolveOuter();
-    };
-    const wHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
-    let worker = null;
-    const MS = 120000;
-    const to = setTimeout(() => {
-      try { console.warn('glb-fetch-worker: timeout; using main-thread fetch for any missing GLBs'); } catch (e) {}
-      try { if (worker) worker.terminate(); } catch (e) {}
-      finish();
-    }, MS);
-    const cleanup = () => {
-      clearTimeout(to);
-      try { if (worker) worker.terminate(); } catch (e) {}
-    };
-
-    const onMsg = (ev) => {
-      if (ev.data && ev.data.done) {
-        cleanup();
-        finish();
-        return;
-      }
-      const u = ev.data && ev.data.url;
-      const buf = ev.data && ev.data.buffer;
-      if (u && buf) buffers.set(u, buf);
-      if (u) report();
-    };
-
-    const attach = (w) => {
-      worker = w;
-      worker.onmessage = onMsg;
-      worker.onerror = (err) => {
-        try { console.warn('glb-fetch-worker error', err); } catch (e) {}
-        cleanup();
-        finish();
-      };
-      try {
-        worker.postMessage({ urls });
-      } catch (e) {
-        try { console.warn('glb-fetch-worker postMessage failed', e); } catch (e2) {}
-        cleanup();
-        finish();
-      }
-    };
-
-    try {
-      attach(new Worker(wHref));
-    } catch (e) {
-      try {
-        void fetch(wHref)
-          .then(r => r.text())
-          .then(code => {
-            try {
-              attach(new Worker(URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))));
-            } catch (eBlob) {
-              cleanup();
-              finish();
-            }
-          })
-          .catch(() => {
-            cleanup();
-            finish();
-          });
-      } catch (e2) {
-        cleanup();
-        finish();
-      }
-    }
-  });
-
-  for (let i = 0; i < urls.length; i++) {
-    const u = urls[i];
-    if (buffers.has(u)) continue;
-    const ab = await fetchGlbArrayBufferCached(u, 14000);
-    if (ab) buffers.set(u, ab);
-  }
-
-  return buffers;
-}
-
-function scheduleGameGltfParse(urls, buffers, onProgress) {
-  if (_gameGltfParsePromise) return;
-  const total = urls.length;
-  _gameGltfParsePromise = (async () => {
-    _gameGltfParseReady = false;
-    try {
-      for (let i = 0; i < urls.length; i++) {
-        const u = urls[i];
-        const ab = buffers.get(u);
-        if (ab) {
-          try {
-            const gltf = await parseGltfArrayBuffer(ab);
-            if (gltf && gltf.scene) _gameGltfRootByUrl.set(u, gltf.scene);
-          } catch (e2) {}
-        }
-        if (onProgress) onProgress(i + 1, total);
-        await new Promise(r => requestAnimationFrame(r));
-      }
-    } finally {
-      _gameGltfParseReady = true;
-      try {
-        if (typeof G !== 'undefined' && G && G.mode === 'playing') rebuildPlayerShip();
-      } catch (eR) {}
-    }
-  })();
-}
-function startGameGltfPreloadWithWorker(onProgress) {
-  if (_gameGltfPreloadPromise) return _gameGltfPreloadPromise;
-  _gameGltfPreloadPromise = (async () => {
-    const urls = collectGameGlbResolveUrls();
-    const buffers = await fetchGameGlbBuffersWithWorker(urls, onProgress);
-    scheduleGameGltfParse(urls, buffers, onProgress);
-  })();
-  return _gameGltfPreloadPromise;
-}
-
 let _gameImagePreloadWorker = null;
+let _gameGlbPreloadWorker = null;
 let _gameAssetPreloadStarted = false;
 
 function preloadToolbarIconStripsOnMainThread() {
@@ -23978,6 +23862,26 @@ function kickOffGameAssetPreload() {
         fetch(urls[i], { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' }).catch(() => {});
       }
     }
+  }
+  const glbPreloadUrls = [];
+  for (let gi = 0; gi < GAME_GLTF_MODEL_RELS.length; gi++) {
+    glbPreloadUrls.push(resolveGameAssetUrl(GAME_GLTF_MODEL_RELS[gi]));
+  }
+  const glbWorkerHref = resolveGameAssetUrl('assets/glb-preload-worker.js');
+  try {
+    _gameGlbPreloadWorker = new Worker(glbWorkerHref);
+    _gameGlbPreloadWorker.postMessage({ urls: glbPreloadUrls, parallel: 8 });
+  } catch (eGl) {
+    try {
+      void fetch(glbWorkerHref)
+        .then(r => r.text())
+        .then(code => {
+          const blob = new Blob([code], { type: 'application/javascript' });
+          _gameGlbPreloadWorker = new Worker(URL.createObjectURL(blob));
+          _gameGlbPreloadWorker.postMessage({ urls: glbPreloadUrls, parallel: 8 });
+        })
+        .catch(() => {});
+    } catch (_) {}
   }
   try {
     warmupBinaryGameAssetCache(collectResolvableBinaryGameAssetUrls());
@@ -29548,10 +29452,10 @@ window.portSell = function(id, price) {
 
 window.portBuyShip = function(shipType) {
   if (!G.docked) { notify('Dock at a port shipyard first.'); return; }
-  if (!SHIP_TYPES[normalizeClientShipType(shipType)]) { notify('Unknown hull class.'); return; }
-  if (normalizeClientShipType(shipType) === normalizeClientShipType(G.player.shipType)) { notify('You already sail that class.'); return; }
-  const specNew = SHIP_TYPES[normalizeClientShipType(shipType)];
-  const price = SHIP_PURCHASE_PRICE[normalizeClientShipType(shipType)] != null ? SHIP_PURCHASE_PRICE[normalizeClientShipType(shipType)] : 200;
+  if (!SHIP_TYPES[shipType]) { notify('Unknown hull class.'); return; }
+  if (shipType === G.player.shipType) { notify('You already sail that class.'); return; }
+  const specNew = SHIP_TYPES[shipType];
+  const price = SHIP_PURCHASE_PRICE[shipType] != null ? SHIP_PURCHASE_PRICE[shipType] : 200;
   const tradeIn = computePlayerShipTradeInGold();
   const payFromHold = Math.max(0, price - tradeIn);
   const gold = G.player.inventory.find(i => i.id === 'gold');
@@ -29561,7 +29465,7 @@ window.portBuyShip = function(shipType) {
     return;
   }
   gold.count -= payFromHold;
-  G.player.shipType = normalizeClientShipType(shipType);
+  G.player.shipType = shipType;
   G.player.shipParts = { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' };
   const mh = G.player.maxHealth != null ? G.player.maxHealth : 100;
   G.player.health = mh;
@@ -33591,6 +33495,7 @@ function warmUpGameView() {
 function preloadRealmWhileConnecting() {
   if (G.mode !== 'playing' || typeof THREE === 'undefined') return;
   try { kickOffGameAssetPreload(); } catch (e0) {}
+  try { void ensureGameGltfTemplatesLoaded(); } catch (e0b) {}
   try { updateChunks(); } catch (e1) {}
   try { warmTutorialRaidCutsceneMeshesIfEligible(); } catch (e2) {}
   try {
@@ -34042,14 +33947,12 @@ function gameLoop(time) {
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
     lastTime = time;
     document.body.classList.toggle('game-playing', G.mode === 'playing');
-    try { syncMainCanvasPointerEvents(); } catch (ePc) {}
     return;
   }
   let dt = (time - lastTime) / 1000;
   if (lastTime <= 0) {
     lastTime = time;
     document.body.classList.toggle('game-playing', G.mode === 'playing');
-    try { syncMainCanvasPointerEvents(); } catch (ePc) {}
     if (G.mode === 'playing') {
       try { render(); } catch (e) { console.error('[playground] render error:', e); }
     }
@@ -34059,7 +33962,6 @@ function gameLoop(time) {
   lastTime = time;
   _gameLoopFrame++;
   document.body.classList.toggle('game-playing', G.mode === 'playing');
-  try { syncMainCanvasPointerEvents(); } catch (ePc) {}
   /* While on the main menu / creation flow, `menuRender` owns the WebGL view. Do not `render()` here too — double 60fps world draws OOM/thermal-throttle GPUs and can crash mobile tabs. In play, this loop is the only renderer. */
   if (G.mode === 'playing') {
     try {
@@ -36262,7 +36164,7 @@ function applyDefaultStartingLoadout(opts) {
     G.player.crew[idx] = { ...G.player.crew[idx], ...savedCap, role: 'captain', task: 'helm', health: 100, missedMeals: 0 };
     if (!prizeVictimRespawn) {
       if (savedShipName) G.player.shipName = savedShipName;
-      if (savedShipType) G.player.shipType = normalizeClientShipType(savedShipType);
+      if (savedShipType) G.player.shipType = savedShipType;
       if (savedParts) G.player.shipParts = savedParts;
     }
     if (savedFlagAsset != null) {
@@ -36423,7 +36325,7 @@ function loadProgress() {
     if (Number.isFinite(pr)) G.player.rotation = pr;
     if (data.health !== undefined) G.player.health = data.health;
     if (data.shipName) G.player.shipName = data.shipName;
-    if (data.shipType) G.player.shipType = normalizeClientShipType(data.shipType);
+    if (data.shipType) G.player.shipType = normalizeShipType(data.shipType);
     if (data.shipParts) G.player.shipParts = normalizeShipParts(data.shipParts);
     if (Array.isArray(data.inventory)) {
       G.player.inventory = data.inventory;
@@ -36718,18 +36620,6 @@ function menuRender() {
   }
 }
 
-function finishColdBootMenuUnblock() {
-  try {
-    const gel = document.getElementById('game-boot-overlay');
-    if (gel) {
-      gel.style.display = 'none';
-      gel.setAttribute('aria-hidden', 'true');
-    }
-    document.body.classList.remove('game-boot-active');
-    syncMainCanvasPointerEvents();
-  } catch (e) {}
-}
-
 (function runInitialGameBootSequence() {
   const el = document.getElementById('game-boot-overlay');
   const sub = el && el.querySelector('.game-boot-sub');
@@ -36739,36 +36629,25 @@ function finishColdBootMenuUnblock() {
     el.setAttribute('aria-hidden', 'false');
   }
   document.body.classList.add('game-boot-active');
-  try { syncMainCanvasPointerEvents(); } catch (eS) {}
-  let bootFailsafeTimer = setTimeout(() => {
-    try { console.warn('cold boot failsafe: enabling main menu input'); } catch (e) {}
-    finishColdBootMenuUnblock();
-  }, 24000);
   try { kickOffGameAssetPreload(); } catch (e) {}
+  if (sub) sub.textContent = 'Caching 3D voyages…';
   void (async () => {
-    if (sub) sub.textContent = 'Downloading 3D assets…';
-    try {
-      await Promise.race([
-        startGameGltfPreloadWithWorker((done, tot) => {
-          if (sub && tot > 0) sub.textContent = 'Loading 3D assets ' + done + ' / ' + tot + '…';
-        }),
-        new Promise(r => setTimeout(r, 14000)),
-      ]);
-    } catch (e0) {
-      try { console.warn('gameGltfPreload', e0); } catch (e1) {}
-    }
-    if (sub) sub.textContent = 'Warming water, sky, and main menu…';
+    try { await ensureGameGltfTemplatesLoaded(); } catch (_ge) {}
     let frames = 0;
     function step() {
       frames++;
+      if (sub && frames === 3) sub.textContent = 'Warming water, sky, and main menu…';
       if (frames < 5) {
         requestAnimationFrame(step);
         return;
       }
       if (sub) sub.textContent = 'Ready.';
       setTimeout(() => {
-        try { clearTimeout(bootFailsafeTimer); } catch (eC) {}
-        finishColdBootMenuUnblock();
+        if (el) {
+          el.style.display = 'none';
+          el.setAttribute('aria-hidden', 'true');
+        }
+        document.body.classList.remove('game-boot-active');
       }, 120);
     }
     requestAnimationFrame(step);
@@ -36848,8 +36727,6 @@ function drawMenuBg() {
 
   requestAnimationFrame(drawMenuBg);
 }
-
-drawMenuBg();
 
 document.getElementById('start-btn').onclick = () => {
   if (voyageSaveExistsInStorage()) {

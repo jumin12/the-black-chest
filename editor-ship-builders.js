@@ -4,8 +4,8 @@
 import * as THREE from 'three';
 
 export const SHIP_TYPES_ME = {
-  sloop: { name: 'Sloop', desc: 'Fast starter hull', hullLen: 7, hullW: 2.2, hullH: 1.3, masts: 1, cannonSlots: 2, bowStyle: 'pointed' },
-  galleon: { name: 'Galleon', desc: 'Heavy war and cargo ship', hullLen: 15, hullW: 4.8, hullH: 2.5, masts: 3, cannonSlots: 8, bowStyle: 'wide' }
+  sloop: { name: 'Sloop', desc: 'Swift corsair hull', hullLen: 7, hullW: 2.2, hullH: 1.35, masts: 1, cannonSlots: 2, bowStyle: 'pointed' },
+  galleon: { name: 'Galleon', desc: 'Heavy cargo & war hull', hullLen: 16, hullW: 5.0, hullH: 2.55, masts: 3, cannonSlots: 8, bowStyle: 'wide' }
 };
 
 export const SHIP_PARTS_ME = {
@@ -210,7 +210,8 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
     bow.position.set(0, spec.hullH * 0.2, spec.hullLen * 0.48); bow.castShadow = true; g.add(bow);
   }
 
-  if (type === 'warship') {
+
+  if (type === 'galleon') {
     const qdb = new THREE.BoxGeometry(spec.hullW * 0.85, spec.hullH * 1.0, spec.hullLen * 0.22);
     const quarter = new THREE.Mesh(qdb, new THREE.MeshPhongMaterial({ color: 0x4a2a10, shininess: 15 }));
     quarter.position.set(0, spec.hullH * 0.7, -spec.hullLen * 0.35); quarter.castShadow = true; g.add(quarter);
@@ -219,9 +220,6 @@ export function buildShipMeshME(type, parts, flagColor, meshOpts) {
       const win = new THREE.Mesh(wg, new THREE.MeshBasicMaterial({ color: 0x888844 }));
       win.position.set(0, spec.hullH * 0.3, -spec.hullLen * (0.1 + wi * 0.12)); g.add(win);
     }
-  }
-
-  if (type === 'galleon' || type === 'warship') {
     const cb = new THREE.BoxGeometry(spec.hullW * 0.55, spec.hullH * 0.3, spec.hullLen * 0.08);
     const crows = new THREE.Mesh(cb, rm);
     crows.position.set(0, spec.hullH * 0.6 + spec.hullLen * 0.7 * 0.95, 0); g.add(crows);
@@ -332,11 +330,9 @@ function repelCrewFromMastsXZME(px, pz, spec, shipType) {
   }
   const pf = pushOutOfCircleXZME(x, z, 0, hl * 0.35, 0.38, 0.5);
   x = pf.x; z = pf.z;
-  if (st === 'warship') {
+  if (st === 'galleon') {
     const pb = pushOutOfAabbXZME(x, z, -hw * 0.41, hw * 0.41, -hl * 0.45, -hl * 0.17);
     x = pb.x; z = pb.z;
-  }
-  if (st === 'galleon' || st === 'warship') {
     const pc = pushOutOfCircleXZME(x, z, 0, 0, 0.3, 0.44);
     x = pc.x; z = pc.z;
   }
