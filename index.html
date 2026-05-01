@@ -3468,6 +3468,8 @@ const G = {
   serverMaxPlayers: null,
   /** Last measured RTT to game server (ms), from `client_pong` after `client_ping`. */
   clientServerRttMs: null,
+  /** EMA of measured RTT — stable `client_pong` values for interp delay (avoids delay shimmer). */
+  _netInterpRttEwma: null,
   /** Monotonic counter for `update.seq` (server acks via `state` / authoritative self row). */
   netSendSeq: 0,
   /** Multiplayer: hull no longer matches realm — block play until reload / reconnect. */
@@ -19835,7 +19837,7 @@ function enqueueNetStateMessage(msg) {
     G._netStatePrevArrivalAt = nowA;
   }
   /** Keep newest snapshots; large backlog handled in `update()` with synthetic recv times per message. */
-  const maxQ = 22;
+  const maxQ = 28;
   if (G._netStateDrainQueue.length > maxQ) G._netStateDrainQueue.splice(0, G._netStateDrainQueue.length - maxQ);
 }
 
@@ -19984,6 +19986,7 @@ async function connectToServer() {
   G._lastNetStateSrvTick = null;
   G._pendingNpcSyncQueue = [];
   G._netInterpJitterEwma = null;
+  G._netInterpRttEwma = null;
   G._netStatePrevArrivalAt = null;
   G._netLastStateGapMs = null;
   G._netStateDrainQueue = [];
@@ -20230,6 +20233,11 @@ async function connectToServer() {
       case 'client_pong': {
         if (msg.t != null && Number.isFinite(Number(msg.t))) {
           G.clientServerRttMs = Math.max(0, performance.now() - Number(msg.t));
+          const r0 = G.clientServerRttMs;
+          G._netInterpRttEwma =
+            G._netInterpRttEwma == null || !Number.isFinite(G._netInterpRttEwma)
+              ? r0
+              : G._netInterpRttEwma + (r0 - G._netInterpRttEwma) * 0.2;
         }
         if (G.myId != null && G.clientServerRttMs != null && ws?.readyState === 1) {
           const tNow = performance.now();
@@ -21482,7 +21490,7 @@ function appendPeerHullHistSample(row, rx, rz, rr, recvMs, stNum, spdAbs) {
 
 /**
  * Authoritative AOI `state` snapshot(s). Incoming messages queue in `_netStateDrainQueue`; `update` drains
- * up to **eighteen** snapshots per frame (oldest→newest) with staggered `snapshotWallMs`, matching `npc_sync` burst
+ * up to **twenty-two** snapshots per frame (oldest→newest) with staggered `snapshotWallMs`, matching `npc_sync` burst
  * handling so `_snapHist` gets intermediate poses instead of one giant teleport. Wildlife anchor, stale-peer prune,
  * boarding ingest, NPC authority, reconcile-self, and roster run **only** on the final drained message (`peerMergeOnly: false`).
  * Peer `_snapHist.recvMs` follows **`srvTick`** (like NPC net hulls) so burst synthetic wall times don’t shrink the recv timeline.
@@ -30832,15 +30840,27 @@ function yawDeltaShortest(fromRef, toAngle) {
 }
 
 /**
+ * Stable RTT for net interpolation — EMA of `client_pong`, falls back to instant sample or LAN default.
+ */
+function getEffectiveRttForNetInterpMs() {
+  const e = G._netInterpRttEwma;
+  const r = G.clientServerRttMs;
+  const pick = e != null && Number.isFinite(Number(e)) ? Number(e) : r != null && Number.isFinite(Number(r)) ? Number(r) : 52;
+  return Math.min(420, Math.max(0, pick));
+}
+
+/**
  * Delayed playback for remote hulls / NPC relay keys — **tight** RTT scaling (FPS-style: ~1–3 frames), not cruise-ship buffer.
+ * Jitter EWMA adds a few ms only when packet spacing is irregular (stable links stay snappy).
  */
 function getEffectiveHullSnapInterpDelayMs() {
-  const r =
-    G.clientServerRttMs != null && Number.isFinite(Number(G.clientServerRttMs))
-      ? Math.min(420, Math.max(0, Number(G.clientServerRttMs)))
-      : 55;
-  const d = 12 + r * 0.12;
-  return Math.max(18, Math.min(46, d));
+  const r = getEffectiveRttForNetInterpMs();
+  const j =
+    G._netInterpJitterEwma != null && Number.isFinite(Number(G._netInterpJitterEwma))
+      ? Math.min(16, Math.max(0, Number(G._netInterpJitterEwma)) * 0.38)
+      : 0;
+  const d = 10.5 + r * 0.1 + j;
+  return Math.max(16, Math.min(42, d));
 }
 
 function getEffectiveRemoteInterpDelayMs() {
@@ -30854,14 +30874,14 @@ function getEffectiveNpcInterpDelayMs() {
 /** Delayed hull playback for NPC relay — still a hair tighter than AOI peers so observers don’t lead NPC authority. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   void relayObserver;
-  return Math.max(14, getEffectiveHullSnapInterpDelayMs() - 6);
+  return Math.max(12, getEffectiveHullSnapInterpDelayMs() - 5);
 }
 
 /**
  * Other captains — ~2 server ticks @ 60Hz behind latest sample (low-latency FPS feel). Adaptive fn adds a little under jitter only.
  */
 function getEffectivePeerHullInterpDelayMs() {
-  return Math.max(22, getEffectiveHullSnapInterpDelayMs() + 11);
+  return Math.max(19, getEffectiveHullSnapInterpDelayMs() + 8);
 }
 
 /**
@@ -30877,12 +30897,14 @@ function getAdaptivePeerHullPlaybackDelayMs(row, nowWallMs) {
   const tickMs = 1000 / NET_SYNC_HZ;
   const playT = nowWallMs - base;
   const ahead = last.recvMs - playT;
-  const wantLo = tickMs * 1.22;
-  const wantHi = tickMs * 3.85;
+  const wantLo = tickMs * 1.08;
+  const wantHi = tickMs * 3.45;
   let dly = base;
-  if (ahead < wantLo) dly = base + (wantLo - ahead) * 0.38;
-  else if (ahead > wantHi) dly = base - Math.min(28, (ahead - wantHi) * 0.55);
-  return Math.max(16, Math.min(62, dly));
+  if (ahead < wantLo) dly = base + (wantLo - ahead) * 0.34;
+  else if (ahead > wantHi) dly = base - Math.min(30, (ahead - wantHi) * 0.58);
+  if (hist.length >= 12) dly -= 2.2;
+  else if (hist.length >= 8) dly -= 1.2;
+  return Math.max(14, Math.min(55, dly));
 }
 
 /**
@@ -31047,7 +31069,7 @@ function sampleHullRecvHist(hist, tgtRecvMs, interpOpts) {
     const vRef =
       capSp != null && Number.isFinite(Number(capSp)) ? Math.max(1.1, Number(capSp) * 1.58 + 1.35) : null;
     const dSeg = Math.hypot(b.x - a.x, b.z - a.z) / Math.max(T, 1e-3);
-    const limV = Math.max(dSeg * 2.45, vRef != null ? vRef : dSeg * 3.2, dSeg * 3.55);
+    const limV = Math.max(dSeg * 2.62, vRef != null ? vRef * 1.06 : dSeg * 3.35, dSeg * 3.78);
     const clampV = (vx, vz) => {
       const vm = Math.hypot(vx, vz);
       if (vm > limV && vm > 1e-4) {
@@ -31134,7 +31156,7 @@ function smoothRemotePlayerNetVelocity(p, dt) {
     const pz = G.player && Number.isFinite(Number(G.player.z)) ? Number(G.player.z) : null;
     const dm = px != null && pz != null ? Math.hypot(Number(p.x) - px, Number(p.z) - pz) : 99999;
     const near = dm < 160;
-    const a = 1 - Math.exp(-(near ? 26 : 17) * dc);
+    const a = 1 - Math.exp(-(near ? 34 : 21) * dc);
     p._netVelSmX = Number.isFinite(p._netVelSmX) ? p._netVelSmX + (tx - p._netVelSmX) * a : tx;
     p._netVelSmZ = Number.isFinite(p._netVelSmZ) ? p._netVelSmZ + (tz - p._netVelSmZ) * a : tz;
   }
@@ -31164,7 +31186,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const delayMsPlay = getAdaptivePeerHullPlaybackDelayMs(p, nowWall);
   const spAbsHint = p.speed != null && Number.isFinite(Number(p.speed)) ? Math.abs(Number(p.speed)) : 0;
   const peerMaxExtrap = Math.round(
-    Math.min(82, Math.max(34, delayMsPlay * 0.3 + 14 + spAbsHint * 0.42))
+    Math.min(78, Math.max(32, delayMsPlay * 0.28 + 12 + spAbsHint * 0.46))
   );
   const extrapBowAllow = spAbsHint * (peerMaxExtrap / 1000) * 1.22;
   /* Hermite between dense hull keys; extrap budget scales with speed/delay so fast ships don’t stair-step then snap. */
@@ -31176,7 +31198,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     peerTailSpeedCap: spAbsHint
   });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    const pvk = 1 - Math.exp(-48 * dt);
+    const pvk = 1 - Math.exp(-56 * dt);
     if (Number.isFinite(p._netVelTargetX) && Number.isFinite(p._netVelTargetZ)) {
       p._netVelSmX = Number.isFinite(p._netVelSmX)
         ? p._netVelSmX + (p._netVelTargetX - p._netVelSmX) * pvk
@@ -31195,8 +31217,10 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
         p._peerDispX = ip.x;
         p._peerDispZ = ip.z;
       } else {
-        /* Hermite already smooths between snaps — chase interp tightly (COD-style), no heavy second low-pass. */
-        const q = Math.min(0.97, Math.max(0.28, 26 * dt + gap * 0.0016));
+        /* Hermite already smooths between snaps — chase interp tightly; extra snap when error is tiny (no mush). */
+        let q = Math.min(0.97, Math.max(0.3, 30 * dt + gap * 0.00175));
+        if (gap < 3.2) q = Math.min(0.995, 0.62 + 52 * dt);
+        else if (gap < 8.5) q = Math.max(q, Math.min(0.99, 0.45 + 40 * dt));
         p._peerDispX += (ip.x - p._peerDispX) * q;
         p._peerDispZ += (ip.z - p._peerDispZ) * q;
       }
@@ -31381,10 +31405,10 @@ function update(dt) {
     const q = G._netStateDrainQueue;
     while (q.length > 128) q.shift();
     /** Apply several queued snapshots (oldest→newest); larger drain uses upgraded servers to preserve motion between ticks. */
-    const maxDrain = 18;
+    const maxDrain = 22;
     while (q.length > maxDrain) q.shift();
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    const stateBurstWallStep = (1000 / NET_SYNC_HZ) * 0.1;
+    const stateBurstWallStep = (1000 / NET_SYNC_HZ) * 0.065;
     const nState = q.length;
     for (let di = 0; di < nState; di++) {
       const last = di === nState - 1;
