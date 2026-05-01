@@ -4308,11 +4308,7 @@ function setMultiplayerConnectingOverlay(show) {
   try {
     document.body.classList.toggle('mp-connecting-active', on);
   } catch (e) {}
-  try {
-    if (typeof renderer !== 'undefined' && renderer && renderer.domElement) {
-      renderer.domElement.style.pointerEvents = on ? 'none' : '';
-    }
-  } catch (e2) {}
+  try { syncMainCanvasPointerEvents(); } catch (e2) {}
 }
 
 function setDesyncBlockingOverlay(show, message) {
@@ -6133,6 +6129,14 @@ renderer.domElement.style.background = '#152a45';
 renderer.domElement.style.touchAction = 'none';
 renderer.domElement.tabIndex = 0;
 renderer.domElement.style.outline = 'none';
+/** Main canvas is full-screen; keep it from swallowing clicks on the main menu / create flow. */
+function syncMainCanvasPointerEvents() {
+  if (typeof renderer === 'undefined' || !renderer || !renderer.domElement) return;
+  const menuBlocksCanvas = typeof G !== 'undefined' && G && G.mode !== 'playing';
+  const mpVeil = typeof document !== 'undefined' && document.body && document.body.classList.contains('mp-connecting-active');
+  renderer.domElement.style.pointerEvents = menuBlocksCanvas || mpVeil ? 'none' : '';
+}
+syncMainCanvasPointerEvents();
 let _webglReloadScheduled = false;
 renderer.domElement.addEventListener('webglcontextlost', e => {
   try { e.preventDefault(); } catch (err) {}
@@ -23734,6 +23738,31 @@ function tryAddDockFromGlb(group, dockX, dockCenterY, dockZ, dockAngle) {
   group.add(dock);
   return true;
 }
+async function fetchGlbArrayBufferCached(url, timeoutMs) {
+  const ms = timeoutMs > 0 ? timeoutMs : 14000;
+  try {
+    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+      const r = await fetch(url, { cache: 'force-cache', mode: 'cors', credentials: 'same-origin', signal: AbortSignal.timeout(ms) });
+      if (!r.ok) return null;
+      return await r.arrayBuffer();
+    }
+  } catch (e) {
+    return null;
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => {
+    try { ctrl.abort(); } catch (e) {}
+  }, ms);
+  try {
+    const r = await fetch(url, { cache: 'force-cache', mode: 'cors', credentials: 'same-origin', signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return null;
+    return await r.arrayBuffer();
+  } catch (e) {
+    clearTimeout(t);
+    return null;
+  }
+}
 async function fetchGameGlbBuffersWithWorker(urls, onProgress) {
   const buffers = new Map();
   const total = urls.length;
@@ -23820,10 +23849,8 @@ async function fetchGameGlbBuffersWithWorker(urls, onProgress) {
   for (let i = 0; i < urls.length; i++) {
     const u = urls[i];
     if (buffers.has(u)) continue;
-    try {
-      const r = await fetch(u, { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' });
-      if (r.ok) buffers.set(u, await r.arrayBuffer());
-    } catch (e) {}
+    const ab = await fetchGlbArrayBufferCached(u, 14000);
+    if (ab) buffers.set(u, ab);
   }
 
   return buffers;
@@ -34015,12 +34042,14 @@ function gameLoop(time) {
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
     lastTime = time;
     document.body.classList.toggle('game-playing', G.mode === 'playing');
+    try { syncMainCanvasPointerEvents(); } catch (ePc) {}
     return;
   }
   let dt = (time - lastTime) / 1000;
   if (lastTime <= 0) {
     lastTime = time;
     document.body.classList.toggle('game-playing', G.mode === 'playing');
+    try { syncMainCanvasPointerEvents(); } catch (ePc) {}
     if (G.mode === 'playing') {
       try { render(); } catch (e) { console.error('[playground] render error:', e); }
     }
@@ -34030,6 +34059,7 @@ function gameLoop(time) {
   lastTime = time;
   _gameLoopFrame++;
   document.body.classList.toggle('game-playing', G.mode === 'playing');
+  try { syncMainCanvasPointerEvents(); } catch (ePc) {}
   /* While on the main menu / creation flow, `menuRender` owns the WebGL view. Do not `render()` here too — double 60fps world draws OOM/thermal-throttle GPUs and can crash mobile tabs. In play, this loop is the only renderer. */
   if (G.mode === 'playing') {
     try {
@@ -36688,6 +36718,18 @@ function menuRender() {
   }
 }
 
+function finishColdBootMenuUnblock() {
+  try {
+    const gel = document.getElementById('game-boot-overlay');
+    if (gel) {
+      gel.style.display = 'none';
+      gel.setAttribute('aria-hidden', 'true');
+    }
+    document.body.classList.remove('game-boot-active');
+    syncMainCanvasPointerEvents();
+  } catch (e) {}
+}
+
 (function runInitialGameBootSequence() {
   const el = document.getElementById('game-boot-overlay');
   const sub = el && el.querySelector('.game-boot-sub');
@@ -36697,13 +36739,21 @@ function menuRender() {
     el.setAttribute('aria-hidden', 'false');
   }
   document.body.classList.add('game-boot-active');
+  try { syncMainCanvasPointerEvents(); } catch (eS) {}
+  let bootFailsafeTimer = setTimeout(() => {
+    try { console.warn('cold boot failsafe: enabling main menu input'); } catch (e) {}
+    finishColdBootMenuUnblock();
+  }, 24000);
   try { kickOffGameAssetPreload(); } catch (e) {}
   void (async () => {
     if (sub) sub.textContent = 'Downloading 3D assets…';
     try {
-      await startGameGltfPreloadWithWorker((done, tot) => {
-        if (sub && tot > 0) sub.textContent = 'Loading 3D assets ' + done + ' / ' + tot + '…';
-      });
+      await Promise.race([
+        startGameGltfPreloadWithWorker((done, tot) => {
+          if (sub && tot > 0) sub.textContent = 'Loading 3D assets ' + done + ' / ' + tot + '…';
+        }),
+        new Promise(r => setTimeout(r, 14000)),
+      ]);
     } catch (e0) {
       try { console.warn('gameGltfPreload', e0); } catch (e1) {}
     }
@@ -36717,11 +36767,8 @@ function menuRender() {
       }
       if (sub) sub.textContent = 'Ready.';
       setTimeout(() => {
-        if (el) {
-          el.style.display = 'none';
-          el.setAttribute('aria-hidden', 'true');
-        }
-        document.body.classList.remove('game-boot-active');
+        try { clearTimeout(bootFailsafeTimer); } catch (eC) {}
+        finishColdBootMenuUnblock();
       }, 120);
     }
     requestAnimationFrame(step);
