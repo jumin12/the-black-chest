@@ -9544,15 +9544,8 @@ function cloneParsedGlbTree(relPath) {
   }
 }
 
-/** Per-asset euler (radians) applied to cloned glTF before footprint fitting — edit for wrongly rotated exports. */
-const GAME_GLB_EULER_BIAS_RAD_BEFORE_FOOTPRINT = Object.freeze({
-  'assets/3d models/buildings/church.glb': { ry: Math.PI / 2 },
-  'assets/3d models/buildings/tavern.glb': { ry: Math.PI / 2 },
-  'assets/3d models/buildings/govmansion.glb': { ry: Math.PI / 2 },
-  'assets/3d models/buildings/house1.glb': { ry: Math.PI / 2 },
-  'assets/3d models/buildings/house2.glb': { ry: Math.PI / 2 },
-  'assets/3d models/buildings/house3.glb': { ry: Math.PI / 2 }
-});
+/** Per-asset euler (radians) applied to cloned glTF before footprint fitting. Town GLBs assume Y-up — add keys only when an asset needs yaw/pitch tweaks. */
+const GAME_GLB_EULER_BIAS_RAD_BEFORE_FOOTPRINT = Object.freeze({});
 
 function applyGlbAuthoringEulerBiasBeforeFootprint(sceneRoot, relPath) {
   const spec = relPath ? GAME_GLB_EULER_BIAS_RAD_BEFORE_FOOTPRINT[relPath] : null;
@@ -9677,7 +9670,8 @@ function plantGlbFootprintPivotForRel(relPath, bx, groundY, bz, yawRad, tgtW, tg
 
 function createPalmTree(x, y, z, rng, yawOverride) {
   const r = decoRand(rng);
-  const rel = r() < 0.5 ? 'assets/3d models/decorations/tree1.glb' : 'assets/3d models/decorations/tree2.glb';
+  const alt = ((Math.floor(Number(x) * 67.91) >>> 0) ^ (Math.floor(Number(z) * 59.73) >>> 0)) & 1;
+  const rel = alt === 0 ? 'assets/3d models/decorations/tree1.glb' : 'assets/3d models/decorations/tree2.glb';
   let yaw = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
     ? Number(yawOverride)
     : (r() * Math.PI * 2);
@@ -9775,9 +9769,9 @@ function createRock(x, y, z, s, rng) {
 function createBush(x, y, z, s, rng) {
   const r = decoRand(rng);
   const rels = ['assets/3d models/decorations/bush1.glb', 'assets/3d models/decorations/bush2.glb', 'assets/3d models/decorations/bush3.glb'];
-  const rel = rels[(Math.abs(Math.floor(r() * 77)) % 3)];
-  const span = Math.max(0.7, Math.min(2.2, (s || 0.32) * 3.45));
-  const pt = plantGlbFootprintPivotForRel(rel, x, y, z, r() * Math.PI * 2, span * 2.8, span * 1.8, span * 2.8, 0.93);
+  const rel = rels[((Math.floor(x * 73.1 + z * 67.9) % 5281) >>> 0) % 3];
+  const span = Math.max(0.65, Math.min(2.35, (s || 0.32) * 3.45));
+  const pt = plantGlbFootprintPivotForRel(rel, x, y, z, r() * Math.PI * 2, span * 2.45, span * 1.55, span * 2.45, 0.818);
   if (pt) return pt;
   const g = new THREE.Group();
   const mat = new THREE.MeshLambertMaterial({ color: [0x2d5016, 0x3a6b28, 0x25603a, 0x3d6b2a][Math.floor(r() * 4)] });
@@ -9905,16 +9899,18 @@ function addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rn
       : plantGlbFootprintPivotForRel(rel, bx, baseY, bz, 0, tgtW, tgtH, tgtD, 0.93);
   if (!pt && type !== 'house') {
     try { console.warn('Town landmark GLB missing (skipped procedural fallback):', type, rel); } catch (_) {}
-    return;
+    return false;
   }
   if (pt) {
     group.add(pt);
-    return;
+    return true;
   }
   try { console.warn('Town house skipped (no house*.glb template):', rel); } catch (_) {}
+  return false;
 }
 
-function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints) {
+/** Optional `{ maxSlope, minGyMax, minGyMin }` relax terrain checks for stubborn landmark packing. */
+function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints, slopeRelax) {
   const r = decoRand(rng);
   let bW, bD, bH, wallHex, roofStyle;
   if (type === 'church') {
@@ -9936,7 +9932,14 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
       if (Math.hypot(bx - fp.x, bz - fp.z) < fp.r + footprintR) return false;
     }
   }
-  const maxSlope = type === 'house' ? 0.55 : 0.44;
+  let maxSlope = type === 'house' ? 0.55 : 0.44;
+  let gminMaxEff = minGyMax;
+  let gminMinEff = minGyMin;
+  if (slopeRelax) {
+    if (slopeRelax.maxSlope != null) maxSlope = slopeRelax.maxSlope;
+    if (slopeRelax.minGyMax != null) gminMaxEff = slopeRelax.minGyMax;
+    if (slopeRelax.minGyMin != null) gminMinEff = slopeRelax.minGyMin;
+  }
   const cornerE = half * 0.82;
   const samplePts = [
     [0, 0], [cornerE, cornerE], [cornerE, -cornerE], [-cornerE, cornerE], [-cornerE, -cornerE],
@@ -9949,14 +9952,14 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
     gyMax = Math.max(gyMax, g);
     gyMin = Math.min(gyMin, g);
   }
-  if (gyMax < minGyMax || gyMin < minGyMin) return false;
+  if (gyMax < gminMaxEff || gyMin < gminMinEff) return false;
   if (gyMax - gyMin > maxSlope) return false;
   if (!landOk(bx - cornerE, bz - cornerE)) return false;
   if (!landOk(bx + cornerE, bz - cornerE)) return false;
   if (!landOk(bx - cornerE, bz + cornerE)) return false;
   if (!landOk(bx + cornerE, bz + cornerE)) return false;
   const baseY = SEA_LEVEL + gyMin + 0.04;
-  addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rng, wallHex, roofStyle);
+  if (!addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rng, wallHex, roofStyle)) return false;
   if (footprints) footprints.push({ x: bx, z: bz, r: footprintR });
   return true;
 }
@@ -9977,6 +9980,24 @@ function addTownSettlementForChunk(group, dockX, dockZ, dockAngle, centerWX, cen
     { type: 'church', al: 0.15, sp: -0.34 },
   ];
   const placedTypes = new Set();
+
+  (function tryLandmarkAnchors() {
+    const anch = [
+      { type: 'governor', along: Math.max(9.6, 10.6 + islandRadius * 0.074), sp: 6.55 },
+      { type: 'tavern', along: Math.max(13.4, 15.4 + islandRadius * 0.086), sp: -6.32 },
+      { type: 'church', along: Math.max(17.2, 19.6 + islandRadius * 0.094), sp: 4.05 },
+    ];
+    for (let ai = 0; ai < anch.length; ai++) {
+      const s = anch[ai];
+      if (placedTypes.has(s.type)) continue;
+      const bx = dockX + ux * s.along + dockWidX * s.spread;
+      const bz = dockZ + uz * s.along + dockWidZ * s.spread;
+      if (tryPlaceTownLandmark(group, s.type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints)) {
+        placedTypes.add(s.type);
+      }
+    }
+  })();
+
   for (const s of signatures) {
     let placedSig = false;
     for (let attempt = 0; attempt < 52 && !placedSig; attempt++) {
@@ -10003,32 +10024,18 @@ function addTownSettlementForChunk(group, dockX, dockZ, dockAngle, centerWX, cen
       }
     }
   }
-  const houseGoal = 4 + Math.floor(rng() * 4);
-  let houses = 0;
-  for (let attempt = 0; attempt < 160 && houses < houseGoal; attempt++) {
-    const along = 8 + rng() * Math.min(islandRadius * 0.58, 62);
-    const spread = (rng() * 2 - 1) * (5.5 + rng() * 8);
-    const bx = dockX + ux * along + dockWidX * spread;
-    const bz = dockZ + uz * along + dockWidZ * spread;
-    if (tryPlaceTownLandmark(group, 'house', bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints)) houses++;
-  }
-  if (placedTypes.size < 3 || houses < 3) {
-    for (let k = 0; k < 96 && (placedTypes.size < 3 || houses < houseGoal); k++) {
+  /* Landmarks resolve before residential sprawl — reserves lots for gov/tavern/church GLBs. */
+  if (placedTypes.size < 3) {
+    for (let k = 0; k < 120 && placedTypes.size < 3; k++) {
       const ang = dockAngle + Math.PI * 0.42 + k * 0.33;
       const dist = 6.5 + (k % 16) * 2.35;
-      const bx = dockX + Math.cos(ang) * dist;
-      const bz = dockZ + Math.sin(ang) * dist;
-      if (placedTypes.size < 3) {
-        for (const s of signatures) {
-          if (placedTypes.has(s.type)) continue;
-          if (tryPlaceTownLandmark(group, s.type, bx + (rng() - 0.5) * 2.2, bz + (rng() - 0.5) * 2.2, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints)) {
-            placedTypes.add(s.type);
-            break;
-          }
-        }
-      } else if (houses < houseGoal) {
-        if (tryPlaceTownLandmark(group, 'house', bx + (rng() - 0.5) * 2.8, bz + (rng() - 0.5) * 2.8, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints)) {
-          houses++;
+      const bx = dockX + Math.cos(ang) * dist + (rng() - 0.5) * 2.1;
+      const bz = dockZ + Math.sin(ang) * dist + (rng() - 0.5) * 2.1;
+      for (const s of signatures) {
+        if (placedTypes.has(s.type)) continue;
+        if (tryPlaceTownLandmark(group, s.type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints)) {
+          placedTypes.add(s.type);
+          break;
         }
       }
     }
@@ -10052,6 +10059,48 @@ function addTownSettlementForChunk(group, dockX, dockZ, dockAngle, centerWX, cen
           }
         }
       }
+    }
+  }
+  if (placedTypes.size < 3) {
+    const needU = ['governor', 'tavern', 'church'].filter(t => !placedTypes.has(t));
+    const tier2Rel = {
+      maxSlope: 3.05,
+      minGyMax: minGyMax * 0.52,
+      minGyMin: minGyMin * 0.62
+    };
+    for (let ui = 0; ui < needU.length; ui++) {
+      const ty = needU[ui];
+      let ok = false;
+      for (let ring = 0; ring < 44 && !ok; ring++) {
+        for (let h = 0; h < 20 && !ok; h++) {
+          const ang = rng() * Math.PI * 2;
+          const dist = 6.2 + ring * 2.05 + rng() * 2.4;
+          const bx = centerWX + Math.cos(ang) * dist;
+          const bz = centerWZ + Math.sin(ang) * dist;
+          if (tryPlaceTownLandmark(group, ty, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints, tier2Rel)) {
+            placedTypes.add(ty);
+            ok = true;
+          }
+        }
+      }
+    }
+  }
+  const houseGoal = 4 + Math.floor(rng() * 4);
+  let houses = 0;
+  for (let attempt = 0; attempt < 160 && houses < houseGoal; attempt++) {
+    const along = 8 + rng() * Math.min(islandRadius * 0.58, 62);
+    const spread = (rng() * 2 - 1) * (5.5 + rng() * 8);
+    const bx = dockX + ux * along + dockWidX * spread;
+    const bz = dockZ + uz * along + dockWidZ * spread;
+    if (tryPlaceTownLandmark(group, 'house', bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints)) houses++;
+  }
+  if (houses < houseGoal) {
+    for (let k = 0; k < 110 && houses < houseGoal; k++) {
+      const ang = dockAngle + Math.PI * 0.42 + k * 0.33;
+      const dist = 6.5 + (k % 18) * 2.2;
+      const bx = dockX + Math.cos(ang) * dist + (rng() - 0.5) * 2.95;
+      const bz = dockZ + Math.sin(ang) * dist + (rng() - 0.5) * 2.95;
+      if (tryPlaceTownLandmark(group, 'house', bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints)) houses++;
     }
   }
 }
@@ -10729,10 +10778,8 @@ function makePredatorSharkMesh(scale) {
     sh.position.x -= (b2.min.x + b2.max.x) * 0.5;
     sh.position.y -= (b2.min.y + b2.max.y) * 0.5;
     sh.position.z -= (b2.min.z + b2.max.z) * 0.5;
-    const orient = new THREE.Group();
-    orient.rotation.x = Math.PI / 2;
-    orient.add(sh);
-    g.add(orient);
+    /** glTF sharks are authored Y-forward; procedural mesh used PI/2 on cones — omit extra X-roll for GLB. */
+    g.add(sh);
     g.userData.glbSharkRoot = true;
     g.userData.isPredatorShark = true;
     g.userData.swimPhase = 0;
@@ -11235,10 +11282,7 @@ function spawnSeagulls(wx, wz, count, rng) {
       bird.position.x -= (b2.min.x + b2.max.x) * 0.5;
       bird.position.y -= (b2.min.y + b2.max.y) * 0.5;
       bird.position.z -= (b2.min.z + b2.max.z) * 0.5;
-      const ori = new THREE.Group();
-      ori.rotation.x = Math.PI / 2;
-      ori.add(bird);
-      sg.add(ori);
+      sg.add(bird);
       sg.userData.glbSeagull = true;
       sg.userData.wingL = null;
       sg.userData.wingR = null;
@@ -11408,11 +11452,9 @@ function spawnFish(wx, wz, count, rng) {
       tpl.position.x -= (b2.min.x + b2.max.x) * 0.5;
       tpl.position.y -= (b2.min.y + b2.max.y) * 0.5;
       tpl.position.z -= (b2.min.z + b2.max.z) * 0.5;
-      const orient = new THREE.Group();
-      orient.rotation.x = Math.PI / 2;
-      orient.rotation.y = (Math.PI / 180) * 8 * swimmerStreamHash(wx, wz, 0xbee0 + fishPick);
-      orient.add(tpl);
-      fg.add(orient);
+      tpl.rotation.order = 'YXZ';
+      tpl.rotation.y += (Math.PI / 180) * 8 * swimmerStreamHash(wx, wz, 0xbee0 + fishPick);
+      fg.add(tpl);
       fg.userData.glbFish = true;
     } else {
       fg.userData.glbFish = false;
