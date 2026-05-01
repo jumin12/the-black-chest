@@ -9476,7 +9476,7 @@ function decoRand(rng) {
 
 function createPalmTree(x, y, z, rng, yawOverride) {
   const r = decoRand(rng);
-  if (gameGltfMeshesReady()) {
+  {
     const rel = GAME_GLB_TREE_RELS[Math.floor(Math.abs(Math.sin(x * 0.21 + z * 0.17 + (r() - 0.5)) * 4133)) % GAME_GLB_TREE_RELS.length];
     const glb = cloneGameGltfFromRel(rel);
     if (glb) {
@@ -9579,7 +9579,7 @@ function createRock(x, y, z, s, rng) {
 
 function createBush(x, y, z, s, rng) {
   const r = decoRand(rng);
-  if (gameGltfMeshesReady()) {
+  {
     const rel = GAME_GLB_BUSH_RELS[Math.floor(r() * GAME_GLB_BUSH_RELS.length)];
     const glb = cloneGameGltfFromRel(rel);
     if (glb) {
@@ -10515,7 +10515,7 @@ function nudgeSharkPairMidpointToOpenSea(mA, mB, yOff) {
 
 function makePredatorSharkMesh(scale) {
   const s = Number(scale) || 1;
-  if (gameGltfMeshesReady()) {
+  {
     const glb = cloneGameGltfFromRel('assets/3d models/wildlife/shark.glb');
     if (glb) {
       const box = new THREE.Box3().setFromObject(glb);
@@ -11026,7 +11026,7 @@ function spawnSeagulls(wx, wz, count, rng) {
     const sg = new THREE.Group();
     let glbWingL = null;
     let glbWingR = null;
-    if (gameGltfMeshesReady()) {
+    {
       const rel = GAME_GLB_SEAGULL_RELS[Math.floor(r() * GAME_GLB_SEAGULL_RELS.length)];
       const mdl = cloneGameGltfFromRel(rel);
       if (mdl) {
@@ -11166,7 +11166,7 @@ function spawnFish(wx, wz, count, rng) {
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
     let useGlbFish = false;
-    if (gameGltfMeshesReady() && species.glb) {
+    if (species.glb) {
       const mdl = cloneGameGltfFromRel(species.glb);
       if (mdl) {
         const tLen = Math.max(0.09, species.len * (0.82 + r() * 0.36));
@@ -23571,6 +23571,7 @@ const _gameGltfLoader = new GLTFLoader();
 const _gameGltfRootByUrl = new Map();
 let _gameGltfParseReady = false;
 let _gameGltfPreloadPromise = null;
+let _gameGltfParsePromise = null;
 
 const GAME_GLB_SLOOP_RELS = [
   'assets/3d models/ships/pirate-sloop1.glb',
@@ -23626,7 +23627,6 @@ function parseGltfArrayBuffer(ab) {
   });
 }
 function cloneGameGltfFromRel(relPath) {
-  if (!_gameGltfParseReady) return null;
   const url = resolveGameAssetUrl(relPath);
   const root = _gameGltfRootByUrl.get(url);
   if (!root) return null;
@@ -23638,9 +23638,6 @@ function cloneGameGltfFromRel(relPath) {
     }
   });
   return c;
-}
-function gameGltfMeshesReady() {
-  return _gameGltfParseReady;
 }
 function pickSloopGlbRel(salt) {
   const arr = GAME_GLB_SLOOP_RELS;
@@ -23655,7 +23652,6 @@ function shipGlbRelForGameType(shipType, salt) {
   return t === 'galleon' ? pickGalleonGlbRel(salt) : pickSloopGlbRel(salt);
 }
 function tryInjectShipGlbHull(group, type, spec, meshOpts, shipName) {
-  if (!gameGltfMeshesReady()) return false;
   let salt = 0;
   if (meshOpts && meshOpts.glbSalt != null && Number.isFinite(Number(meshOpts.glbSalt))) salt = Number(meshOpts.glbSalt) >>> 0;
   else {
@@ -23693,7 +23689,6 @@ function tryInjectShipGlbHull(group, type, spec, meshOpts, shipName) {
 }
 /** @returns {boolean} true when GLB landmark added (caller records footprint). */
 function tryAddTownLandmarkFromGlb(group, type, bx, bz, baseY, rng, footprintR) {
-  if (!gameGltfMeshesReady()) return false;
   const r = decoRand(rng);
   let rel;
   if (type === 'church') rel = 'assets/3d models/buildings/church1.glb';
@@ -23719,7 +23714,6 @@ function tryAddTownLandmarkFromGlb(group, type, bx, bz, baseY, rng, footprintR) 
   return true;
 }
 function tryAddDockFromGlb(group, dockX, dockCenterY, dockZ, dockAngle) {
-  if (!gameGltfMeshesReady()) return false;
   const dock = cloneGameGltfFromRel('assets/3d models/buildings/dock1.glb');
   if (!dock) return false;
   dock.rotation.order = 'YXZ';
@@ -23740,64 +23734,133 @@ function tryAddDockFromGlb(group, dockX, dockCenterY, dockZ, dockAngle) {
   group.add(dock);
   return true;
 }
+async function fetchGameGlbBuffersWithWorker(urls, onProgress) {
+  const buffers = new Map();
+  const total = urls.length;
+  let reported = 0;
+  const report = () => {
+    reported++;
+    if (onProgress) onProgress(Math.min(reported, total), total);
+  };
+
+  await new Promise((resolveOuter) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolveOuter();
+    };
+    const wHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
+    let worker = null;
+    const MS = 120000;
+    const to = setTimeout(() => {
+      try { console.warn('glb-fetch-worker: timeout; using main-thread fetch for any missing GLBs'); } catch (e) {}
+      try { if (worker) worker.terminate(); } catch (e) {}
+      finish();
+    }, MS);
+    const cleanup = () => {
+      clearTimeout(to);
+      try { if (worker) worker.terminate(); } catch (e) {}
+    };
+
+    const onMsg = (ev) => {
+      if (ev.data && ev.data.done) {
+        cleanup();
+        finish();
+        return;
+      }
+      const u = ev.data && ev.data.url;
+      const buf = ev.data && ev.data.buffer;
+      if (u && buf) buffers.set(u, buf);
+      if (u) report();
+    };
+
+    const attach = (w) => {
+      worker = w;
+      worker.onmessage = onMsg;
+      worker.onerror = (err) => {
+        try { console.warn('glb-fetch-worker error', err); } catch (e) {}
+        cleanup();
+        finish();
+      };
+      try {
+        worker.postMessage({ urls });
+      } catch (e) {
+        try { console.warn('glb-fetch-worker postMessage failed', e); } catch (e2) {}
+        cleanup();
+        finish();
+      }
+    };
+
+    try {
+      attach(new Worker(wHref));
+    } catch (e) {
+      try {
+        void fetch(wHref)
+          .then(r => r.text())
+          .then(code => {
+            try {
+              attach(new Worker(URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))));
+            } catch (eBlob) {
+              cleanup();
+              finish();
+            }
+          })
+          .catch(() => {
+            cleanup();
+            finish();
+          });
+      } catch (e2) {
+        cleanup();
+        finish();
+      }
+    }
+  });
+
+  for (let i = 0; i < urls.length; i++) {
+    const u = urls[i];
+    if (buffers.has(u)) continue;
+    try {
+      const r = await fetch(u, { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' });
+      if (r.ok) buffers.set(u, await r.arrayBuffer());
+    } catch (e) {}
+  }
+
+  return buffers;
+}
+
+function scheduleGameGltfParse(urls, buffers, onProgress) {
+  if (_gameGltfParsePromise) return;
+  const total = urls.length;
+  _gameGltfParsePromise = (async () => {
+    _gameGltfParseReady = false;
+    try {
+      for (let i = 0; i < urls.length; i++) {
+        const u = urls[i];
+        const ab = buffers.get(u);
+        if (ab) {
+          try {
+            const gltf = await parseGltfArrayBuffer(ab);
+            if (gltf && gltf.scene) _gameGltfRootByUrl.set(u, gltf.scene);
+          } catch (e2) {}
+        }
+        if (onProgress) onProgress(i + 1, total);
+        await new Promise(r => requestAnimationFrame(r));
+      }
+    } finally {
+      _gameGltfParseReady = true;
+      try {
+        if (typeof G !== 'undefined' && G && G.mode === 'playing') rebuildPlayerShip();
+      } catch (eR) {}
+    }
+  })();
+}
 function startGameGltfPreloadWithWorker(onProgress) {
   if (_gameGltfPreloadPromise) return _gameGltfPreloadPromise;
   _gameGltfPreloadPromise = (async () => {
     const urls = collectGameGlbResolveUrls();
-    const buffers = new Map();
-    await new Promise((resolveWorker) => {
-      const wHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
-      let worker = null;
-      const finish = () => {
-        try { if (worker) worker.terminate(); } catch (e) {}
-        resolveWorker();
-      };
-      const onMsg = (ev) => {
-        if (ev.data && ev.data.done) {
-          finish();
-          return;
-        }
-        const u = ev.data && ev.data.url;
-        const buf = ev.data && ev.data.buffer;
-        if (u && buf) buffers.set(u, buf);
-      };
-      try {
-        worker = new Worker(wHref);
-        worker.onmessage = onMsg;
-        worker.postMessage({ urls });
-      } catch (e) {
-        try {
-          void fetch(wHref)
-            .then(r => r.text())
-            .then(code => {
-              worker = new Worker(URL.createObjectURL(new Blob([code], { type: 'application/javascript' })));
-              worker.onmessage = onMsg;
-              worker.postMessage({ urls });
-            })
-            .catch(finish);
-        } catch (e2) {
-          finish();
-        }
-      }
-    });
-    let doneN = 0;
-    const total = urls.length;
-    for (let i = 0; i < urls.length; i++) {
-      const u = urls[i];
-      const ab = buffers.get(u);
-      if (!ab) {
-        doneN++;
-        if (onProgress) onProgress(doneN, total);
-        continue;
-      }
-      try {
-        const gltf = await parseGltfArrayBuffer(ab);
-        if (gltf && gltf.scene) _gameGltfRootByUrl.set(u, gltf.scene);
-      } catch (e2) {}
-      doneN++;
-      if (onProgress) onProgress(doneN, total);
-    }
-    _gameGltfParseReady = true;
+    const buffers = await fetchGameGlbBuffersWithWorker(urls, onProgress);
+    scheduleGameGltfParse(urls, buffers, onProgress);
   })();
   return _gameGltfPreloadPromise;
 }
@@ -23892,7 +23955,6 @@ function kickOffGameAssetPreload() {
   try {
     warmupBinaryGameAssetCache(collectResolvableBinaryGameAssetUrls());
   } catch (eBin) {}
-  try { void startGameGltfPreloadWithWorker(); } catch (eG) {}
 }
 
 function ensureSfxBuffer(key, url) {
@@ -36637,10 +36699,10 @@ function menuRender() {
   document.body.classList.add('game-boot-active');
   try { kickOffGameAssetPreload(); } catch (e) {}
   void (async () => {
-    if (sub) sub.textContent = 'Fetching 3D models (Web Worker)…';
+    if (sub) sub.textContent = 'Downloading 3D assets…';
     try {
       await startGameGltfPreloadWithWorker((done, tot) => {
-        if (sub && tot > 0) sub.textContent = 'Parsing GLB ' + done + ' / ' + tot + '…';
+        if (sub && tot > 0) sub.textContent = 'Loading 3D assets ' + done + ' / ' + tot + '…';
       });
     } catch (e0) {
       try { console.warn('gameGltfPreload', e0); } catch (e1) {}
@@ -36739,6 +36801,8 @@ function drawMenuBg() {
 
   requestAnimationFrame(drawMenuBg);
 }
+
+drawMenuBg();
 
 document.getElementById('start-btn').onclick = () => {
   if (voyageSaveExistsInStorage()) {
