@@ -97,10 +97,48 @@ function windFieldBase(noise, x, z) {
   return { angle, speed: Math.max(0.35, Math.min(14, speed)) };
 }
 
-function applyWindEffectWithNavigation(baseWindEffect, windDot) {
-  const navM = 1;
-  let w = 1 + (baseWindEffect - 1) * navM;
-  w += (Math.max(0, windDot) * 0.03 + Math.max(0, -windDot) * 0.018) * (navM - 1);
+/** Mirrors client `clampSkillLv` / crew station multipliers (`index.html`). */
+function clampSkillLvServer(n) {
+  return Math.max(1, Math.min(5, Math.floor(Number(n) || 1)));
+}
+
+function findCrewByRole(crewData, role) {
+  if (!Array.isArray(crewData)) return null;
+  const want = String(role || '').toLowerCase();
+  for (let i = 0; i < crewData.length; i++) {
+    const c = crewData[i];
+    if (c && String(c.role || '').toLowerCase() === want) return c;
+  }
+  return null;
+}
+
+/** Same formula as client `crewStationSkillMult` (navigator / sailor sails / captain command). */
+function crewStationSkillMultServer(crewData, morale, stationRole, skillKey) {
+  const c = findCrewByRole(crewData, stationRole);
+  if (!c || !c.skills || typeof c.skills !== 'object') return 1;
+  const lv = clampSkillLvServer(c.skills[skillKey]);
+  const m = morale != null && Number.isFinite(Number(morale)) ? Number(morale) : 100;
+  const t = Math.max(0, Math.min(100, m)) / 100;
+  const morEff = 0.55 + t * 0.45;
+  return 1 + 0.05 * lv * morEff;
+}
+
+function getNavigationStationMultServer(p) {
+  return crewStationSkillMultServer(p && p.crewData, p && p.morale, 'navigator', 'navigation');
+}
+
+function getSailingStationMultServer(p) {
+  return crewStationSkillMultServer(p && p.crewData, p && p.morale, 'sailor', 'sailing');
+}
+
+function getCommandAuraMultServer(p) {
+  return crewStationSkillMultServer(p && p.crewData, p && p.morale, 'captain', 'commanding');
+}
+
+function applyWindEffectWithNavigation(baseWindEffect, windDot, navM) {
+  const nav = navM != null && Number.isFinite(Number(navM)) ? Number(navM) : 1;
+  let w = 1 + (baseWindEffect - 1) * nav;
+  w += (Math.max(0, windDot) * 0.03 + Math.max(0, -windDot) * 0.018) * (nav - 1);
   return Math.max(0.2, w);
 }
 
@@ -116,12 +154,15 @@ function effectiveSailingSpeed(p, noise) {
   const w = windFieldBase(noise, p.x, p.z);
   const rot = p.rotation != null && Number.isFinite(Number(p.rotation)) ? Number(p.rotation) : 0;
   const windDot = Math.cos(w.angle - rot);
-  const windEffect = Math.max(0.25, windDot * 0.35 + 0.65);
-  const windTerm = applyWindEffectWithNavigation(windEffect, windDot);
+  const baseWind = Math.max(0.25, windDot * 0.35 + 0.65);
+  const navM = getNavigationStationMultServer(p);
+  const windTerm = applyWindEffectWithNavigation(baseWind, windDot, navM);
   const rigPct = (p.riggingHealth != null ? Number(p.riggingHealth) : 100) / 100;
   const rigF = Math.max(0.26, Math.pow(Math.max(0.05, rigPct), 1.35));
   const morF = moraleEfficiency(p.morale);
-  return spd * windTerm * rigF * morF;
+  const sailM = getSailingStationMultServer(p);
+  const cmdM = getCommandAuraMultServer(p);
+  return spd * windTerm * rigF * morF * sailM * cmdM;
 }
 
 function createClampWorld(edgeClamp) {
@@ -193,7 +234,8 @@ function createGameSimulation(opts) {
       return;
     }
     if (d < 0.12) return;
-    const maxPull = Math.min(28, 3.8 + d * 0.2);
+    /* Stronger catch-up when underway — previous cap left steady error vs client-driven hull → stair-step in AOI. */
+    const maxPull = Math.min(44, 6.2 + d * 0.26);
     const k = Math.min(1, maxPull / d);
     p.x += dx * k;
     p.z += dz * k;
