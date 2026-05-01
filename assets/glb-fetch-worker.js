@@ -1,6 +1,6 @@
 /**
- * Parallel byte fetch for `.glb` bootstrap — mirrors window `fetch` init (omit credentials).
- * `fetchInit.cache` aligns with scenic loader (`default` vs `reload` retries).
+ * Legacy dedicated worker — GLB scenic bootstrap uses main-thread concurrent `fetch()` instead
+ * (see `fetchGlbArrayBuffersConcurrent` in index.html). File kept so existing URLs still 404-clean.
  */
 self.onmessage = async (evt) => {
   const msg = evt.data || {};
@@ -10,13 +10,17 @@ self.onmessage = async (evt) => {
     self.postMessage({ id, ok: false, err: 'missing url' });
     return;
   }
-  const fi = msg.fetchInit && typeof msg.fetchInit === 'object' ? msg.fetchInit : {};
   try {
+    /**
+     * Omit credentials: DedicatedWorkers from blob: URLs have an opaque origin; with
+     * `Access-Control-Allow-Origin: *` the server rejects credentialed CORS reads.
+     * Same-origin file/http pages still succeed with cors+omit for anonymous assets.
+     */
     const res = await fetch(String(url), {
-      cache: fi.cache !== undefined ? fi.cache : 'default',
-      mode: fi.mode !== undefined ? fi.mode : 'cors',
-      credentials: fi.credentials !== undefined ? fi.credentials : 'omit',
-      redirect: fi.redirect !== undefined ? fi.redirect : 'follow',
+      cache: 'force-cache',
+      mode: 'cors',
+      credentials: 'omit',
+      redirect: 'follow',
       referrerPolicy: 'same-origin'
     });
     if (!res.ok) {
