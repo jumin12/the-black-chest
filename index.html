@@ -19744,6 +19744,7 @@ function removeRemotePeer(lid) {
       op._snapInterpMsBase = null;
       op._peerHullPredX = undefined;
       op._peerHullPredZ = undefined;
+      op._peerHullRySm = undefined;
     }
   } catch (e) {}
   G.otherPlayers.delete(lidN);
@@ -30839,6 +30840,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   if (p.docked) {
     p._peerHullPredX = undefined;
     p._peerHullPredZ = undefined;
+    p._peerHullRySm = undefined;
     ns.x = p.x;
     ns.z = p.z;
     ns.ry = authR;
@@ -30852,7 +30854,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     catmullRom: true
   });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    /* Same physics idea as net NPCs: integrate smoothed server finite-diff velocity + hull speed, pull toward delayed spline. */
+    /* Same physics idea as net NPCs: integrate smoothed server finite-diff velocity + hull speed, pull toward delayed spline.
+     * Catmull xy vs linear yaw on samples skews bow vs track — blend display yaw toward velocity (atan2) + soft auth pull. */
     const pvk = 1 - Math.exp(-32 * dt);
     if (Number.isFinite(p._netVelTargetX) && Number.isFinite(p._netVelTargetZ)) {
       p._netVelSmX = Number.isFinite(p._netVelSmX)
@@ -30862,13 +30865,26 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
         ? p._netVelSmZ + (p._netVelTargetZ - p._netVelSmZ) * pvk
         : p._netVelTargetZ;
     }
-    if (
-      !Number.isFinite(p._peerHullPredX) ||
-      !Number.isFinite(p._peerHullPredZ) ||
-      Math.hypot(ip.x - p._peerHullPredX, ip.z - p._peerHullPredZ) > 155
-    ) {
+    const predPX = p._peerHullPredX;
+    const predPZ = p._peerHullPredZ;
+    const gapFromSpline =
+      Number.isFinite(predPX) && Number.isFinite(predPZ) ? Math.hypot(ip.x - predPX, ip.z - predPZ) : 1e9;
+    if (!Number.isFinite(predPX) || !Number.isFinite(predPZ)) {
       p._peerHullPredX = ip.x;
       p._peerHullPredZ = ip.z;
+    } else if (gapFromSpline > 340) {
+      p._peerHullPredX = ip.x;
+      p._peerHullPredZ = ip.z;
+    } else if (gapFromSpline > 72) {
+      const pk = Math.min(1, (gapFromSpline - 72) / 220);
+      let tugNear = 1;
+      if (G.player && Number.isFinite(Number(G.player.x)) && Number.isFinite(Number(G.player.z))) {
+        const dcCam = Math.hypot(ip.x - Number(G.player.x), ip.z - Number(G.player.z));
+        if (dcCam < 300) tugNear = 0.58 + (dcCam / 300) * 0.42;
+      }
+      const tug = (1 - Math.exp(-10 * dt)) * (0.14 + pk * 0.62) * tugNear;
+      p._peerHullPredX += (ip.x - p._peerHullPredX) * tug;
+      p._peerHullPredZ += (ip.z - p._peerHullPredZ) * tug;
     }
     const hvsm = Number.isFinite(p._netVelSmX) && Number.isFinite(p._netVelSmZ);
     let vx = hvsm ? p._netVelSmX : 0;
@@ -30886,17 +30902,41 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     p._peerHullPredZ += vz * dt;
     const ecx = ip.x - p._peerHullPredX;
     const ecz = ip.z - p._peerHullPredZ;
-    const corr = 1 - Math.exp(-9.5 * dt);
-    p._peerHullPredX += ecx * corr * 0.44;
-    p._peerHullPredZ += ecz * corr * 0.44;
+    const corr = 1 - Math.exp(-8.2 * dt);
+    let corrGain = 0.34;
+    if (G.player && Number.isFinite(Number(G.player.x)) && Number.isFinite(Number(G.player.z))) {
+      const dcCam2 = Math.hypot(p._peerHullPredX - Number(G.player.x), p._peerHullPredZ - Number(G.player.z));
+      if (dcCam2 < 300) corrGain *= 0.68 + (dcCam2 / 300) * 0.32;
+    }
+    p._peerHullPredX += ecx * corr * corrGain;
+    p._peerHullPredZ += ecz * corr * corrGain;
+
+    const vmStep = Math.hypot(vx, vz);
+    const ryVel = vmStep > 0.055 ? Math.atan2(vx, vz) : ip.ry;
+    const wVel = Math.min(1, vmStep / Math.max(spAbs * 0.5 + 2.4, 3.1));
+    let ryDes = interpYawShortest(ip.ry, ryVel, wVel * 0.92);
+    const authPull = Math.min(1, 11 * dt) * (vmStep < 0.42 ? 0.58 : 0.4);
+    ryDes = interpYawShortest(ryDes, authR, authPull);
+    if (!Number.isFinite(p._peerHullRySm)) {
+      p._peerHullRySm = ryDes;
+    } else {
+      let dr = ryDes - p._peerHullRySm;
+      while (dr > Math.PI) dr -= Math.PI * 2;
+      while (dr < -Math.PI) dr += Math.PI * 2;
+      p._peerHullRySm += dr * (1 - Math.exp(-17 * dt));
+      while (p._peerHullRySm > Math.PI) p._peerHullRySm -= Math.PI * 2;
+      while (p._peerHullRySm < -Math.PI) p._peerHullRySm += Math.PI * 2;
+    }
+
     ns.x = p._peerHullPredX;
     ns.z = p._peerHullPredZ;
-    ns.ry = ip.ry;
-    if (sg.userData) sg.userData.visYaw = ip.ry;
+    ns.ry = p._peerHullRySm;
+    if (sg.userData) sg.userData.visYaw = p._peerHullRySm;
     return ns;
   }
   p._peerHullPredX = undefined;
   p._peerHullPredZ = undefined;
+  p._peerHullRySm = undefined;
   smoothRemotePlayerNetVelocity(p, dt);
   let ax = Number(p.x), az = Number(p.z);
   if (!Number.isFinite(ax) || !Number.isFinite(az)) {
