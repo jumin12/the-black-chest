@@ -3018,7 +3018,6 @@ body.game-help-mobile-minimal #game-help-panel{
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js';
-import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js';
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const _deviceMem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : null;
@@ -23861,17 +23860,17 @@ function collectResolvableBinaryGameAssetUrls() {
 
 function warmupBinaryGameAssetCache(urls) {
   if (!urls || !urls.length) return;
-  const chunk = 6;
-  let i = 0;
-  function pump() {
-    const slice = urls.slice(i, i + chunk);
-    i += chunk;
-    for (let j = 0; j < slice.length; j++) {
-      fetch(slice[j], { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' }).catch(() => {});
+  const conc = Math.min(40, Math.max(14, ((_deviceCores || 8) * 3) >>> 0));
+  void (async () => {
+    for (let i = 0; i < urls.length; i += conc) {
+      const batch = urls.slice(i, Math.min(urls.length, i + conc));
+      await Promise.all(
+        batch.map(href =>
+          fetch(href, { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' }).catch(() => {})
+        )
+      );
     }
-    if (i < urls.length) queueMicrotask(pump);
-  }
-  pump();
+  })();
 }
 
 let _sceneGlbBootstrapPromise = null;
@@ -23881,7 +23880,7 @@ async function fetchGlbArrayBuffersWithWorkerPool(rels, maxWorkers) {
   const out = Object.create(null);
   if (!rels || !rels.length) return out;
   const tasks = rels.map(rel => ({ rel, url: resolveGameAssetUrl(rel) }));
-  const nW = Math.max(1, Math.min(maxWorkers || 6, tasks.length, 8));
+  const nW = Math.max(1, Math.min(maxWorkers || 8, tasks.length, 16));
   const codeHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
   const workers = [];
   const bootOne = () => new Worker(codeHref);
@@ -23952,40 +23951,63 @@ async function fetchGlbArrayBuffersWithWorkerPool(rels, maxWorkers) {
 
 function ensureSceneGlbsBootstrapped() {
   if (_sceneGlbBootstrapPromise) return _sceneGlbBootstrapPromise;
-  _sceneGlbBootstrapPromise = (async () => {
+  const run = async () => {
     const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
-    const maxW = Math.min(8, Math.max(4, _deviceCores || 6));
+    const maxW = Math.min(16, Math.max(6, _deviceCores || 8));
     const buffers = await fetchGlbArrayBuffersWithWorkerPool(rels, maxW);
     for (let i = 0; i < rels.length; i++) {
       const rel = rels[i];
       const ab = buffers[rel];
       if (!ab) throw new Error('Missing buffer ' + rel);
       await new Promise((resolve, reject) => {
+        let settled = false;
+        const PARSE_MS = 90000;
+        const parseTo = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          reject(new Error('GLTF parse timeout: ' + rel));
+        }, PARSE_MS);
         try {
           _gltfSceneBootstrapLoader.parse(
             ab,
             '',
             (gltf) => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(parseTo);
               if (gltf && gltf.scene) {
                 _gameGlbParsedSceneTemplates[rel] = gltf.scene;
+                resolve();
               } else {
                 reject(new Error('Empty glTF ' + rel));
-                return;
               }
-              resolve();
             },
-            (err) => reject(err || new Error('parse ' + rel))
+            (err) => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(parseTo);
+              reject(err || new Error('parse ' + rel));
+            }
           );
         } catch (pe) {
-          reject(pe);
+          if (!settled) {
+            settled = true;
+            window.clearTimeout(parseTo);
+            reject(pe);
+          }
         }
       });
     }
-  })();
+  };
+  _sceneGlbBootstrapPromise = run().catch((err) => {
+    _sceneGlbBootstrapPromise = null;
+    throw err;
+  });
   return _sceneGlbBootstrapPromise;
 }
 
-let _gameImagePreloadWorker = null;
+/** Image preload workers — many run in parallel so the browser cache fills fast. */
+let _gameImagePreloadWorkers = [];
 let _gameAssetPreloadStarted = false;
 
 function preloadToolbarIconStripsOnMainThread() {
@@ -24049,28 +24071,51 @@ function kickOffGameAssetPreload() {
   preloadBannerEmblemPngsOnMainThread();
   preloadTradeAndCargoItemPngsOnMainThread();
   const wHref = resolveGameAssetUrl('image-preload-worker.js');
-  try {
-    _gameImagePreloadWorker = new Worker(wHref);
-    _gameImagePreloadWorker.postMessage({ urls });
-  } catch (e) {
-    try {
-      void fetch(wHref)
-        .then(r => r.text())
-        .then(code => {
-          const blob = new Blob([code], { type: 'application/javascript' });
-          _gameImagePreloadWorker = new Worker(URL.createObjectURL(blob));
-          _gameImagePreloadWorker.postMessage({ urls });
-        })
-        .catch(() => {
-          for (let i = 0; i < urls.length; i++) {
-            fetch(urls[i], { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' }).catch(() => {});
-          }
-        });
-    } catch (e2) {
-      for (let i = 0; i < urls.length; i++) {
-        fetch(urls[i], { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' }).catch(() => {});
+  const nImgW = Math.min(20, Math.max(10, Math.ceil(((_deviceCores || 8) * 2))));
+  const chunkSzW = Math.max(1, Math.ceil(urls.length / nImgW));
+  const spawnWorkers = (makeWorker) => {
+    _gameImagePreloadWorkers.length = 0;
+    for (let wi = 0; wi < nImgW && wi * chunkSzW < urls.length; wi++) {
+      const slice = urls.slice(wi * chunkSzW, wi * chunkSzW + chunkSzW);
+      if (!slice.length) continue;
+      try {
+        const w = makeWorker();
+        w.postMessage({ urls: slice });
+        _gameImagePreloadWorkers.push(w);
+      } catch (_) {
+        for (let j = 0; j < _gameImagePreloadWorkers.length; j++) {
+          try { _gameImagePreloadWorkers[j].terminate(); } catch (eT) {}
+        }
+        _gameImagePreloadWorkers.length = 0;
+        return false;
       }
     }
+    return _gameImagePreloadWorkers.length > 0;
+  };
+  const fallbackFetchAll = () => {
+    for (let u = 0; u < urls.length; u++) {
+      fetch(urls[u], { cache: 'force-cache', mode: 'cors', credentials: 'same-origin' }).catch(() => {});
+    }
+  };
+  let blobUrlHold = null;
+  const spawnFromBlobCode = (code) => {
+    blobUrlHold = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+    const ok = spawnWorkers(() => new Worker(blobUrlHold));
+    setTimeout(() => {
+      try {
+        if (blobUrlHold) URL.revokeObjectURL(blobUrlHold);
+        blobUrlHold = null;
+      } catch (_) {}
+    }, 120000);
+    if (!ok) fallbackFetchAll();
+  };
+  try {
+    if (!spawnWorkers(() => new Worker(wHref))) throw new Error('image workers');
+  } catch (_) {
+    void fetch(wHref)
+      .then(r => r.text())
+      .then(spawnFromBlobCode)
+      .catch(fallbackFetchAll);
   }
   try {
     warmupBinaryGameAssetCache(collectResolvableBinaryGameAssetUrls());
@@ -36838,23 +36883,41 @@ function menuRender() {
   }
 
   void (async () => {
+    let bootDone = false;
+    const BOOT_ABORT_MS = 85000;
+    const GLB_RACE_MS = 70000;
+    const finishBoot = (msg) => {
+      if (bootDone) return;
+      bootDone = true;
+      try { clearTimeout(watchdog); } catch (wd) {}
+      if (sub) sub.textContent = msg ? String(msg) : 'Ready.';
+      setTimeout(() => {
+        if (el) {
+          el.style.display = 'none';
+          el.setAttribute('aria-hidden', 'true');
+        }
+        document.body.classList.remove('game-boot-active');
+      }, 140);
+    };
+    const watchdog = setTimeout(() => {
+      try { console.warn('Game boot watchdog: unlocking menu (GLB preload may continue in background).'); } catch (w) {}
+      finishBoot('Ready.');
+    }, BOOT_ABORT_MS);
+
     await waitRaf(5);
     if (sub) sub.textContent = 'Fetching 3D landmarks, trees, and wildlife in parallel…';
     try {
-      await ensureSceneGlbsBootstrapped();
+      await Promise.race([
+        ensureSceneGlbsBootstrapped(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('glb-deadline')), GLB_RACE_MS))
+      ]);
+      finishBoot('Ready.');
     } catch (e) {
       try { console.warn('Scene GLB bootstrap', e); } catch (e2) {}
-      if (sub) sub.textContent = 'Continuing with reduced 3D detail…';
-      await new Promise(r => setTimeout(r, 520));
+      if (sub) sub.textContent = 'Continuing — some 3D props may load lazily…';
+      await new Promise(r => setTimeout(r, 420));
+      finishBoot('Ready.');
     }
-    if (sub) sub.textContent = 'Ready.';
-    setTimeout(() => {
-      if (el) {
-        el.style.display = 'none';
-        el.setAttribute('aria-hidden', 'true');
-      }
-      document.body.classList.remove('game-boot-active');
-    }, 140);
   })();
 })();
 menuRender();
