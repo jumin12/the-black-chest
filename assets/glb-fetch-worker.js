@@ -1,22 +1,24 @@
 /**
- * Fetches one GLB URL per message; returns ArrayBuffer with transfer.
- * Used in a small pool on the main thread for parallel cold-cache loading.
+ * Fetches `.glb` binaries in parallel threads; transfers ArrayBuffers to the main thread.
+ * Used alongside GLTFLoader.parse() on main (Three.js parsers are not threaded here).
  */
-self.onmessage = (e) => {
-  const d = e.data || {};
-  const id = d.id;
-  const url = d.url;
-  if (!url) {
-    self.postMessage({ id, ok: false, err: 'no url' });
+self.onmessage = async (evt) => {
+  const msg = evt.data || {};
+  const id = msg.id;
+  const url = msg.url;
+  if (url == null) {
+    self.postMessage({ id, ok: false, err: 'missing url' });
     return;
   }
-  fetch(String(url), { credentials: 'same-origin', cache: 'force-cache', mode: 'cors' })
-    .then((r) =>
-      r.arrayBuffer().then((ab) => {
-        self.postMessage({ id, ok: r.ok, status: r.status, ab }, ab.byteLength ? [ab] : []);
-      })
-    )
-    .catch((err) => {
-      self.postMessage({ id, ok: false, err: String(err && err.message != null ? err.message : err) });
-    });
+  try {
+    const res = await fetch(String(url), { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' });
+    if (!res.ok) {
+      self.postMessage({ id, ok: false, err: String(res.status), statusText: String(res.statusText || '') });
+      return;
+    }
+    const buf = await res.arrayBuffer();
+    self.postMessage({ id, ok: true, ab: buf }, [buf]);
+  } catch (e) {
+    self.postMessage({ id, ok: false, err: (e && e.message) ? String(e.message) : String(e) });
+  }
 };

@@ -3018,7 +3018,7 @@ body.game-help-mobile-minimal #game-help-panel{
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/DRACOLoader.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js';
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const _deviceMem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : null;
@@ -7609,14 +7609,12 @@ function applyCustomMapPayload(data, statusEl) {
   G.townFlagMeshes = [];
   destroyAmbientWildlife();
   ensurePlayerInOpenOcean();
-  afterWorldGlbModelsHydrated(() => {
-    updateChunks();
-    spawnNPCs();
-    nudgePlayerSpawnClearOfShips();
-    scatterWindStreaksNearPlayer();
-    seedDecorativeWildlifeNearPlayer();
-    flushGameViewRender();
-  });
+  updateChunks();
+  spawnNPCs();
+  nudgePlayerSpawnClearOfShips();
+  scatterWindStreaksNearPlayer();
+  seedDecorativeWildlifeNearPlayer();
+  flushGameViewRender();
   if (statusEl) statusEl.textContent = 'Custom map active — terrain & ports from editor.';
   return true;
 }
@@ -9525,24 +9523,87 @@ function decoRand(rng) {
   return typeof rng === 'function' ? rng : Math.random;
 }
 
+/** Parsed scenic GLB roots (clone templates). Assigned in `bootstrapSceneGlbsFromBootList`. */
+const _gameGlbParsedSceneTemplates = Object.create(null);
+const _WILDLIFE_FISH_GLB_RELS = [
+  'assets/3d models/wildlife/fish1.glb',
+  'assets/3d models/wildlife/fish2.glb',
+  'assets/3d models/wildlife/fish3.glb',
+  'assets/3d models/wildlife/fish4.glb',
+  'assets/3d models/wildlife/fish5.glb',
+  'assets/3d models/wildlife/fish6.glb',
+  'assets/3d models/wildlife/fish7.glb'
+];
+function cloneParsedGlbTree(relPath) {
+  const src = relPath ? _gameGlbParsedSceneTemplates[relPath] : null;
+  if (!src) return null;
+  try {
+    return src.clone(true);
+  } catch (e0) {
+    try { console.warn('cloneParsedGlbTree', relPath, e0); } catch (e1) {}
+    return null;
+  }
+}
+function applyIslandGlbPresentation(root) {
+  if (!root) return;
+  root.traverse(obj => {
+    if (obj.isMesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = obj.receiveShadow ?? true;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (let mi = 0; mi < mats.length; mi++) {
+        const m = mats[mi];
+        if (m && m.envMapIntensity !== undefined) m.envMapIntensity = Math.min(1, m.envMapIntensity);
+      }
+    }
+  });
+}
+/**
+ * Fits `glbClone` uniformly into a tgt width/depth/height box, bottoms at local y=0, centers on xz origin,
+ * then parents under a yawed pivot at world (bx, groundY, bz).
+ */
+function plantGlbFootprintPivot(bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, glbClone, padFrac) {
+  if (!glbClone) return null;
+  const inner = glbClone;
+  applyIslandGlbPresentation(inner);
+  inner.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(inner);
+  const dx = Math.max(box.max.x - box.min.x, 1e-3);
+  const dy = Math.max(box.max.y - box.min.y, 1e-3);
+  const dz = Math.max(box.max.z - box.min.z, 1e-3);
+  const pad = padFrac != null ? padFrac : 0.96;
+  const u = Math.min(tgtW / dx, tgtH / dy, tgtD / dz) * pad;
+  inner.scale.multiplyScalar(u);
+  inner.updateMatrixWorld(true);
+  const b2 = new THREE.Box3().setFromObject(inner);
+  const cx = (b2.min.x + b2.max.x) * 0.5;
+  const cz = (b2.min.z + b2.max.z) * 0.5;
+  inner.position.x -= cx;
+  inner.position.z -= cz;
+  inner.position.y -= b2.min.y;
+  const pivot = new THREE.Group();
+  pivot.add(inner);
+  pivot.rotation.y = yawRad || 0;
+  pivot.position.set(bx, groundY, bz);
+  return pivot;
+}
+
+function plantGlbFootprintPivotForRel(relPath, bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, padFrac) {
+  const c = cloneParsedGlbTree(relPath);
+  if (!c) return null;
+  const p = plantGlbFootprintPivot(bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, c, padFrac);
+  if (p) p.userData.glbSceneRel = relPath;
+  return p;
+}
+
 function createPalmTree(x, y, z, rng, yawOverride) {
   const r = decoRand(rng);
-  const rel = WORLD_GLB.trees[Math.floor(r() * WORLD_GLB.trees.length)];
-  const tpl = getWorldGlbTemplate(rel);
-  if (tpl) {
-    const g = cloneWorldGlbForInstance(tpl);
-    const box = new THREE.Box3().setFromObject(g);
-    const h = Math.max(1e-3, box.max.y - box.min.y);
-    const targetH = 4.35 + r() * 2.65;
-    g.scale.setScalar(targetH / h);
-    const b2 = new THREE.Box3().setFromObject(g);
-    const yaw = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
-      ? Number(yawOverride)
-      : (r() * Math.PI * 2);
-    g.position.set(x, y - b2.min.y, z);
-    g.rotation.y = yaw;
-    return g;
-  }
+  const rel = r() < 0.5 ? 'assets/3d models/decorations/tree1.glb' : 'assets/3d models/decorations/tree2.glb';
+  let yaw = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
+    ? Number(yawOverride)
+    : (r() * Math.PI * 2);
+  const pt = plantGlbFootprintPivotForRel(rel, x, y, z, yaw, 5.2, 13, 5.2, 0.9);
+  if (pt) return pt;
   const g = new THREE.Group();
   const height = 4.35 + r() * 2.65;
   const pts = [];
@@ -9624,6 +9685,10 @@ function createPalmTree(x, y, z, rng, yawOverride) {
 
 function createRock(x, y, z, s, rng) {
   const r = decoRand(rng);
+  const rel = r() < 0.52 ? 'assets/3d models/decorations/jaggedrocks1.glb' : 'assets/3d models/decorations/jaggedrocks2.glb';
+  const span = (s || 0.85) * 2.95;
+  const pt = plantGlbFootprintPivotForRel(rel, x, y, z, r() * Math.PI * 2, span * 3.15, span * 2.4, span * 3.15, 0.92);
+  if (pt) return pt;
   const geo = new THREE.DodecahedronGeometry(s, 1);
   const p = geo.attributes.position;
   for (let i = 0; i < p.count; i++) { p.setX(i, p.getX(i) + (r() - 0.5) * s * 0.3); p.setY(i, p.getY(i) * (0.5 + r() * 0.5)); p.setZ(i, p.getZ(i) + (r() - 0.5) * s * 0.3); }
@@ -9633,19 +9698,11 @@ function createRock(x, y, z, s, rng) {
 
 function createBush(x, y, z, s, rng) {
   const r = decoRand(rng);
-  const rel = WORLD_GLB.bushes[Math.floor(r() * WORLD_GLB.bushes.length)];
-  const tpl = getWorldGlbTemplate(rel);
-  if (tpl) {
-    const g = cloneWorldGlbForInstance(tpl);
-    const box = new THREE.Box3().setFromObject(g);
-    const h = Math.max(1e-3, box.max.y - box.min.y);
-    const targetH = s * 2.1;
-    g.scale.setScalar(targetH / h);
-    const b2 = new THREE.Box3().setFromObject(g);
-    g.position.set(x, y - b2.min.y, z);
-    g.rotation.y = r() * Math.PI * 2;
-    return g;
-  }
+  const rels = ['assets/3d models/decorations/bush1.glb', 'assets/3d models/decorations/bush2.glb', 'assets/3d models/decorations/bush3.glb'];
+  const rel = rels[(Math.abs(Math.floor(r() * 77)) % 3)];
+  const span = Math.max(0.7, Math.min(2.2, (s || 0.32) * 3.45));
+  const pt = plantGlbFootprintPivotForRel(rel, x, y, z, r() * Math.PI * 2, span * 2.8, span * 1.8, span * 2.8, 0.93);
+  if (pt) return pt;
   const g = new THREE.Group();
   const mat = new THREE.MeshLambertMaterial({ color: [0x2d5016, 0x3a6b28, 0x25603a, 0x3d6b2a][Math.floor(r() * 4)] });
   for (let i = 0; i < 4; i++) {
@@ -9660,6 +9717,18 @@ function createBush(x, y, z, s, rng) {
 
 function createBarrel(x, y, z, rng) {
   const r = decoRand(rng);
+  const pt = plantGlbFootprintPivotForRel(
+    'assets/3d models/decorations/barrel.glb',
+    x,
+    y,
+    z,
+    r() * Math.PI * 2,
+    2.85,
+    2.95,
+    2.85,
+    0.94
+  );
+  if (pt) return pt;
   const g = new THREE.Group();
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.85, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
   body.position.y = 0.42; body.castShadow = true; g.add(body);
@@ -9784,34 +9853,18 @@ function addTownBuildingFootprintProcedural(group, bx, bz, baseY, bW, bD, bH, wa
   }
 }
 
-function addTownBuildingFootprint(group, type, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle) {
-  const r = decoRand(rng);
-  let rel = null;
-  if (type === 'church') rel = WORLD_GLB.church;
-  else if (type === 'tavern') rel = WORLD_GLB.tavern;
-  else if (type === 'governor') rel = WORLD_GLB.governor;
-  else if (type === 'house') rel = r() < 0.5 ? WORLD_GLB.house1 : WORLD_GLB.house2;
-  const tpl = rel ? getWorldGlbTemplate(rel) : null;
-  if (!tpl) {
-    addTownBuildingFootprintProcedural(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
-    return false;
+function addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rng, wallHex, roofStyle) {
+  const rel =
+    type === 'church' ? 'assets/3d models/buildings/church.glb'
+      : type === 'tavern' ? 'assets/3d models/buildings/tavern.glb'
+        : type === 'governor' ? 'assets/3d models/buildings/govmansion.glb'
+          : 'assets/3d models/buildings/house' + (1 + Math.floor(decoRand(rng)() * 3)) + '.glb';
+  const pt = plantGlbFootprintPivotForRel(rel, bx, baseY, bz, 0, bW * 1.05, bH * 1.18, bD * 1.06, 0.93);
+  if (pt) {
+    group.add(pt);
+    return;
   }
-  const g = cloneWorldGlbForInstance(tpl);
-  const box = new THREE.Box3().setFromObject(g);
-  const fw = Math.max(1e-3, box.max.x - box.min.x);
-  const fd = Math.max(1e-3, box.max.z - box.min.z);
-  const fh = Math.max(1e-3, box.max.y - box.min.y);
-  const sx = bW / fw;
-  const sz = bD / fd;
-  const sy = bH / fh;
-  const sc = Math.min(sx, sz, sy) * 0.94;
-  g.scale.setScalar(sc);
-  const b2 = new THREE.Box3().setFromObject(g);
-  const ox = (b2.min.x + b2.max.x) * 0.5;
-  const oz = (b2.min.z + b2.max.z) * 0.5;
-  g.position.set(bx - ox, baseY - b2.min.y, bz - oz);
-  group.add(g);
-  return true;
+  addTownBuildingFootprintProcedural(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
 }
 
 function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints) {
@@ -9856,32 +9909,7 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
   if (!landOk(bx - cornerE, bz + cornerE)) return false;
   if (!landOk(bx + cornerE, bz + cornerE)) return false;
   const baseY = SEA_LEVEL + gyMin + 0.04;
-  const usedGlb = addTownBuildingFootprint(group, type, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
-  if (type === 'church' && !usedGlb) {
-    const steepleX = bx + bW * 0.15;
-    const steepleZ = bz - bD * 0.38;
-    const stBase = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.48, 0.58, bH * 0.42, 8),
-      new THREE.MeshLambertMaterial({ color: 0xc8c4bc })
-    );
-    stBase.position.set(steepleX, baseY + bH + bH * 0.2, steepleZ);
-    stBase.castShadow = true;
-    group.add(stBase);
-    const spire = new THREE.Mesh(
-      new THREE.ConeGeometry(0.52, 1.55, 8),
-      new THREE.MeshLambertMaterial({ color: 0x5a5852 })
-    );
-    spire.position.set(steepleX, baseY + bH + bH * 0.42 + 0.78, steepleZ);
-    spire.castShadow = true;
-    group.add(spire);
-    const cross = new THREE.Mesh(
-      new THREE.BoxGeometry(0.12, 0.55, 0.12),
-      new THREE.MeshLambertMaterial({ color: 0xd8d0c8 })
-    );
-    cross.position.set(steepleX, baseY + bH + bH * 0.42 + 1.55 + 0.28, steepleZ);
-    cross.castShadow = true;
-    group.add(cross);
-  }
+  addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rng, wallHex, roofStyle);
   if (footprints) footprints.push({ x: bx, z: bz, r: footprintR });
   return true;
 }
@@ -10074,47 +10102,82 @@ function generateCustomMapChunk(cx, cz) {
         : (e.color != null ? Number(e.color) : pal[Math.floor(er0() * 5)]);
       const rot = e.rot != null ? Number(e.rot) : 0;
       const baseOff = 0.08;
-      const pivot = new THREE.Group();
-      pivot.position.set(e.x, 0, e.z);
-      pivot.rotation.y = rot;
-      group.add(pivot);
-      addTownBuildingFootprint(pivot, 'tavern', 0, 0, surf + baseOff, bW, bW, bH, wallHex, er, 'hip');
+      const baseY = surf + baseOff;
+      const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 3)) + '.glb';
+      const planted = plantGlbFootprintPivotForRel(rel, e.x, baseY, e.z, rot, bW * 1.12, bH * 1.25, bW * 1.12, 0.92);
+      if (planted) {
+        group.add(planted);
+      } else {
+        const pivot = new THREE.Group();
+        pivot.position.set(e.x, 0, e.z);
+        pivot.rotation.y = rot;
+        const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: wallHex }));
+        bldg.position.set(0, baseY + bH / 2, 0);
+        bldg.castShadow = true;
+        const foundation = new THREE.Mesh(new THREE.BoxGeometry(bW + 0.5, 0.3, bW + 0.5), new THREE.MeshLambertMaterial({ color: 0x5a4a38 }));
+        foundation.position.set(0, baseY - 0.12, 0);
+        foundation.castShadow = true;
+        const roof = new THREE.Mesh(new THREE.ConeGeometry(bW * 0.8, 1.5, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
+        roof.position.set(0, baseY + bH + 0.7, 0);
+        roof.rotation.y = Math.PI / 4;
+        roof.castShadow = true;
+        pivot.add(bldg, foundation, roof);
+        group.add(pivot);
+      }
     } else if (e.type === 'house') {
       const w = e.houseW != null ? Number(e.houseW) : (2.7 + er0() * 0.35);
       const d = e.houseD != null ? Number(e.houseD) : (2.5 + er0() * 0.3);
       const wallH = e.houseWallH != null ? Number(e.houseWallH) : (2.05 + er0() * 0.35);
-      const rot = e.rot != null ? Number(e.rot) : 0;
-      const pivot = new THREE.Group();
-      pivot.position.set(e.x, 0, e.z);
-      pivot.rotation.y = rot;
-      group.add(pivot);
-      addTownBuildingFootprint(pivot, 'house', 0, 0, surf + 0.06, w, d, wallH, 0xe2d2b8, er, 'hip');
+      const yaw = e.rot != null ? Number(e.rot) : 0;
+      const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 3)) + '.glb';
+      const planted = plantGlbFootprintPivotForRel(rel, e.x, surf + 0.06, e.z, yaw, Math.max(w, d) * 1.1, wallH + 2.35, Math.max(w, d) * 1.08, 0.92);
+      if (planted) {
+        group.add(planted);
+      } else {
+        const hg = new THREE.Group();
+        hg.position.set(e.x, surf + 0.06, e.z);
+        hg.rotation.y = yaw;
+        const walls = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), new THREE.MeshLambertMaterial({ color: 0xe2d2b8 }));
+        walls.position.y = wallH / 2;
+        hg.add(walls);
+        const hRoof = new THREE.Mesh(
+          new THREE.ConeGeometry(Math.hypot(w, d) * 0.36, 1.35 + er0() * 0.25, 4),
+          new THREE.MeshLambertMaterial({ color: 0x6b3d22 })
+        );
+        hRoof.rotation.y = Math.PI / 4;
+        hRoof.position.y = wallH + 0.55;
+        hg.add(hRoof);
+        group.add(hg);
+      }
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
-      let tpl = getWorldGlbTemplate(WORLD_GLB.dockA);
-      if (!tpl) tpl = getWorldGlbTemplate(WORLD_GLB.dockB);
+      const dockDeckY = surf + 0.45;
+      let dockDocked = false;
+      const tpl = cloneParsedGlbTree('assets/3d models/buildings/dock.glb');
       if (tpl) {
-        const dk = cloneWorldGlbForInstance(tpl);
-        const box = new THREE.Box3().setFromObject(dk);
-        const dx = Math.max(1e-3, box.max.x - box.min.x);
-        const dz = Math.max(1e-3, box.max.z - box.min.z);
-        const horizMax = Math.max(dx, dz);
-        const horizMin = Math.min(dx, dz);
-        const sc = Math.min(PIER_TOTAL_LEN / horizMax, PIER_DECK_WIDTH / horizMin) * 1.02;
-        dk.scale.setScalar(sc);
-        dk.rotation.y = ang;
-        dk.updateMatrixWorld(true);
-        const wb = new THREE.Box3().setFromObject(dk);
-        const wcx = (wb.min.x + wb.max.x) * 0.5;
-        const wcz = (wb.min.z + wb.max.z) * 0.5;
-        const deckY = surf + 0.45;
-        dk.position.set(e.x - wcx, deckY - wb.min.y, e.z - wcz);
-        dk.receiveShadow = true;
-        dk.castShadow = true;
-        group.add(dk);
-      } else {
+        applyIslandGlbPresentation(tpl);
+        tpl.updateMatrixWorld(true);
+        const box0 = new THREE.Box3().setFromObject(tpl);
+        const dx0 = Math.max(box0.max.x - box0.min.x, 1e-3);
+        const dy0 = Math.max(box0.max.y - box0.min.y, 1e-3);
+        const dz0 = Math.max(box0.max.z - box0.min.z, 1e-3);
+        const uDock = Math.min((PIER_DECK_WIDTH * 1.02) / dx0, (PIER_TOTAL_LEN * 1.02) / dz0, (PIER_DECK_WIDTH * 0.55 + 1.05) / dy0) * 0.98;
+        tpl.scale.multiplyScalar(uDock);
+        tpl.updateMatrixWorld(true);
+        const b1 = new THREE.Box3().setFromObject(tpl);
+        tpl.position.x -= (b1.min.x + b1.max.x) * 0.5;
+        tpl.position.z -= (b1.min.z + b1.max.z) * 0.5;
+        tpl.position.y -= b1.min.y;
+        const dp = new THREE.Group();
+        dp.add(tpl);
+        dp.rotation.y = ang;
+        dp.position.set(e.x, dockDeckY, e.z);
+        group.add(dp);
+        dockDocked = true;
+      }
+      if (!dockDocked) {
         const dock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.45, PIER_TOTAL_LEN), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
-        dock.position.set(e.x, surf + 0.45, e.z);
+        dock.position.set(e.x, dockDeckY, e.z);
         dock.rotation.y = ang;
         dock.receiveShadow = true; dock.castShadow = true;
         group.add(dock);
@@ -10338,8 +10401,19 @@ function generateIsland(cx, cz) {
       z: worldZ + ln.noise2D(cx + 1, cz) * islandRadius * 0.4, collected: false,
       count: fiType === 'gold' ? 12 + Math.floor(Math.abs(ln.noise2D(cx, cz)) * 8) : fiType === 'cannonballs' ? 5 + Math.floor(Math.abs(ln.noise2D(cx + 3, cz)) * 8) : fiType === 'food' ? 8 + Math.floor(Math.abs(ln.noise2D(cx, cz + 2)) * 10) : 4 + Math.floor(Math.abs(ln.noise2D(cx + 2, cz)) * 4) };
     G.floatingItems.push(fi);
-    const crate = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
-    crate.position.set(fi.x, SEA_LEVEL + 1.5, fi.z); crate.castShadow = true; crate.userData.floatItem = fi;
+    const ct = cloneParsedGlbTree('assets/3d models/decorations/crate.glb');
+    let crate = null;
+    if (ct) {
+      crate = plantGlbFootprintPivot(fi.x, SEA_LEVEL + 1.45, fi.z, rng() * Math.PI * 2, 3.4, 3.5, 3.4, ct, 0.95);
+    }
+    if (!crate) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
+      m.position.set(fi.x, SEA_LEVEL + 1.5, fi.z);
+      m.castShadow = true;
+      crate = m;
+    }
+    crate.castShadow = true;
+    crate.userData.floatItem = fi;
     fi.lootVisual = crate;
     group.add(crate);
   }
@@ -10378,38 +10452,47 @@ function generateIsland(cx, cz) {
     const dockGround = dockYLand > 0 ? dockYLand : 0;
     const dockDeckClear = 0.52;
     const dockCenterY = SEA_LEVEL + dockGround + dockDeckClear;
-    const relDock = (((cx * 92811) ^ (cz * 74413) ^ ((G.worldSeed >>> 0))) & 1) === 0 ? WORLD_GLB.dockA : WORLD_GLB.dockB;
-    const dockTpl = getWorldGlbTemplate(relDock);
+
+    let dockAdded = false;
+    const dockTpl = cloneParsedGlbTree('assets/3d models/buildings/dock.glb');
     if (dockTpl) {
-      const dk = cloneWorldGlbForInstance(dockTpl);
-      const box = new THREE.Box3().setFromObject(dk);
-      const dx = Math.max(1e-3, box.max.x - box.min.x);
-      const dz = Math.max(1e-3, box.max.z - box.min.z);
-      const horizMax = Math.max(dx, dz);
-      const horizMin = Math.min(dx, dz);
-      const sc = Math.min(PIER_TOTAL_LEN / horizMax, PIER_DECK_WIDTH / horizMin) * 1.02;
-      dk.scale.setScalar(sc);
-      dk.rotation.y = dockAngle;
-      dk.updateMatrixWorld(true);
-      const wb = new THREE.Box3().setFromObject(dk);
-      const wcx = (wb.min.x + wb.max.x) * 0.5;
-      const wcz = (wb.min.z + wb.max.z) * 0.5;
-      dk.position.set(dockX - wcx, dockCenterY - wb.min.y, dockZ - wcz);
-      dk.receiveShadow = true;
-      dk.castShadow = true;
-      group.add(dk);
-    } else {
+      applyIslandGlbPresentation(dockTpl);
+      dockTpl.updateMatrixWorld(true);
+      const box0 = new THREE.Box3().setFromObject(dockTpl);
+      const dx0 = Math.max(box0.max.x - box0.min.x, 1e-3);
+      const dy0 = Math.max(box0.max.y - box0.min.y, 1e-3);
+      const dz0 = Math.max(box0.max.z - box0.min.z, 1e-3);
+      const uDock = Math.min((PIER_DECK_WIDTH * 1.02) / dx0, (PIER_TOTAL_LEN * 1.02) / dz0, (PIER_DECK_WIDTH * 0.55 + 1.2) / dy0) * 0.98;
+      dockTpl.scale.multiplyScalar(uDock);
+      dockTpl.updateMatrixWorld(true);
+      const b1 = new THREE.Box3().setFromObject(dockTpl);
+      const cx0 = (b1.min.x + b1.max.x) * 0.5;
+      const cz0 = (b1.min.z + b1.max.z) * 0.5;
+      dockTpl.position.x -= cx0;
+      dockTpl.position.z -= cz0;
+      dockTpl.position.y -= b1.min.y;
+      const dockPivot = new THREE.Group();
+      dockPivot.add(dockTpl);
+      dockPivot.rotation.y = dockAngle;
+      dockPivot.position.set(dockX, dockCenterY, dockZ);
+      group.add(dockPivot);
+      dockAdded = true;
+    }
+    if (!dockAdded) {
       const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.4, PIER_TOTAL_LEN);
       const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
       const dock = new THREE.Mesh(dockGeo, dockMat);
       dock.position.set(dockX, dockCenterY, dockZ);
       dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
       group.add(dock);
+    }
+    group.userData.dockAngle = dockAngle;
 
-      const dockUndersideY = dockCenterY - 0.2;
-      const postH = 5.8;
-      const postTopY = dockUndersideY - 0.06;
-      const postAlongStep = PIER_TOTAL_LEN / 3.5;
+    const dockUndersideY = dockCenterY - 0.2;
+    const postH = 5.8;
+    const postTopY = dockUndersideY - 0.06;
+    const postAlongStep = PIER_TOTAL_LEN / 3.5;
+    if (!dockAdded) {
       for (let pi = 0; pi < 8; pi++) {
         const side = pi % 2 === 0 ? 1 : -1;
         const along = (Math.floor(pi / 2) - 1.5) * postAlongStep;
@@ -10421,7 +10504,6 @@ function generateIsland(cx, cz) {
         group.add(post);
       }
     }
-    group.userData.dockAngle = dockAngle;
 
     const toInX = worldX - dockX, toInZ = worldZ - dockZ;
     const inLen = Math.hypot(toInX, toInZ) || 1;
@@ -10615,39 +10697,34 @@ function nudgeSharkPairMidpointToOpenSea(mA, mB, yOff) {
   mB.position.y = worldSeaSurfaceY(mB.position.x, mB.position.z) + yE * 0.55;
 }
 
-function sharkYawModelFix(mesh) {
-  if (!mesh || !mesh.userData) return 0;
-  const v = mesh.userData.sharkYawFix;
-  return v != null && Number.isFinite(Number(v)) ? Number(v) : 0;
-}
-
 function makePredatorSharkMesh(scale) {
-  const tpl = getWorldGlbTemplate(WORLD_GLB.shark);
+  const g = new THREE.Group();
+  const s = Number(scale) || 1;
+  const tpl = cloneParsedGlbTree('assets/3d models/wildlife/shark.glb');
   if (tpl) {
-    const root = cloneWorldGlbForInstance(tpl);
-    const box = new THREE.Box3().setFromObject(root);
-    const longest = Math.max(1e-3, box.max.x - box.min.x, box.max.z - box.min.z, box.max.y - box.min.y);
-    const target = (Number(scale) || 1) * 1.48;
-    root.scale.setScalar(target / longest);
-    const b2 = new THREE.Box3().setFromObject(root);
-    root.position.set(0, -b2.min.y * 0.25 - 0.02, -b2.min.z * 0.02);
-    let tailBone = null;
-    root.traverse((o) => {
-      const nm = o.name ? String(o.name).toLowerCase() : '';
-      if (!tailBone && (nm.includes('tail') || nm.includes('caud'))) tailBone = o;
-    });
-    const g = new THREE.Group();
-    g.add(root);
+    const sh = tpl;
+    applyIslandGlbPresentation(sh);
+    sh.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(sh);
+    const sz = new THREE.Vector3();
+    box.getSize(sz);
+    const lg = Math.max(sz.x, sz.y, sz.z, 1e-4);
+    const want = 5.85 * s;
+    sh.scale.multiplyScalar(want / lg);
+    sh.updateMatrixWorld(true);
+    const b2 = new THREE.Box3().setFromObject(sh);
+    sh.position.x -= (b2.min.x + b2.max.x) * 0.5;
+    sh.position.y -= (b2.min.y + b2.max.y) * 0.5;
+    sh.position.z -= (b2.min.z + b2.max.z) * 0.5;
+    const orient = new THREE.Group();
+    orient.rotation.x = Math.PI / 2;
+    orient.add(sh);
+    g.add(orient);
+    g.userData.glbSharkRoot = true;
     g.userData.isPredatorShark = true;
-    g.userData.glbShark = true;
-    g.userData.tailBone = tailBone || root.children[Math.max(0, root.children.length - 1)] || null;
-    g.userData.sharkYawFix = WORLD_GLB_SHARK_YAW;
     g.userData.swimPhase = 0;
     return g;
   }
-
-  const g = new THREE.Group();
-  const s = Number(scale) || 1;
   const matTop = new THREE.MeshPhongMaterial({ color: 0x3d4a52, emissive: 0x05080a, shininess: 28, specular: 0x334455 });
   const matBelly = new THREE.MeshPhongMaterial({ color: 0x6a7580, emissive: 0x040506, shininess: 18, specular: 0x223033 });
   const matFin = new THREE.MeshPhongMaterial({ color: 0x2a343c, emissive: 0x030405, shininess: 12, specular: 0x1a2028, side: THREE.DoubleSide });
@@ -10687,7 +10764,6 @@ function makePredatorSharkMesh(scale) {
   g.userData.pecFinL = pecL;
   g.userData.pecFinR = pecR;
   g.userData.isPredatorShark = true;
-  g.userData.sharkYawFix = 0;
   g.userData.swimPhase = 0;
   return g;
 }
@@ -10696,12 +10772,10 @@ function applyPredatorSharkSwimMotion(mesh, swimMag, bankZ) {
   const sm = swimMag == null ? 1 : swimMag;
   const ph = mesh.userData.swimPhase || 0;
   const t = getWildlifeWorldTime();
-  if (mesh.userData.glbShark) {
-    const tb = mesh.userData.tailBone;
-    if (tb) tb.rotation.y = Math.sin(t * 2.95 * sm + ph) * 0.35;
-    mesh.rotation.x = Math.sin(t * 2.08 * sm + ph * 1.15) * 0.1 * sm;
-    const baseZ = bankZ != null ? bankZ : 0;
-    mesh.rotation.z = baseZ + Math.sin(t * 2.55 * sm + ph) * 0.065 * sm;
+  if (mesh.userData.glbSharkRoot) {
+    mesh.rotation.x = Math.sin(t * 2.05 * sm + ph * 1.12) * 0.055 * sm;
+    const br = bankZ != null ? bankZ : 0;
+    mesh.rotation.z = br + Math.sin(t * 2.22 * sm + ph * 0.95) * 0.04 * sm;
     return;
   }
   if (mesh.userData.tail) mesh.userData.tail.rotation.y = Math.sin(t * 2.95 * sm + ph) * 0.55;
@@ -10714,7 +10788,11 @@ function applyPredatorSharkSwimMotion(mesh, swimMag, bankZ) {
   mesh.rotation.z = bankZ != null ? bankZ : 0;
 }
 function disposePredatorSharkMesh(root) {
-  disposeObject3DSubtree(root);
+  if (!root) return;
+  root.traverse(obj => {
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) obj.material.dispose();
+  });
 }
 function spawnAmbientSharkPair(wx, wz, rng) {
   const r = decoRand(rng);
@@ -10772,11 +10850,11 @@ function updateAmbientSharkPairs(dt) {
     );
     const vxa = -Math.sin(a1);
     const vza = Math.cos(a1);
-    pair.mA.rotation.y = Math.atan2(vxa, vza) + sharkYawModelFix(pair.mA);
+    pair.mA.rotation.y = Math.atan2(vxa, vza);
     applyPredatorSharkSwimMotion(pair.mA, 1, -Math.sin(a1) * 0.09);
     const vxb = -Math.sin(a2);
     const vzb = Math.cos(a2);
-    pair.mB.rotation.y = Math.atan2(vxb, vzb) + sharkYawModelFix(pair.mB);
+    pair.mB.rotation.y = Math.atan2(vxb, vzb);
     applyPredatorSharkSwimMotion(pair.mB, 0.92, -Math.sin(a2) * 0.085);
     const mx = (ax + bx) * 0.5, mz = (az + bz) * 0.5;
     const vis = isInTerrainStreamChunkRing(mx, mz, pcx, pcz);
@@ -10913,8 +10991,7 @@ function updateRescueSharkEscorts(dt) {
       e.mB.position.y = worldSeaSurfaceY(e.mB.position.x, e.mB.position.z) + escortFloat - bob * 0.7;
       const faceY = Math.atan2(e.departDirX, e.departDirZ);
       for (const mesh of [e.mA, e.mB]) {
-        const fxSh = sharkYawModelFix(mesh);
-        let diff = faceY + fxSh - mesh.rotation.y;
+        let diff = faceY - mesh.rotation.y;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
         mesh.rotation.y += diff * Math.min(1, 8 * ddt);
@@ -10981,8 +11058,7 @@ function updateRescueSharkEscorts(dt) {
       const hx = boatX - nx, hz = boatZ - nz;
       if (Math.hypot(hx, hz) > 0.06) {
         const ty = Math.atan2(hx, hz);
-        const fxSh = sharkYawModelFix(mesh);
-        let diff = ty + fxSh - mesh.rotation.y;
+        let diff = ty - mesh.rotation.y;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
         mesh.rotation.y += diff * Math.min(1, 9 * ddt);
@@ -11029,8 +11105,8 @@ function initSwimmerPredators(sw) {
   m2.position.set(u.predatorSpawn0[1].x, worldSeaSurfaceY(u.predatorSpawn0[1].x, u.predatorSpawn0[1].z) - 0.05, u.predatorSpawn0[1].z);
   const y1 = Math.atan2(swx - m1.position.x, swz - m1.position.z);
   const y2 = Math.atan2(swx - m2.position.x, swz - m2.position.z);
-  m1.rotation.y = y1 + sharkYawModelFix(m1);
-  m2.rotation.y = y2 + sharkYawModelFix(m2);
+  m1.rotation.y = y1;
+  m2.rotation.y = y2;
   scene.add(m1);
   scene.add(m2);
   u.predatorMeshes = [m1, m2];
@@ -11120,7 +11196,7 @@ function updateSwimmerPredatorMeshes(sw, swx, swy, swz, tw) {
       const rdz = swz - pz;
       if (Math.hypot(rdx, rdz) > 0.04) headYaw = Math.atan2(rdx, rdz);
     }
-    mesh.rotation.y = headYaw + sharkYawModelFix(mesh);
+    mesh.rotation.y = headYaw;
     const sm = tw < APP ? 0.82 : tw < APP + CIR ? 1.08 : tw < APP + CIR + ATK ? 1.35 : 0.9;
     applyPredatorSharkSwimMotion(mesh, sm);
   }
@@ -11130,27 +11206,29 @@ function spawnSeagulls(wx, wz, count, rng) {
   const r = decoRand(rng);
   for (let i = 0; i < count; i++) {
     const sg = new THREE.Group();
-    const relG = WORLD_GLB.seagulls[Math.floor(r() * WORLD_GLB.seagulls.length)];
-    const tpl = getWorldGlbTemplate(relG);
+    const tpl = cloneParsedGlbTree('assets/3d models/wildlife/seagul1.glb');
     if (tpl) {
-      const bird = cloneWorldGlbForInstance(tpl);
+      const bird = tpl;
+      applyIslandGlbPresentation(bird);
+      bird.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(bird);
-      const span = Math.max(1e-3, box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z);
-      bird.scale.setScalar(0.52 / span);
+      const sz = new THREE.Vector3();
+      box.getSize(sz);
+      const lg = Math.max(sz.x, sz.y, sz.z, 1e-4);
+      const want = 0.95 + r() * 0.38;
+      bird.scale.multiplyScalar(want / lg);
+      bird.updateMatrixWorld(true);
       const b2 = new THREE.Box3().setFromObject(bird);
-      bird.position.y = -b2.min.y;
-      bird.rotation.y = WORLD_GLB_SEAGULL_YAW;
-      sg.add(bird);
-      let wingL = null;
-      let wingR = null;
-      bird.traverse((o) => {
-        const nm = o.name ? String(o.name).toLowerCase() : '';
-        if (nm.includes('wing') && nm.includes('l')) wingL = o;
-        if (nm.includes('wing') && nm.includes('r')) wingR = o;
-      });
-      sg.userData.wingL = wingL;
-      sg.userData.wingR = wingR;
-      sg.userData.glbBird = true;
+      bird.position.x -= (b2.min.x + b2.max.x) * 0.5;
+      bird.position.y -= (b2.min.y + b2.max.y) * 0.5;
+      bird.position.z -= (b2.min.z + b2.max.z) * 0.5;
+      const ori = new THREE.Group();
+      ori.rotation.x = Math.PI / 2;
+      ori.add(bird);
+      sg.add(ori);
+      sg.userData.glbSeagull = true;
+      sg.userData.wingL = null;
+      sg.userData.wingR = null;
     } else {
       const body = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 3), new THREE.MeshLambertMaterial({ color: 0xeeeeee }));
       body.rotation.x = Math.PI / 2; sg.add(body);
@@ -11158,8 +11236,8 @@ function spawnSeagulls(wx, wz, count, rng) {
       wingL.position.set(-0.2, 0, 0); sg.add(wingL);
       const wingR = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
       wingR.position.set(0.2, 0, 0); sg.add(wingR);
-      sg.userData.wingL = wingL;
-      sg.userData.wingR = wingR;
+      sg.userData.glbSeagull = false;
+      sg.userData.wingL = wingL; sg.userData.wingR = wingR;
     }
     sg.position.set(wx + (r() - 0.5) * 52, 24 + r() * 10, wz + (r() - 0.5) * 52);
     sg.userData.cx = wx; sg.userData.cz = wz;
@@ -11225,7 +11303,18 @@ function removeFishSchoolByLeader(leader) {
     const f = fishSchools[i];
     if (f.userData.leader === leader) {
       scene.remove(f);
-      disposeObject3DSubtree(f);
+      try { disposeObject3DResources(f); } catch (rf) {
+        f.traverse(obj => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            for (let mi = 0; mi < mats.length; mi++) {
+              const mm = mats[mi];
+              if (mm) mm.dispose();
+            }
+          }
+        });
+      }
       fishSchools.splice(i, 1);
     }
   }
@@ -11245,9 +11334,7 @@ function pruneWildlifeAwayFromPlayer() {
       if (k > dropK) { dropK = k; dropI = idx; }
     });
     if (dropI < 0) break;
-    const sgPr = seagulls[dropI];
-    scene.remove(sgPr);
-    disposeObject3DSubtree(sgPr);
+    scene.remove(seagulls[dropI]);
     seagulls.splice(dropI, 1);
   }
   while (ambientSharkPairs.length > WILDLIFE_SHARK_PAIR_CAP) {
@@ -11269,6 +11356,7 @@ function pruneWildlifeAwayFromPlayer() {
 function spawnFish(wx, wz, count, rng) {
   if (count <= 0 || isSeaObstructed(wx, wz) || !wildlifeXZOutsideIslandMargin(wx, wz)) return;
   const r = decoRand(rng);
+  const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
   const floatOffset = -0.045 - r() * 0.11;
   const h = (salt) => swimmerStreamHash(wx, wz, salt);
   const leader = {
@@ -11284,44 +11372,46 @@ function spawnFish(wx, wz, count, rng) {
     x: wx,
     z: wz,
     lastOkX: wx,
-    lastOkZ: wz,
-    variant: Math.abs(((h(506) * 917) | 0)) % WORLD_GLB.fish.length
+    lastOkZ: wz
   };
   schoolLeaders.push(leader);
+  const spLen = Math.max(species.len, 0.16);
   for (let i = 0; i < count; i++) {
+    const fishPick = Math.floor(swimmerStreamHash(wx * 1007 + i * 0.13, wz * 791 - i * 0.077, 0x71f0 ^ (i << 7)) * _WILDLIFE_FISH_GLB_RELS.length);
+    const fishRel = _WILDLIFE_FISH_GLB_RELS[(fishPick + Math.floor(swimmerStreamHash(wx, wz, 960 + i) * 997)) % _WILDLIFE_FISH_GLB_RELS.length];
     const fg = new THREE.Group();
-    const relFish = WORLD_GLB.fish[(leader.variant + i) % WORLD_GLB.fish.length];
-    const tpl = getWorldGlbTemplate(relFish);
-    let tailRef = null;
+    const tpl = cloneParsedGlbTree(fishRel);
     if (tpl) {
-      const body = cloneWorldGlbForInstance(tpl);
-      const box = new THREE.Box3().setFromObject(body);
-      const slen = Math.max(1e-3, box.max.z - box.min.z, box.max.x - box.min.x);
-      const targ = 0.22 + r() * 0.28;
-      body.scale.setScalar(targ / slen);
-      const b3 = new THREE.Box3().setFromObject(body);
-      body.position.set(0, -b3.min.y * 0.5, -b3.min.z * 0.15);
-      body.traverse((o) => {
-        const nm = o.name ? String(o.name).toLowerCase() : '';
-        if (!tailRef && nm.includes('tail')) tailRef = o;
-      });
-      fg.add(body);
-      if (!tailRef && body.children.length) tailRef = body.children[body.children.length - 1];
+      applyIslandGlbPresentation(tpl);
+      tpl.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(tpl);
+      const sz = new THREE.Vector3();
+      box.getSize(sz);
+      const lg = Math.max(sz.x, sz.y, sz.z, 1e-4);
+      const want = spLen * (0.94 + swimmerStreamHash(wx + i * 0.051, wz - i * 0.063, 0x8113 + i) * 0.22);
+      tpl.scale.multiplyScalar(want / lg);
+      tpl.updateMatrixWorld(true);
+      const b2 = new THREE.Box3().setFromObject(tpl);
+      tpl.position.x -= (b2.min.x + b2.max.x) * 0.5;
+      tpl.position.y -= (b2.min.y + b2.max.y) * 0.5;
+      tpl.position.z -= (b2.min.z + b2.max.z) * 0.5;
+      const orient = new THREE.Group();
+      orient.rotation.x = Math.PI / 2;
+      orient.rotation.y = (Math.PI / 180) * 8 * swimmerStreamHash(wx, wz, 0xbee0 + fishPick);
+      orient.add(tpl);
+      fg.add(orient);
       fg.userData.glbFish = true;
-      fg.userData.tailPart = tailRef;
     } else {
-      const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
-      const meshBody = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 5), new THREE.MeshBasicMaterial({ color: species.color }));
-      meshBody.rotation.x = Math.PI / 2; fg.add(meshBody);
+      fg.userData.glbFish = false;
+      const body = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 5), new THREE.MeshBasicMaterial({ color: species.color }));
+      body.rotation.x = Math.PI / 2; fg.add(body);
       const tail = new THREE.Mesh(new THREE.PlaneGeometry(species.size * 1.2, species.size), new THREE.MeshBasicMaterial({ color: species.color, side: THREE.DoubleSide }));
       tail.position.set(0, 0, -species.len * 0.55); fg.add(tail);
-      fg.userData.tailPart = tail;
       if (species.name === 'dolphin' || species.name === 'shark') {
         const fin = new THREE.Mesh(new THREE.ConeGeometry(species.size * 0.4, species.size * 1.5, 3), new THREE.MeshBasicMaterial({ color: species.color }));
         fin.position.set(0, species.size * 0.7, -species.len * 0.1); fg.add(fin);
       }
     }
-    fg.userData.fishYawBoost = WORLD_GLB_FISH_YAW;
     const f0x = wx + (r() - 0.5) * 3;
     const f0z = wz + (r() - 0.5) * 3;
     fg.position.set(f0x, worldSeaSurfaceY(f0x, f0z) + floatOffset, f0z);
@@ -11353,10 +11443,6 @@ function updateFish(dt) {
       l.wB = 0.068 + g(505) * 0.058;
       if (l.lastOkX == null) l.lastOkX = ax;
       if (l.lastOkZ == null) l.lastOkZ = az;
-      if (l.variant == null && WORLD_GLB.fish.length) {
-        const g2 = (s) => swimmerStreamHash(ax, az, s);
-        l.variant = Math.abs(((g2(506) * 917) | 0)) % WORLD_GLB.fish.length;
-      }
     }
     const a = t * l.wA + l.phA;
     const b = t * l.wB + l.phB;
@@ -11404,11 +11490,10 @@ function updateFish(dt) {
     const vx = Math.cos(a) * l.wA * l.amp + Math.cos(b * 1.17) * l.wB * 1.17 * l.amp * 0.38;
     const vz = -Math.sin(a * 0.95) * l.wA * 0.95 * l.amp - Math.sin(b) * l.wB * l.amp * 0.33;
     const schoolYaw = Math.hypot(vx, vz) > 0.018 ? Math.atan2(vx, vz) : f.rotation.y;
-    const yawBoost = (f.userData && f.userData.fishYawBoost != null) ? Number(f.userData.fishYawBoost) : 0;
-    f.rotation.y = schoolYaw + yawBoost + Math.sin(t * 4 + f.userData.wiggle) * 0.07;
-    const tp = f.userData && f.userData.tailPart;
-    const tw = tp || f.children[1];
-    if (tw && tw.rotation) tw.rotation.y = Math.sin(t * 8 + f.userData.wiggle) * 0.4;
+    f.rotation.y = schoolYaw + Math.sin(t * 4 + f.userData.wiggle) * 0.07;
+    if (!f.userData.glbFish && f.children[1]) {
+      f.children[1].rotation.y = Math.sin(t * 8 + f.userData.wiggle) * 0.4;
+    }
   });
 }
 
@@ -11423,8 +11508,14 @@ function updateSeagulls(dt) {
     sg.position.y = 22 + Math.sin(p * 2) * 4;
     sg.rotation.y = p + Math.PI / 2;
     const wingFlap = Math.sin(wt * 2.6 + p * 3) * 0.4;
-    if (sg.userData.wingL && sg.userData.wingL.rotation) sg.userData.wingL.rotation.z = wingFlap;
-    if (sg.userData.wingR && sg.userData.wingR.rotation) sg.userData.wingR.rotation.z = -wingFlap;
+    if (!sg.userData.glbSeagull && sg.userData.wingL && sg.userData.wingR) {
+      sg.userData.wingL.rotation.z = wingFlap;
+      sg.userData.wingR.rotation.z = -wingFlap;
+    }
+    if (sg.userData.glbSeagull) {
+      sg.rotation.z = wingFlap * 0.42;
+      sg.rotation.x = Math.sin(wt * 3.05 + p * 1.7) * 0.11;
+    }
     sg.visible = isInTerrainStreamChunkRing(sg.position.x, sg.position.z, pcx, pcz);
   });
 }
@@ -19613,11 +19704,9 @@ function queueFetchServerWorldMap(rev) {
             });
           } else if (!G.customMap) {
             relocatePlayerNearProceduralArchipelago();
-            afterWorldGlbModelsHydrated(() => {
-              updateChunks();
-              nudgePlayerSpawnClearOfShips();
-              flushGameViewRender();
-            });
+            updateChunks();
+            nudgePlayerSpawnClearOfShips();
+            flushGameViewRender();
           }
         }
         return Promise.reject(new Error('map missing'));
@@ -19637,11 +19726,9 @@ function queueFetchServerWorldMap(rev) {
       if (runId !== serverWorldMapFetchToken) return;
       if (G.mode !== 'playing' || G.customMap || knownServerWorldMapRev <= 0) return;
       relocatePlayerNearProceduralArchipelago();
-      afterWorldGlbModelsHydrated(() => {
-        updateChunks();
-        nudgePlayerSpawnClearOfShips();
-        flushGameViewRender();
-      });
+      updateChunks();
+      nudgePlayerSpawnClearOfShips();
+      flushGameViewRender();
     });
 }
 
@@ -19897,15 +19984,10 @@ function syncCaptainNameToServer() {
 }
 
 function destroyAmbientWildlife() {
-  seagulls.forEach(sg => {
-    scene.remove(sg);
-    disposeObject3DSubtree(sg);
-  });
+  seagulls.forEach(sg => { scene.remove(sg); });
   seagulls.length = 0;
-  fishSchools.forEach(f => {
-    scene.remove(f);
-    disposeObject3DSubtree(f);
-  });
+  fishSchools.forEach(f => { scene.remove(f); });
+  fishSchools.length = 0;
   schoolLeaders.length = 0;
   ambientSharkPairs.forEach(sh => {
     scene.remove(sh.mA);
@@ -19951,30 +20033,28 @@ function applySharedWorldFromServerSeed(s, opts) {
   if (opts.relocateAfterDroppingServerChart && G.mode === 'playing' && !preservePos) {
     relocatePlayerNearProceduralArchipelago();
   }
-  afterWorldGlbModelsHydrated(() => {
-    updateChunks();
-    if (preservePos) {
-      G.player.x = saveX;
-      G.player.z = saveZ;
-      G.player.rotation = saveR;
-      clampPlayerIntoWorldBounds();
-      const st = G.player.shipType || 'sloop';
-      if (shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, st) || !hasMinClearanceFromLand(G.player.x, G.player.z, 42)) {
-        if (!nudgePlayerSavedPositionToValidSea(saveX, saveZ, saveR, st)) ensurePlayerInOpenOcean();
-      }
+  updateChunks();
+  if (preservePos) {
+    G.player.x = saveX;
+    G.player.z = saveZ;
+    G.player.rotation = saveR;
+    clampPlayerIntoWorldBounds();
+    const st = G.player.shipType || 'sloop';
+    if (shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, st) || !hasMinClearanceFromLand(G.player.x, G.player.z, 42)) {
+      if (!nudgePlayerSavedPositionToValidSea(saveX, saveZ, saveR, st)) ensurePlayerInOpenOcean();
     }
-    spawnNPCs({ preserveLocalTutorialRaid: true });
-    nudgePlayerSpawnClearOfShips();
-    scatterWindStreaksNearPlayer();
-    seedDecorativeWildlifeNearPlayer();
-    flushGameViewRender();
-    if (!opts.skipServerMapReapply && knownServerWorldMapRev > 0 && G.mode === 'playing') {
-      queueFetchServerWorldMap(knownServerWorldMapRev);
-    }
-    if (G.mode === 'playing' && ws && ws.readyState === 1) {
-      try { ws.send(JSON.stringify({ type: 'get_leaderboard' })); } catch (e) {}
-    }
-  });
+  }
+  spawnNPCs({ preserveLocalTutorialRaid: true });
+  nudgePlayerSpawnClearOfShips();
+  scatterWindStreaksNearPlayer();
+  seedDecorativeWildlifeNearPlayer();
+  flushGameViewRender();
+  if (!opts.skipServerMapReapply && knownServerWorldMapRev > 0 && G.mode === 'playing') {
+    queueFetchServerWorldMap(knownServerWorldMapRev);
+  }
+  if (G.mode === 'playing' && ws && ws.readyState === 1) {
+    try { ws.send(JSON.stringify({ type: 'get_leaderboard' })); } catch (e) {}
+  }
 }
 function startServerSeedPrefetch() {
   prefetchedServerSeed = null;
@@ -19997,12 +20077,10 @@ function startServerSeedPrefetch() {
               playWorldNetTimeoutId = null;
             }
             noise = new SimplexNoise(G.worldSeed);
-            afterWorldGlbModelsHydrated(() => {
-              updateChunks();
-              spawnNPCs();
-              scatterWindStreaksNearPlayer();
-              flushGameViewRender();
-            });
+            updateChunks();
+            spawnNPCs();
+            scatterWindStreaksNearPlayer();
+            flushGameViewRender();
           }
         }
       }
@@ -20395,13 +20473,7 @@ async function connectToServer() {
   G.iAmMultiplayerNpcStepper = false;
   try { stopMultiplayerRttLoop(); } catch (e) {}
   if (G.mode === 'playing') {
-    queueMicrotask(() => {
-      void (async () => {
-        try {
-          await preloadRealmWhileConnecting();
-        } catch (e) {}
-      })();
-    });
+    queueMicrotask(() => { try { preloadRealmWhileConnecting(); } catch (e) {} });
   }
   let socket;
   try {
@@ -20591,23 +20663,13 @@ async function connectToServer() {
           }
         }
         try { if (G.mode === 'playing' && G.myId != null) startMultiplayerRttLoop(); } catch (e) {}
-        void (async () => {
-          try {
-            const mpSub = document.querySelector('#mp-connecting-overlay .mp-connecting-sub');
-            await ensureWorldGlbModelsLoaded({ subEl: mpSub });
-          } catch (egl) {
-            try {
-              console.warn('Connecting GLB preload', egl);
-            } catch (e) {}
-          }
-          try {
-            warmTutorialRaidCutsceneMeshesIfEligible();
-            flushGameViewRender();
-          } catch (e) {}
-          setMultiplayerConnectingOverlay(false);
-          G._netDesyncSticky = 0;
-          try { setDesyncBlockingOverlay(false); } catch (e) {}
-        })();
+        try {
+          warmTutorialRaidCutsceneMeshesIfEligible();
+          flushGameViewRender();
+        } catch (e) {}
+        setMultiplayerConnectingOverlay(false);
+        G._netDesyncSticky = 0;
+        try { setDesyncBlockingOverlay(false); } catch (e) {}
         break;
       case 'server_pop':
         applyServerPop(msg);
@@ -23726,77 +23788,39 @@ function collectResolvableGameImageUrls() {
   return hrefs;
 }
 
-/** Every `.glb` under `assets/3d models/` (buildings, decorations, ships, wildlife). Extend when new models are added; remove when deleted. */
-const GAME_ASSET_3D_GLB_REL_PATHS = [
-  'assets/3d models/buildings/church1.glb',
+/** GLB sets: `SCENE_BOOT` is parsed into `_gameGlbParsedSceneTemplates` before the menu unlocks; ships are warm-cached only for now. */
+const GAME_ASSET_3D_GLB_SCENE_BOOT_RELS = [
+  'assets/3d models/buildings/church.glb',
   'assets/3d models/buildings/dock.glb',
-  'assets/3d models/buildings/dock1.glb',
-  'assets/3d models/buildings/govres1.glb',
+  'assets/3d models/buildings/govmansion.glb',
   'assets/3d models/buildings/house1.glb',
   'assets/3d models/buildings/house2.glb',
+  'assets/3d models/buildings/house3.glb',
   'assets/3d models/buildings/tavern.glb',
+  'assets/3d models/decorations/barrel.glb',
   'assets/3d models/decorations/bush1.glb',
   'assets/3d models/decorations/bush2.glb',
+  'assets/3d models/decorations/bush3.glb',
+  'assets/3d models/decorations/crate.glb',
+  'assets/3d models/decorations/jaggedrocks1.glb',
+  'assets/3d models/decorations/jaggedrocks2.glb',
   'assets/3d models/decorations/tree1.glb',
   'assets/3d models/decorations/tree2.glb',
-  'assets/3d models/decorations/tree3.glb',
-  'assets/3d models/ships/galleon1.glb',
-  'assets/3d models/ships/galleon2.glb',
-  'assets/3d models/ships/galleon3.glb',
-  'assets/3d models/ships/galleon4.glb',
-  'assets/3d models/ships/pirate-sloop1.glb',
-  'assets/3d models/ships/piratesloop1.glb',
-  'assets/3d models/ships/rowboat.glb',
-  'assets/3d models/ships/sloop1.glb',
-  'assets/3d models/ships/sloop2.glb',
-  'assets/3d models/ships/sloop3.glb',
   'assets/3d models/wildlife/fish1.glb',
   'assets/3d models/wildlife/fish2.glb',
   'assets/3d models/wildlife/fish3.glb',
   'assets/3d models/wildlife/fish4.glb',
+  'assets/3d models/wildlife/fish5.glb',
+  'assets/3d models/wildlife/fish6.glb',
+  'assets/3d models/wildlife/fish7.glb',
   'assets/3d models/wildlife/seagul1.glb',
-  'assets/3d models/wildlife/seagul2.glb',
   'assets/3d models/wildlife/shark.glb'
 ];
-
-/** Ships use procedural meshes in-world; preload list may still warm-cache ship GLBs for future use. */
-const GAME_WORLD_GLB_REL_PATHS = GAME_ASSET_3D_GLB_REL_PATHS.filter(p => p.indexOf('/ships/') === -1);
-
-/** Rel paths for procedural replacement (every non-ship world model). */
-const WORLD_GLB = {
-  church: 'assets/3d models/buildings/church1.glb',
-  tavern: 'assets/3d models/buildings/tavern.glb',
-  governor: 'assets/3d models/buildings/govres1.glb',
-  house1: 'assets/3d models/buildings/house1.glb',
-  house2: 'assets/3d models/buildings/house2.glb',
-  dockA: 'assets/3d models/buildings/dock.glb',
-  dockB: 'assets/3d models/buildings/dock1.glb',
-  trees: [
-    'assets/3d models/decorations/tree1.glb',
-    'assets/3d models/decorations/tree2.glb',
-    'assets/3d models/decorations/tree3.glb'
-  ],
-  bushes: [
-    'assets/3d models/decorations/bush1.glb',
-    'assets/3d models/decorations/bush2.glb'
-  ],
-  fish: [
-    'assets/3d models/wildlife/fish1.glb',
-    'assets/3d models/wildlife/fish2.glb',
-    'assets/3d models/wildlife/fish3.glb',
-    'assets/3d models/wildlife/fish4.glb'
-  ],
-  seagulls: [
-    'assets/3d models/wildlife/seagul1.glb',
-    'assets/3d models/wildlife/seagul2.glb'
-  ],
-  shark: 'assets/3d models/wildlife/shark.glb'
-};
-
-/** GLB authoring often aligns +X forward; game wildlife faces travel direction with atan2(vx,vz) on Y. */
-const WORLD_GLB_FISH_YAW = Math.PI * 0.5;
-const WORLD_GLB_SEAGULL_YAW = Math.PI * 0.5;
-const WORLD_GLB_SHARK_YAW = -Math.PI * 0.5;
+const GAME_ASSET_3D_GLB_SHIP_RELS = [
+  'assets/3d models/ships/piratesloop.glb',
+  'assets/3d models/ships/sloop1.glb'
+];
+const GAME_ASSET_3D_GLB_REL_PATHS = [...GAME_ASSET_3D_GLB_SCENE_BOOT_RELS, ...GAME_ASSET_3D_GLB_SHIP_RELS];
 
 /** All `.wav` / `.mp3` under `assets/sound/` that the client may fetch early (matches on-disk layout). */
 const GAME_ASSET_SOUND_PRELOAD_REL_PATHS = [
@@ -23853,225 +23877,115 @@ function warmupBinaryGameAssetCache(urls) {
   pump();
 }
 
-let _worldGlbLoadPromise = null;
-/** True after a full fetch+parse attempt finished (individual files may have failed); further awaits resolve immediately. */
-let _worldGlbHydrationFinished = false;
-/** @type {GLTFLoader | null} */
-let _sharedWorldGltfLoader = null;
+let _sceneGlbBootstrapPromise = null;
+const _gltfSceneBootstrapLoader = new GLTFLoader();
 
-function getSharedWorldGLTFLoader() {
-  if (!_sharedWorldGltfLoader) {
-    const loader = new GLTFLoader();
-    try {
-      const draco = new DRACOLoader();
-      draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/libs/draco/');
-      loader.setDRACOLoader(draco);
-    } catch (e) {}
-    _sharedWorldGltfLoader = loader;
-  }
-  return _sharedWorldGltfLoader;
-}
-
-/** @type {Map<string, THREE.Object3D>} */
-const _worldGlbTemplates = new Map();
-const WORLD_GLB_FETCH_WORKERS = Math.max(
-  3,
-  Math.min(
-    10,
-    Math.round((((typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 8) * 3) / 4)
-  )
-);
-
-function worldGlbTemplatesReady() {
-  const rels = GAME_WORLD_GLB_REL_PATHS;
-  for (let i = 0; i < rels.length; i++) {
-    if (!_worldGlbTemplates.has(rels[i])) return false;
-  }
-  return rels.length > 0;
-}
-
-function getWorldGlbTemplate(relPath) {
-  if (relPath == null) return null;
-  return _worldGlbTemplates.get(String(relPath)) || null;
-}
-
-function worldGlbParserBasePath(assetHref) {
-  if (!assetHref || typeof assetHref !== 'string') return '';
-  const i = assetHref.lastIndexOf('/');
-  return i < 0 ? './' : assetHref.slice(0, i + 1);
-}
-
-function annotateWorldGlbTemplateShadows(root) {
-  root.traverse((o) => {
-    if (o.isMesh) {
-      o.castShadow = true;
-      o.receiveShadow = true;
-    }
-  });
-}
-
-function cloneWorldGlbForInstance(templateRoot) {
-  const c = templateRoot.clone(true);
-  c.traverse((o) => {
-    if (o.isMesh) {
-      if (o.geometry) o.geometry = o.geometry.clone();
-      if (o.material) {
-        o.material = Array.isArray(o.material)
-          ? o.material.map((m) => (m && m.clone ? m.clone() : m))
-          : (o.material && o.material.clone ? o.material.clone() : o.material);
-      }
-      o.castShadow = true;
-      o.receiveShadow = true;
-    }
-  });
-  return c;
-}
-
-function spawnGlbFetchWorker() {
-  const href = resolveGameAssetUrl('assets/glb-fetch-worker.js');
-  try {
-    return new Worker(href);
-  } catch (e) {
-    return null;
-  }
-}
-
-/** Parallel `fetch` of GLBs by filename across a small Worker pool (ArrayBuffers transferred back). */
-function fetchGlbBuffersWithWorkerPool(absoluteUrls, onSliceDone) {
+async function fetchGlbArrayBuffersWithWorkerPool(rels, maxWorkers) {
+  const out = Object.create(null);
+  if (!rels || !rels.length) return out;
+  const tasks = rels.map(rel => ({ rel, url: resolveGameAssetUrl(rel) }));
+  const nW = Math.max(1, Math.min(maxWorkers || 6, tasks.length, 8));
+  const codeHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
   const workers = [];
-  for (let i = 0; i < WORLD_GLB_FETCH_WORKERS; i++) {
-    const w = spawnGlbFetchWorker();
-    if (w) workers.push(w);
+  const bootOne = () => new Worker(codeHref);
+  try {
+    for (let wi = 0; wi < nW; wi++) workers.push(bootOne());
+  } catch (e0) {
+    try {
+      const js = await fetch(codeHref, { cache: 'force-cache' }).then(r => r.text());
+      const blob = new Blob([js], { type: 'application/javascript' });
+      const ou = URL.createObjectURL(blob);
+      for (let wi = 0; wi < nW; wi++) workers.push(new Worker(ou));
+    } catch (e1) {
+      await Promise.all(tasks.map(async (t) => {
+        const res = await fetch(t.url, { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' });
+        if (!res.ok) throw new Error(t.rel + ' ' + res.status);
+        out[t.rel] = await res.arrayBuffer();
+      }));
+      return out;
+    }
   }
   if (!workers.length) {
-    const n = absoluteUrls.length;
-    let done = 0;
-    return Promise.all(
-      absoluteUrls.map((url) =>
-        fetch(url, { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' }).then((r) => {
-          if (!r.ok) throw new Error(String(r.status));
-          return r.arrayBuffer().then((ab) => {
-            done++;
-            if (onSliceDone) onSliceDone(done, n);
-            return ab;
-          });
-        })
-      )
-    );
+    await Promise.all(tasks.map(async (t) => {
+      const res = await fetch(t.url, { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' });
+      if (!res.ok) throw new Error(t.rel + ' ' + res.status);
+      out[t.rel] = await res.arrayBuffer();
+    }));
+    return out;
   }
-  let wi = 0;
-  const pick = () => workers[(wi++) % workers.length];
-  const n = absoluteUrls.length;
-  let finished = 0;
-  const run = Promise.all(
-    absoluteUrls.map(
-      (url, idx) =>
-        new Promise((resolve, reject) => {
-          const w = pick();
-          const id = idx;
-          const onMsg = (e) => {
-            const d = e.data || {};
-            if (d.id !== id) return;
-            w.removeEventListener('message', onMsg);
-            w.removeEventListener('error', onErr);
-            if (d.ok && d.ab) {
-              finished++;
-              if (onSliceDone) onSliceDone(finished, n);
-              resolve(d.ab);
-            } else reject(new Error(d.err || 'glb ' + String(d.status || '')));
-          };
-          const onErr = (err) => {
-            w.removeEventListener('message', onMsg);
-            w.removeEventListener('error', onErr);
-            reject(err);
-          };
-          w.addEventListener('message', onMsg);
-          w.addEventListener('error', onErr);
-          w.postMessage({ id, url });
-        })
-    )
-  );
-  return run.finally(() => {
-    for (let j = 0; j < workers.length; j++) {
-      try { workers[j].terminate(); } catch (e) {}
+  const inbox = new Map();
+  let nextId = 1;
+  const waitAll = new Promise((resolve, reject) => {
+    let left = tasks.length;
+    const doneOne = () => {
+      left--;
+      if (left <= 0) resolve();
+    };
+    for (let wi = 0; wi < workers.length; wi++) {
+      workers[wi].onmessage = (ev) => {
+        const d = ev.data || {};
+        const id = d.id;
+        const slot = inbox.get(id);
+        if (!slot) return;
+        inbox.delete(id);
+        if (d.ok && d.ab) {
+          out[slot.rel] = d.ab;
+          doneOne();
+        } else {
+          reject(new Error((slot.rel || 'glb') + ': ' + (d.err || 'worker fetch')));
+        }
+      };
+      workers[wi].onerror = (err) => reject(err);
     }
-  });
-}
-
-async function ensureWorldGlbModelsLoaded(statusOpt) {
-  if (_worldGlbHydrationFinished) return;
-  if (_worldGlbLoadPromise) {
-    await _worldGlbLoadPromise;
-    return;
-  }
-  const rels = GAME_WORLD_GLB_REL_PATHS;
-  const subEl = statusOpt && statusOpt.subEl;
-  _worldGlbLoadPromise = (async () => {
-    if (rels.length === 0) {
-      _worldGlbHydrationFinished = true;
-      return;
-    }
-    if (subEl) subEl.textContent = 'Loading 3D world models (' + rels.length + ')…';
-    const urls = rels.map((r) => resolveGameAssetUrl(r));
-    const buffers = await fetchGlbBuffersWithWorkerPool(urls, (done, tot) => {
-      if (subEl) subEl.textContent = 'Fetching 3D models… ' + done + ' / ' + tot;
+    tasks.forEach((t, idx) => {
+      const id = nextId++;
+      inbox.set(id, { rel: t.rel });
+      workers[idx % workers.length].postMessage({ id, url: t.url });
     });
-    const loader = getSharedWorldGLTFLoader();
-    if (subEl) subEl.textContent = 'Parsing 3D models…';
-    for (let i = 0; i < rels.length; i++) {
-      try {
-        const assetHref = resolveGameAssetUrl(rels[i]);
-        const pathBase = worldGlbParserBasePath(assetHref);
-        const gltf = await new Promise((resolve, reject) => {
-          try {
-            loader.parse(
-              buffers[i],
-              pathBase || './',
-              (g) => resolve(g),
-              (err) => reject(err || new Error('gltf parse'))
-            );
-          } catch (e2) {
-            reject(e2);
-          }
-        });
-        annotateWorldGlbTemplateShadows(gltf.scene);
-        _worldGlbTemplates.set(rels[i], gltf.scene);
-      } catch (pe) {
-        try {
-          console.warn('World GLB parse failed:', rels[i], pe);
-        } catch (e3) {}
-      }
-      if (subEl) subEl.textContent = 'Parsing 3D models… ' + (i + 1) + ' / ' + rels.length;
-    }
-    if (subEl) subEl.textContent = '3D scenery ready.';
-    _worldGlbHydrationFinished = true;
-  })();
+  });
   try {
-    await _worldGlbLoadPromise;
-  } catch (e) {
-    _worldGlbLoadPromise = null;
-    try {
-      console.warn('World GLB pack fetch failed:', e);
-    } catch (e2) {}
-    throw e;
+    await waitAll;
+  } finally {
+    for (let wi = 0; wi < workers.length; wi++) {
+      try { workers[wi].terminate(); } catch (e2) {}
+    }
   }
+  return out;
 }
 
-/**
- * `generateIsland` caches chunk keys forever; terrain/ports must not be built until world GLB templates exist
- * (otherwise procedural fallbacks stick). Use this before any path that clears islands and calls `updateChunks`.
- */
-function afterWorldGlbModelsHydrated(run) {
-  const go = () => {
-    try {
-      run();
-    } catch (e) {
-      try {
-        console.warn('afterWorldGlbModelsHydrated', e);
-      } catch (e2) {}
+function ensureSceneGlbsBootstrapped() {
+  if (_sceneGlbBootstrapPromise) return _sceneGlbBootstrapPromise;
+  _sceneGlbBootstrapPromise = (async () => {
+    const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
+    const maxW = Math.min(8, Math.max(4, _deviceCores || 6));
+    const buffers = await fetchGlbArrayBuffersWithWorkerPool(rels, maxW);
+    for (let i = 0; i < rels.length; i++) {
+      const rel = rels[i];
+      const ab = buffers[rel];
+      if (!ab) throw new Error('Missing buffer ' + rel);
+      await new Promise((resolve, reject) => {
+        try {
+          _gltfSceneBootstrapLoader.parse(
+            ab,
+            '',
+            (gltf) => {
+              if (gltf && gltf.scene) {
+                _gameGlbParsedSceneTemplates[rel] = gltf.scene;
+              } else {
+                reject(new Error('Empty glTF ' + rel));
+                return;
+              }
+              resolve();
+            },
+            (err) => reject(err || new Error('parse ' + rel))
+          );
+        } catch (pe) {
+          reject(pe);
+        }
+      });
     }
-  };
-  void ensureWorldGlbModelsLoaded().then(go).catch(go);
+  })();
+  return _sceneGlbBootstrapPromise;
 }
 
 let _gameImagePreloadWorker = null;
@@ -24164,6 +24078,9 @@ function kickOffGameAssetPreload() {
   try {
     warmupBinaryGameAssetCache(collectResolvableBinaryGameAssetUrls());
   } catch (eBin) {}
+  try {
+    void ensureSceneGlbsBootstrapped();
+  } catch (gb) {}
 }
 
 function ensureSfxBuffer(key, url) {
@@ -33770,22 +33687,18 @@ function warmUpGameView() {
 /**
  * During MP "Connecting", pull nearby terrain, compile tutorial-raid hull, and render once so first frames stay smooth.
  */
-async function preloadRealmWhileConnecting() {
+function preloadRealmWhileConnecting() {
   if (G.mode !== 'playing' || typeof THREE === 'undefined') return;
-  try {
-    await ensureWorldGlbModelsLoaded();
-  } catch (egl) {
-    try {
-      console.warn('preloadRealm GLB', egl);
-    } catch (e) {}
-  }
   try { kickOffGameAssetPreload(); } catch (e0) {}
-  try { updateChunks(); } catch (e1) {}
-  try { warmTutorialRaidCutsceneMeshesIfEligible(); } catch (e2) {}
-  try {
-    warmUpGameView();
-    flushGameViewRender();
-  } catch (e3) {}
+  const pump = () => {
+    try { updateChunks(); } catch (e1) {}
+    try { warmTutorialRaidCutsceneMeshesIfEligible(); } catch (e2) {}
+    try {
+      warmUpGameView();
+      flushGameViewRender();
+    } catch (e3) {}
+  };
+  void ensureSceneGlbsBootstrapped().then(pump).catch(() => { pump(); });
 }
 
 /**
@@ -35385,26 +35298,6 @@ function buildTutorialSteps() {
 
 let _pendingTutorialAfterHelp = false;
 
-/** After the help modal has been closed once, hide "Skip HUD tour" on later opens. */
-const GAME_HELP_ALREADY_OPENED_LS = 'pirates_game_help_already_opened_v1';
-
-function syncGameHelpSkipTutorialHudVisibility() {
-  const sb = document.getElementById('game-help-skip-tutorial-hud');
-  if (!sb) return;
-  let openedBefore = false;
-  try {
-    openedBefore = localStorage.getItem(GAME_HELP_ALREADY_OPENED_LS) === '1';
-  } catch (e) {}
-  sb.style.display = openedBefore ? 'none' : '';
-}
-
-function markGameHelpModalOpenedForSkipButton() {
-  try {
-    localStorage.setItem(GAME_HELP_ALREADY_OPENED_LS, '1');
-  } catch (e) {}
-  syncGameHelpSkipTutorialHudVisibility();
-}
-
 function gameHelpSetTab(tab) {
   document.querySelectorAll('#game-help-modal .game-help-tab').forEach(b => {
     const on = b.getAttribute('data-help-tab') === tab;
@@ -35434,7 +35327,6 @@ function openGameHelpModal(opts = {}) {
   root.style.display = 'flex';
   root.setAttribute('aria-hidden', 'false');
   document.getElementById('btn-help')?.classList.add('active');
-  syncGameHelpSkipTutorialHudVisibility();
   requestAnimationFrame(() => {
     syncGameHelpScrollbarThumb();
     requestAnimationFrame(() => syncGameHelpScrollbarThumb());
@@ -35446,7 +35338,6 @@ function closeGameHelpModal(options = {}) {
   const skipHudStartRaid = !!options.skipTutorialHudStartRaidAfterClose;
   const root = document.getElementById('game-help-modal');
   if (!root || root.style.display !== 'flex') return;
-  markGameHelpModalOpenedForSkipButton();
   root.style.display = 'none';
   root.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('game-help-mobile-minimal');
@@ -35467,7 +35358,6 @@ function dismissGameHelpForMainMenu() {
   document.getElementById('btn-help')?.classList.remove('help-welcome-pulse');
   document.getElementById('btn-help')?.classList.remove('active');
   const gh = document.getElementById('game-help-modal');
-  if (gh && gh.style.display === 'flex') markGameHelpModalOpenedForSkipButton();
   if (gh) {
     gh.style.display = 'none';
     gh.setAttribute('aria-hidden', 'true');
@@ -35957,7 +35847,7 @@ document.getElementById('tutorial-skip')?.addEventListener('click', () => {
   restoreMobileGameControls();
 });
 
-async function beginVoyageAfterCharacter() {
+function beginVoyageAfterCharacter() {
   if (!acquireGameTabLockOrExplain()) {
     resetDuplicateSessionOverlayCopy();
     showDuplicateSessionOverlay();
@@ -36004,11 +35894,6 @@ async function beginVoyageAfterCharacter() {
   G.player.riggingHealth = 100;
   G.player.morale = 100;
   trimCrewAndPrisonersToShipLimits();
-  try {
-    await ensureWorldGlbModelsLoaded();
-  } catch (eGl) {
-    try { console.warn('Voyage GLB preload', eGl); } catch (e1) {}
-  }
   updateChunks();
   initTownStockpiles();
   spawnNPCs();
@@ -36058,7 +35943,7 @@ function launchGame() {
     if (r) r.checked = true;
     if (pick) pick.style.display = 'flex';
   } else {
-    void beginVoyageAfterCharacter();
+    beginVoyageAfterCharacter();
   }
 }
 
@@ -36066,7 +35951,7 @@ document.getElementById('mobile-layout-confirm')?.addEventListener('click', () =
   const r = document.querySelector('input[name="mob-scheme"]:checked');
   G.mobileControlScheme = r ? Math.max(0, Math.min(3, parseInt(r.value, 10))) : 0;
   try { localStorage.setItem('pirates_mobile_scheme', String(G.mobileControlScheme)); } catch (e) {}
-  void beginVoyageAfterCharacter();
+  beginVoyageAfterCharacter();
 });
 
 document.getElementById('quest-toggle-btn')?.addEventListener('click', () => {
@@ -36845,26 +36730,16 @@ if (!hasSave) {
 updatePiratesPanel();
 noise = new SimplexNoise(G.worldSeed);
 if (!hasSave) ensurePlayerInOpenOcean();
+updateChunks();
+spawnNPCs();
+initMainMenuAttractor();
+nudgePlayerSpawnClearOfShips();
+syncDayNightVisuals(G.player.x, G.player.z);
 
 document.getElementById('ui-layer').style.display = 'none';
 document.getElementById('touch-controls').style.display = 'none';
 document.getElementById('touch-zoom').style.display = 'none';
 document.getElementById('touch-broadsides-layer').style.display = 'none';
-
-void (async () => {
-  try {
-    await ensureWorldGlbModelsLoaded();
-  } catch (eGl) {
-    try {
-      console.warn('Menu world GLB init', eGl);
-    } catch (e) {}
-  }
-  updateChunks();
-  spawnNPCs();
-  initMainMenuAttractor();
-  nudgePlayerSpawnClearOfShips();
-  syncDayNightVisuals(G.player.x, G.player.z);
-})();
 
 function menuRender() {
   if (G.mode !== 'playing') {
@@ -36952,34 +36827,38 @@ function menuRender() {
   }
   document.body.classList.add('game-boot-active');
   try { kickOffGameAssetPreload(); } catch (e) {}
-  let frames = 0;
-  function step() {
-    frames++;
-    if (sub && frames === 3) sub.textContent = 'Warming water, sky, and main menu…';
-    if (frames < 5) {
-      requestAnimationFrame(step);
-      return;
-    }
-    void (async () => {
-      try {
-        await ensureWorldGlbModelsLoaded({ subEl: sub });
-      } catch (eg) {
-        try {
-          console.warn('Boot GLB load', eg);
-        } catch (e) {}
-        if (sub) sub.textContent = 'Using fallback scenery…';
+
+  function waitRaf(n) {
+    return new Promise(resolve => {
+      let c = 0;
+      function tick() {
+        c++;
+        if (c < n) requestAnimationFrame(tick);
+        else resolve();
       }
-      if (sub) sub.textContent = 'Ready.';
-      setTimeout(() => {
-        if (el) {
-          el.style.display = 'none';
-          el.setAttribute('aria-hidden', 'true');
-        }
-        document.body.classList.remove('game-boot-active');
-      }, 140);
-    })();
+      requestAnimationFrame(tick);
+    });
   }
-  requestAnimationFrame(step);
+
+  void (async () => {
+    await waitRaf(5);
+    if (sub) sub.textContent = 'Fetching 3D landmarks, trees, and wildlife in parallel…';
+    try {
+      await ensureSceneGlbsBootstrapped();
+    } catch (e) {
+      try { console.warn('Scene GLB bootstrap', e); } catch (e2) {}
+      if (sub) sub.textContent = 'Continuing with reduced 3D detail…';
+      await new Promise(r => setTimeout(r, 520));
+    }
+    if (sub) sub.textContent = 'Ready.';
+    setTimeout(() => {
+      if (el) {
+        el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
+      }
+      document.body.classList.remove('game-boot-active');
+    }, 140);
+  })();
 })();
 menuRender();
 
@@ -37058,7 +36937,6 @@ function drawMenuBg() {
 
 document.getElementById('start-btn').onclick = () => {
   if (voyageSaveExistsInStorage()) {
-    void (async () => {
     if (!acquireGameTabLockOrExplain()) {
       resetDuplicateSessionOverlayCopy();
       showDuplicateSessionOverlay();
@@ -37083,11 +36961,6 @@ document.getElementById('start-btn').onclick = () => {
     destroyAmbientWildlife();
     noise = new SimplexNoise(G.worldSeed >>> 0);
     clampPlayerIntoWorldBounds();
-    try {
-      await ensureWorldGlbModelsLoaded();
-    } catch (eGl) {
-      try { console.warn('Continue voyage GLB preload', eGl); } catch (e0) {}
-    }
     updateChunks();
     {
       const st = G.player.shipType || 'sloop';
@@ -37120,7 +36993,6 @@ document.getElementById('start-btn').onclick = () => {
       syncMusicAndTravelVolume();
       notify('Progress restored');
     });
-    })();
   } else {
     document.getElementById('start-screen').style.display = 'none';
     document.getElementById('create-screen').style.display = 'block';
