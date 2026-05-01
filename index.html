@@ -23706,12 +23706,24 @@ function resolveGameAssetUrl(relPath) {
   const s = String(relPath);
   if (/^https?:\/\//i.test(s) || /^data:/i.test(s) || /^blob:/i.test(s)) return s;
   const clean = s.replace(/^\//, '').replace(/\\/g, '/');
-  const pathEncoded = clean
+  /* Never encode "?query" into a filename segment (e.g. items cache-bust "?v=5"). */
+  let pathOnly = clean;
+  let tail = '';
+  const qi = clean.indexOf('?');
+  const hi = clean.indexOf('#');
+  if (qi >= 0) {
+    pathOnly = clean.slice(0, qi);
+    tail = clean.slice(qi);
+  } else if (hi >= 0) {
+    pathOnly = clean.slice(0, hi);
+    tail = clean.slice(hi);
+  }
+  const pathEncoded = pathOnly
     .split('/')
     .map(seg => {
       if (seg === '') return '';
       try {
-        return encodeURIComponent(decodeURIComponent(seg));
+        return encodeURIComponent(decodeURIComponent(seg.replace(/\+/g, ' ')));
       } catch (_de) {
         return encodeURIComponent(seg);
       }
@@ -23725,10 +23737,10 @@ function resolveGameAssetUrl(relPath) {
     } else {
       base = window.location.href;
     }
-    return new URL(pathEncoded, base).href;
+    return new URL(pathEncoded + tail, base).href;
   } catch (e) {
     try {
-      return new URL(pathEncoded, window.location.origin + '/').href;
+      return new URL(pathEncoded + tail, window.location.origin + '/').href;
     } catch (e2) {
       return s;
     }

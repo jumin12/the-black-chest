@@ -1943,6 +1943,21 @@ function tryServeGameAssets(reqPath, res) {
   return true;
 }
 
+/** Incoming paths are RFC3986-percent-encoded (%20, commas in sfx filenames); disk uses decoded names (`3d models/`, punctuation). */
+function decodeHttpPathpathname(pathOnly) {
+  if (!pathOnly) return '/';
+  const segments = pathOnly.split('/');
+  for (let i = 0; i < segments.length; i++) {
+    if (!segments[i]) continue;
+    try {
+      segments[i] = decodeURIComponent(segments[i].replace(/\+/g, ' '));
+    } catch (_) { /* malformed escape — keep segment literal */ }
+  }
+  let out = segments.join('/');
+  if (!out.startsWith('/')) out = '/' + out;
+  return out;
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, CORS_HEADERS);
@@ -1950,7 +1965,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const reqPath = String(req.url || '').split('?')[0];
+  const pathnameRaw = String(req.url || '').split('?')[0].split('#')[0];
+  const reqPath = decodeHttpPathpathname(pathnameRaw);
 
   if (req.method === 'POST' && reqPath === '/api/navigator-auth') {
     readJsonBody(req).then(body => {
@@ -2136,6 +2152,42 @@ const server = http.createServer((req, res) => {
         + '</svg>'
       );
       sendSvg(svg);
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && reqPath === '/site.webmanifest') {
+    const fpMan = path.join(__dirname, 'site.webmanifest');
+    fs.readFile(fpMan, (err, data) => {
+      if (err) {
+        res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
+        res.end('Not found');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/manifest+json; charset=utf-8',
+        'Cache-Control': 'public, max-age=86400',
+        ...CORS_HEADERS
+      });
+      res.end(data);
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && reqPath === '/image-preload-worker.js') {
+    const fpW = path.join(__dirname, 'image-preload-worker.js');
+    fs.readFile(fpW, (err, data) => {
+      if (err) {
+        res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
+        res.end('Not found');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'public, max-age=86400',
+        ...CORS_HEADERS
+      });
+      res.end(data);
     });
     return;
   }
