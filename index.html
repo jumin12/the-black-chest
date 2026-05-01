@@ -7609,12 +7609,14 @@ function applyCustomMapPayload(data, statusEl) {
   G.townFlagMeshes = [];
   destroyAmbientWildlife();
   ensurePlayerInOpenOcean();
-  updateChunks();
-  spawnNPCs();
-  nudgePlayerSpawnClearOfShips();
-  scatterWindStreaksNearPlayer();
-  seedDecorativeWildlifeNearPlayer();
-  flushGameViewRender();
+  afterWorldGlbModelsHydrated(() => {
+    updateChunks();
+    spawnNPCs();
+    nudgePlayerSpawnClearOfShips();
+    scatterWindStreaksNearPlayer();
+    seedDecorativeWildlifeNearPlayer();
+    flushGameViewRender();
+  });
   if (statusEl) statusEl.textContent = 'Custom map active — terrain & ports from editor.';
   return true;
 }
@@ -19611,9 +19613,11 @@ function queueFetchServerWorldMap(rev) {
             });
           } else if (!G.customMap) {
             relocatePlayerNearProceduralArchipelago();
-            updateChunks();
-            nudgePlayerSpawnClearOfShips();
-            flushGameViewRender();
+            afterWorldGlbModelsHydrated(() => {
+              updateChunks();
+              nudgePlayerSpawnClearOfShips();
+              flushGameViewRender();
+            });
           }
         }
         return Promise.reject(new Error('map missing'));
@@ -19633,9 +19637,11 @@ function queueFetchServerWorldMap(rev) {
       if (runId !== serverWorldMapFetchToken) return;
       if (G.mode !== 'playing' || G.customMap || knownServerWorldMapRev <= 0) return;
       relocatePlayerNearProceduralArchipelago();
-      updateChunks();
-      nudgePlayerSpawnClearOfShips();
-      flushGameViewRender();
+      afterWorldGlbModelsHydrated(() => {
+        updateChunks();
+        nudgePlayerSpawnClearOfShips();
+        flushGameViewRender();
+      });
     });
 }
 
@@ -19945,28 +19951,30 @@ function applySharedWorldFromServerSeed(s, opts) {
   if (opts.relocateAfterDroppingServerChart && G.mode === 'playing' && !preservePos) {
     relocatePlayerNearProceduralArchipelago();
   }
-  updateChunks();
-  if (preservePos) {
-    G.player.x = saveX;
-    G.player.z = saveZ;
-    G.player.rotation = saveR;
-    clampPlayerIntoWorldBounds();
-    const st = G.player.shipType || 'sloop';
-    if (shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, st) || !hasMinClearanceFromLand(G.player.x, G.player.z, 42)) {
-      if (!nudgePlayerSavedPositionToValidSea(saveX, saveZ, saveR, st)) ensurePlayerInOpenOcean();
+  afterWorldGlbModelsHydrated(() => {
+    updateChunks();
+    if (preservePos) {
+      G.player.x = saveX;
+      G.player.z = saveZ;
+      G.player.rotation = saveR;
+      clampPlayerIntoWorldBounds();
+      const st = G.player.shipType || 'sloop';
+      if (shipFootprintOverlapsLand(G.player.x, G.player.z, G.player.rotation, st) || !hasMinClearanceFromLand(G.player.x, G.player.z, 42)) {
+        if (!nudgePlayerSavedPositionToValidSea(saveX, saveZ, saveR, st)) ensurePlayerInOpenOcean();
+      }
     }
-  }
-  spawnNPCs({ preserveLocalTutorialRaid: true });
-  nudgePlayerSpawnClearOfShips();
-  scatterWindStreaksNearPlayer();
-  seedDecorativeWildlifeNearPlayer();
-  flushGameViewRender();
-  if (!opts.skipServerMapReapply && knownServerWorldMapRev > 0 && G.mode === 'playing') {
-    queueFetchServerWorldMap(knownServerWorldMapRev);
-  }
-  if (G.mode === 'playing' && ws && ws.readyState === 1) {
-    try { ws.send(JSON.stringify({ type: 'get_leaderboard' })); } catch (e) {}
-  }
+    spawnNPCs({ preserveLocalTutorialRaid: true });
+    nudgePlayerSpawnClearOfShips();
+    scatterWindStreaksNearPlayer();
+    seedDecorativeWildlifeNearPlayer();
+    flushGameViewRender();
+    if (!opts.skipServerMapReapply && knownServerWorldMapRev > 0 && G.mode === 'playing') {
+      queueFetchServerWorldMap(knownServerWorldMapRev);
+    }
+    if (G.mode === 'playing' && ws && ws.readyState === 1) {
+      try { ws.send(JSON.stringify({ type: 'get_leaderboard' })); } catch (e) {}
+    }
+  });
 }
 function startServerSeedPrefetch() {
   prefetchedServerSeed = null;
@@ -19989,10 +19997,12 @@ function startServerSeedPrefetch() {
               playWorldNetTimeoutId = null;
             }
             noise = new SimplexNoise(G.worldSeed);
-            updateChunks();
-            spawnNPCs();
-            scatterWindStreaksNearPlayer();
-            flushGameViewRender();
+            afterWorldGlbModelsHydrated(() => {
+              updateChunks();
+              spawnNPCs();
+              scatterWindStreaksNearPlayer();
+              flushGameViewRender();
+            });
           }
         }
       }
@@ -23885,6 +23895,12 @@ function getWorldGlbTemplate(relPath) {
   return _worldGlbTemplates.get(String(relPath)) || null;
 }
 
+function worldGlbParserBasePath(assetHref) {
+  if (!assetHref || typeof assetHref !== 'string') return '';
+  const i = assetHref.lastIndexOf('/');
+  return i < 0 ? './' : assetHref.slice(0, i + 1);
+}
+
 function annotateWorldGlbTemplateShadows(root) {
   root.traverse((o) => {
     if (o.isMesh) {
@@ -24004,11 +24020,13 @@ async function ensureWorldGlbModelsLoaded(statusOpt) {
     if (subEl) subEl.textContent = 'Parsing 3D models…';
     for (let i = 0; i < rels.length; i++) {
       try {
+        const assetHref = resolveGameAssetUrl(rels[i]);
+        const pathBase = worldGlbParserBasePath(assetHref);
         const gltf = await new Promise((resolve, reject) => {
           try {
             loader.parse(
               buffers[i],
-              '',
+              pathBase || './',
               (g) => resolve(g),
               (err) => reject(err || new Error('gltf parse'))
             );
@@ -24037,6 +24055,23 @@ async function ensureWorldGlbModelsLoaded(statusOpt) {
     } catch (e2) {}
     throw e;
   }
+}
+
+/**
+ * `generateIsland` caches chunk keys forever; terrain/ports must not be built until world GLB templates exist
+ * (otherwise procedural fallbacks stick). Use this before any path that clears islands and calls `updateChunks`.
+ */
+function afterWorldGlbModelsHydrated(run) {
+  const go = () => {
+    try {
+      run();
+    } catch (e) {
+      try {
+        console.warn('afterWorldGlbModelsHydrated', e);
+      } catch (e2) {}
+    }
+  };
+  void ensureWorldGlbModelsLoaded().then(go).catch(go);
 }
 
 let _gameImagePreloadWorker = null;
