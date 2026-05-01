@@ -1860,8 +1860,12 @@ process.on('SIGTERM', () => {
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type'
+};
+/** Extra headers for Workers / anonymous fetches loading `/assets/` (paired with credentials:'omit'). */
+const STATIC_CROSS_ORIGIN_HEADERS = {
+  'Cross-Origin-Resource-Policy': 'cross-origin'
 };
 
 function setWorldSeedAndPersist(newSeed) {
@@ -1932,11 +1936,14 @@ function sendAssetFile(filePath, res) {
       return;
     }
     warnIfServingGlbLfsPointer(filePath, data);
-    res.writeHead(200, {
+    const headers = {
       'Content-Type': mimeTypeForFile(filePath),
+      'Content-Length': data.length,
       'Cache-Control': 'public, max-age=3600',
-      ...CORS_HEADERS
-    });
+      ...CORS_HEADERS,
+      ...STATIC_CROSS_ORIGIN_HEADERS
+    };
+    res.writeHead(200, headers);
     res.end(data);
   });
 }
@@ -1944,16 +1951,18 @@ function sendAssetFile(filePath, res) {
  * Important: browsers send URL-encoded paths (spaces as %20); Node's req.url stays encoded,
  * so we must decode before mapping to filenames or folders like `assets/3d models/...`.
  */
-function tryServeGameAssets(reqPath, res) {
-  if (!reqPath.startsWith('/assets/')) return false;
-  let rel;
+function tryServeGameAssets(method, reqPath, res) {
+  if (method !== 'GET' && method !== 'HEAD') return false;
+  let localPath = reqPath;
   try {
-    rel = decodeURIComponent(reqPath.slice(1));
+    localPath = decodeURIComponent(reqPath);
   } catch (e) {
     res.writeHead(400, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
     res.end('Bad asset path encoding');
     return true;
   }
+  if (!localPath.startsWith('/assets/')) return false;
+  const rel = localPath.replace(/\\/g, '/').slice(1);
   const resolved = path.resolve(__dirname, rel);
   const prefix = ASSETS_ROOT + path.sep;
   if (resolved !== ASSETS_ROOT && !resolved.startsWith(prefix)) {
@@ -1965,6 +1974,17 @@ function tryServeGameAssets(reqPath, res) {
     if (err || !st.isFile()) {
       res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
       res.end('Not found');
+      return;
+    }
+    if (method === 'HEAD') {
+      res.writeHead(200, {
+        'Content-Type': mimeTypeForFile(resolved),
+        'Content-Length': st.size,
+        'Cache-Control': 'public, max-age=3600',
+        ...CORS_HEADERS,
+        ...STATIC_CROSS_ORIGIN_HEADERS
+      });
+      res.end();
       return;
     }
     sendAssetFile(resolved, res);
@@ -2198,7 +2218,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && tryServeRepoRootStatic(req.method, reqPath, res)) return;
 
-  if (req.method === 'GET' && tryServeGameAssets(reqPath, res)) return;
+  if ((req.method === 'GET' || req.method === 'HEAD') && tryServeGameAssets(req.method, reqPath, res)) return;
 
   if (reqPath === '/' || reqPath === '/index.html') {
     fs.readFile(path.join(__dirname, 'index.html'), (err, data) => {

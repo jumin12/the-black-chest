@@ -11,7 +11,18 @@ self.onmessage = async (evt) => {
     return;
   }
   try {
-    const res = await fetch(String(url), { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' });
+    /**
+     * Omit credentials: DedicatedWorkers from blob: URLs have an opaque origin; with
+     * `Access-Control-Allow-Origin: *` the server rejects credentialed CORS reads.
+     * Same-origin file/http pages still succeed with cors+omit for anonymous assets.
+     */
+    const res = await fetch(String(url), {
+      cache: 'force-cache',
+      mode: 'cors',
+      credentials: 'omit',
+      redirect: 'follow',
+      referrerPolicy: 'same-origin'
+    });
     if (!res.ok) {
       self.postMessage({ id, ok: false, err: String(res.status), statusText: String(res.statusText || '') });
       return;
