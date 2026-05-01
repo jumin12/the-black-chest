@@ -7666,6 +7666,8 @@ const PIER_DECK_WIDTH = 5;
 const PIER_LAND_HALF = 4.15;
 const PIER_SEA_HALF = 11.9;
 const PIER_TOTAL_LEN = PIER_LAND_HALF + PIER_SEA_HALF;
+/** Multiply dock mesh (GLB + fallback plank) footprint — larger berth without retuning shoreline math. */
+const PIER_MESH_VISUAL_SCALE = 1.34;
 /** After shoreline placement, shift the stored dock center seaward so `dockX/Z` matches pier mesh center. */
 const PIER_MESH_CENTER_SHIFT = (PIER_SEA_HALF - PIER_LAND_HALF) * 0.5;
 
@@ -9812,15 +9814,12 @@ function createPalmTree(x, y, z, rng, yawOverride) {
   return g;
 }
 
-/**
- * Underwater `jaggedrocks*.glb` only — no generic procedural boulder meshes.
- * Pivot is planted on the ocean floor plane (`seaBedY`).
- */
-function createJaggedSeabedRock(x, seaBedY, z, s, rng) {
+/** Underwater jaggedrock GLBs only (no generic procedural boulder). Returns `null` until assets decode. */
+function createRock(x, y, z, s, rng) {
   const r = decoRand(rng);
   const rel = r() < 0.52 ? 'assets/3d models/decorations/jaggedrocks1.glb' : 'assets/3d models/decorations/jaggedrocks2.glb';
   const span = (s || 0.85) * 2.95;
-  const pt = plantGlbFootprintPivotForRel(rel, x, seaBedY, z, r() * Math.PI * 2, span * 3.15, span * 2.4, span * 3.15, 0.92);
+  const pt = plantGlbFootprintPivotForRel(rel, x, y, z, r() * Math.PI * 2, span * 3.15, span * 2.4, span * 3.15, 0.92);
   return pt || null;
 }
 
@@ -9851,17 +9850,17 @@ function createBarrel(x, y, z, rng) {
     y,
     z,
     r() * Math.PI * 2,
-    1.68,
-    1.74,
-    1.68,
+    1.72,
+    1.78,
+    1.72,
     0.94
   );
   if (pt) return pt;
   const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.54, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
-    body.position.y = 0.27; body.castShadow = true; g.add(body);
-  const band = new THREE.Mesh(new THREE.TorusGeometry(0.23, 0.026, 4, 10), new THREE.MeshLambertMaterial({ color: 0x222222 }));
-  band.position.y = 0.21; band.rotation.x = Math.PI / 2; g.add(band);
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.22, 0.52, 8), new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
+  body.position.y = 0.26; body.castShadow = true; g.add(body);
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.022, 4, 10), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+  band.position.y = 0.2; band.rotation.x = Math.PI / 2; g.add(band);
   g.position.set(x, y, z); g.rotation.y = r() * Math.PI * 2;
   return g;
 }
@@ -9964,10 +9963,10 @@ function addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rn
   }
   const relUse = rel || houseRel;
   const houseFit = type === 'house';
-  const tgtW = bW * (houseFit ? 1.22 : 1.16),
-    tgtH = bH * (houseFit ? 1.48 : 1.32),
-    tgtD = bD * (houseFit ? 1.22 : 1.12);
-  const padUse = houseFit ? 0.878 : 0.925;
+  const tgtW = bW * (houseFit ? 1.24 : 1.2),
+    tgtH = bH * (houseFit ? 1.5 : 1.36),
+    tgtD = bD * (houseFit ? 1.24 : 1.18);
+  const padUse = houseFit ? 0.885 : 0.93;
   let pt =
     type === 'house'
       ? tryPlantHouseGlbFootprintVariants(bx, baseY, bz, yawPlant, tgtW, tgtH, tgtD, padUse, houseRel)
@@ -9989,13 +9988,13 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
   const r = decoRand(rng);
   let bW, bD, bH, wallHex, roofStyle;
   if (type === 'church') {
-    bW = 4.05; bD = 8.1; bH = 7.5; wallHex = 0xd8d4cc; roofStyle = 'slate';
+    bW = 3.45; bD = 6.9; bH = 6.35; wallHex = 0xd8d4cc; roofStyle = 'slate';
   } else if (type === 'tavern') {
-    bW = 8.25; bD = 6.55; bH = 5.15; wallHex = 0x8f6e4e; roofStyle = 'hip';
+    bW = 7.2; bD = 5.65; bH = 4.35; wallHex = 0x8f6e4e; roofStyle = 'hip';
   } else if (type === 'governor') {
-    bW = 9.95; bD = 8.2; bH = 7.2; wallHex = 0xeee6da; roofStyle = 'flat';
+    bW = 8.65; bD = 7.1; bH = 6.1; wallHex = 0xeee6da; roofStyle = 'flat';
   } else {
-    bW = (2.5 + r() * 1.8) * 1.38; bD = bW * (0.88 + r() * 0.14); bH = (2.35 + r() * 1.35) * 1.36;
+    bW = 3.15 + r() * 2.25; bD = bW * (0.88 + r() * 0.14); bH = 2.95 + r() * 1.65;
     wallHex = [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868][Math.floor(r() * 5)];
     roofStyle = 'hip';
   }
@@ -10272,7 +10271,7 @@ function generateCustomMapChunk(cx, cz) {
       const baseOff = 0.08;
       const baseY = surf + baseOff;
       const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 3)) + '.glb';
-      const planted = tryPlantHouseGlbFootprintVariants(e.x, baseY, e.z, rot, bW * 1.54, bH * 1.68, bW * 1.52, 0.92, rel);
+      const planted = tryPlantHouseGlbFootprintVariants(e.x, baseY, e.z, rot, bW * 1.38, bH * 1.52, bW * 1.38, 0.92, rel);
       if (planted) group.add(planted);
       else try { console.warn('Custom map entity building: missing house*.glb', e.id != null ? e.id : ei, rel); } catch (_) {}
     } else if (e.type === 'house') {
@@ -10281,7 +10280,7 @@ function generateCustomMapChunk(cx, cz) {
       const wallH = e.houseWallH != null ? Number(e.houseWallH) : (2.05 + er0() * 0.35);
       const yaw = e.rot != null ? Number(e.rot) : 0;
       const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 3)) + '.glb';
-      const planted = tryPlantHouseGlbFootprintVariants(e.x, surf + 0.06, e.z, yaw, Math.max(w, d) * 1.48, wallH + 3.05, Math.max(w, d) * 1.42, 0.92, rel);
+      const planted = tryPlantHouseGlbFootprintVariants(e.x, surf + 0.06, e.z, yaw, Math.max(w, d) * 1.36, wallH + 3.05, Math.max(w, d) * 1.34, 0.92, rel);
       if (planted) group.add(planted);
       else try { console.warn('Custom map entity house: missing house*.glb', e.id != null ? e.id : ei, rel); } catch (_) {}
     } else if (e.type === 'dock') {
@@ -10297,7 +10296,7 @@ function generateCustomMapChunk(cx, cz) {
         const dx0 = Math.max(box0.max.x - box0.min.x, 1e-3);
         const dy0 = Math.max(box0.max.y - box0.min.y, 1e-3);
         const dz0 = Math.max(box0.max.z - box0.min.z, 1e-3);
-        const uDock = Math.min((PIER_DECK_WIDTH * 1.02) / dx0, (PIER_TOTAL_LEN * 1.02) / dz0, (PIER_DECK_WIDTH * 0.55 + 1.05) / dy0) * 0.98 * 1.36;
+        const uDock = Math.min((PIER_DECK_WIDTH * 1.02) / dx0, (PIER_TOTAL_LEN * 1.02) / dz0, (PIER_DECK_WIDTH * 0.55 + 1.05) / dy0) * 0.98 * PIER_MESH_VISUAL_SCALE;
         tpl.scale.multiplyScalar(uDock);
         tpl.updateMatrixWorld(true);
         const b1 = new THREE.Box3().setFromObject(tpl);
@@ -10312,7 +10311,7 @@ function generateCustomMapChunk(cx, cz) {
         dockDocked = true;
       }
       if (!dockDocked) {
-        const dock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.45, PIER_TOTAL_LEN), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+        const dock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH * PIER_MESH_VISUAL_SCALE, 0.45, PIER_TOTAL_LEN * PIER_MESH_VISUAL_SCALE), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
         dock.position.set(e.x, dockDeckY, e.z);
         dock.rotation.y = ang;
         dock.receiveShadow = true; dock.castShadow = true;
@@ -10331,11 +10330,11 @@ function generateCustomMapChunk(cx, cz) {
       flag.position.set(e.x + 1.05, surf + 8.6, e.z);
       group.add(flag);
     } else if (e.type === 'rock') {
-      if (surf > SEA_LEVEL + 0.22) continue;
       const s = e.scale != null ? Number(e.scale) : 0.8;
-      const seabedY = SEABED_VISUAL_Y + 0.05 + Math.min(0.35, s * 0.04);
-      const rk = createJaggedSeabedRock(e.x, seabedY, e.z, s, er);
-      if (rk) group.add(rk);
+      const lift = e.yLift != null ? Number(e.yLift) : 0;
+      const seabedY = SEA_LEVEL + PROC_SEABED_Y + 0.1 + lift;
+      const rockMesh = createRock(e.x, seabedY, e.z, s, er);
+      if (rockMesh) group.add(rockMesh);
     } else if (e.type === 'barrel') {
       group.add(createBarrel(e.x, surf + 0.02, e.z, er));
     } else if (e.type === 'driftwood') {
@@ -10494,18 +10493,20 @@ function generateIsland(cx, cz) {
     group.add(createBush(worldX + bx, SEA_LEVEL + by + 0.02, worldZ + bz, 0.28 + rng() * 0.42, rng));
   }
 
-  /** Jagged rocks only — ring around shoreline on the seabed (not atop terrain). */
-  const seabedRockCount = Math.floor((5 + h * 14) * decorScale);
-  for (let sr = 0; sr < seabedRockCount; sr++) {
-    const a = ln.noise2D(sr * 0.55, 310) * Math.PI * 2;
-    const rad = islandRadius * (0.94 + Math.abs(ln.noise2D(sr * 0.48, 311)) * 0.78);
-    const rx = Math.cos(a) * rad;
-    const rz = Math.sin(a) * rad;
-    const nd = proceduralIslandNormDistCore(rx, rz, worldX, worldZ, islandRadius, islandNoise);
-    if (nd < 0.96 || nd > 1.4) continue;
-    const seabedY = SEABED_VISUAL_Y + 0.04 + rng() * 0.1;
-    const rr = createJaggedSeabedRock(worldX + rx, seabedY, worldZ + rz, 0.52 + rng() * 1.45, rng);
-    if (rr) group.add(rr);
+  const rockTarget = Math.floor((3 + h * 15) * decorScale);
+  let rocksPlaced = 0;
+  for (let ri = 0; ri < rockTarget * 10 && rocksPlaced < rockTarget; ri++) {
+    const a = ln.noise2D(ri * 0.5, 10) * Math.PI * 2;
+    const rad = (0.86 + Math.abs(ln.noise2D(ri * 0.4, 11)) * 0.62) * islandRadius;
+    const rx = Math.cos(a) * rad, rz = Math.sin(a) * rad;
+    const landHt = sampleIslandLandHeight(rx, rz, worldX, worldZ, islandRadius, islandHeight, islandNoise);
+    if (landHt >= 0) continue;
+    const floorY = SEA_LEVEL + PROC_SEABED_Y + 0.12;
+    const rockMesh = createRock(worldX + rx, floorY, worldZ + rz, 0.42 + rng() * 1.15, rng);
+    if (rockMesh) {
+      group.add(rockMesh);
+      rocksPlaced++;
+    }
   }
 
   const driftN = Math.floor((2 + h * 7 + islandRadius * 0.05) * decorScale);
@@ -10604,7 +10605,7 @@ function generateIsland(cx, cz) {
       const dx0 = Math.max(box0.max.x - box0.min.x, 1e-3);
       const dy0 = Math.max(box0.max.y - box0.min.y, 1e-3);
       const dz0 = Math.max(box0.max.z - box0.min.z, 1e-3);
-      const uDock = Math.min((PIER_DECK_WIDTH * 1.02) / dx0, (PIER_TOTAL_LEN * 1.02) / dz0, (PIER_DECK_WIDTH * 0.55 + 1.2) / dy0) * 0.98 * 1.36;
+      const uDock = Math.min((PIER_DECK_WIDTH * 1.02) / dx0, (PIER_TOTAL_LEN * 1.02) / dz0, (PIER_DECK_WIDTH * 0.55 + 1.2) / dy0) * 0.98 * PIER_MESH_VISUAL_SCALE;
       dockTpl.scale.multiplyScalar(uDock);
       dockTpl.updateMatrixWorld(true);
       const b1 = new THREE.Box3().setFromObject(dockTpl);
@@ -10621,7 +10622,7 @@ function generateIsland(cx, cz) {
       dockAdded = true;
     }
     if (!dockAdded) {
-      const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.4, PIER_TOTAL_LEN);
+      const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH * PIER_MESH_VISUAL_SCALE, 0.4, PIER_TOTAL_LEN * PIER_MESH_VISUAL_SCALE);
       const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
       const dock = new THREE.Mesh(dockGeo, dockMat);
       dock.position.set(dockX, dockCenterY, dockZ);
@@ -24064,7 +24065,7 @@ let _sceneGlbIslandRefreshDebounce = null;
 
 function scheduleDebouncedRefreshVisibleIslandsForSceneGlbs(ms) {
   const delay = Number(ms);
-  const dly = Number.isFinite(delay) && delay >= 0 ? delay : 120;
+  const dly = Number.isFinite(delay) && delay >= 0 ? delay : 200;
   if (_sceneGlbIslandRefreshDebounce) clearTimeout(_sceneGlbIslandRefreshDebounce);
   _sceneGlbIslandRefreshDebounce = setTimeout(() => {
     _sceneGlbIslandRefreshDebounce = null;
@@ -24097,7 +24098,14 @@ function arrayBufferLooksLikeBinaryGlb(ab) {
 }
 
 /**
- * Parallel main-thread `.glb` fetches — fallback when workers miss tasks or hosts block `worker-src`.
+ * Parallel main-thread `.glb` fetches — same semantics as ordinary page `fetch()` (why “other sites work”).
+ *
+ * Dedicated Workers were removed from this hot path because they often fail silently on some hosts
+ * (CSP `worker-src`, blob-worker edge cases after fetch failure, CDN strips worker scripts, mobile
+ * Data Saver quirks). Those failures left `buffers[rel]` empty while DevTools fetch from the Window
+ * still looked fine during manual testing.
+ *
+ * Parsing stays on main thread (GLTFLoader); only the byte download was ever parallelised.
  */
 async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent, fetchOptsOverride) {
   const out = Object.create(null);
@@ -24123,176 +24131,9 @@ async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent, fetchOptsOver
     }
   };
   const cap = Number(maxConcurrent);
-  const nRuns = Math.min(Math.max(2, Number.isFinite(cap) ? Math.floor(cap) : 8), 24, Math.max(1, list.length));
+  const nRuns = Math.min(Math.max(2, Number.isFinite(cap) ? Math.floor(cap) : 8), 16, Math.max(1, list.length));
   await Promise.all(Array.from({ length: nRuns }, () => pump()));
   return out;
-}
-
-/**
- * Multi-worker `.glb` fetch — DedicatedWorkers overlap network + wasm decode latency off the UI thread.
- * Each task settles exactly once; worker `onerror` accounts for stuck jobs; deadline + hybrid fill prevents hangs.
- */
-async function fetchGlbArrayBuffersWorkerPool(rels, maxWorkers, fetchOptsOverride) {
-  const out = Object.create(null);
-  if (!rels || !rels.length) return out;
-  const tasks = rels.map((rel) => ({ rel, url: resolveGameAssetUrl(rel) }));
-  const fetchOpts =
-    fetchOptsOverride && typeof fetchOptsOverride === 'object'
-      ? fetchOptsOverride
-      : { cache: 'default', mode: 'cors', credentials: 'omit', redirect: 'follow' };
-  const nW = Math.max(2, Math.min(maxWorkers || 6, tasks.length, 14));
-  const codeHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
-  const POOL_DEADLINE_MS = 95000;
-
-  const workers = [];
-  let blobUrlHold = null;
-  try {
-    for (let wi = 0; wi < nW; wi++) workers.push(new Worker(codeHref));
-  } catch (_) {
-    try {
-      const js = await fetch(codeHref, {
-        cache: 'force-cache',
-        mode: 'cors',
-        credentials: 'omit',
-        redirect: 'follow'
-      }).then((r) => r.text());
-      blobUrlHold = URL.createObjectURL(new Blob([js], { type: 'application/javascript' }));
-      for (let wi = 0; wi < nW; wi++) workers.push(new Worker(blobUrlHold));
-    } catch (_) {
-      return out;
-    }
-  }
-  if (!workers.length) return out;
-
-  const q = tasks.slice();
-  let nextId = 1;
-  const inbox = new Map();
-  const inflight = new Array(workers.length).fill(null);
-  let completed = 0;
-  const targetN = tasks.length;
-  let resolveAll = null;
-  const allTasksAccounted = new Promise((r) => {
-    resolveAll = r;
-  });
-
-  function bump() {
-    completed++;
-    if (completed >= targetN && typeof resolveAll === 'function') {
-      try {
-        resolveAll();
-      } catch (_) {}
-      resolveAll = null;
-    }
-  }
-
-  function pumpWorker(wi) {
-    const task = q.shift();
-    if (!task) return;
-    const id = nextId++;
-    inbox.set(id, task);
-    inflight[wi] = id;
-    try {
-      workers[wi].postMessage({ id, url: task.url, fetchInit: fetchOpts }, []);
-    } catch (pe) {
-      inbox.delete(id);
-      inflight[wi] = null;
-      q.unshift(task);
-      try {
-        console.warn('GLB worker postMessage', task.rel, pe);
-      } catch (_) {}
-      recoverWorkerSlot(wi);
-    }
-  }
-
-  function recoverWorkerSlot(wi) {
-    try {
-      workers[wi].terminate();
-    } catch (_) {}
-    try {
-      workers[wi] = blobUrlHold ? new Worker(blobUrlHold) : new Worker(codeHref);
-      workers[wi].onmessage = makeOnMessage(wi);
-      workers[wi].onerror = makeOnError(wi);
-    } catch (_) {
-      return;
-    }
-    pumpWorker(wi);
-  }
-
-  function makeOnMessage(wi) {
-    return (ev) => {
-      const d = ev.data || {};
-      const id = d.id;
-      const slot = inbox.get(id);
-      if (!slot) return;
-      inbox.delete(id);
-      inflight[wi] = null;
-      if (d.ok && d.ab) out[slot.rel] = d.ab;
-      else try { console.warn('GLB worker fetch failed', slot.rel, d.err || ''); } catch (_) {}
-      bump();
-      pumpWorker(wi);
-    };
-  }
-
-  function makeOnError(wi) {
-    return () => {
-      try {
-        console.warn('glb-fetch-worker runtime error; recovering slot', wi);
-      } catch (_) {}
-      const stuck = inflight[wi];
-      inflight[wi] = null;
-      if (stuck != null && inbox.has(stuck)) {
-        inbox.delete(stuck);
-        bump();
-      }
-      recoverWorkerSlot(wi);
-    };
-  }
-
-  for (let wi = 0; wi < workers.length; wi++) {
-    workers[wi].onmessage = makeOnMessage(wi);
-    workers[wi].onerror = makeOnError(wi);
-  }
-  for (let wi = 0; wi < workers.length; wi++) pumpWorker(wi);
-
-  try {
-    await Promise.race([
-      allTasksAccounted,
-      new Promise((r) => setTimeout(r, POOL_DEADLINE_MS))
-    ]);
-  } finally {
-    for (let wi = 0; wi < workers.length; wi++) {
-      try {
-        workers[wi].terminate();
-      } catch (_) {}
-    }
-    if (blobUrlHold) {
-      setTimeout(() => {
-        try {
-          URL.revokeObjectURL(blobUrlHold);
-        } catch (_) {}
-      }, 3200);
-    }
-    if (completed < targetN) {
-      try {
-        console.warn('[Scene GLB] Worker pool incomplete', completed + '/' + targetN, '— window.fetch will fill gaps');
-      } catch (_) {}
-    }
-  }
-  return out;
-}
-
-/** Workers first; main-thread concurrent fetch catches misses (blocked workers / timeout / transient errors). */
-async function fetchGlbArrayBuffersHybrid(rels, maxConcurrent, fetchOptsOverride) {
-  const workerSlots = Math.min(12, Math.max(4, Math.floor((_deviceCores || 8) * 0.72)));
-  const wOut = await fetchGlbArrayBuffersWorkerPool(rels, workerSlots, fetchOptsOverride);
-  const missing = rels.filter((r) => !wOut[r]);
-  if (!missing.length) return wOut;
-  const fb = await fetchGlbArrayBuffersConcurrent(missing, maxConcurrent, fetchOptsOverride);
-  for (let i = 0; i < missing.length; i++) {
-    const k = missing[i];
-    if (fb[k]) wOut[k] = fb[k];
-  }
-  return wOut;
 }
 
 /**
@@ -24356,51 +24197,35 @@ async function parseSceneGlbIntoTemplates(rel, ab) {
   }
 }
 
-/**
- * Parses many scenic `.glb` buffers with limited parallelism — overlaps Draco/decoding waits vs strict serial.
- */
-async function parseSceneGlbBuffersInParallel(rels, buffers, parallel) {
-  if (!rels || !rels.length) return;
-  let qi = 0;
-  const n = Math.min(Math.max(2, Number(parallel) | 0), 12, Math.max(1, rels.length));
-  const worker = async () => {
-    for (;;) {
-      const j = qi++;
-      if (j >= rels.length) break;
-      const rel = rels[j];
-      const ab = buffers[rel];
-      if (!ab) {
-        try { console.warn('Scene GLB missing (no buffer)', rel); } catch (_) {}
-        continue;
-      }
-      await parseSceneGlbIntoTemplates(rel, ab);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.max(1, n) }, () => worker()));
-}
-
 function ensureSceneGlbsBootstrapped() {
   if (_sceneGlbBootstrapPromise) return _sceneGlbBootstrapPromise;
   const run = async () => {
     try {
       await attachGltfBootstrapDecoders(renderer);
       const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
-      const fetchConc = Math.min(22, Math.max(10, (_deviceCores || 8) * 2));
-      const parseConc = Math.min(9, Math.max(4, Math.floor((_deviceCores || 8) * 0.85)));
-      const buffers = await fetchGlbArrayBuffersHybrid(rels, fetchConc);
-      await parseSceneGlbBuffersInParallel(rels, buffers, parseConc);
+      const maxW = Math.min(16, Math.max(6, _deviceCores || 8));
+      const buffers = await fetchGlbArrayBuffersConcurrent(rels, maxW);
+      for (let i = 0; i < rels.length; i++) {
+        const rel = rels[i];
+        const ab = buffers[rel];
+        if (!ab) {
+          try { console.warn('Scene GLB missing (no buffer)', rel); } catch (_) {}
+          continue;
+        }
+        await parseSceneGlbIntoTemplates(rel, ab);
+      }
       const missingAfterFirst = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
       if (missingAfterFirst.length) {
         try {
           console.warn('[Scene GLB] Retrying fetch/parse for', missingAfterFirst.length, 'asset(s) (cache reload)…');
         } catch (_) {}
         const reloadOpts = { cache: 'reload', mode: 'cors', credentials: 'omit', redirect: 'follow' };
-        const bufRetry = await fetchGlbArrayBuffersHybrid(
-          missingAfterFirst,
-          Math.min(14, Math.max(6, Math.floor(fetchConc * 0.65))),
-          reloadOpts
-        );
-        await parseSceneGlbBuffersInParallel(missingAfterFirst, bufRetry, Math.max(3, parseConc - 1));
+        const bufRetry = await fetchGlbArrayBuffersConcurrent(missingAfterFirst, Math.min(8, Math.max(2, Math.floor(maxW / 2))), reloadOpts);
+        for (let j = 0; j < missingAfterFirst.length; j++) {
+          const rel = missingAfterFirst[j];
+          if (_gameGlbParsedSceneTemplates[rel]) continue;
+          await parseSceneGlbIntoTemplates(rel, bufRetry[rel]);
+        }
       }
       const stillMissing = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
       const okN = rels.length - stillMissing.length;
@@ -24453,7 +24278,7 @@ function ensureSceneGlbsBootstrapped() {
         } catch (_) {}
       }
       if (Object.keys(_gameGlbParsedSceneTemplates).length > 0) {
-        scheduleDebouncedRefreshVisibleIslandsForSceneGlbs(140);
+        scheduleDebouncedRefreshVisibleIslandsForSceneGlbs(220);
       }
     } catch (eu) {
       try { console.warn('Scene GLB bootstrap fatal:', eu); } catch (_) {}
