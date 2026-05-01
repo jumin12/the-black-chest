@@ -1939,10 +1939,20 @@ function sendAssetFile(filePath, res) {
     res.end(data);
   });
 }
-/** GET /assets/... only; blocks path traversal. */
+/** GET /assets/... only; blocks path traversal.
+ * Important: browsers send URL-encoded paths (spaces as %20); Node's req.url stays encoded,
+ * so we must decode before mapping to filenames or folders like `assets/3d models/...`.
+ */
 function tryServeGameAssets(reqPath, res) {
   if (!reqPath.startsWith('/assets/')) return false;
-  const rel = reqPath.slice(1);
+  let rel;
+  try {
+    rel = decodeURIComponent(reqPath.slice(1));
+  } catch (e) {
+    res.writeHead(400, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
+    res.end('Bad asset path encoding');
+    return true;
+  }
   const resolved = path.resolve(__dirname, rel);
   const prefix = ASSETS_ROOT + path.sep;
   if (resolved !== ASSETS_ROOT && !resolved.startsWith(prefix)) {
