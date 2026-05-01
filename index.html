@@ -9537,7 +9537,16 @@ function cloneParsedGlbTree(relPath) {
   const src = relPath ? _gameGlbParsedSceneTemplates[relPath] : null;
   if (!src) return null;
   try {
-    return src.clone(true);
+    const out = src.clone(true);
+    out.traverse((node) => {
+      if (!node.isMesh || !node.material) return;
+      if (Array.isArray(node.material)) {
+        node.material = node.material.map((mm) => (mm && mm.clone ? mm.clone() : mm));
+      } else if (node.material.clone) {
+        node.material = node.material.clone();
+      }
+    });
+    return out;
   } catch (e0) {
     try { console.warn('cloneParsedGlbTree', relPath, e0); } catch (e1) {}
     return null;
@@ -9573,41 +9582,44 @@ function glbExternalResourceBaseUrl(relPath) {
   }
 }
 
-/** Set sRGB vs linear texture color spaces — fixes dull/wrong-tint meshes after parse when maps default wrong. */
+/**
+ * Light touch-up after GLTFLoader: do not force LinearSRGB onto normal/ORM maps (breaks shading / “broken” look).
+ * Only fix clearly wrong assignments (e.g. data maps tagged sRGB) and unset color maps.
+ */
 function enhanceImportedGlbMaterials(root) {
   if (!root || !THREE || THREE.SRGBColorSpace === undefined) return;
   const SRGB = THREE.SRGBColorSpace;
-  const LINEAR = THREE.LinearSRGBColorSpace;
+  const DATA = THREE.NoColorSpace !== undefined ? THREE.NoColorSpace : THREE.LinearSRGBColorSpace;
   root.traverse((obj) => {
     if (!obj.isMesh) return;
     const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
     for (let mi = 0; mi < mats.length; mi++) {
       const m = mats[mi];
       if (!m) continue;
-      const setSrgb = (t) => {
-        if (t && t.isTexture && t.colorSpace !== SRGB) {
+      const fixColorIfUnassigned = (t) => {
+        if (t && t.isTexture && (t.colorSpace == null || t.colorSpace === '')) {
           t.colorSpace = SRGB;
           t.needsUpdate = true;
         }
       };
-      const setLinear = (t) => {
-        if (t && t.isTexture && t.colorSpace !== LINEAR) {
-          t.colorSpace = LINEAR;
+      const fixDataIfWrongSrgb = (t) => {
+        if (t && t.isTexture && t.colorSpace === SRGB) {
+          t.colorSpace = DATA;
           t.needsUpdate = true;
         }
       };
-      if (m.map) setSrgb(m.map);
-      if (m.emissiveMap) setSrgb(m.emissiveMap);
-      if (m.specularMap) setSrgb(m.specularMap);
-      if (m.normalMap) setLinear(m.normalMap);
-      if (m.roughnessMap) setLinear(m.roughnessMap);
-      if (m.metalnessMap) setLinear(m.metalnessMap);
-      if (m.aoMap) setLinear(m.aoMap);
-      if (m.bumpMap) setLinear(m.bumpMap);
-      if (m.displacementMap) setLinear(m.displacementMap);
-      if (m.clearcoatNormalMap) setLinear(m.clearcoatNormalMap);
-      if (m.clearcoatRoughnessMap) setLinear(m.clearcoatRoughnessMap);
-      if (m.iridescenceThicknessMap) setLinear(m.iridescenceThicknessMap);
+      if (m.map) fixColorIfUnassigned(m.map);
+      if (m.emissiveMap) fixColorIfUnassigned(m.emissiveMap);
+      if (m.specularMap) fixColorIfUnassigned(m.specularMap);
+      fixDataIfWrongSrgb(m.normalMap);
+      fixDataIfWrongSrgb(m.roughnessMap);
+      fixDataIfWrongSrgb(m.metalnessMap);
+      fixDataIfWrongSrgb(m.aoMap);
+      fixDataIfWrongSrgb(m.bumpMap);
+      fixDataIfWrongSrgb(m.displacementMap);
+      fixDataIfWrongSrgb(m.clearcoatNormalMap);
+      fixDataIfWrongSrgb(m.clearcoatRoughnessMap);
+      fixDataIfWrongSrgb(m.iridescenceThicknessMap);
       if (typeof m.needsUpdate !== 'undefined') m.needsUpdate = true;
     }
   });
@@ -9905,11 +9917,15 @@ function addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rn
     houseRel = 'assets/3d models/buildings/house' + (hv + 1) + '.glb';
   }
   const relUse = rel || houseRel;
-  const tgtW = bW * 1.05, tgtH = bH * 1.18, tgtD = bD * 1.06;
+  const houseFit = type === 'house';
+  const tgtW = bW * (houseFit ? 1.1 : 1.05),
+    tgtH = bH * (houseFit ? 1.32 : 1.18),
+    tgtD = bD * (houseFit ? 1.1 : 1.06);
+  const padUse = houseFit ? 0.885 : 0.93;
   let pt =
     type === 'house'
-      ? tryPlantHouseGlbFootprintVariants(bx, baseY, bz, yawPlant, tgtW, tgtH, tgtD, 0.93, houseRel)
-      : plantGlbFootprintPivotForRel(relUse, bx, baseY, bz, yawPlant, tgtW, tgtH, tgtD, 0.93);
+      ? tryPlantHouseGlbFootprintVariants(bx, baseY, bz, yawPlant, tgtW, tgtH, tgtD, padUse, houseRel)
+      : plantGlbFootprintPivotForRel(relUse, bx, baseY, bz, yawPlant, tgtW, tgtH, tgtD, padUse);
   if (!pt && type !== 'house') {
     try { console.warn('Town landmark GLB missing (skipped procedural fallback):', type, relUse); } catch (_) {}
     return false;
@@ -9938,14 +9954,14 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
     roofStyle = 'hip';
   }
   const half = Math.max(bW, bD) * 0.5 + 0.04;
-  const footprintR = half + (type === 'house' ? 1.28 : 1.72);
+  const footprintR = half + (type === 'house' ? 0.92 : 1.72);
   if (footprints && footprints.length) {
     for (let fi = 0; fi < footprints.length; fi++) {
       const fp = footprints[fi];
       if (Math.hypot(bx - fp.x, bz - fp.z) < fp.r + footprintR) return false;
     }
   }
-  let maxSlope = type === 'house' ? 0.55 : 0.44;
+  let maxSlope = type === 'house' ? 0.7 : 0.44;
   let gminMaxEff = minGyMax;
   let gminMinEff = minGyMin;
   if (slopeRelax) {
@@ -23844,6 +23860,15 @@ function resolveGameAssetUrl(relPath) {
   const s = String(relPath);
   if (/^https?:\/\//i.test(s) || /^data:/i.test(s) || /^blob:/i.test(s)) return s;
   const clean = s.replace(/^\//, '');
+  /** Encode each path segment (spaces in `3d models`, etc.) so fetches + glTF URI resolution match the static server. */
+  const encoded = clean.split('/').map((seg) => {
+    if (!seg) return seg;
+    try {
+      return encodeURIComponent(decodeURIComponent(seg));
+    } catch (eD) {
+      return encodeURIComponent(seg);
+    }
+  }).join('/');
   try {
     const proto = window.location.protocol;
     let base;
@@ -23852,10 +23877,10 @@ function resolveGameAssetUrl(relPath) {
     } else {
       base = window.location.href;
     }
-    return new URL(clean, base).href;
+    return new URL(encoded, base).href;
   } catch (e) {
     try {
-      return new URL(clean, window.location.origin + '/').href;
+      return new URL(encoded, window.location.origin + '/').href;
     } catch (e2) {
       return s;
     }
@@ -24162,6 +24187,15 @@ function ensureSceneGlbsBootstrapped() {
         try { console.warn('Scene GLB parse failed:', rel, eP); } catch (_) {}
       }
     }
+      const criticalHouseTemplates = [
+        'assets/3d models/buildings/house1.glb',
+        'assets/3d models/buildings/house2.glb',
+        'assets/3d models/buildings/house3.glb'
+      ];
+      const missH = criticalHouseTemplates.filter((hr) => !_gameGlbParsedSceneTemplates[hr]);
+      if (missH.length) {
+        try { console.warn('Town house GLB templates missing (check LFS / deploy):', missH.join(', ')); } catch (_) {}
+      }
       if (!_sceneGlbVisibleChunkRefreshScheduled && Object.keys(_gameGlbParsedSceneTemplates).length > 0) {
         _sceneGlbVisibleChunkRefreshScheduled = true;
         try {
