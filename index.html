@@ -30774,9 +30774,12 @@ function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   return Math.max(20, getEffectiveHullSnapInterpDelayMs() - 12);
 }
 
-/** Other captains — match NPC relay playback horizon (Catmull + prediction use the same delay budget). */
+/**
+ * Other captains — slightly longer playback delay than NPC relay so Catmull has more real samples under jitter;
+ * reduces edge extrapolation and “hop” along the hull path.
+ */
 function getEffectivePeerHullInterpDelayMs() {
-  return getEffectiveNpcNetObservationInterpDelayMs(null);
+  return Math.max(34, getEffectiveHullSnapInterpDelayMs() + 12);
 }
 
 /** Uniform Catmull–Rom scalar segment — smoother paths than linear lerp between quantized ~60Hz hull keys. */
@@ -30944,11 +30947,12 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
   const delayMsPlay = getEffectivePeerHullInterpDelayMs();
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, {
-    maxExtrapMs: 52,
-    catmullRom: true
+    maxExtrapMs: 38,
+    catmullRom: true,
+    delayHintMs: delayMsPlay
   });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    /* Same playback stack as authoritative NPCs (Catmull xz+yaw + velocity blend + correction toward delayed anchor). */
+    /* Catmull xz + velocity blend like NPCs; soft prediction catch-up (no hard snap) + course-aligned yaw. */
     const pvk = 1 - Math.exp(-32 * dt);
     if (Number.isFinite(p._netVelTargetX) && Number.isFinite(p._netVelTargetZ)) {
       p._netVelSmX = Number.isFinite(p._netVelSmX)
@@ -30958,13 +30962,19 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
         ? p._netVelSmZ + (p._netVelTargetZ - p._netVelSmZ) * pvk
         : p._netVelTargetZ;
     }
-    if (
-      !Number.isFinite(p._peerHullPredX) ||
-      !Number.isFinite(p._peerHullPredZ) ||
-      Math.hypot(ip.x - p._peerHullPredX, ip.z - p._peerHullPredZ) > 168
-    ) {
+    if (!Number.isFinite(p._peerHullPredX) || !Number.isFinite(p._peerHullPredZ)) {
       p._peerHullPredX = ip.x;
       p._peerHullPredZ = ip.z;
+    } else {
+      const gapIp = Math.hypot(ip.x - p._peerHullPredX, ip.z - p._peerHullPredZ);
+      if (gapIp > 260) {
+        p._peerHullPredX = ip.x;
+        p._peerHullPredZ = ip.z;
+      } else if (gapIp > 70) {
+        const soft = 1 - Math.exp(-3.6 * dt);
+        p._peerHullPredX += (ip.x - p._peerHullPredX) * soft;
+        p._peerHullPredZ += (ip.z - p._peerHullPredZ) * soft;
+      }
     }
     const hvsm = Number.isFinite(p._netVelSmX) && Number.isFinite(p._netVelSmZ);
     let vx = hvsm ? p._netVelSmX : 0;
@@ -30982,13 +30992,22 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     p._peerHullPredZ += vz * dt;
     const ecx = ip.x - p._peerHullPredX;
     const ecz = ip.z - p._peerHullPredZ;
-    const corr = 1 - Math.exp(-9.5 * dt);
-    p._peerHullPredX += ecx * corr * 0.44;
-    p._peerHullPredZ += ecz * corr * 0.44;
+    const corr = 1 - Math.exp(-8.2 * dt);
+    p._peerHullPredX += ecx * corr * 0.34;
+    p._peerHullPredZ += ecz * corr * 0.34;
     ns.x = p._peerHullPredX;
     ns.z = p._peerHullPredZ;
-    ns.ry = ip.ry;
-    if (sg.userData) sg.userData.visYaw = ip.ry;
+    let ryOut = ip.ry;
+    const vMag = Math.hypot(vx, vz);
+    if (vMag > 0.1 && spAbs > 0.035) {
+      const course = Math.atan2(vx, vz);
+      const cw = Math.min(0.8, 0.32 + (vMag / (spAbs + 0.55)) * 0.45);
+      ryOut = interpYawShortest(ip.ry, course, cw);
+    }
+    const authPull = (1 - Math.exp(-10 * dt)) * 0.36;
+    ryOut = interpYawShortest(ryOut, authR, authPull);
+    ns.ry = ryOut;
+    if (sg.userData) sg.userData.visYaw = ryOut;
     p._peerHullRySm = undefined;
     return ns;
   }
