@@ -30910,8 +30910,18 @@ function sampleHullRecvHist(hist, tgtRecvMs, interpOpts) {
     if (hist.length < 2) return { x: last.x, z: last.z, ry: last.ry };
     const prev = hist[hist.length - 2];
     const dtm = Math.max(4.5, last.recvMs - prev.recvMs);
-    const vx = (last.x - prev.x) / dtm;
-    const vz = (last.z - prev.z) / dtm;
+    let vx = (last.x - prev.x) / dtm;
+    let vz = (last.z - prev.z) / dtm;
+    const capSp = interpOpts.peerTailSpeedCap;
+    if (capSp != null && Number.isFinite(Number(capSp)) && Number(capSp) >= 0) {
+      const cap = Math.max(0.55, Number(capSp) * 1.18 + 0.45);
+      const vmCap = Math.hypot(vx, vz);
+      if (vmCap > cap && vmCap > 1e-4) {
+        const s = cap / vmCap;
+        vx *= s;
+        vz *= s;
+      }
+    }
     const vm = Math.hypot(vx, vz);
     /* Allow more forward extrapolation when the buffer is deliberately large (high RTT/jitter). */
     let extrapMax = Math.min(138, Math.max(52, (interpOpts.delayHintMs != null ? Number(interpOpts.delayHintMs) : 72) * 0.4 + 26));
@@ -31033,15 +31043,17 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const nowWall =
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
   const delayMsPlay = getEffectivePeerHullInterpDelayMs();
-  /* No tail extrap past last sample (prevents “ghost” ahead of captain); linear xz avoids Catmull overshoot between 60Hz keys. */
+  const spAbsHint = p.speed != null && Number.isFinite(Number(p.speed)) ? Math.abs(Number(p.speed)) : 0;
+  /* Tight tail extrap fills ~1 net tick without freezing on last key (was skippy at maxExtrapMs:0); bow clamp still caps “ghost ahead”. */
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, {
-    maxExtrapMs: 0,
+    maxExtrapMs: 26,
     catmullRom: false,
-    delayHintMs: delayMsPlay
+    delayHintMs: delayMsPlay,
+    peerTailSpeedCap: spAbsHint
   });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
     /* Linear xz playback + velocity blend; soft catch-up + course-aligned yaw. */
-    const pvk = 1 - Math.exp(-32 * dt);
+    const pvk = 1 - Math.exp(-22 * dt);
     if (Number.isFinite(p._netVelTargetX) && Number.isFinite(p._netVelTargetZ)) {
       p._netVelSmX = Number.isFinite(p._netVelSmX)
         ? p._netVelSmX + (p._netVelTargetX - p._netVelSmX) * pvk
@@ -31058,17 +31070,23 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
       if (gapIp > 195) {
         p._peerHullPredX = ip.x;
         p._peerHullPredZ = ip.z;
-      } else if (gapIp > 64) {
+      } else if (gapIp > 52) {
         const soft = 1 - Math.exp(-3.6 * dt);
         p._peerHullPredX += (ip.x - p._peerHullPredX) * soft;
         p._peerHullPredZ += (ip.z - p._peerHullPredZ) * soft;
       }
     }
+    /* Light continuous pull toward delayed sample reduces integrator fight when gap is small (fewer micro hitches). */
+    {
+      const tiny = 1 - Math.exp(-5.4 * dt);
+      p._peerHullPredX += (ip.x - p._peerHullPredX) * tiny * 0.11;
+      p._peerHullPredZ += (ip.z - p._peerHullPredZ) * tiny * 0.11;
+    }
     const hvsm = Number.isFinite(p._netVelSmX) && Number.isFinite(p._netVelSmZ);
     let vx = hvsm ? p._netVelSmX : 0;
     let vz = hvsm ? p._netVelSmZ : 0;
     const vmNet = Math.hypot(vx, vz);
-    const spAbs = p.speed != null && Number.isFinite(Number(p.speed)) ? Math.abs(Number(p.speed)) : 0;
+    const spAbs = spAbsHint;
     const hx = Math.sin(ip.ry) * spAbs;
     const hz = Math.cos(ip.ry) * spAbs;
     const spFloor = Math.max(0.06, spAbs);
@@ -31087,9 +31105,9 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     p._peerHullPredZ += vz * dt;
     const ecx = ip.x - p._peerHullPredX;
     const ecz = ip.z - p._peerHullPredZ;
-    const corr = 1 - Math.exp(-8.2 * dt);
-    p._peerHullPredX += ecx * corr * 0.34;
-    p._peerHullPredZ += ecz * corr * 0.34;
+    const corr = 1 - Math.exp(-6 * dt);
+    p._peerHullPredX += ecx * corr * 0.26;
+    p._peerHullPredZ += ecz * corr * 0.26;
     const authX = Number(p.x);
     const authZ = Number(p.z);
     const cl = clampPeerHullPredToAuthoritative(p._peerHullPredX, p._peerHullPredZ, authX, authZ, authR, spAbs);
