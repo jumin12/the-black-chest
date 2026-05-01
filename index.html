@@ -11783,15 +11783,25 @@ function ensureGameGltfTemplatesLoaded() {
   if (_gameGltfTemplatesPromise) return _gameGltfTemplatesPromise;
   _gameGltfTemplatesPromise = (async () => {
     try {
-      for (let i = 0; i < GAME_GLTF_MODEL_RELS.length; i++) {
-        const rel = GAME_GLTF_MODEL_RELS[i];
-        if (_gltfTemplateRoots[rel]) continue;
-        const url = resolveGameAssetUrl(rel);
-        const gltf = await new Promise((res, rej) => {
-          _GAME_GLTF_LOADER.load(url, res, undefined, rej);
-        });
-        _gltfTemplateRoots[rel] = gltf.scene;
-      }
+      const loadOne = (rel) =>
+        Promise.race([
+          new Promise((res, rej) => {
+            const url = resolveGameAssetUrl(rel);
+            _GAME_GLTF_LOADER.load(url, res, undefined, rej);
+          }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('glb-timeout')), 18000))
+        ]);
+      await Promise.all(
+        GAME_GLTF_MODEL_RELS.map(async rel => {
+          if (_gltfTemplateRoots[rel]) return;
+          try {
+            const gltf = await loadOne(rel);
+            _gltfTemplateRoots[rel] = gltf.scene;
+          } catch (e) {
+            try { console.warn('GLTF load skipped', rel, e && e.message ? e.message : e); } catch (_) {}
+          }
+        })
+      );
       _gameGltfLoadComplete = Object.keys(_gltfTemplateRoots).length >= GAME_GLTF_MODEL_RELS.length;
     } catch (e) {
       try { console.warn('ensureGameGltfTemplatesLoaded', e); } catch (_) {}
@@ -36631,8 +36641,14 @@ function menuRender() {
   document.body.classList.add('game-boot-active');
   try { kickOffGameAssetPreload(); } catch (e) {}
   if (sub) sub.textContent = 'Caching 3D voyages…';
+  const BOOT_GLTF_CEILING_MS = 14000;
   void (async () => {
-    try { await ensureGameGltfTemplatesLoaded(); } catch (_ge) {}
+    try {
+      await Promise.race([
+        ensureGameGltfTemplatesLoaded(),
+        new Promise(resolve => setTimeout(resolve, BOOT_GLTF_CEILING_MS))
+      ]);
+    } catch (_ge) {}
     let frames = 0;
     function step() {
       frames++;
@@ -36728,7 +36744,8 @@ function drawMenuBg() {
   requestAnimationFrame(drawMenuBg);
 }
 
-document.getElementById('start-btn').onclick = () => {
+const _menuStartBtn = document.getElementById('start-btn');
+if (_menuStartBtn) _menuStartBtn.onclick = () => {
   if (voyageSaveExistsInStorage()) {
     if (!acquireGameTabLockOrExplain()) {
       resetDuplicateSessionOverlayCopy();
@@ -36853,15 +36870,18 @@ function executeStartNewVoyageAfterConfirm() {
   updatePiratesPanel();
 }
 
-document.getElementById('new-game-btn').onclick = () => {
+document.getElementById('new-game-btn')?.addEventListener('click', () => {
   const m = document.getElementById('new-voyage-confirm-modal');
   if (m) m.style.display = 'flex';
-};
+});
 
 document.getElementById('new-voyage-cancel')?.addEventListener('click', closeNewVoyageConfirmModal);
 document.getElementById('new-voyage-confirm-delete')?.addEventListener('click', executeStartNewVoyageAfterConfirm);
 
 refreshMainMenuSavePanel();
+try {
+  requestAnimationFrame(() => { try { drawMenuBg(); } catch (_me) {} });
+} catch (_me2) {}
 
 document.getElementById('create-launch').onclick = () => {
   if (G.crewEditIdx != null) {
