@@ -19742,6 +19742,8 @@ function removeRemotePeer(lid) {
       op._snapHist = null;
       op._snapInterpTickBase = null;
       op._snapInterpMsBase = null;
+      op._peerHullPredX = undefined;
+      op._peerHullPredZ = undefined;
     }
   } catch (e) {}
   G.otherPlayers.delete(lidN);
@@ -21388,7 +21390,7 @@ function applyNpcSyncMessage(msg, opts) {
 
 /**
  * Authoritative AOI `state` snapshot(s). Incoming messages queue in `_netStateDrainQueue`; `update` drains
- * up to **eight** snapshots per frame (oldest→newest) with staggered `snapshotWallMs`, matching `npc_sync` burst
+ * up to **twelve** snapshots per frame (oldest→newest) with staggered `snapshotWallMs`, matching `npc_sync` burst
  * handling so `_snapHist` gets intermediate poses instead of one giant teleport. Wildlife anchor, stale-peer prune,
  * boarding ingest, NPC authority, reconcile-self, and roster run **only** on the final drained message (`peerMergeOnly: false`).
  * Peer `_snapHist.recvMs` follows **`srvTick`** (like NPC net hulls) so burst synthetic wall times don’t shrink the recv timeline.
@@ -30693,15 +30695,15 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** Anchor ships slightly tighter than peer hulls — lower delay + spline sampling reduces “slow/stuttery” AI vs heavy hull smoothing. */
+/** Delayed hull playback for NPC relay — matches peer captains (`getEffectivePeerHullInterpDelayMs`) so AI and humans share one timeline. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   void relayObserver;
   return Math.max(20, getEffectiveHullSnapInterpDelayMs() - 12);
 }
 
-/** Other captains’ hulls — slight slack vs hull delay so delayed playback sits inside real ~60Hz keys (less extrap jitter). */
+/** Other captains — same delayed-sample horizon as authoritative NPC hulls (Catmull + prediction below). */
 function getEffectivePeerHullInterpDelayMs() {
-  return Math.max(26, getEffectiveHullSnapInterpDelayMs() - 6);
+  return getEffectiveNpcNetObservationInterpDelayMs(null);
 }
 
 /** Uniform Catmull–Rom scalar segment — smoother paths than linear lerp between quantized ~60Hz hull keys. */
@@ -30835,6 +30837,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     sg.userData.netSmooth = ns;
   }
   if (p.docked) {
+    p._peerHullPredX = undefined;
+    p._peerHullPredZ = undefined;
     ns.x = p.x;
     ns.z = p.z;
     ns.ry = authR;
@@ -30848,13 +30852,51 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     catmullRom: true
   });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    /* Delayed spline pose — Catmull keys spaced by srvTick like NPCs (burst wall-ms alone collapses time → jitter). */
-    ns.x = ip.x;
-    ns.z = ip.z;
+    /* Same physics idea as net NPCs: integrate smoothed server finite-diff velocity + hull speed, pull toward delayed spline. */
+    const pvk = 1 - Math.exp(-32 * dt);
+    if (Number.isFinite(p._netVelTargetX) && Number.isFinite(p._netVelTargetZ)) {
+      p._netVelSmX = Number.isFinite(p._netVelSmX)
+        ? p._netVelSmX + (p._netVelTargetX - p._netVelSmX) * pvk
+        : p._netVelTargetX;
+      p._netVelSmZ = Number.isFinite(p._netVelSmZ)
+        ? p._netVelSmZ + (p._netVelTargetZ - p._netVelSmZ) * pvk
+        : p._netVelTargetZ;
+    }
+    if (
+      !Number.isFinite(p._peerHullPredX) ||
+      !Number.isFinite(p._peerHullPredZ) ||
+      Math.hypot(ip.x - p._peerHullPredX, ip.z - p._peerHullPredZ) > 155
+    ) {
+      p._peerHullPredX = ip.x;
+      p._peerHullPredZ = ip.z;
+    }
+    const hvsm = Number.isFinite(p._netVelSmX) && Number.isFinite(p._netVelSmZ);
+    let vx = hvsm ? p._netVelSmX : 0;
+    let vz = hvsm ? p._netVelSmZ : 0;
+    const vmNet = Math.hypot(vx, vz);
+    const spAbs = p.speed != null && Number.isFinite(Number(p.speed)) ? Math.abs(Number(p.speed)) : 0;
+    const hx = Math.sin(ip.ry) * spAbs;
+    const hz = Math.cos(ip.ry) * spAbs;
+    const spFloor = Math.max(0.06, spAbs);
+    const blendH =
+      vmNet < spFloor * 0.38 ? 0.78 : vmNet < spFloor * 0.78 ? 0.52 : Math.min(0.34, 0.14 + spAbs * 0.022);
+    vx = vx * (1 - blendH) + hx * blendH;
+    vz = vz * (1 - blendH) + hz * blendH;
+    p._peerHullPredX += vx * dt;
+    p._peerHullPredZ += vz * dt;
+    const ecx = ip.x - p._peerHullPredX;
+    const ecz = ip.z - p._peerHullPredZ;
+    const corr = 1 - Math.exp(-9.5 * dt);
+    p._peerHullPredX += ecx * corr * 0.44;
+    p._peerHullPredZ += ecz * corr * 0.44;
+    ns.x = p._peerHullPredX;
+    ns.z = p._peerHullPredZ;
     ns.ry = ip.ry;
     if (sg.userData) sg.userData.visYaw = ip.ry;
     return ns;
   }
+  p._peerHullPredX = undefined;
+  p._peerHullPredZ = undefined;
   smoothRemotePlayerNetVelocity(p, dt);
   let ax = Number(p.x), az = Number(p.z);
   if (!Number.isFinite(ax) || !Number.isFinite(az)) {
@@ -30935,7 +30977,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 
 /* ============================== GAME LOOP ================================ */
 /** Longer window @ ~60Hz so delayed playback stays inside real samples on jittery links. */
-const REMOTE_SNAP_HIST_MAX = 48;
+const REMOTE_SNAP_HIST_MAX = 52;
 
 /**
  * Peer hull `recvMs` — **server tick timeline** (same idea as `applyNpcSyncMessage`), aligned to `performance.now()` playback.
@@ -30985,8 +31027,8 @@ function update(dt) {
   if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
     const q = G._netStateDrainQueue;
     while (q.length > 128) q.shift();
-    /** Apply several queued snapshots (oldest→newest) so discarded backlog doesn’t teleport peers in one giant step. */
-    const maxDrain = 8;
+    /** Apply several queued snapshots (oldest→newest); larger drain uses upgraded servers to preserve motion between ticks. */
+    const maxDrain = 12;
     while (q.length > maxDrain) q.shift();
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     const stateBurstWallStep = (1000 / NET_SYNC_HZ) * 0.1;
