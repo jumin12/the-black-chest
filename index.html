@@ -21451,7 +21451,7 @@ function applyNetStateMessage(msg, opts) {
         let vtx = (px1 - px0) / dtSnap;
         let vtz = (pz1 - pz0) / dtSnap;
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
-        const vcap1 = dNear < 168 ? 132 : 90;
+        const vcap1 = dNear < 210 ? 162 : 112;
         const vm0 = Math.hypot(vtx, vtz);
         if (vm0 > vcap1) {
           const s0 = vcap1 / vm0;
@@ -30675,6 +30675,14 @@ function interpYawShortest(a, b, u) {
   return v;
 }
 
+/** Shortest signed Δ from `fromRef` to `toAngle` (radians). */
+function yawDeltaShortest(fromRef, toAngle) {
+  let d = toAngle - fromRef;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
 /**
  * Delayed playback for remote hulls — scales ~weakly with RTT. Lower bound keeps jitter acceptable on LAN;
  * caps prevent excessive rubber-band on jittery links.
@@ -30696,15 +30704,15 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** Delayed hull playback for NPC relay — peers use a slightly looser delay (`getEffectivePeerHullInterpDelayMs`). */
+/** Delayed hull playback for NPC relay — shares delay with peer captains via `getEffectivePeerHullInterpDelayMs`. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   void relayObserver;
   return Math.max(20, getEffectiveHullSnapInterpDelayMs() - 12);
 }
 
-/** Other captains — slightly deeper buffer than NPC relay to reduce extrapolation pops on sparse keys. */
+/** Other captains — match NPC relay playback horizon (Catmull + prediction use the same delay budget). */
 function getEffectivePeerHullInterpDelayMs() {
-  return Math.max(26, getEffectiveHullSnapInterpDelayMs() - 6);
+  return getEffectiveNpcNetObservationInterpDelayMs(null);
 }
 
 /** Uniform Catmull–Rom scalar segment — smoother paths than linear lerp between quantized ~60Hz hull keys. */
@@ -30799,6 +30807,28 @@ function sampleHullRecvHist(hist, tgtRecvMs, interpOpts) {
     }
     sx = catmullRomScalar(p0x, p1x, p2x, p3x, u);
     sz = catmullRomScalar(p0z, p1z, p2z, p3z, u);
+    /* Linear yaw across ±π jumps reads backwards in tight circles — unwrap through control keys then Catmull like xz. */
+    const p1y = a.ry,
+      p2y = b.ry;
+    let p0y, p3y;
+    if (i >= 2) {
+      p0y = hist[i - 2].ry;
+    } else {
+      p0y = p1y + yawDeltaShortest(p2y, p1y);
+    }
+    if (i + 1 < hist.length) {
+      p3y = hist[i + 1].ry;
+    } else {
+      p3y = p2y + yawDeltaShortest(p1y, p2y);
+    }
+    const uy1 = p1y;
+    const uy0 = uy1 + yawDeltaShortest(uy1, p0y);
+    const uy2 = uy1 + yawDeltaShortest(uy1, p2y);
+    const uy3 = uy2 + yawDeltaShortest(uy2, p3y);
+    let sry = catmullRomScalar(uy0, uy1, uy2, uy3, u);
+    while (sry > Math.PI) sry -= Math.PI * 2;
+    while (sry < -Math.PI) sry += Math.PI * 2;
+    return { x: sx, z: sz, ry: sry };
   }
   return {
     x: sx,
@@ -30850,36 +30880,52 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
   const delayMsPlay = getEffectivePeerHullInterpDelayMs();
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, {
-    maxExtrapMs: 40,
-    catmullRom: false
+    maxExtrapMs: 52,
+    catmullRom: true
   });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    /* Delayed hull-only playback (linear xy + yaw from the same segment). Extra velocity integration was fighting the
-     * spline and teleported hulls; Catmull xy + separate yaw/velocity also skewed bow vs track. */
-    p._peerHullPredX = undefined;
-    p._peerHullPredZ = undefined;
-
-    let dMis = authR - ip.ry;
-    while (dMis > Math.PI) dMis -= Math.PI * 2;
-    while (dMis < -Math.PI) dMis += Math.PI * 2;
-    const yawMis = Math.abs(dMis);
-    const uAuth = Math.min(0.78, 0.36 + Math.min(1, yawMis / 1.65) * 0.42);
-    const ryAnchor = interpYawShortest(ip.ry, authR, uAuth);
-    if (!Number.isFinite(p._peerHullRySm)) {
-      p._peerHullRySm = ryAnchor;
-    } else {
-      let dr = ryAnchor - p._peerHullRySm;
-      while (dr > Math.PI) dr -= Math.PI * 2;
-      while (dr < -Math.PI) dr += Math.PI * 2;
-      p._peerHullRySm += dr * (1 - Math.exp(-22 * dt));
-      while (p._peerHullRySm > Math.PI) p._peerHullRySm -= Math.PI * 2;
-      while (p._peerHullRySm < -Math.PI) p._peerHullRySm += Math.PI * 2;
+    /* Same playback stack as authoritative NPCs (Catmull xz+yaw + velocity blend + correction toward delayed anchor). */
+    const pvk = 1 - Math.exp(-32 * dt);
+    if (Number.isFinite(p._netVelTargetX) && Number.isFinite(p._netVelTargetZ)) {
+      p._netVelSmX = Number.isFinite(p._netVelSmX)
+        ? p._netVelSmX + (p._netVelTargetX - p._netVelSmX) * pvk
+        : p._netVelTargetX;
+      p._netVelSmZ = Number.isFinite(p._netVelSmZ)
+        ? p._netVelSmZ + (p._netVelTargetZ - p._netVelSmZ) * pvk
+        : p._netVelTargetZ;
     }
-
-    ns.x = ip.x;
-    ns.z = ip.z;
-    ns.ry = p._peerHullRySm;
-    if (sg.userData) sg.userData.visYaw = p._peerHullRySm;
+    if (
+      !Number.isFinite(p._peerHullPredX) ||
+      !Number.isFinite(p._peerHullPredZ) ||
+      Math.hypot(ip.x - p._peerHullPredX, ip.z - p._peerHullPredZ) > 168
+    ) {
+      p._peerHullPredX = ip.x;
+      p._peerHullPredZ = ip.z;
+    }
+    const hvsm = Number.isFinite(p._netVelSmX) && Number.isFinite(p._netVelSmZ);
+    let vx = hvsm ? p._netVelSmX : 0;
+    let vz = hvsm ? p._netVelSmZ : 0;
+    const vmNet = Math.hypot(vx, vz);
+    const spAbs = p.speed != null && Number.isFinite(Number(p.speed)) ? Math.abs(Number(p.speed)) : 0;
+    const hx = Math.sin(ip.ry) * spAbs;
+    const hz = Math.cos(ip.ry) * spAbs;
+    const spFloor = Math.max(0.06, spAbs);
+    const blendH =
+      vmNet < spFloor * 0.38 ? 0.78 : vmNet < spFloor * 0.78 ? 0.52 : Math.min(0.34, 0.14 + spAbs * 0.022);
+    vx = vx * (1 - blendH) + hx * blendH;
+    vz = vz * (1 - blendH) + hz * blendH;
+    p._peerHullPredX += vx * dt;
+    p._peerHullPredZ += vz * dt;
+    const ecx = ip.x - p._peerHullPredX;
+    const ecz = ip.z - p._peerHullPredZ;
+    const corr = 1 - Math.exp(-9.5 * dt);
+    p._peerHullPredX += ecx * corr * 0.44;
+    p._peerHullPredZ += ecz * corr * 0.44;
+    ns.x = p._peerHullPredX;
+    ns.z = p._peerHullPredZ;
+    ns.ry = ip.ry;
+    if (sg.userData) sg.userData.visYaw = ip.ry;
+    p._peerHullRySm = undefined;
     return ns;
   }
   p._peerHullPredX = undefined;
@@ -30938,7 +30984,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   const dPeerCam = Math.hypot(ns.x - px, ns.z - pz);
   const nearPeer = dPeerCam < 175;
   if (velPred) {
-    const vcap = nearPeer ? 130 : 88;
+    const vcap = nearPeer ? 148 : 102;
     const vm = Math.hypot(evx, evz);
     const s = vm > vcap ? vcap / vm : 1;
     ns.x += evx * s * dt;
