@@ -24059,12 +24059,47 @@ function warmupBinaryGameAssetCache(urls) {
 }
 
 let _sceneGlbBootstrapPromise = null;
-/** At least four `assets/glb-fetch-worker.js` instances pull `.glb` bytes in parallel; main thread merges gaps. */
-const GLB_SCENE_BOOT_MIN_FETCH_WORKERS = 4;
-/** Concurrent `GLTFLoader.parse` calls (still main-thread — Three/decoders/WASM need the window context). */
-const GLB_SCENE_BOOT_PARSE_PARALLEL = 4;
+/** Pull GLB bytes via many DedicatedWorkers — scales with `_deviceCores` / navigator.hardwareConcurrency. */
+const GLB_SCENE_BOOT_MIN_FETCH_WORKERS = 8;
+/** Hard cap avoids hundreds of Workers on gigantic asset lists while still saturated on LAN/HTTP2/CDN. */
+const GLB_SCENE_BOOT_MAX_FETCH_WORKERS = 28;
+/** Concurrent `GLTFLoader.parse` on main thread — WASM Draco/KTX often parallelizes inside; overlaps across files. */
+const GLB_SCENE_BOOT_PARSE_PARALLEL_MIN = 8;
+const GLB_SCENE_BOOT_PARSE_PARALLEL_CAP = 16;
 
-/** Coalesce many parse completions into one terrain/wildlife rebuild (cheap vs unloading per file). */
+function glbSceneBootHardwareConcurrency() {
+  const n = typeof _deviceCores === 'number' && _deviceCores > 0 ? _deviceCores : 8;
+  return Math.min(64, Math.max(4, n));
+}
+
+function glbSceneBootResolvedFetchWorkerCount(taskCount) {
+  const hc = glbSceneBootHardwareConcurrency();
+  const cap = Math.max(1, taskCount || 1);
+  return Math.min(cap, Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, hc), GLB_SCENE_BOOT_MAX_FETCH_WORKERS);
+}
+
+function glbSceneBootResolvedParseConcurrency(pairCount) {
+  const hc = glbSceneBootHardwareConcurrency();
+  const cap = Math.max(1, pairCount || 1);
+  return Math.min(cap, Math.max(GLB_SCENE_BOOT_PARSE_PARALLEL_MIN, hc), GLB_SCENE_BOOT_PARSE_PARALLEL_CAP);
+}
+
+/** Warm GPU program cache after templates exist (idle so first sail frame hurts less). */
+function scheduleDeferredRendererCompileWarmup() {
+  const compileBoot = () => {
+    try {
+      if (!renderer || !scene || !camera || typeof renderer.compile !== 'function') return;
+      renderer.compile(scene, camera);
+    } catch (_) {}
+  };
+  try {
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(compileBoot, { timeout: 3500 });
+    else window.requestAnimationFrame(compileBoot);
+  } catch (_) {
+    window.setTimeout(compileBoot, 0);
+  }
+}
+
 let _sceneGlbIslandRefreshDebounce = null;
 
 function scheduleDebouncedRefreshVisibleIslandsForSceneGlbs(ms) {
@@ -24128,7 +24163,11 @@ async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent, fetchOptsOver
     }
   };
   const cap = Number(maxConcurrent);
-  const nRuns = Math.min(Math.max(2, Number.isFinite(cap) ? Math.floor(cap) : 8), 16, Math.max(1, list.length));
+  const nRuns = Math.min(
+    Math.max(4, Number.isFinite(cap) ? Math.floor(cap) : glbSceneBootResolvedFetchWorkerCount(list.length) * 2),
+    40,
+    Math.max(1, list.length)
+  );
   await Promise.all(Array.from({ length: nRuns }, () => pump()));
   return out;
 }
@@ -24198,8 +24237,7 @@ async function fetchGlbArrayBuffersWorkerFirst(rels, fetchOptsOverride) {
       : { cache: 'default', mode: 'cors', credentials: 'omit', redirect: 'follow' };
 
   const tasks = rels.map((rel) => ({ rel, url: resolveGameAssetUrl(rel) }));
-  const hw = typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 8;
-  const targetWorkers = Math.min(Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, Math.min(hw, 12)), tasks.length);
+  const targetWorkers = glbSceneBootResolvedFetchWorkerCount(tasks.length);
 
   const codeHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
   let workers = [];
@@ -24228,12 +24266,12 @@ async function fetchGlbArrayBuffersWorkerFirst(rels, fetchOptsOverride) {
       }, 240000);
     } catch (_) {
       terminateWorkers();
-      return fetchGlbArrayBuffersConcurrent(rels, Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, 8), fetchOptsOverride);
+      return fetchGlbArrayBuffersConcurrent(rels, Math.min(48, glbSceneBootResolvedFetchWorkerCount(rels.length) * 2), fetchOptsOverride);
     }
   }
 
   if (!workers.length) {
-    return fetchGlbArrayBuffersConcurrent(rels, Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, 8), fetchOptsOverride);
+    return fetchGlbArrayBuffersConcurrent(rels, Math.min(48, glbSceneBootResolvedFetchWorkerCount(rels.length) * 2), fetchOptsOverride);
   }
 
   try {
@@ -24246,7 +24284,11 @@ async function fetchGlbArrayBuffersWorkerFirst(rels, fetchOptsOverride) {
 
   const still = rels.filter((r) => !out[r]);
   if (still.length) {
-    const fill = await fetchGlbArrayBuffersConcurrent(still, Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, 8), fetchOptsOverride);
+    const fill = await fetchGlbArrayBuffersConcurrent(
+      still,
+      Math.min(48, glbSceneBootResolvedFetchWorkerCount(still.length) * 2),
+      fetchOptsOverride
+    );
     for (let si = 0; si < still.length; si++) {
       const rKey = still[si];
       if (!out[rKey] && fill[rKey]) out[rKey] = fill[rKey];
@@ -24257,11 +24299,10 @@ async function fetchGlbArrayBuffersWorkerFirst(rels, fetchOptsOverride) {
 }
 
 async function parseSceneGlbTemplatesParallel(rels, buffers, concurrency) {
-  const raw = Number(concurrency);
-  const requested = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : GLB_SCENE_BOOT_PARSE_PARALLEL;
-  const conc = Math.min(8, Math.max(GLB_SCENE_BOOT_PARSE_PARALLEL, requested));
   const pairs = [];
   for (let i = 0; i < rels.length; i++) pairs.push({ rel: rels[i], ab: buffers[rels[i]] });
+  let conc = concurrency != null && Number(concurrency) > 0 ? Math.floor(Number(concurrency)) : glbSceneBootResolvedParseConcurrency(pairs.length);
+  conc = Math.min(GLB_SCENE_BOOT_PARSE_PARALLEL_CAP, Math.max(GLB_SCENE_BOOT_PARSE_PARALLEL_MIN, conc), pairs.length);
   let qi = 0;
   const runner = async () => {
     while (true) {
@@ -24276,7 +24317,7 @@ async function parseSceneGlbTemplatesParallel(rels, buffers, concurrency) {
       await parseSceneGlbIntoTemplates(rel, ab);
     }
   };
-  const nruns = Math.min(Math.max(conc, 2), Math.max(1, pairs.length));
+  const nruns = Math.min(Math.max(conc, GLB_SCENE_BOOT_PARSE_PARALLEL_MIN), Math.max(1, pairs.length));
   await Promise.all(Array.from({ length: nruns }, () => runner()));
 }
 
@@ -24345,11 +24386,13 @@ function ensureSceneGlbsBootstrapped() {
   if (_sceneGlbBootstrapPromise) return _sceneGlbBootstrapPromise;
   const run = async () => {
     try {
-      await attachGltfBootstrapDecoders(renderer);
       const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
       const fetchOptsPrimary = { cache: 'default', mode: 'cors', credentials: 'omit', redirect: 'follow' };
-      const buffers = await fetchGlbArrayBuffersWorkerFirst(rels, fetchOptsPrimary);
-      await parseSceneGlbTemplatesParallel(rels, buffers, GLB_SCENE_BOOT_PARSE_PARALLEL);
+      const [, buffers] = await Promise.all([
+        attachGltfBootstrapDecoders(renderer),
+        fetchGlbArrayBuffersWorkerFirst(rels, fetchOptsPrimary)
+      ]);
+      await parseSceneGlbTemplatesParallel(rels, buffers);
       const missingAfterFirst = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
       if (missingAfterFirst.length) {
         try {
@@ -24357,7 +24400,7 @@ function ensureSceneGlbsBootstrapped() {
         } catch (_) {}
         const reloadOpts = { cache: 'reload', mode: 'cors', credentials: 'omit', redirect: 'follow' };
         const bufRetry = await fetchGlbArrayBuffersWorkerFirst(missingAfterFirst, reloadOpts);
-        await parseSceneGlbTemplatesParallel(missingAfterFirst, bufRetry, GLB_SCENE_BOOT_PARSE_PARALLEL);
+        await parseSceneGlbTemplatesParallel(missingAfterFirst, bufRetry);
       }
       const stillMissing = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
       const okN = rels.length - stillMissing.length;
@@ -24410,6 +24453,7 @@ function ensureSceneGlbsBootstrapped() {
       }
       if (Object.keys(_gameGlbParsedSceneTemplates).length > 0) {
         scheduleDebouncedRefreshVisibleIslandsForSceneGlbs(220);
+        scheduleDeferredRendererCompileWarmup();
       }
     } catch (eu) {
       try { console.warn('Scene GLB bootstrap fatal:', eu); } catch (_) {}
