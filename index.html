@@ -19797,6 +19797,7 @@ function removeRemotePeer(lid) {
       op._peerDispX = undefined;
       op._peerDispZ = undefined;
       op._peerHullRySm = undefined;
+      op._peerDlySm = undefined;
     }
   } catch (e) {}
   G.otherPlayers.delete(lidN);
@@ -21530,6 +21531,8 @@ function applyNetStateMessage(msg, opts) {
           op._peerDispZ = undefined;
           op._peerHullPredX = undefined;
           op._peerHullPredZ = undefined;
+          op._peerDlySm = undefined;
+          op._peerHullRySm = undefined;
         }
       } catch (e) {}
       G._lastAppliedStateSrvTick = null;
@@ -30857,7 +30860,7 @@ function getEffectiveHullSnapInterpDelayMs() {
   const r = getEffectiveRttForNetInterpMs();
   const j =
     G._netInterpJitterEwma != null && Number.isFinite(Number(G._netInterpJitterEwma))
-      ? Math.min(16, Math.max(0, Number(G._netInterpJitterEwma)) * 0.38)
+      ? Math.min(14, Math.max(0, Number(G._netInterpJitterEwma)) * 0.30)
       : 0;
   const d = 10.5 + r * 0.1 + j;
   return Math.max(16, Math.min(42, d));
@@ -30900,8 +30903,8 @@ function getAdaptivePeerHullPlaybackDelayMs(row, nowWallMs) {
   const wantLo = tickMs * 1.08;
   const wantHi = tickMs * 3.45;
   let dly = base;
-  if (ahead < wantLo) dly = base + (wantLo - ahead) * 0.34;
-  else if (ahead > wantHi) dly = base - Math.min(30, (ahead - wantHi) * 0.58);
+  if (ahead < wantLo) dly = base + (wantLo - ahead) * 0.28;
+  else if (ahead > wantHi) dly = base - Math.min(24, (ahead - wantHi) * 0.5);
   if (hist.length >= 12) dly -= 2.2;
   else if (hist.length >= 8) dly -= 1.2;
   return Math.max(14, Math.min(55, dly));
@@ -30929,18 +30932,18 @@ function clampPeerHullPredToAuthoritative(predX, predZ, authX, authZ, authR, spA
   const spd = Math.abs(spAbs != null && Number.isFinite(Number(spAbs)) ? Number(spAbs) : 0);
   const extra =
     extrapBowAllow != null && Number.isFinite(Number(extrapBowAllow)) ? Math.max(0, Number(extrapBowAllow)) : 0;
-  const maxBow = 12 + Math.min(88, spd * 0.62) + extra;
+  const maxBow = 14 + Math.min(92, spd * 0.58) + extra;
   let x = predX;
   let z = predZ;
   if (bow > maxBow) {
-    const ex = (bow - maxBow) * 0.52;
+    const ex = (bow - maxBow) * 0.4;
     x -= fx * ex;
     z -= fz * ex;
     dxf = x - authX;
     dzf = z - authZ;
   }
   const lat = Math.abs(dxf * -fz + dzf * fx);
-  const maxLat = Math.min(178, 108 + spd * 0.52);
+  const maxLat = Math.min(188, 112 + spd * 0.48);
   if (lat > maxLat) {
     const sc = maxLat / lat;
     x = authX + dxf * sc;
@@ -31025,7 +31028,7 @@ function sampleHullRecvHist(hist, tgtRecvMs, interpOpts) {
     if (maxExtrapMsCap != null) over = Math.min(over, maxExtrapMsCap);
     let uex = 1 + over / dtm;
     const delayHint = interpOpts.delayHintMs != null ? Number(interpOpts.delayHintMs) : 72;
-    let ueCap = delayHint >= 128 ? 2.12 : 1.94;
+    let ueCap = delayHint >= 128 ? 2.12 : delayHint <= 52 ? 1.62 : 1.94;
     if (vm > 38) ueCap = Math.min(2.42, ueCap + Math.min(0.38, (vm - 38) * 0.0048));
     if (uex > ueCap) uex = ueCap;
     return {
@@ -31176,6 +31179,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     p._peerDispX = undefined;
     p._peerDispZ = undefined;
     p._peerHullRySm = undefined;
+    p._peerDlySm = undefined;
     ns.x = p.x;
     ns.z = p.z;
     ns.ry = authR;
@@ -31183,7 +31187,13 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   }
   const nowWall =
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-  const delayMsPlay = getAdaptivePeerHullPlaybackDelayMs(p, nowWall);
+  const dlyTarget = getAdaptivePeerHullPlaybackDelayMs(p, nowWall);
+  if (!Number.isFinite(p._peerDlySm)) p._peerDlySm = dlyTarget;
+  else {
+    const dlk = 1 - Math.exp(-9.8 * dt);
+    p._peerDlySm += (dlyTarget - p._peerDlySm) * dlk;
+  }
+  const delayMsPlay = p._peerDlySm;
   const spAbsHint = p.speed != null && Number.isFinite(Number(p.speed)) ? Math.abs(Number(p.speed)) : 0;
   const peerMaxExtrap = Math.round(
     Math.min(78, Math.max(32, delayMsPlay * 0.28 + 12 + spAbsHint * 0.46))
@@ -31212,15 +31222,21 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
       p._peerDispZ = ip.z;
     } else {
       const gap = Math.hypot(ip.x - p._peerDispX, ip.z - p._peerDispZ);
-      const hardSnap = Math.max(195, 64 + spAbsHint * 3.15);
+      const hardSnap = Math.max(245, 102 + spAbsHint * 3.45);
+      const softSnap = hardSnap * 0.76;
       if (gap > hardSnap) {
         p._peerDispX = ip.x;
         p._peerDispZ = ip.z;
+      } else if (gap > softSnap) {
+        const t = (gap - softSnap) / Math.max(1e-3, hardSnap - softSnap);
+        const qFast = Math.min(0.99, 0.72 + 24 * dt);
+        p._peerDispX += (ip.x - p._peerDispX) * qFast * (0.4 + 0.6 * t);
+        p._peerDispZ += (ip.z - p._peerDispZ) * qFast * (0.4 + 0.6 * t);
       } else {
         /* Hermite already smooths between snaps — chase interp tightly; extra snap when error is tiny (no mush). */
-        let q = Math.min(0.97, Math.max(0.3, 30 * dt + gap * 0.00175));
-        if (gap < 3.2) q = Math.min(0.995, 0.62 + 52 * dt);
-        else if (gap < 8.5) q = Math.max(q, Math.min(0.99, 0.45 + 40 * dt));
+        let q = Math.min(0.97, Math.max(0.3, 28 * dt + gap * 0.00165));
+        if (gap < 3.2) q = Math.min(0.995, 0.58 + 48 * dt);
+        else if (gap < 8.5) q = Math.max(q, Math.min(0.99, 0.42 + 36 * dt));
         p._peerDispX += (ip.x - p._peerDispX) * q;
         p._peerDispZ += (ip.z - p._peerDispZ) * q;
       }
@@ -31237,12 +31253,22 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
       spAbs,
       extrapBowAllow
     );
-    p._peerHullPredX = cl.x;
-    p._peerHullPredZ = cl.z;
-    p._peerDispX = cl.x;
-    p._peerDispZ = cl.z;
-    ns.x = cl.x;
-    ns.z = cl.z;
+    const eCl = Math.hypot(cl.x - p._peerDispX, cl.z - p._peerDispZ);
+    if (eCl > 58) {
+      p._peerDispX = cl.x;
+      p._peerDispZ = cl.z;
+    } else if (eCl > 0.04) {
+      const pk = 1 - Math.exp(-24 * dt);
+      p._peerDispX += (cl.x - p._peerDispX) * pk;
+      p._peerDispZ += (cl.z - p._peerDispZ) * pk;
+    } else {
+      p._peerDispX = cl.x;
+      p._peerDispZ = cl.z;
+    }
+    p._peerHullPredX = p._peerDispX;
+    p._peerHullPredZ = p._peerDispZ;
+    ns.x = p._peerDispX;
+    ns.z = p._peerDispZ;
     let ryOut = ip.ry;
     const hvsm = Number.isFinite(p._netVelSmX) && Number.isFinite(p._netVelSmZ);
     let vx = hvsm ? p._netVelSmX : 0;
@@ -31261,11 +31287,15 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
       const cw = Math.min(0.85, 0.36 + (vMag / (spAbs + 0.45)) * 0.48);
       ryOut = interpYawShortest(ip.ry, course, cw);
     }
-    const authPull = (1 - Math.exp(-12 * dt)) * 0.2;
+    const authPull = (1 - Math.exp(-11 * dt)) * 0.14;
     ryOut = interpYawShortest(ryOut, authR, authPull);
-    ns.ry = ryOut;
-    if (sg.userData) sg.userData.visYaw = ryOut;
-    p._peerHullRySm = undefined;
+    if (!Number.isFinite(p._peerHullRySm)) p._peerHullRySm = ryOut;
+    else {
+      const yw = 1 - Math.exp(-(spAbs > 0.26 ? 31 : 22) * dt);
+      p._peerHullRySm = interpYawShortest(p._peerHullRySm, ryOut, Math.min(1, yw));
+    }
+    ns.ry = p._peerHullRySm;
+    if (sg.userData) sg.userData.visYaw = p._peerHullRySm;
     return ns;
   }
   p._peerHullPredX = undefined;
@@ -31273,6 +31303,7 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
   p._peerDispX = undefined;
   p._peerDispZ = undefined;
   p._peerHullRySm = undefined;
+  p._peerDlySm = undefined;
   smoothRemotePlayerNetVelocity(p, dt);
   let ax = Number(p.x), az = Number(p.z);
   if (!Number.isFinite(ax) || !Number.isFinite(az)) {
