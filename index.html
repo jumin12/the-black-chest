@@ -9543,6 +9543,83 @@ function cloneParsedGlbTree(relPath) {
     return null;
   }
 }
+
+/** Per-asset euler (radians) applied to cloned glTF before footprint fitting — edit for wrongly rotated exports. */
+const GAME_GLB_EULER_BIAS_RAD_BEFORE_FOOTPRINT = Object.freeze({
+  'assets/3d models/buildings/church.glb': { ry: Math.PI / 2 },
+  'assets/3d models/buildings/tavern.glb': { ry: Math.PI / 2 },
+  'assets/3d models/buildings/govmansion.glb': { ry: Math.PI / 2 },
+  'assets/3d models/buildings/house1.glb': { ry: Math.PI / 2 },
+  'assets/3d models/buildings/house2.glb': { ry: Math.PI / 2 },
+  'assets/3d models/buildings/house3.glb': { ry: Math.PI / 2 }
+});
+
+function applyGlbAuthoringEulerBiasBeforeFootprint(sceneRoot, relPath) {
+  const spec = relPath ? GAME_GLB_EULER_BIAS_RAD_BEFORE_FOOTPRINT[relPath] : null;
+  if (!sceneRoot || !spec) return;
+  sceneRoot.rotation.order = 'YXZ';
+  if (typeof spec.rx === 'number') sceneRoot.rotation.x += spec.rx;
+  if (typeof spec.ry === 'number') sceneRoot.rotation.y += spec.ry;
+  if (typeof spec.rz === 'number') sceneRoot.rotation.z += spec.rz;
+}
+
+/** Base URL ending with `/` for sibling images referenced from `.glb` (external textures). */
+function glbExternalResourceBaseUrl(relPath) {
+  if (!relPath) return '';
+  try {
+    const href = resolveGameAssetUrl(relPath);
+    const u = new URL(href, typeof window !== 'undefined' ? window.location.href : 'http://localhost/');
+    let p = u.pathname;
+    p = p.replace(/\/([^/]+\.glb|[^/]+\.gltf)$/i, '/');
+    u.pathname = p || '/';
+    u.search = '';
+    u.hash = '';
+    return u.href;
+  } catch (e1) {
+    return '';
+  }
+}
+
+/** Set sRGB vs linear texture color spaces — fixes dull/wrong-tint meshes after parse when maps default wrong. */
+function enhanceImportedGlbMaterials(root) {
+  if (!root || !THREE || THREE.SRGBColorSpace === undefined) return;
+  const SRGB = THREE.SRGBColorSpace;
+  const LINEAR = THREE.LinearSRGBColorSpace;
+  root.traverse((obj) => {
+    if (!obj.isMesh) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (let mi = 0; mi < mats.length; mi++) {
+      const m = mats[mi];
+      if (!m) continue;
+      const setSrgb = (t) => {
+        if (t && t.isTexture && t.colorSpace !== SRGB) {
+          t.colorSpace = SRGB;
+          t.needsUpdate = true;
+        }
+      };
+      const setLinear = (t) => {
+        if (t && t.isTexture && t.colorSpace !== LINEAR) {
+          t.colorSpace = LINEAR;
+          t.needsUpdate = true;
+        }
+      };
+      if (m.map) setSrgb(m.map);
+      if (m.emissiveMap) setSrgb(m.emissiveMap);
+      if (m.specularMap) setSrgb(m.specularMap);
+      if (m.normalMap) setLinear(m.normalMap);
+      if (m.roughnessMap) setLinear(m.roughnessMap);
+      if (m.metalnessMap) setLinear(m.metalnessMap);
+      if (m.aoMap) setLinear(m.aoMap);
+      if (m.bumpMap) setLinear(m.bumpMap);
+      if (m.displacementMap) setLinear(m.displacementMap);
+      if (m.clearcoatNormalMap) setLinear(m.clearcoatNormalMap);
+      if (m.clearcoatRoughnessMap) setLinear(m.clearcoatRoughnessMap);
+      if (m.iridescenceThicknessMap) setLinear(m.iridescenceThicknessMap);
+      if (typeof m.needsUpdate !== 'undefined') m.needsUpdate = true;
+    }
+  });
+}
+
 function applyIslandGlbPresentation(root) {
   if (!root) return;
   root.traverse(obj => {
@@ -9556,15 +9633,18 @@ function applyIslandGlbPresentation(root) {
       }
     }
   });
+  enhanceImportedGlbMaterials(root);
 }
 /**
  * Fits `glbClone` uniformly into a tgt width/depth/height box, bottoms at local y=0, centers on xz origin,
  * then parents under a yawed pivot at world (bx, groundY, bz).
+ * `glbFitRelPath`: optional authoring key into `GAME_GLB_EULER_BIAS_RAD_BEFORE_FOOTPRINT`.
  */
-function plantGlbFootprintPivot(bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, glbClone, padFrac) {
+function plantGlbFootprintPivot(bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, glbClone, padFrac, glbFitRelPath) {
   if (!glbClone) return null;
   const inner = glbClone;
   applyIslandGlbPresentation(inner);
+  applyGlbAuthoringEulerBiasBeforeFootprint(inner, glbFitRelPath || '');
   inner.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(inner);
   const dx = Math.max(box.max.x - box.min.x, 1e-3);
@@ -9590,7 +9670,7 @@ function plantGlbFootprintPivot(bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, glbCl
 function plantGlbFootprintPivotForRel(relPath, bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, padFrac) {
   const c = cloneParsedGlbTree(relPath);
   if (!c) return null;
-  const p = plantGlbFootprintPivot(bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, c, padFrac);
+  const p = plantGlbFootprintPivot(bx, groundY, bz, yawRad, tgtW, tgtH, tgtD, c, padFrac, relPath);
   if (p) p.userData.glbSceneRel = relPath;
   return p;
 }
@@ -9797,56 +9877,19 @@ function ensureCanonicalWildlifeForChunk(cx, cz) {
   if (rng() < 0.48) spawnAmbientSharkPair(cwx + (rng() - 0.5) * 105, cwz + (rng() - 0.5) * 105, rng);
 }
 
-function addTownBuildingFootprintProcedural(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle) {
-  const r = decoRand(rng);
-  const foundation = new THREE.Mesh(
-    new THREE.BoxGeometry(bW + 0.55, 0.42, bD + 0.55),
-    new THREE.MeshLambertMaterial({ color: 0x5a4a38 })
-  );
-  foundation.position.set(bx, baseY - 0.2, bz);
-  foundation.castShadow = true;
-  group.add(foundation);
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(bW, bH, bD),
-    new THREE.MeshLambertMaterial({ color: wallHex })
-  );
-  body.position.set(bx, baseY + bH / 2, bz);
-  body.castShadow = true;
-  group.add(body);
-  if (roofStyle === 'hip') {
-    const roof = new THREE.Mesh(
-      new THREE.ConeGeometry(Math.hypot(bW, bD) * 0.42, 1.35 + r() * 0.35, 4),
-      new THREE.MeshLambertMaterial({ color: 0x8b3a1a })
-    );
-    roof.position.set(bx, baseY + bH + 0.62, bz);
-    roof.rotation.y = Math.PI / 4;
-    roof.castShadow = true;
-    group.add(roof);
-  } else if (roofStyle === 'slate') {
-    const roof = new THREE.Mesh(
-      new THREE.ConeGeometry(Math.hypot(bW, bD) * 0.38, 1.05, 4),
-      new THREE.MeshLambertMaterial({ color: 0x4a5568 })
-    );
-    roof.position.set(bx, baseY + bH + 0.48, bz);
-    roof.rotation.y = Math.PI / 4;
-    roof.castShadow = true;
-    group.add(roof);
-  } else if (roofStyle === 'flat') {
-    const roof = new THREE.Mesh(
-      new THREE.BoxGeometry(bW * 1.04, 0.38, bD * 1.04),
-      new THREE.MeshLambertMaterial({ color: 0x353330 })
-    );
-    roof.position.set(bx, baseY + bH + 0.2, bz);
-    roof.castShadow = true;
-    group.add(roof);
-    const ped = new THREE.Mesh(
-      new THREE.BoxGeometry(bW * 0.42, 0.65, 0.28),
-      new THREE.MeshLambertMaterial({ color: 0xe2dcd4 })
-    );
-    ped.position.set(bx, baseY + bH * 0.38, bz + bD * 0.48);
-    ped.castShadow = true;
-    group.add(ped);
+
+
+/** Town/custom-map houses share `house{1..3}.glb` — retry variants if bootstrap missed one LOD. */
+function tryPlantHouseGlbFootprintVariants(x, groundY, z, yawRad, tgtW, tgtH, tgtD, padFrac, preferredHouseRel) {
+  const variants = ['assets/3d models/buildings/house1.glb', 'assets/3d models/buildings/house2.glb', 'assets/3d models/buildings/house3.glb'];
+  let pt = plantGlbFootprintPivotForRel(preferredHouseRel, x, groundY, z, yawRad, tgtW, tgtH, tgtD, padFrac);
+  if (pt) return pt;
+  for (let i = 0; i < variants.length; i++) {
+    if (variants[i] === preferredHouseRel) continue;
+    pt = plantGlbFootprintPivotForRel(variants[i], x, groundY, z, yawRad, tgtW, tgtH, tgtD, padFrac);
+    if (pt) return pt;
   }
+  return null;
 }
 
 function addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rng, wallHex, roofStyle) {
@@ -9854,13 +9897,21 @@ function addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rn
     type === 'church' ? 'assets/3d models/buildings/church.glb'
       : type === 'tavern' ? 'assets/3d models/buildings/tavern.glb'
         : type === 'governor' ? 'assets/3d models/buildings/govmansion.glb'
-          : 'assets/3d models/buildings/house' + (1 + Math.floor(decoRand(rng)() * 3)) + '.glb';
-  const pt = plantGlbFootprintPivotForRel(rel, bx, baseY, bz, 0, bW * 1.05, bH * 1.18, bD * 1.06, 0.93);
+          : ('assets/3d models/buildings/house' + (1 + Math.floor(decoRand(rng)() * 3)) + '.glb');
+  const tgtW = bW * 1.05, tgtH = bH * 1.18, tgtD = bD * 1.06;
+  let pt =
+    type === 'house'
+      ? tryPlantHouseGlbFootprintVariants(bx, baseY, bz, 0, tgtW, tgtH, tgtD, 0.93, rel)
+      : plantGlbFootprintPivotForRel(rel, bx, baseY, bz, 0, tgtW, tgtH, tgtD, 0.93);
+  if (!pt && type !== 'house') {
+    try { console.warn('Town landmark GLB missing (skipped procedural fallback):', type, rel); } catch (_) {}
+    return;
+  }
   if (pt) {
     group.add(pt);
     return;
   }
-  addTownBuildingFootprintProcedural(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
+  try { console.warn('Town house skipped (no house*.glb template):', rel); } catch (_) {}
 }
 
 function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints) {
@@ -10093,58 +10144,22 @@ function generateCustomMapChunk(cx, cz) {
     else if (e.type === 'building') {
       const bH = e.buildH != null ? Number(e.buildH) : (2.5 + er0() * 1.5);
       const bW = e.buildW != null ? Number(e.buildW) : (2.5 + er0() * 2);
-      const pal = [0xc8b890, 0xa08860, 0x8a7050, 0xb0a078, 0x9a8868];
-      const wallHex = e.wallColor != null ? Number(e.wallColor)
-        : (e.color != null ? Number(e.color) : pal[Math.floor(er0() * 5)]);
       const rot = e.rot != null ? Number(e.rot) : 0;
       const baseOff = 0.08;
       const baseY = surf + baseOff;
       const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 3)) + '.glb';
-      const planted = plantGlbFootprintPivotForRel(rel, e.x, baseY, e.z, rot, bW * 1.12, bH * 1.25, bW * 1.12, 0.92);
-      if (planted) {
-        group.add(planted);
-      } else {
-        const pivot = new THREE.Group();
-        pivot.position.set(e.x, 0, e.z);
-        pivot.rotation.y = rot;
-        const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: wallHex }));
-        bldg.position.set(0, baseY + bH / 2, 0);
-        bldg.castShadow = true;
-        const foundation = new THREE.Mesh(new THREE.BoxGeometry(bW + 0.5, 0.3, bW + 0.5), new THREE.MeshLambertMaterial({ color: 0x5a4a38 }));
-        foundation.position.set(0, baseY - 0.12, 0);
-        foundation.castShadow = true;
-        const roof = new THREE.Mesh(new THREE.ConeGeometry(bW * 0.8, 1.5, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
-        roof.position.set(0, baseY + bH + 0.7, 0);
-        roof.rotation.y = Math.PI / 4;
-        roof.castShadow = true;
-        pivot.add(bldg, foundation, roof);
-        group.add(pivot);
-      }
+      const planted = tryPlantHouseGlbFootprintVariants(e.x, baseY, e.z, rot, bW * 1.12, bH * 1.25, bW * 1.12, 0.92, rel);
+      if (planted) group.add(planted);
+      else try { console.warn('Custom map entity building: missing house*.glb', e.id != null ? e.id : ei, rel); } catch (_) {}
     } else if (e.type === 'house') {
       const w = e.houseW != null ? Number(e.houseW) : (2.7 + er0() * 0.35);
       const d = e.houseD != null ? Number(e.houseD) : (2.5 + er0() * 0.3);
       const wallH = e.houseWallH != null ? Number(e.houseWallH) : (2.05 + er0() * 0.35);
       const yaw = e.rot != null ? Number(e.rot) : 0;
       const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 3)) + '.glb';
-      const planted = plantGlbFootprintPivotForRel(rel, e.x, surf + 0.06, e.z, yaw, Math.max(w, d) * 1.1, wallH + 2.35, Math.max(w, d) * 1.08, 0.92);
-      if (planted) {
-        group.add(planted);
-      } else {
-        const hg = new THREE.Group();
-        hg.position.set(e.x, surf + 0.06, e.z);
-        hg.rotation.y = yaw;
-        const walls = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), new THREE.MeshLambertMaterial({ color: 0xe2d2b8 }));
-        walls.position.y = wallH / 2;
-        hg.add(walls);
-        const hRoof = new THREE.Mesh(
-          new THREE.ConeGeometry(Math.hypot(w, d) * 0.36, 1.35 + er0() * 0.25, 4),
-          new THREE.MeshLambertMaterial({ color: 0x6b3d22 })
-        );
-        hRoof.rotation.y = Math.PI / 4;
-        hRoof.position.y = wallH + 0.55;
-        hg.add(hRoof);
-        group.add(hg);
-      }
+      const planted = tryPlantHouseGlbFootprintVariants(e.x, surf + 0.06, e.z, yaw, Math.max(w, d) * 1.1, wallH + 2.35, Math.max(w, d) * 1.08, 0.92, rel);
+      if (planted) group.add(planted);
+      else try { console.warn('Custom map entity house: missing house*.glb', e.id != null ? e.id : ei, rel); } catch (_) {}
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
       const dockDeckY = surf + 0.45;
@@ -10152,6 +10167,7 @@ function generateCustomMapChunk(cx, cz) {
       const tpl = cloneParsedGlbTree('assets/3d models/buildings/dock.glb');
       if (tpl) {
         applyIslandGlbPresentation(tpl);
+        applyGlbAuthoringEulerBiasBeforeFootprint(tpl, 'assets/3d models/buildings/dock.glb');
         tpl.updateMatrixWorld(true);
         const box0 = new THREE.Box3().setFromObject(tpl);
         const dx0 = Math.max(box0.max.x - box0.min.x, 1e-3);
@@ -10400,7 +10416,7 @@ function generateIsland(cx, cz) {
     const ct = cloneParsedGlbTree('assets/3d models/decorations/crate.glb');
     let crate = null;
     if (ct) {
-      crate = plantGlbFootprintPivot(fi.x, SEA_LEVEL + 1.45, fi.z, rng() * Math.PI * 2, 3.4, 3.5, 3.4, ct, 0.95);
+      crate = plantGlbFootprintPivot(fi.x, SEA_LEVEL + 1.45, fi.z, rng() * Math.PI * 2, 3.4, 3.5, 3.4, ct, 0.95, 'assets/3d models/decorations/crate.glb');
     }
     if (!crate) {
       const m = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), new THREE.MeshLambertMaterial({ color: 0x8b6914 }));
@@ -10453,6 +10469,7 @@ function generateIsland(cx, cz) {
     const dockTpl = cloneParsedGlbTree('assets/3d models/buildings/dock.glb');
     if (dockTpl) {
       applyIslandGlbPresentation(dockTpl);
+      applyGlbAuthoringEulerBiasBeforeFootprint(dockTpl, 'assets/3d models/buildings/dock.glb');
       dockTpl.updateMatrixWorld(true);
       const box0 = new THREE.Box3().setFromObject(dockTpl);
       const dx0 = Math.max(box0.max.x - box0.min.x, 1e-3);
@@ -24059,7 +24076,7 @@ function ensureSceneGlbsBootstrapped() {
           try {
             _gltfSceneBootstrapLoader.parse(
               ab,
-              '',
+              glbExternalResourceBaseUrl(rel),
               (gltf) => {
                 if (settled) return;
                 settled = true;
