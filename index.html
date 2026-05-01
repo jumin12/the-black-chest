@@ -9930,12 +9930,12 @@ function ensureCanonicalWildlifeForChunk(cx, cz) {
 
 
 
-/** Town/custom-map houses — try variants beginning at `preferredHouseRel`, then `(idx+1)%3`, `(idx+2)%3`,
+/** Town/custom-map houses — try variants beginning at `preferredHouseRel`, then `(idx+1)%2`,
  *  so a failed footprint on house2 doesn't always snap every lot to house1 first in the fixed array order. */
 function tryPlantHouseGlbFootprintVariants(x, groundY, z, yawRad, tgtW, tgtH, tgtD, padFrac, preferredHouseRel) {
-  const variants = ['assets/3d models/buildings/house1.glb', 'assets/3d models/buildings/house2.glb', 'assets/3d models/buildings/house3.glb'];
+  const variants = ['assets/3d models/buildings/house1.glb', 'assets/3d models/buildings/house2.glb'];
   let start = variants.indexOf(preferredHouseRel);
-  if (start < 0) start = Math.max(0, Math.min(2, (((Math.floor(x * 89.113) >>> 0) ^ (Math.floor(z * 79.917) >>> 0)) >>> 0) % 3));
+  if (start < 0) start = (((Math.floor(x * 89.113) >>> 0) ^ (Math.floor(z * 79.917) >>> 0)) >>> 0) % 2;
   for (let k = 0; k < variants.length; k++) {
     const rel = variants[(start + k) % variants.length];
     const pt = plantGlbFootprintPivotForRel(rel, x, groundY, z, yawRad, tgtW, tgtH, tgtD, padFrac);
@@ -9958,7 +9958,7 @@ function addTownLandmarkBuildingModel(group, type, bx, bz, baseY, bW, bD, bH, rn
   let houseRel = '';
   if (type === 'house') {
     /* Spread house meshes by lot coordinate so adjacent builds don't collapse to house1 fallbacks after failed fits. */
-    const hv = (((Math.floor(bx * 91.817) >>> 0) ^ (Math.floor(bz * 77.929) >>> 0)) >>> 0) % 3;
+    const hv = (((Math.floor(bx * 91.817) >>> 0) ^ (Math.floor(bz * 77.929) >>> 0)) >>> 0) % 2;
     houseRel = 'assets/3d models/buildings/house' + (hv + 1) + '.glb';
   }
   const relUse = rel || houseRel;
@@ -10270,7 +10270,7 @@ function generateCustomMapChunk(cx, cz) {
       const rot = e.rot != null ? Number(e.rot) : 0;
       const baseOff = 0.08;
       const baseY = surf + baseOff;
-      const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 3)) + '.glb';
+      const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 2)) + '.glb';
       const planted = tryPlantHouseGlbFootprintVariants(e.x, baseY, e.z, rot, bW * 1.38, bH * 1.52, bW * 1.38, 0.92, rel);
       if (planted) group.add(planted);
       else try { console.warn('Custom map entity building: missing house*.glb', e.id != null ? e.id : ei, rel); } catch (_) {}
@@ -10279,7 +10279,7 @@ function generateCustomMapChunk(cx, cz) {
       const d = e.houseD != null ? Number(e.houseD) : (2.5 + er0() * 0.3);
       const wallH = e.houseWallH != null ? Number(e.houseWallH) : (2.05 + er0() * 0.35);
       const yaw = e.rot != null ? Number(e.rot) : 0;
-      const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 3)) + '.glb';
+      const rel = 'assets/3d models/buildings/house' + (1 + Math.floor(er0() * 2)) + '.glb';
       const planted = tryPlantHouseGlbFootprintVariants(e.x, surf + 0.06, e.z, yaw, Math.max(w, d) * 1.36, wallH + 3.05, Math.max(w, d) * 1.34, 0.92, rel);
       if (planted) group.add(planted);
       else try { console.warn('Custom map entity house: missing house*.glb', e.id != null ? e.id : ei, rel); } catch (_) {}
@@ -23977,7 +23977,6 @@ const GAME_ASSET_3D_GLB_SCENE_BOOT_RELS = [
   'assets/3d models/buildings/govmansion.glb',
   'assets/3d models/buildings/house1.glb',
   'assets/3d models/buildings/house2.glb',
-  'assets/3d models/buildings/house3.glb',
   'assets/3d models/buildings/tavern.glb',
   'assets/3d models/decorations/barrel.glb',
   'assets/3d models/decorations/bush1.glb',
@@ -24060,6 +24059,11 @@ function warmupBinaryGameAssetCache(urls) {
 }
 
 let _sceneGlbBootstrapPromise = null;
+/** At least four `assets/glb-fetch-worker.js` instances pull `.glb` bytes in parallel; main thread merges gaps. */
+const GLB_SCENE_BOOT_MIN_FETCH_WORKERS = 4;
+/** Concurrent `GLTFLoader.parse` calls (still main-thread — Three/decoders/WASM need the window context). */
+const GLB_SCENE_BOOT_PARSE_PARALLEL = 4;
+
 /** Coalesce many parse completions into one terrain/wildlife rebuild (cheap vs unloading per file). */
 let _sceneGlbIslandRefreshDebounce = null;
 
@@ -24098,14 +24102,7 @@ function arrayBufferLooksLikeBinaryGlb(ab) {
 }
 
 /**
- * Parallel main-thread `.glb` fetches — same semantics as ordinary page `fetch()` (why “other sites work”).
- *
- * Dedicated Workers were removed from this hot path because they often fail silently on some hosts
- * (CSP `worker-src`, blob-worker edge cases after fetch failure, CDN strips worker scripts, mobile
- * Data Saver quirks). Those failures left `buffers[rel]` empty while DevTools fetch from the Window
- * still looked fine during manual testing.
- *
- * Parsing stays on main thread (GLTFLoader); only the byte download was ever parallelised.
+ * Main-thread parallel fetches (fills gaps when Workers are blocked or return nothing).
  */
 async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent, fetchOptsOverride) {
   const out = Object.create(null);
@@ -24134,6 +24131,153 @@ async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent, fetchOptsOver
   const nRuns = Math.min(Math.max(2, Number.isFinite(cap) ? Math.floor(cap) : 8), 16, Math.max(1, list.length));
   await Promise.all(Array.from({ length: nRuns }, () => pump()));
   return out;
+}
+
+function glbWorkerFetchArrayBufferOnce(worker, msgId, url, fetchOpts, timeoutMs) {
+  return new Promise((resolve) => {
+    const ms = Number(timeoutMs);
+    const tlim = Number.isFinite(ms) && ms > 0 ? ms : 150000;
+    const to = window.setTimeout(finishNothing, tlim);
+    let finished = false;
+    function cleanup() {
+      window.clearTimeout(to);
+      worker.removeEventListener('message', onMsg);
+      worker.removeEventListener('error', onErr);
+    }
+    function finishNothing() {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(null);
+    }
+    function resolveAb(ab) {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(ab);
+    }
+    function onMsg(ev) {
+      const d = ev.data || {};
+      if (d.id !== msgId) return;
+      if (d.ok && d.ab) resolveAb(d.ab);
+      else resolveAb(null);
+    }
+    function onErr() {
+      resolveAb(null);
+    }
+    worker.addEventListener('message', onMsg);
+    worker.addEventListener('error', onErr, { once: true });
+    try {
+      worker.postMessage({ id: msgId, url: String(url), fetchOpts });
+    } catch (_) {
+      finishNothing();
+    }
+  });
+}
+
+async function glbWorkerDrainBucket(worker, bucket, wi, fetchOpts, out) {
+  for (let i = 0; i < bucket.length; i++) {
+    const t = bucket[i];
+    const msgId = wi * 87381 + i * 917 + 1;
+    const ab = await glbWorkerFetchArrayBufferOnce(worker, msgId, t.url, fetchOpts, 150000);
+    if (ab) out[t.rel] = ab;
+    else try { console.warn('GLB worker fetch failed:', t.rel); } catch (_) {}
+  }
+}
+
+/**
+ * Prefer ≥4 DedicatedWorkers for byte download (parallel I/O); merge any misses on the main thread.
+ * `GLTFLoader.parse` still runs on window (THREE + Draco/KTX setup); see `parseSceneGlbTemplatesParallel`.
+ */
+async function fetchGlbArrayBuffersWorkerFirst(rels, fetchOptsOverride) {
+  const out = Object.create(null);
+  if (!rels || !rels.length) return out;
+  const fetchOpts =
+    fetchOptsOverride && typeof fetchOptsOverride === 'object'
+      ? fetchOptsOverride
+      : { cache: 'default', mode: 'cors', credentials: 'omit', redirect: 'follow' };
+
+  const tasks = rels.map((rel) => ({ rel, url: resolveGameAssetUrl(rel) }));
+  const hw = typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 8;
+  const targetWorkers = Math.min(Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, Math.min(hw, 12)), tasks.length);
+
+  const codeHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
+  let workers = [];
+
+  function terminateWorkers() {
+    for (let i = 0; i < workers.length; i++) {
+      try { workers[i].terminate(); } catch (_) {}
+    }
+    workers = [];
+  }
+
+  try {
+    for (let wi = 0; wi < targetWorkers; wi++) workers.push(new Worker(codeHref));
+  } catch (_) {
+    terminateWorkers();
+    try {
+      const js = await fetch(codeHref, { cache: 'default', mode: 'cors', credentials: 'omit', redirect: 'follow' }).then((r) => r.text());
+      const ou = URL.createObjectURL(new Blob([js], { type: 'application/javascript' }));
+      for (let wi = 0; wi < targetWorkers; wi++) {
+        try {
+          workers.push(new Worker(ou));
+        } catch (_) {}
+      }
+      window.setTimeout(() => {
+        try { URL.revokeObjectURL(ou); } catch (_) {}
+      }, 240000);
+    } catch (_) {
+      terminateWorkers();
+      return fetchGlbArrayBuffersConcurrent(rels, Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, 8), fetchOptsOverride);
+    }
+  }
+
+  if (!workers.length) {
+    return fetchGlbArrayBuffersConcurrent(rels, Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, 8), fetchOptsOverride);
+  }
+
+  try {
+    const buckets = workers.map(() => []);
+    for (let i = 0; i < tasks.length; i++) buckets[i % workers.length].push(tasks[i]);
+    await Promise.all(workers.map((w, wi) => glbWorkerDrainBucket(w, buckets[wi], wi, fetchOpts, out)));
+  } finally {
+    terminateWorkers();
+  }
+
+  const still = rels.filter((r) => !out[r]);
+  if (still.length) {
+    const fill = await fetchGlbArrayBuffersConcurrent(still, Math.max(GLB_SCENE_BOOT_MIN_FETCH_WORKERS, 8), fetchOptsOverride);
+    for (let si = 0; si < still.length; si++) {
+      const rKey = still[si];
+      if (!out[rKey] && fill[rKey]) out[rKey] = fill[rKey];
+    }
+  }
+
+  return out;
+}
+
+async function parseSceneGlbTemplatesParallel(rels, buffers, concurrency) {
+  const raw = Number(concurrency);
+  const requested = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : GLB_SCENE_BOOT_PARSE_PARALLEL;
+  const conc = Math.min(8, Math.max(GLB_SCENE_BOOT_PARSE_PARALLEL, requested));
+  const pairs = [];
+  for (let i = 0; i < rels.length; i++) pairs.push({ rel: rels[i], ab: buffers[rels[i]] });
+  let qi = 0;
+  const runner = async () => {
+    while (true) {
+      const j = qi++;
+      if (j >= pairs.length) break;
+      const pair = pairs[j];
+      const { rel, ab } = pair;
+      if (!ab) {
+        try { console.warn('Scene GLB missing (no buffer)', rel); } catch (_) {}
+        continue;
+      }
+      await parseSceneGlbIntoTemplates(rel, ab);
+    }
+  };
+  const nruns = Math.min(Math.max(conc, 2), Math.max(1, pairs.length));
+  await Promise.all(Array.from({ length: nruns }, () => runner()));
 }
 
 /**
@@ -24203,29 +24347,17 @@ function ensureSceneGlbsBootstrapped() {
     try {
       await attachGltfBootstrapDecoders(renderer);
       const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
-      const maxW = Math.min(16, Math.max(6, _deviceCores || 8));
-      const buffers = await fetchGlbArrayBuffersConcurrent(rels, maxW);
-      for (let i = 0; i < rels.length; i++) {
-        const rel = rels[i];
-        const ab = buffers[rel];
-        if (!ab) {
-          try { console.warn('Scene GLB missing (no buffer)', rel); } catch (_) {}
-          continue;
-        }
-        await parseSceneGlbIntoTemplates(rel, ab);
-      }
+      const fetchOptsPrimary = { cache: 'default', mode: 'cors', credentials: 'omit', redirect: 'follow' };
+      const buffers = await fetchGlbArrayBuffersWorkerFirst(rels, fetchOptsPrimary);
+      await parseSceneGlbTemplatesParallel(rels, buffers, GLB_SCENE_BOOT_PARSE_PARALLEL);
       const missingAfterFirst = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
       if (missingAfterFirst.length) {
         try {
           console.warn('[Scene GLB] Retrying fetch/parse for', missingAfterFirst.length, 'asset(s) (cache reload)…');
         } catch (_) {}
         const reloadOpts = { cache: 'reload', mode: 'cors', credentials: 'omit', redirect: 'follow' };
-        const bufRetry = await fetchGlbArrayBuffersConcurrent(missingAfterFirst, Math.min(8, Math.max(2, Math.floor(maxW / 2))), reloadOpts);
-        for (let j = 0; j < missingAfterFirst.length; j++) {
-          const rel = missingAfterFirst[j];
-          if (_gameGlbParsedSceneTemplates[rel]) continue;
-          await parseSceneGlbIntoTemplates(rel, bufRetry[rel]);
-        }
+        const bufRetry = await fetchGlbArrayBuffersWorkerFirst(missingAfterFirst, reloadOpts);
+        await parseSceneGlbTemplatesParallel(missingAfterFirst, bufRetry, GLB_SCENE_BOOT_PARSE_PARALLEL);
       }
       const stillMissing = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
       const okN = rels.length - stillMissing.length;
@@ -24237,8 +24369,7 @@ function ensureSceneGlbsBootstrapped() {
         'assets/3d models/buildings/tavern.glb',
         'assets/3d models/buildings/govmansion.glb',
         'assets/3d models/buildings/house1.glb',
-        'assets/3d models/buildings/house2.glb',
-        'assets/3d models/buildings/house3.glb'
+        'assets/3d models/buildings/house2.glb'
       ];
       const missTown = townBuildingCriticalRels.filter((hr) => !_gameGlbParsedSceneTemplates[hr]);
       if (missTown.length) {

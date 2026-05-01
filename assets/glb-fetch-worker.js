@@ -1,32 +1,27 @@
 /**
- * Dedicated worker — fetches scenic `.glb` bytes off the main thread and transfers ArrayBuffers back.
- * Main thread passes `fetchInit` (subset of RequestInit): cache / mode / credentials / redirect /
- * referrerPolicy. Omit credentials keeps CORS + anonymous reads reliable for workers/blobs.
+ * Dedicated fetch worker for `.glb` bytes — run 4+ in parallel from the main thread (see `fetchGlbArrayBuffersWorkerFirst`).
+ * Parses stay on the main thread (Three.js GLTFLoader + GPU resources).
  */
 self.onmessage = async (evt) => {
   const msg = evt.data || {};
   const id = msg.id;
   const url = msg.url;
+  const fo = msg.fetchOpts && typeof msg.fetchOpts === 'object' ? msg.fetchOpts : {};
   if (url == null) {
     self.postMessage({ id, ok: false, err: 'missing url' });
     return;
   }
-  const fi = msg.fetchInit && typeof msg.fetchInit === 'object' ? msg.fetchInit : {};
+  const fetchOpts = {
+    cache: fo.cache != null ? fo.cache : 'default',
+    mode: fo.mode != null ? fo.mode : 'cors',
+    credentials: fo.credentials != null ? fo.credentials : 'omit',
+    redirect: fo.redirect != null ? fo.redirect : 'follow',
+    referrerPolicy: fo.referrerPolicy != null ? fo.referrerPolicy : 'same-origin'
+  };
   try {
-    const res = await fetch(String(url), {
-      cache: fi.cache !== undefined ? fi.cache : 'default',
-      mode: fi.mode !== undefined ? fi.mode : 'cors',
-      credentials: fi.credentials !== undefined ? fi.credentials : 'omit',
-      redirect: fi.redirect !== undefined ? fi.redirect : 'follow',
-      referrerPolicy: fi.referrerPolicy !== undefined ? fi.referrerPolicy : 'same-origin'
-    });
+    const res = await fetch(String(url), fetchOpts);
     if (!res.ok) {
-      self.postMessage({
-        id,
-        ok: false,
-        err: String(res.status),
-        statusText: String(res.statusText || '')
-      });
+      self.postMessage({ id, ok: false, err: String(res.status), statusText: String(res.statusText || '') });
       return;
     }
     const buf = await res.arrayBuffer();
