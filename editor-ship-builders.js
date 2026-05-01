@@ -4,11 +4,8 @@
 import * as THREE from 'three';
 
 export const SHIP_TYPES_ME = {
-  cutter: { name: 'Cutter', desc: 'Nimble scout', hullLen: 5, hullW: 1.6, hullH: 1.0, masts: 1, cannonSlots: 1, bowStyle: 'pointed' },
-  sloop: { name: 'Sloop', desc: 'Fast raider', hullLen: 7, hullW: 2.2, hullH: 1.3, masts: 1, cannonSlots: 2, bowStyle: 'pointed' },
-  brigantine: { name: 'Brigantine', desc: 'Balanced trader', hullLen: 10, hullW: 3.2, hullH: 1.7, masts: 2, cannonSlots: 4, bowStyle: 'wide' },
-  galleon: { name: 'Galleon', desc: 'Heavy hauler', hullLen: 14, hullW: 4.5, hullH: 2.3, masts: 3, cannonSlots: 6, bowStyle: 'wide' },
-  warship: { name: 'Man-o-War', desc: 'Floating fortress', hullLen: 18, hullW: 5.5, hullH: 2.8, masts: 3, cannonSlots: 10, bowStyle: 'blunt' }
+  sloop: { name: 'Sloop', desc: 'Fast starter hull', hullLen: 7, hullW: 2.2, hullH: 1.3, masts: 1, cannonSlots: 2, bowStyle: 'pointed' },
+  galleon: { name: 'Galleon', desc: 'Heavy war and cargo ship', hullLen: 15, hullW: 4.8, hullH: 2.5, masts: 3, cannonSlots: 8, bowStyle: 'wide' }
 };
 
 export const SHIP_PARTS_ME = {
