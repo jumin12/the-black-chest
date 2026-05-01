@@ -3017,6 +3017,7 @@ body.game-help-mobile-minimal #game-help-panel{
 </script>
 <script type="module">
 import * as THREE from 'three';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js';
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1);
 const _deviceMem = typeof navigator !== 'undefined' && navigator.deviceMemory != null ? Number(navigator.deviceMemory) : null;
@@ -9523,6 +9524,22 @@ function decoRand(rng) {
 
 function createPalmTree(x, y, z, rng, yawOverride) {
   const r = decoRand(rng);
+  const rel = WORLD_GLB.trees[Math.floor(r() * WORLD_GLB.trees.length)];
+  const tpl = getWorldGlbTemplate(rel);
+  if (tpl) {
+    const g = cloneWorldGlbForInstance(tpl);
+    const box = new THREE.Box3().setFromObject(g);
+    const h = Math.max(1e-3, box.max.y - box.min.y);
+    const targetH = 4.35 + r() * 2.65;
+    g.scale.setScalar(targetH / h);
+    const b2 = new THREE.Box3().setFromObject(g);
+    const yaw = (yawOverride !== undefined && yawOverride !== null && Number.isFinite(Number(yawOverride)))
+      ? Number(yawOverride)
+      : (r() * Math.PI * 2);
+    g.position.set(x, y - b2.min.y, z);
+    g.rotation.y = yaw;
+    return g;
+  }
   const g = new THREE.Group();
   const height = 4.35 + r() * 2.65;
   const pts = [];
@@ -9613,6 +9630,19 @@ function createRock(x, y, z, s, rng) {
 
 function createBush(x, y, z, s, rng) {
   const r = decoRand(rng);
+  const rel = WORLD_GLB.bushes[Math.floor(r() * WORLD_GLB.bushes.length)];
+  const tpl = getWorldGlbTemplate(rel);
+  if (tpl) {
+    const g = cloneWorldGlbForInstance(tpl);
+    const box = new THREE.Box3().setFromObject(g);
+    const h = Math.max(1e-3, box.max.y - box.min.y);
+    const targetH = s * 2.1;
+    g.scale.setScalar(targetH / h);
+    const b2 = new THREE.Box3().setFromObject(g);
+    g.position.set(x, y - b2.min.y, z);
+    g.rotation.y = r() * Math.PI * 2;
+    return g;
+  }
   const g = new THREE.Group();
   const mat = new THREE.MeshLambertMaterial({ color: [0x2d5016, 0x3a6b28, 0x25603a, 0x3d6b2a][Math.floor(r() * 4)] });
   for (let i = 0; i < 4; i++) {
@@ -9699,7 +9729,7 @@ function ensureCanonicalWildlifeForChunk(cx, cz) {
   if (rng() < 0.48) spawnAmbientSharkPair(cwx + (rng() - 0.5) * 105, cwz + (rng() - 0.5) * 105, rng);
 }
 
-function addTownBuildingFootprint(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle) {
+function addTownBuildingFootprintProcedural(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle) {
   const r = decoRand(rng);
   const foundation = new THREE.Mesh(
     new THREE.BoxGeometry(bW + 0.55, 0.42, bD + 0.55),
@@ -9751,6 +9781,36 @@ function addTownBuildingFootprint(group, bx, bz, baseY, bW, bD, bH, wallHex, rng
   }
 }
 
+function addTownBuildingFootprint(group, type, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle) {
+  const r = decoRand(rng);
+  let rel = null;
+  if (type === 'church') rel = WORLD_GLB.church;
+  else if (type === 'tavern') rel = WORLD_GLB.tavern;
+  else if (type === 'governor') rel = WORLD_GLB.governor;
+  else if (type === 'house') rel = r() < 0.5 ? WORLD_GLB.house1 : WORLD_GLB.house2;
+  const tpl = rel ? getWorldGlbTemplate(rel) : null;
+  if (!tpl) {
+    addTownBuildingFootprintProcedural(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
+    return false;
+  }
+  const g = cloneWorldGlbForInstance(tpl);
+  const box = new THREE.Box3().setFromObject(g);
+  const fw = Math.max(1e-3, box.max.x - box.min.x);
+  const fd = Math.max(1e-3, box.max.z - box.min.z);
+  const fh = Math.max(1e-3, box.max.y - box.min.y);
+  const sx = bW / fw;
+  const sz = bD / fd;
+  const sy = bH / fh;
+  const sc = Math.min(sx, sz, sy) * 0.94;
+  g.scale.setScalar(sc);
+  const b2 = new THREE.Box3().setFromObject(g);
+  const ox = (b2.min.x + b2.max.x) * 0.5;
+  const oz = (b2.min.z + b2.max.z) * 0.5;
+  g.position.set(bx - ox, baseY - b2.min.y, bz - oz);
+  group.add(g);
+  return true;
+}
+
 function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, minGyMax, minGyMin, footprints) {
   const r = decoRand(rng);
   let bW, bD, bH, wallHex, roofStyle;
@@ -9793,8 +9853,8 @@ function tryPlaceTownLandmark(group, type, bx, bz, rng, terrainYWorld, landOk, m
   if (!landOk(bx - cornerE, bz + cornerE)) return false;
   if (!landOk(bx + cornerE, bz + cornerE)) return false;
   const baseY = SEA_LEVEL + gyMin + 0.04;
-  addTownBuildingFootprint(group, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
-  if (type === 'church') {
+  const usedGlb = addTownBuildingFootprint(group, type, bx, bz, baseY, bW, bD, bH, wallHex, rng, roofStyle);
+  if (type === 'church' && !usedGlb) {
     const steepleX = bx + bW * 0.15;
     const steepleZ = bz - bD * 0.38;
     const stBase = new THREE.Mesh(
@@ -10011,47 +10071,51 @@ function generateCustomMapChunk(cx, cz) {
         : (e.color != null ? Number(e.color) : pal[Math.floor(er0() * 5)]);
       const rot = e.rot != null ? Number(e.rot) : 0;
       const baseOff = 0.08;
-      const baseY = surf + baseOff;
       const pivot = new THREE.Group();
       pivot.position.set(e.x, 0, e.z);
       pivot.rotation.y = rot;
-      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bW, bH, bW), new THREE.MeshLambertMaterial({ color: wallHex }));
-      bldg.position.set(0, baseY + bH / 2, 0);
-      bldg.castShadow = true;
-      const foundation = new THREE.Mesh(new THREE.BoxGeometry(bW + 0.5, 0.3, bW + 0.5), new THREE.MeshLambertMaterial({ color: 0x5a4a38 }));
-      foundation.position.set(0, baseY - 0.12, 0);
-      foundation.castShadow = true;
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(bW * 0.8, 1.5, 4), new THREE.MeshLambertMaterial({ color: 0x8b3a1a }));
-      roof.position.set(0, baseY + bH + 0.7, 0);
-      roof.rotation.y = Math.PI / 4;
-      roof.castShadow = true;
-      pivot.add(bldg, foundation, roof);
       group.add(pivot);
+      addTownBuildingFootprint(pivot, 'tavern', 0, 0, surf + baseOff, bW, bW, bH, wallHex, er, 'hip');
     } else if (e.type === 'house') {
       const w = e.houseW != null ? Number(e.houseW) : (2.7 + er0() * 0.35);
       const d = e.houseD != null ? Number(e.houseD) : (2.5 + er0() * 0.3);
       const wallH = e.houseWallH != null ? Number(e.houseWallH) : (2.05 + er0() * 0.35);
-      const hg = new THREE.Group();
-      hg.position.set(e.x, surf + 0.06, e.z);
-      hg.rotation.y = e.rot != null ? Number(e.rot) : 0;
-      const walls = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), new THREE.MeshLambertMaterial({ color: 0xe2d2b8 }));
-      walls.position.y = wallH / 2;
-      hg.add(walls);
-      const hRoof = new THREE.Mesh(
-        new THREE.ConeGeometry(Math.hypot(w, d) * 0.36, 1.35 + er0() * 0.25, 4),
-        new THREE.MeshLambertMaterial({ color: 0x6b3d22 })
-      );
-      hRoof.rotation.y = Math.PI / 4;
-      hRoof.position.y = wallH + 0.55;
-      hg.add(hRoof);
-      group.add(hg);
+      const rot = e.rot != null ? Number(e.rot) : 0;
+      const pivot = new THREE.Group();
+      pivot.position.set(e.x, 0, e.z);
+      pivot.rotation.y = rot;
+      group.add(pivot);
+      addTownBuildingFootprint(pivot, 'house', 0, 0, surf + 0.06, w, d, wallH, 0xe2d2b8, er, 'hip');
     } else if (e.type === 'dock') {
       const ang = e.rot != null ? Number(e.rot) : 0;
-      const dock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.45, PIER_TOTAL_LEN), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
-      dock.position.set(e.x, surf + 0.45, e.z);
-      dock.rotation.y = ang;
-      dock.receiveShadow = true; dock.castShadow = true;
-      group.add(dock);
+      let tpl = getWorldGlbTemplate(WORLD_GLB.dockA);
+      if (!tpl) tpl = getWorldGlbTemplate(WORLD_GLB.dockB);
+      if (tpl) {
+        const dk = cloneWorldGlbForInstance(tpl);
+        const box = new THREE.Box3().setFromObject(dk);
+        const dx = Math.max(1e-3, box.max.x - box.min.x);
+        const dz = Math.max(1e-3, box.max.z - box.min.z);
+        const horizMax = Math.max(dx, dz);
+        const horizMin = Math.min(dx, dz);
+        const sc = Math.min(PIER_TOTAL_LEN / horizMax, PIER_DECK_WIDTH / horizMin) * 1.02;
+        dk.scale.setScalar(sc);
+        dk.rotation.y = ang;
+        dk.updateMatrixWorld(true);
+        const wb = new THREE.Box3().setFromObject(dk);
+        const wcx = (wb.min.x + wb.max.x) * 0.5;
+        const wcz = (wb.min.z + wb.max.z) * 0.5;
+        const deckY = surf + 0.45;
+        dk.position.set(e.x - wcx, deckY - wb.min.y, e.z - wcz);
+        dk.receiveShadow = true;
+        dk.castShadow = true;
+        group.add(dk);
+      } else {
+        const dock = new THREE.Mesh(new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.45, PIER_TOTAL_LEN), new THREE.MeshLambertMaterial({ color: 0x6a4a28 }));
+        dock.position.set(e.x, surf + 0.45, e.z);
+        dock.rotation.y = ang;
+        dock.receiveShadow = true; dock.castShadow = true;
+        group.add(dock);
+      }
     } else if (e.type === 'flagpole') {
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 9, 8), new THREE.MeshLambertMaterial({ color: 0x4a3a28 }));
       pole.position.set(e.x, surf + 4.5, e.z);
@@ -10309,30 +10373,52 @@ function generateIsland(cx, cz) {
       terrainYWorld(dockX, dockZ)
     );
     const dockGround = dockYLand > 0 ? dockYLand : 0;
-    const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.4, PIER_TOTAL_LEN);
-    const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
-    const dock = new THREE.Mesh(dockGeo, dockMat);
     const dockDeckClear = 0.52;
     const dockCenterY = SEA_LEVEL + dockGround + dockDeckClear;
-    dock.position.set(dockX, dockCenterY, dockZ);
-    dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
-    group.add(dock);
-    group.userData.dockAngle = dockAngle;
+    const relDock = (((cx * 92811) ^ (cz * 74413) ^ ((G.worldSeed >>> 0))) & 1) === 0 ? WORLD_GLB.dockA : WORLD_GLB.dockB;
+    const dockTpl = getWorldGlbTemplate(relDock);
+    if (dockTpl) {
+      const dk = cloneWorldGlbForInstance(dockTpl);
+      const box = new THREE.Box3().setFromObject(dk);
+      const dx = Math.max(1e-3, box.max.x - box.min.x);
+      const dz = Math.max(1e-3, box.max.z - box.min.z);
+      const horizMax = Math.max(dx, dz);
+      const horizMin = Math.min(dx, dz);
+      const sc = Math.min(PIER_TOTAL_LEN / horizMax, PIER_DECK_WIDTH / horizMin) * 1.02;
+      dk.scale.setScalar(sc);
+      dk.rotation.y = dockAngle;
+      dk.updateMatrixWorld(true);
+      const wb = new THREE.Box3().setFromObject(dk);
+      const wcx = (wb.min.x + wb.max.x) * 0.5;
+      const wcz = (wb.min.z + wb.max.z) * 0.5;
+      dk.position.set(dockX - wcx, dockCenterY - wb.min.y, dockZ - wcz);
+      dk.receiveShadow = true;
+      dk.castShadow = true;
+      group.add(dk);
+    } else {
+      const dockGeo = new THREE.BoxGeometry(PIER_DECK_WIDTH, 0.4, PIER_TOTAL_LEN);
+      const dockMat = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
+      const dock = new THREE.Mesh(dockGeo, dockMat);
+      dock.position.set(dockX, dockCenterY, dockZ);
+      dock.rotation.y = dockAngle; dock.receiveShadow = true; dock.castShadow = true;
+      group.add(dock);
 
-    const dockUndersideY = dockCenterY - 0.2;
-    const postH = 5.8;
-    const postTopY = dockUndersideY - 0.06;
-    const postAlongStep = PIER_TOTAL_LEN / 3.5;
-    for (let pi = 0; pi < 8; pi++) {
-      const side = pi % 2 === 0 ? 1 : -1;
-      const along = (Math.floor(pi / 2) - 1.5) * postAlongStep;
-      const ppx = dockX + dockLongX * along + dockWidX * 2.3 * side;
-      const ppz = dockZ + dockLongZ * along + dockWidZ * 2.3 * side;
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, postH, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
-      post.position.set(ppx, postTopY - postH * 0.5, ppz);
-      post.castShadow = true;
-      group.add(post);
+      const dockUndersideY = dockCenterY - 0.2;
+      const postH = 5.8;
+      const postTopY = dockUndersideY - 0.06;
+      const postAlongStep = PIER_TOTAL_LEN / 3.5;
+      for (let pi = 0; pi < 8; pi++) {
+        const side = pi % 2 === 0 ? 1 : -1;
+        const along = (Math.floor(pi / 2) - 1.5) * postAlongStep;
+        const ppx = dockX + dockLongX * along + dockWidX * 2.3 * side;
+        const ppz = dockZ + dockLongZ * along + dockWidZ * 2.3 * side;
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, postH, 5), new THREE.MeshLambertMaterial({ color: 0x4a2a10 }));
+        post.position.set(ppx, postTopY - postH * 0.5, ppz);
+        post.castShadow = true;
+        group.add(post);
+      }
     }
+    group.userData.dockAngle = dockAngle;
 
     const toInX = worldX - dockX, toInZ = worldZ - dockZ;
     const inLen = Math.hypot(toInX, toInZ) || 1;
@@ -10526,7 +10612,37 @@ function nudgeSharkPairMidpointToOpenSea(mA, mB, yOff) {
   mB.position.y = worldSeaSurfaceY(mB.position.x, mB.position.z) + yE * 0.55;
 }
 
+function sharkYawModelFix(mesh) {
+  if (!mesh || !mesh.userData) return 0;
+  const v = mesh.userData.sharkYawFix;
+  return v != null && Number.isFinite(Number(v)) ? Number(v) : 0;
+}
+
 function makePredatorSharkMesh(scale) {
+  const tpl = getWorldGlbTemplate(WORLD_GLB.shark);
+  if (tpl) {
+    const root = cloneWorldGlbForInstance(tpl);
+    const box = new THREE.Box3().setFromObject(root);
+    const longest = Math.max(1e-3, box.max.x - box.min.x, box.max.z - box.min.z, box.max.y - box.min.y);
+    const target = (Number(scale) || 1) * 1.48;
+    root.scale.setScalar(target / longest);
+    const b2 = new THREE.Box3().setFromObject(root);
+    root.position.set(0, -b2.min.y * 0.25 - 0.02, -b2.min.z * 0.02);
+    let tailBone = null;
+    root.traverse((o) => {
+      const nm = o.name ? String(o.name).toLowerCase() : '';
+      if (!tailBone && (nm.includes('tail') || nm.includes('caud'))) tailBone = o;
+    });
+    const g = new THREE.Group();
+    g.add(root);
+    g.userData.isPredatorShark = true;
+    g.userData.glbShark = true;
+    g.userData.tailBone = tailBone || root.children[Math.max(0, root.children.length - 1)] || null;
+    g.userData.sharkYawFix = WORLD_GLB_SHARK_YAW;
+    g.userData.swimPhase = 0;
+    return g;
+  }
+
   const g = new THREE.Group();
   const s = Number(scale) || 1;
   const matTop = new THREE.MeshPhongMaterial({ color: 0x3d4a52, emissive: 0x05080a, shininess: 28, specular: 0x334455 });
@@ -10568,6 +10684,7 @@ function makePredatorSharkMesh(scale) {
   g.userData.pecFinL = pecL;
   g.userData.pecFinR = pecR;
   g.userData.isPredatorShark = true;
+  g.userData.sharkYawFix = 0;
   g.userData.swimPhase = 0;
   return g;
 }
@@ -10576,6 +10693,14 @@ function applyPredatorSharkSwimMotion(mesh, swimMag, bankZ) {
   const sm = swimMag == null ? 1 : swimMag;
   const ph = mesh.userData.swimPhase || 0;
   const t = getWildlifeWorldTime();
+  if (mesh.userData.glbShark) {
+    const tb = mesh.userData.tailBone;
+    if (tb) tb.rotation.y = Math.sin(t * 2.95 * sm + ph) * 0.35;
+    mesh.rotation.x = Math.sin(t * 2.08 * sm + ph * 1.15) * 0.1 * sm;
+    const baseZ = bankZ != null ? bankZ : 0;
+    mesh.rotation.z = baseZ + Math.sin(t * 2.55 * sm + ph) * 0.065 * sm;
+    return;
+  }
   if (mesh.userData.tail) mesh.userData.tail.rotation.y = Math.sin(t * 2.95 * sm + ph) * 0.55;
   mesh.rotation.x = Math.sin(t * 2.08 * sm + ph * 1.15) * 0.09 * sm;
   if (mesh.userData.pecFinL && mesh.userData.pecFinR) {
@@ -10586,11 +10711,7 @@ function applyPredatorSharkSwimMotion(mesh, swimMag, bankZ) {
   mesh.rotation.z = bankZ != null ? bankZ : 0;
 }
 function disposePredatorSharkMesh(root) {
-  if (!root) return;
-  root.traverse(obj => {
-    if (obj.geometry) obj.geometry.dispose();
-    if (obj.material) obj.material.dispose();
-  });
+  disposeObject3DSubtree(root);
 }
 function spawnAmbientSharkPair(wx, wz, rng) {
   const r = decoRand(rng);
@@ -10648,11 +10769,11 @@ function updateAmbientSharkPairs(dt) {
     );
     const vxa = -Math.sin(a1);
     const vza = Math.cos(a1);
-    pair.mA.rotation.y = Math.atan2(vxa, vza);
+    pair.mA.rotation.y = Math.atan2(vxa, vza) + sharkYawModelFix(pair.mA);
     applyPredatorSharkSwimMotion(pair.mA, 1, -Math.sin(a1) * 0.09);
     const vxb = -Math.sin(a2);
     const vzb = Math.cos(a2);
-    pair.mB.rotation.y = Math.atan2(vxb, vzb);
+    pair.mB.rotation.y = Math.atan2(vxb, vzb) + sharkYawModelFix(pair.mB);
     applyPredatorSharkSwimMotion(pair.mB, 0.92, -Math.sin(a2) * 0.085);
     const mx = (ax + bx) * 0.5, mz = (az + bz) * 0.5;
     const vis = isInTerrainStreamChunkRing(mx, mz, pcx, pcz);
@@ -10789,7 +10910,8 @@ function updateRescueSharkEscorts(dt) {
       e.mB.position.y = worldSeaSurfaceY(e.mB.position.x, e.mB.position.z) + escortFloat - bob * 0.7;
       const faceY = Math.atan2(e.departDirX, e.departDirZ);
       for (const mesh of [e.mA, e.mB]) {
-        let diff = faceY - mesh.rotation.y;
+        const fxSh = sharkYawModelFix(mesh);
+        let diff = faceY + fxSh - mesh.rotation.y;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
         mesh.rotation.y += diff * Math.min(1, 8 * ddt);
@@ -10856,7 +10978,8 @@ function updateRescueSharkEscorts(dt) {
       const hx = boatX - nx, hz = boatZ - nz;
       if (Math.hypot(hx, hz) > 0.06) {
         const ty = Math.atan2(hx, hz);
-        let diff = ty - mesh.rotation.y;
+        const fxSh = sharkYawModelFix(mesh);
+        let diff = ty + fxSh - mesh.rotation.y;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
         mesh.rotation.y += diff * Math.min(1, 9 * ddt);
@@ -10903,8 +11026,8 @@ function initSwimmerPredators(sw) {
   m2.position.set(u.predatorSpawn0[1].x, worldSeaSurfaceY(u.predatorSpawn0[1].x, u.predatorSpawn0[1].z) - 0.05, u.predatorSpawn0[1].z);
   const y1 = Math.atan2(swx - m1.position.x, swz - m1.position.z);
   const y2 = Math.atan2(swx - m2.position.x, swz - m2.position.z);
-  m1.rotation.y = y1;
-  m2.rotation.y = y2;
+  m1.rotation.y = y1 + sharkYawModelFix(m1);
+  m2.rotation.y = y2 + sharkYawModelFix(m2);
   scene.add(m1);
   scene.add(m2);
   u.predatorMeshes = [m1, m2];
@@ -10994,7 +11117,7 @@ function updateSwimmerPredatorMeshes(sw, swx, swy, swz, tw) {
       const rdz = swz - pz;
       if (Math.hypot(rdx, rdz) > 0.04) headYaw = Math.atan2(rdx, rdz);
     }
-    mesh.rotation.y = headYaw;
+    mesh.rotation.y = headYaw + sharkYawModelFix(mesh);
     const sm = tw < APP ? 0.82 : tw < APP + CIR ? 1.08 : tw < APP + CIR + ATK ? 1.35 : 0.9;
     applyPredatorSharkSwimMotion(mesh, sm);
   }
@@ -11004,17 +11127,41 @@ function spawnSeagulls(wx, wz, count, rng) {
   const r = decoRand(rng);
   for (let i = 0; i < count; i++) {
     const sg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 3), new THREE.MeshLambertMaterial({ color: 0xeeeeee }));
-    body.rotation.x = Math.PI / 2; sg.add(body);
-    const wingL = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
-    wingL.position.set(-0.2, 0, 0); sg.add(wingL);
-    const wingR = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
-    wingR.position.set(0.2, 0, 0); sg.add(wingR);
+    const relG = WORLD_GLB.seagulls[Math.floor(r() * WORLD_GLB.seagulls.length)];
+    const tpl = getWorldGlbTemplate(relG);
+    if (tpl) {
+      const bird = cloneWorldGlbForInstance(tpl);
+      const box = new THREE.Box3().setFromObject(bird);
+      const span = Math.max(1e-3, box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z);
+      bird.scale.setScalar(0.52 / span);
+      const b2 = new THREE.Box3().setFromObject(bird);
+      bird.position.y = -b2.min.y;
+      bird.rotation.y = WORLD_GLB_SEAGULL_YAW;
+      sg.add(bird);
+      let wingL = null;
+      let wingR = null;
+      bird.traverse((o) => {
+        const nm = o.name ? String(o.name).toLowerCase() : '';
+        if (nm.includes('wing') && nm.includes('l')) wingL = o;
+        if (nm.includes('wing') && nm.includes('r')) wingR = o;
+      });
+      sg.userData.wingL = wingL;
+      sg.userData.wingR = wingR;
+      sg.userData.glbBird = true;
+    } else {
+      const body = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 3), new THREE.MeshLambertMaterial({ color: 0xeeeeee }));
+      body.rotation.x = Math.PI / 2; sg.add(body);
+      const wingL = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
+      wingL.position.set(-0.2, 0, 0); sg.add(wingL);
+      const wingR = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.08), new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide }));
+      wingR.position.set(0.2, 0, 0); sg.add(wingR);
+      sg.userData.wingL = wingL;
+      sg.userData.wingR = wingR;
+    }
     sg.position.set(wx + (r() - 0.5) * 52, 24 + r() * 10, wz + (r() - 0.5) * 52);
     sg.userData.cx = wx; sg.userData.cz = wz;
     sg.userData.t0Phase = r() * Math.PI * 2;
     sg.userData.radius = 26 + r() * 42; sg.userData.speed = 0.12 + r() * 0.16;
-    sg.userData.wingL = wingL; sg.userData.wingR = wingR;
     sg.userData.pruneKey = wildlifePruneKey(wx + i * 0.017, wz - i * 0.013, 0x4e67 + i);
     scene.add(sg); seagulls.push(sg);
   }
@@ -11075,10 +11222,7 @@ function removeFishSchoolByLeader(leader) {
     const f = fishSchools[i];
     if (f.userData.leader === leader) {
       scene.remove(f);
-      f.children.forEach(ch => {
-        if (ch.geometry) ch.geometry.dispose();
-        if (ch.material) ch.material.dispose();
-      });
+      disposeObject3DSubtree(f);
       fishSchools.splice(i, 1);
     }
   }
@@ -11098,7 +11242,9 @@ function pruneWildlifeAwayFromPlayer() {
       if (k > dropK) { dropK = k; dropI = idx; }
     });
     if (dropI < 0) break;
-    scene.remove(seagulls[dropI]);
+    const sgPr = seagulls[dropI];
+    scene.remove(sgPr);
+    disposeObject3DSubtree(sgPr);
     seagulls.splice(dropI, 1);
   }
   while (ambientSharkPairs.length > WILDLIFE_SHARK_PAIR_CAP) {
@@ -11120,7 +11266,6 @@ function pruneWildlifeAwayFromPlayer() {
 function spawnFish(wx, wz, count, rng) {
   if (count <= 0 || isSeaObstructed(wx, wz) || !wildlifeXZOutsideIslandMargin(wx, wz)) return;
   const r = decoRand(rng);
-  const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
   const floatOffset = -0.045 - r() * 0.11;
   const h = (salt) => swimmerStreamHash(wx, wz, salt);
   const leader = {
@@ -11136,19 +11281,44 @@ function spawnFish(wx, wz, count, rng) {
     x: wx,
     z: wz,
     lastOkX: wx,
-    lastOkZ: wz
+    lastOkZ: wz,
+    variant: Math.abs(((h(506) * 917) | 0)) % WORLD_GLB.fish.length
   };
   schoolLeaders.push(leader);
   for (let i = 0; i < count; i++) {
     const fg = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 5), new THREE.MeshBasicMaterial({ color: species.color }));
-    body.rotation.x = Math.PI / 2; fg.add(body);
-    const tail = new THREE.Mesh(new THREE.PlaneGeometry(species.size * 1.2, species.size), new THREE.MeshBasicMaterial({ color: species.color, side: THREE.DoubleSide }));
-    tail.position.set(0, 0, -species.len * 0.55); fg.add(tail);
-    if (species.name === 'dolphin' || species.name === 'shark') {
-      const fin = new THREE.Mesh(new THREE.ConeGeometry(species.size * 0.4, species.size * 1.5, 3), new THREE.MeshBasicMaterial({ color: species.color }));
-      fin.position.set(0, species.size * 0.7, -species.len * 0.1); fg.add(fin);
+    const relFish = WORLD_GLB.fish[(leader.variant + i) % WORLD_GLB.fish.length];
+    const tpl = getWorldGlbTemplate(relFish);
+    let tailRef = null;
+    if (tpl) {
+      const body = cloneWorldGlbForInstance(tpl);
+      const box = new THREE.Box3().setFromObject(body);
+      const slen = Math.max(1e-3, box.max.z - box.min.z, box.max.x - box.min.x);
+      const targ = 0.22 + r() * 0.28;
+      body.scale.setScalar(targ / slen);
+      const b3 = new THREE.Box3().setFromObject(body);
+      body.position.set(0, -b3.min.y * 0.5, -b3.min.z * 0.15);
+      body.traverse((o) => {
+        const nm = o.name ? String(o.name).toLowerCase() : '';
+        if (!tailRef && nm.includes('tail')) tailRef = o;
+      });
+      fg.add(body);
+      if (!tailRef && body.children.length) tailRef = body.children[body.children.length - 1];
+      fg.userData.glbFish = true;
+      fg.userData.tailPart = tailRef;
+    } else {
+      const species = FISH_SPECIES[Math.floor(r() * FISH_SPECIES.length)];
+      const meshBody = new THREE.Mesh(new THREE.ConeGeometry(species.size, species.len, 5), new THREE.MeshBasicMaterial({ color: species.color }));
+      meshBody.rotation.x = Math.PI / 2; fg.add(meshBody);
+      const tail = new THREE.Mesh(new THREE.PlaneGeometry(species.size * 1.2, species.size), new THREE.MeshBasicMaterial({ color: species.color, side: THREE.DoubleSide }));
+      tail.position.set(0, 0, -species.len * 0.55); fg.add(tail);
+      fg.userData.tailPart = tail;
+      if (species.name === 'dolphin' || species.name === 'shark') {
+        const fin = new THREE.Mesh(new THREE.ConeGeometry(species.size * 0.4, species.size * 1.5, 3), new THREE.MeshBasicMaterial({ color: species.color }));
+        fin.position.set(0, species.size * 0.7, -species.len * 0.1); fg.add(fin);
+      }
     }
+    fg.userData.fishYawBoost = WORLD_GLB_FISH_YAW;
     const f0x = wx + (r() - 0.5) * 3;
     const f0z = wz + (r() - 0.5) * 3;
     fg.position.set(f0x, worldSeaSurfaceY(f0x, f0z) + floatOffset, f0z);
@@ -11180,6 +11350,10 @@ function updateFish(dt) {
       l.wB = 0.068 + g(505) * 0.058;
       if (l.lastOkX == null) l.lastOkX = ax;
       if (l.lastOkZ == null) l.lastOkZ = az;
+      if (l.variant == null && WORLD_GLB.fish.length) {
+        const g2 = (s) => swimmerStreamHash(ax, az, s);
+        l.variant = Math.abs(((g2(506) * 917) | 0)) % WORLD_GLB.fish.length;
+      }
     }
     const a = t * l.wA + l.phA;
     const b = t * l.wB + l.phB;
@@ -11227,8 +11401,11 @@ function updateFish(dt) {
     const vx = Math.cos(a) * l.wA * l.amp + Math.cos(b * 1.17) * l.wB * 1.17 * l.amp * 0.38;
     const vz = -Math.sin(a * 0.95) * l.wA * 0.95 * l.amp - Math.sin(b) * l.wB * l.amp * 0.33;
     const schoolYaw = Math.hypot(vx, vz) > 0.018 ? Math.atan2(vx, vz) : f.rotation.y;
-    f.rotation.y = schoolYaw + Math.sin(t * 4 + f.userData.wiggle) * 0.07;
-    f.children[1].rotation.y = Math.sin(t * 8 + f.userData.wiggle) * 0.4;
+    const yawBoost = (f.userData && f.userData.fishYawBoost != null) ? Number(f.userData.fishYawBoost) : 0;
+    f.rotation.y = schoolYaw + yawBoost + Math.sin(t * 4 + f.userData.wiggle) * 0.07;
+    const tp = f.userData && f.userData.tailPart;
+    const tw = tp || f.children[1];
+    if (tw && tw.rotation) tw.rotation.y = Math.sin(t * 8 + f.userData.wiggle) * 0.4;
   });
 }
 
@@ -11243,8 +11420,8 @@ function updateSeagulls(dt) {
     sg.position.y = 22 + Math.sin(p * 2) * 4;
     sg.rotation.y = p + Math.PI / 2;
     const wingFlap = Math.sin(wt * 2.6 + p * 3) * 0.4;
-    sg.userData.wingL.rotation.z = wingFlap;
-    sg.userData.wingR.rotation.z = -wingFlap;
+    if (sg.userData.wingL && sg.userData.wingL.rotation) sg.userData.wingL.rotation.z = wingFlap;
+    if (sg.userData.wingR && sg.userData.wingR.rotation) sg.userData.wingR.rotation.z = -wingFlap;
     sg.visible = isInTerrainStreamChunkRing(sg.position.x, sg.position.z, pcx, pcz);
   });
 }
@@ -19713,10 +19890,15 @@ function syncCaptainNameToServer() {
 }
 
 function destroyAmbientWildlife() {
-  seagulls.forEach(sg => { scene.remove(sg); });
+  seagulls.forEach(sg => {
+    scene.remove(sg);
+    disposeObject3DSubtree(sg);
+  });
   seagulls.length = 0;
-  fishSchools.forEach(f => { scene.remove(f); });
-  fishSchools.length = 0;
+  fishSchools.forEach(f => {
+    scene.remove(f);
+    disposeObject3DSubtree(f);
+  });
   schoolLeaders.length = 0;
   ambientSharkPairs.forEach(sh => {
     scene.remove(sh.mA);
@@ -20202,7 +20384,13 @@ async function connectToServer() {
   G.iAmMultiplayerNpcStepper = false;
   try { stopMultiplayerRttLoop(); } catch (e) {}
   if (G.mode === 'playing') {
-    queueMicrotask(() => { try { preloadRealmWhileConnecting(); } catch (e) {} });
+    queueMicrotask(() => {
+      void (async () => {
+        try {
+          await preloadRealmWhileConnecting();
+        } catch (e) {}
+      })();
+    });
   }
   let socket;
   try {
@@ -20392,13 +20580,23 @@ async function connectToServer() {
           }
         }
         try { if (G.mode === 'playing' && G.myId != null) startMultiplayerRttLoop(); } catch (e) {}
-        try {
-          warmTutorialRaidCutsceneMeshesIfEligible();
-          flushGameViewRender();
-        } catch (e) {}
-        setMultiplayerConnectingOverlay(false);
-        G._netDesyncSticky = 0;
-        try { setDesyncBlockingOverlay(false); } catch (e) {}
+        void (async () => {
+          try {
+            const mpSub = document.querySelector('#mp-connecting-overlay .mp-connecting-sub');
+            await ensureWorldGlbModelsLoaded({ subEl: mpSub });
+          } catch (egl) {
+            try {
+              console.warn('Connecting GLB preload', egl);
+            } catch (e) {}
+          }
+          try {
+            warmTutorialRaidCutsceneMeshesIfEligible();
+            flushGameViewRender();
+          } catch (e) {}
+          setMultiplayerConnectingOverlay(false);
+          G._netDesyncSticky = 0;
+          try { setDesyncBlockingOverlay(false); } catch (e) {}
+        })();
         break;
       case 'server_pop':
         applyServerPop(msg);
@@ -23550,6 +23748,45 @@ const GAME_ASSET_3D_GLB_REL_PATHS = [
   'assets/3d models/wildlife/shark.glb'
 ];
 
+/** Ships use procedural meshes in-world; preload list may still warm-cache ship GLBs for future use. */
+const GAME_WORLD_GLB_REL_PATHS = GAME_ASSET_3D_GLB_REL_PATHS.filter(p => p.indexOf('/ships/') === -1);
+
+/** Rel paths for procedural replacement (every non-ship world model). */
+const WORLD_GLB = {
+  church: 'assets/3d models/buildings/church1.glb',
+  tavern: 'assets/3d models/buildings/tavern.glb',
+  governor: 'assets/3d models/buildings/govres1.glb',
+  house1: 'assets/3d models/buildings/house1.glb',
+  house2: 'assets/3d models/buildings/house2.glb',
+  dockA: 'assets/3d models/buildings/dock.glb',
+  dockB: 'assets/3d models/buildings/dock1.glb',
+  trees: [
+    'assets/3d models/decorations/tree1.glb',
+    'assets/3d models/decorations/tree2.glb',
+    'assets/3d models/decorations/tree3.glb'
+  ],
+  bushes: [
+    'assets/3d models/decorations/bush1.glb',
+    'assets/3d models/decorations/bush2.glb'
+  ],
+  fish: [
+    'assets/3d models/wildlife/fish1.glb',
+    'assets/3d models/wildlife/fish2.glb',
+    'assets/3d models/wildlife/fish3.glb',
+    'assets/3d models/wildlife/fish4.glb'
+  ],
+  seagulls: [
+    'assets/3d models/wildlife/seagul1.glb',
+    'assets/3d models/wildlife/seagul2.glb'
+  ],
+  shark: 'assets/3d models/wildlife/shark.glb'
+};
+
+/** GLB authoring often aligns +X forward; game wildlife faces travel direction with atan2(vx,vz) on Y. */
+const WORLD_GLB_FISH_YAW = Math.PI * 0.5;
+const WORLD_GLB_SEAGULL_YAW = Math.PI * 0.5;
+const WORLD_GLB_SHARK_YAW = -Math.PI * 0.5;
+
 /** All `.wav` / `.mp3` under `assets/sound/` that the client may fetch early (matches on-disk layout). */
 const GAME_ASSET_SOUND_PRELOAD_REL_PATHS = [
   'assets/sound/effects/cannon-shot.wav',
@@ -23574,6 +23811,7 @@ const GAME_ASSET_SOUND_PRELOAD_REL_PATHS = [
 function collectResolvableBinaryGameAssetUrls() {
   const rels = [
     'assets/json-parse-worker.js',
+    'assets/glb-fetch-worker.js',
     'assets/multiplayer-server.json',
     ...GAME_ASSET_3D_GLB_REL_PATHS,
     ...GAME_ASSET_SOUND_PRELOAD_REL_PATHS
@@ -23602,6 +23840,180 @@ function warmupBinaryGameAssetCache(urls) {
     if (i < urls.length) queueMicrotask(pump);
   }
   pump();
+}
+
+let _worldGlbLoadPromise = null;
+let _worldGlbLoadFailed = false;
+/** @type {Map<string, THREE.Object3D>} */
+const _worldGlbTemplates = new Map();
+const WORLD_GLB_FETCH_WORKERS = Math.max(
+  3,
+  Math.min(
+    10,
+    Math.round((((typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 8) * 3) / 4)
+  )
+);
+
+function worldGlbTemplatesReady() {
+  if (_worldGlbLoadFailed) return false;
+  const rels = GAME_WORLD_GLB_REL_PATHS;
+  for (let i = 0; i < rels.length; i++) {
+    if (!_worldGlbTemplates.has(rels[i])) return false;
+  }
+  return rels.length > 0;
+}
+
+function getWorldGlbTemplate(relPath) {
+  if (_worldGlbLoadFailed || relPath == null) return null;
+  return _worldGlbTemplates.get(String(relPath)) || null;
+}
+
+function annotateWorldGlbTemplateShadows(root) {
+  root.traverse((o) => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+}
+
+function cloneWorldGlbForInstance(templateRoot) {
+  const c = templateRoot.clone(true);
+  c.traverse((o) => {
+    if (o.isMesh) {
+      if (o.geometry) o.geometry = o.geometry.clone();
+      if (o.material) {
+        o.material = Array.isArray(o.material)
+          ? o.material.map((m) => (m && m.clone ? m.clone() : m))
+          : (o.material && o.material.clone ? o.material.clone() : o.material);
+      }
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  return c;
+}
+
+function spawnGlbFetchWorker() {
+  const href = resolveGameAssetUrl('assets/glb-fetch-worker.js');
+  try {
+    return new Worker(href);
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Parallel `fetch` of GLBs by filename across a small Worker pool (ArrayBuffers transferred back). */
+function fetchGlbBuffersWithWorkerPool(absoluteUrls, onSliceDone) {
+  const workers = [];
+  for (let i = 0; i < WORLD_GLB_FETCH_WORKERS; i++) {
+    const w = spawnGlbFetchWorker();
+    if (w) workers.push(w);
+  }
+  if (!workers.length) {
+    const n = absoluteUrls.length;
+    let done = 0;
+    return Promise.all(
+      absoluteUrls.map((url) =>
+        fetch(url, { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' }).then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+          return r.arrayBuffer().then((ab) => {
+            done++;
+            if (onSliceDone) onSliceDone(done, n);
+            return ab;
+          });
+        })
+      )
+    );
+  }
+  let wi = 0;
+  const pick = () => workers[(wi++) % workers.length];
+  const n = absoluteUrls.length;
+  let finished = 0;
+  const run = Promise.all(
+    absoluteUrls.map(
+      (url, idx) =>
+        new Promise((resolve, reject) => {
+          const w = pick();
+          const id = idx;
+          const onMsg = (e) => {
+            const d = e.data || {};
+            if (d.id !== id) return;
+            w.removeEventListener('message', onMsg);
+            w.removeEventListener('error', onErr);
+            if (d.ok && d.ab) {
+              finished++;
+              if (onSliceDone) onSliceDone(finished, n);
+              resolve(d.ab);
+            } else reject(new Error(d.err || 'glb ' + String(d.status || '')));
+          };
+          const onErr = (err) => {
+            w.removeEventListener('message', onMsg);
+            w.removeEventListener('error', onErr);
+            reject(err);
+          };
+          w.addEventListener('message', onMsg);
+          w.addEventListener('error', onErr);
+          w.postMessage({ id, url });
+        })
+    )
+  );
+  return run.finally(() => {
+    for (let j = 0; j < workers.length; j++) {
+      try { workers[j].terminate(); } catch (e) {}
+    }
+  });
+}
+
+async function ensureWorldGlbModelsLoaded(statusOpt) {
+  if (_worldGlbLoadFailed || worldGlbTemplatesReady()) return;
+  if (_worldGlbLoadPromise) return _worldGlbLoadPromise;
+  const rels = GAME_WORLD_GLB_REL_PATHS;
+  const subEl = statusOpt && statusOpt.subEl;
+  _worldGlbLoadPromise = (async () => {
+    if (rels.length === 0) return;
+    if (subEl) subEl.textContent = 'Loading 3D world models (' + rels.length + ')…';
+    const urls = rels.map((r) => resolveGameAssetUrl(r));
+    let buffers;
+    try {
+      buffers = await fetchGlbBuffersWithWorkerPool(urls, (done, tot) => {
+        if (subEl) subEl.textContent = 'Fetching 3D models… ' + done + ' / ' + tot;
+      });
+    } catch (eFetch) {
+      throw eFetch;
+    }
+    const loader = new GLTFLoader();
+    if (subEl) subEl.textContent = 'Parsing 3D models…';
+    for (let i = 0; i < rels.length; i++) {
+      const gltf = await new Promise((resolve, reject) => {
+        try {
+          loader.parse(
+            buffers[i],
+            '',
+            (g) => resolve(g),
+            (err) => reject(err || new Error('gltf parse'))
+          );
+        } catch (e2) {
+          reject(e2);
+        }
+      });
+      annotateWorldGlbTemplateShadows(gltf.scene);
+      _worldGlbTemplates.set(rels[i], gltf.scene);
+      if (subEl) subEl.textContent = 'Parsing 3D models… ' + (i + 1) + ' / ' + rels.length;
+    }
+    if (subEl) subEl.textContent = '3D scenery ready.';
+  })();
+  try {
+    await _worldGlbLoadPromise;
+  } catch (e) {
+    _worldGlbLoadPromise = null;
+    _worldGlbLoadFailed = true;
+    _worldGlbTemplates.clear();
+    try {
+      console.warn('World GLB pack failed:', e);
+    } catch (e2) {}
+    throw e;
+  }
 }
 
 let _gameImagePreloadWorker = null;
@@ -33300,8 +33712,15 @@ function warmUpGameView() {
 /**
  * During MP "Connecting", pull nearby terrain, compile tutorial-raid hull, and render once so first frames stay smooth.
  */
-function preloadRealmWhileConnecting() {
+async function preloadRealmWhileConnecting() {
   if (G.mode !== 'playing' || typeof THREE === 'undefined') return;
+  try {
+    await ensureWorldGlbModelsLoaded();
+  } catch (egl) {
+    try {
+      console.warn('preloadRealm GLB', egl);
+    } catch (e) {}
+  }
   try { kickOffGameAssetPreload(); } catch (e0) {}
   try { updateChunks(); } catch (e1) {}
   try { warmTutorialRaidCutsceneMeshesIfEligible(); } catch (e2) {}
@@ -36340,16 +36759,26 @@ if (!hasSave) {
 updatePiratesPanel();
 noise = new SimplexNoise(G.worldSeed);
 if (!hasSave) ensurePlayerInOpenOcean();
-updateChunks();
-spawnNPCs();
-initMainMenuAttractor();
-nudgePlayerSpawnClearOfShips();
-syncDayNightVisuals(G.player.x, G.player.z);
 
 document.getElementById('ui-layer').style.display = 'none';
 document.getElementById('touch-controls').style.display = 'none';
 document.getElementById('touch-zoom').style.display = 'none';
 document.getElementById('touch-broadsides-layer').style.display = 'none';
+
+void (async () => {
+  try {
+    await ensureWorldGlbModelsLoaded();
+  } catch (eGl) {
+    try {
+      console.warn('Menu world GLB init', eGl);
+    } catch (e) {}
+  }
+  updateChunks();
+  spawnNPCs();
+  initMainMenuAttractor();
+  nudgePlayerSpawnClearOfShips();
+  syncDayNightVisuals(G.player.x, G.player.z);
+})();
 
 function menuRender() {
   if (G.mode !== 'playing') {
@@ -36445,14 +36874,24 @@ function menuRender() {
       requestAnimationFrame(step);
       return;
     }
-    if (sub) sub.textContent = 'Ready.';
-    setTimeout(() => {
-      if (el) {
-        el.style.display = 'none';
-        el.setAttribute('aria-hidden', 'true');
+    void (async () => {
+      try {
+        await ensureWorldGlbModelsLoaded({ subEl: sub });
+      } catch (eg) {
+        try {
+          console.warn('Boot GLB load', eg);
+        } catch (e) {}
+        if (sub) sub.textContent = 'Using fallback scenery…';
       }
-      document.body.classList.remove('game-boot-active');
-    }, 120);
+      if (sub) sub.textContent = 'Ready.';
+      setTimeout(() => {
+        if (el) {
+          el.style.display = 'none';
+          el.setAttribute('aria-hidden', 'true');
+        }
+        document.body.classList.remove('game-boot-active');
+      }, 140);
+    })();
   }
   requestAnimationFrame(step);
 })();
