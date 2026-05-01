@@ -16,21 +16,13 @@ const VANILLA_PIRATE_RESPAWN_MS = 180000;
 /** Match client `factionHostileToPlayer` — only open combat on strong personal standing penalty. */
 const COMBAT_HOSTILE_STANDING = -42;
 
-/** Must match browser `SHIP_TYPES` (two playable hull archetypes only). Legacy names normalized at runtime. */
 const SHIP_TYPES = {
-  sloop: { hullLen: 7, hullW: 2.2, speed: 1.48, turnRate: 1.28, cannonSlots: 2 },
-  galleon: { hullLen: 16, hullW: 5.0, speed: 0.78, turnRate: 0.62, cannonSlots: 8 }
+  cutter: { hullLen: 5, hullW: 1.6, speed: 1.75, turnRate: 1.6, cannonSlots: 1 },
+  sloop: { hullLen: 7, hullW: 2.2, speed: 1.5, turnRate: 1.3, cannonSlots: 2 },
+  brigantine: { hullLen: 10, hullW: 3.2, speed: 1.25, turnRate: 1.0, cannonSlots: 4 },
+  galleon: { hullLen: 14, hullW: 4.5, speed: 0.94, turnRate: 0.7, cannonSlots: 6 },
+  warship: { hullLen: 18, hullW: 5.5, speed: 0.69, turnRate: 0.5, cannonSlots: 10 }
 };
-function normalizeNpcShipType(t) {
-  const s = String(t || '').trim().toLowerCase();
-  if (s === 'galleon') return 'galleon';
-  if (s === 'sloop') return 'sloop';
-  if (s === 'warship' || s === 'brigantine') return 'galleon';
-  return 'sloop';
-}
-function npcHullSpec(npc) {
-  return SHIP_TYPES[normalizeNpcShipType(npc && npc.type)] || SHIP_TYPES.sloop;
-}
 
 const FACTION_TRADE_COLORS = ['#c8102e', '#e87722', '#0055a4', '#e6bc0c', '#1a7a3e'];
 const FACTION_FLAG_PNG_IDS = [10, 13, 21, 19, 16];
@@ -65,11 +57,13 @@ const FACTION_PATROL_SHIP_NAMES = [
 ];
 
 function tradeShipCannonForType(shipType) {
-  return normalizeNpcShipType(shipType) === 'galleon' ? 'heavy' : 'light';
+  if (shipType === 'galleon') return 'heavy';
+  if (shipType === 'brigantine') return 'medium';
+  return 'light';
 }
 
 function shipHullRadius(shipType) {
-  const s = SHIP_TYPES[normalizeNpcShipType(shipType)] || SHIP_TYPES.sloop;
+  const s = SHIP_TYPES[shipType] || SHIP_TYPES.sloop;
   return Math.max(3.1, s.hullLen * 0.5 + s.hullW * 0.42);
 }
 
@@ -209,7 +203,7 @@ function assignTradeRouteFromHome(npc, homeMeta, list, rng, ws, portController) 
 
 function findMerchantSpawnOffCoast(home, rng, shipTypeOpt, dryLand, edgeClamp) {
   if (!home || home.dockX == null) return null;
-  const spec = SHIP_TYPES[normalizeNpcShipType(shipTypeOpt || 'galleon')] || SHIP_TYPES.sloop;
+  const spec = SHIP_TYPES[shipTypeOpt || 'brigantine'] || SHIP_TYPES.sloop;
   const da = home.dockAngle || 0;
   const longX = Math.sin(da);
   const longZ = Math.cos(da);
@@ -233,7 +227,7 @@ function findMerchantSpawnOffCoast(home, rng, shipTypeOpt, dryLand, edgeClamp) {
     const nz = home.dockZ + longZ * along + widZ * lateral;
     const cx = Math.max(-edgeClamp, Math.min(edgeClamp, nx));
     const cz = Math.max(-edgeClamp, Math.min(edgeClamp, nz));
-    const stKey = normalizeNpcShipType(shipTypeOpt || 'galleon');
+    const stKey = shipTypeOpt || 'brigantine';
     if (!dryLand(cx, cz) && hasClear(cx, cz) && npcFindClearSpawnYaw(cx, cz, stKey, dryLand) != null) return { nx: cx, nz: cz };
   }
   for (let ring = 0; ring < 26; ring++) {
@@ -244,7 +238,7 @@ function findMerchantSpawnOffCoast(home, rng, shipTypeOpt, dryLand, edgeClamp) {
       const nz = home.dockZ + longZ * along + widZ * lateral;
       const cx = Math.max(-edgeClamp, Math.min(edgeClamp, nx));
       const cz = Math.max(-edgeClamp, Math.min(edgeClamp, nz));
-      const stKey2 = normalizeNpcShipType(shipTypeOpt || 'galleon');
+      const stKey2 = shipTypeOpt || 'brigantine';
       if (!dryLand(cx, cz) && hasClear(cx, cz) && npcFindClearSpawnYaw(cx, cz, stKey2, dryLand) != null) return { nx: cx, nz: cz };
     }
   }
@@ -303,7 +297,7 @@ function npcSailBonus(npc) {
 }
 
 function npcMaxForwardSpeed(npc) {
-  const spec = npcHullSpec(npc);
+  const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
   const rigF = Math.max(0.26, Math.pow(rm, 1.32));
   /* Sync with browser `npcMaxForwardSpeed`: hull ceiling + rigging; crew folded into constants vs client crew mult. */
@@ -331,7 +325,7 @@ function npcSailingTurnFactor(npc, windAt) {
 }
 
 function accelerateNpcToward(npc, dt, target) {
-  const spec = npcHullSpec(npc);
+  const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const speedMult = spec.speed + npcSailBonus(npc);
   const maxF = npcMaxForwardSpeed(npc);
   const t = Math.min(maxF, Math.max(0, target));
@@ -555,7 +549,7 @@ function npcBroadsideFireSide(normRel, tolRad) {
 }
 
 function emitBroadside(broadcastAll, npc, targetX, targetZ, tvx, tvz) {
-  const npcSpec = npcHullSpec(npc);
+  const npcSpec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const cc = Math.max(1, npcSpec.cannonSlots || 2);
   const perSide = Math.ceil(cc / 2);
   let px = targetX;
@@ -611,14 +605,17 @@ function emitBroadside(broadcastAll, npc, targetX, targetZ, tvx, tvz) {
   }
 }
 
-const STORY_SHIP_ORDER = ['sloop', 'galleon'];
+const STORY_SHIP_ORDER = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
 const STORY_BOUNTY_SYNC_MIN = 62000;
 const STORY_BOUNTY_SYNC_SPAN = 32;
 const HUNT_MARK_SYNC_MIN = 30000;
 const HUNT_MARK_SYNC_MAX = 31999;
 const STORY_BOUNTY_CAPTAIN_POOLS = {
-  sloop: ['Mara Duskwind', 'Finn Crowsbeak', 'Silas "Shiv" Rackham', 'Nessa "Needle" Croft'],
-  galleon: ['Vex Blackwater', 'Cordelia Ashprow', 'Iron Tom Corsair', 'Bram Blackjib', 'Admiral Scarlett Graves', 'Commodore Jareth Pike']
+  cutter: ['Silas "Shiv" Rackham', 'Nessa "Needle" Croft'],
+  sloop: ['Mara Duskwind', 'Finn Crowsbeak'],
+  brigantine: ['Iron Tom Corsair', 'Bram Blackjib'],
+  galleon: ['Vex Blackwater', 'Cordelia Ashprow'],
+  warship: ['Admiral Scarlett Graves', 'Commodore Jareth Pike']
 };
 
 function storyBountySyncId(ownerPlayerId, step) {
@@ -628,7 +625,7 @@ function storyBountySyncId(ownerPlayerId, step) {
 }
 
 function pickStoryBountyCaptainName(shipType, ownerPlayerId, step) {
-  const pool = STORY_BOUNTY_CAPTAIN_POOLS[normalizeNpcShipType(shipType)] || STORY_BOUNTY_CAPTAIN_POOLS.sloop;
+  const pool = STORY_BOUNTY_CAPTAIN_POOLS[shipType] || STORY_BOUNTY_CAPTAIN_POOLS.sloop;
   const oid = Math.max(0, Math.floor(Number(ownerPlayerId) || 0));
   const st = Math.max(0, Math.floor(Number(step) || 0));
   return pool[(oid * 31 + st * 17) % pool.length] || 'Notorious Pirate';
@@ -689,7 +686,7 @@ function syncStoryBountyNpcs(npcs, playerStories, ctx, ws, edgeClamp) {
       }
       const shipType = STORY_SHIP_ORDER[step] || 'sloop';
       const existing = npcs.find(n => n.syncId === sid);
-      const hp = normalizeNpcShipType(shipType) === 'galleon' ? 118 : 86;
+      const hp = shipType === 'warship' ? 125 : shipType === 'galleon' ? 105 : shipType === 'brigantine' ? 90 : 72;
       if (existing) {
         if (!existing.sinking) {
           existing.health = hp;
@@ -772,7 +769,7 @@ function syncQuestContractNpcs(npcs, playerQuests, ctx, players) {
       const player = players.get(pid);
       const px = player && Number.isFinite(Number(player.x)) ? Number(player.x) : 0;
       const pz = player && Number.isFinite(Number(player.z)) ? Number(player.z) : 0;
-      const typePool = ['sloop', 'galleon'];
+      const typePool = ['cutter', 'sloop', 'brigantine', 'galleon'];
       const npcType = typePool[Math.floor(Math.random() * typePool.length)];
       const dryAt = (x, z) => ctx.dryLandAtWorldPosition(x, z);
       let nx = px;
@@ -1079,7 +1076,7 @@ function createServerNpcWorld(opts) {
       return s / 4294967296;
     };
     if (!pickTradeDestination(home, allPorts, sr, ws, politics.portController)) return false;
-    const shipTypes = ['sloop', 'galleon'];
+    const shipTypes = ['cutter', 'sloop', 'brigantine', 'galleon'];
     const st = shipTypes[Math.floor(sr() * shipTypes.length)];
     let nx = 0;
     let nz = 0;
@@ -1147,7 +1144,7 @@ function createServerNpcWorld(opts) {
       return s / 4294967296;
     };
     const pid = nextPatrolId++;
-    const typePool = ['galleon'];
+    const typePool = ['brigantine', 'warship', 'galleon'];
     const st = typePool[Math.floor(sr() * typePool.length)];
     let nx = 0;
     let nz = 0;
@@ -1206,13 +1203,13 @@ function createServerNpcWorld(opts) {
     if (i < 0 || i >= pirateSlotCount) return;
     if (npcs.some(n => (n.syncId | 0) === i)) return;
     const npcSeed = (ws | 0) * 7 + 13;
-    const typePool = ['sloop', 'sloop', 'sloop', 'galleon', 'galleon'];
+    const typePool = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
     let s = npcSeed + i * 997;
     const sr = () => {
       s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647;
       return s / 2147483647;
     };
-    const npcType = typePool[Math.floor(sr() * typePool.length)];
+    const npcType = typePool[Math.floor(sr() * 5)];
     let nx = 0;
     let nz = 0;
     let placed = false;
@@ -1276,7 +1273,7 @@ function createServerNpcWorld(opts) {
     nextPatrolId = PATROL_SYNC_MIN;
     const playerMap = players instanceof Map ? players : new Map();
     const npcSeed = (ws | 0) * 7 + 13;
-    const typePool = ['sloop', 'sloop', 'galleon', 'galleon'];
+    const typePool = ['cutter', 'sloop', 'brigantine', 'galleon', 'warship'];
     const portCount = collectAllPorts().length;
     const nPirates = Math.min(46, 10 + Math.floor(portCount * 0.48));
     pirateSlotCount = nPirates;
@@ -1287,7 +1284,7 @@ function createServerNpcWorld(opts) {
         s = ((s * 16807) % 2147483647 + 2147483647) % 2147483647;
         return s / 2147483647;
       };
-      const npcType = typePool[Math.floor(sr() * typePool.length)];
+      const npcType = typePool[Math.floor(sr() * 5)];
       let nx = 0;
       let nz = 0;
       let placed = false;

@@ -1722,7 +1722,7 @@ function persistCaptainWorldPresenceFromPlayer(captainKey, p) {
     dockZ: p.dockZ != null ? p.dockZ : null,
     dockAngle: p.dockAngle != null ? p.dockAngle : null,
     dockBerthIndex: p.dockBerthIndex != null ? p.dockBerthIndex : null,
-    shipType: p.shipType != null ? String(p.shipType).slice(0, 24) : 'sloop',
+    shipType: p.shipType != null ? String(p.shipType).slice(0, 24) : 'cutter',
     shipName: p.shipName != null ? String(p.shipName).slice(0, 28) : '',
     shipParts: p.shipParts && typeof p.shipParts === 'object' ? { ...p.shipParts } : { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     health: p.health,
@@ -1943,21 +1943,6 @@ function tryServeGameAssets(reqPath, res) {
   return true;
 }
 
-/** Incoming paths are RFC3986-percent-encoded (%20, commas in sfx filenames); disk uses decoded names (`3d models/`, punctuation). */
-function decodeHttpPathpathname(pathOnly) {
-  if (!pathOnly) return '/';
-  const segments = pathOnly.split('/');
-  for (let i = 0; i < segments.length; i++) {
-    if (!segments[i]) continue;
-    try {
-      segments[i] = decodeURIComponent(segments[i].replace(/\+/g, ' '));
-    } catch (_) { /* malformed escape — keep segment literal */ }
-  }
-  let out = segments.join('/');
-  if (!out.startsWith('/')) out = '/' + out;
-  return out;
-}
-
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, CORS_HEADERS);
@@ -1965,8 +1950,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const pathnameRaw = String(req.url || '').split('?')[0].split('#')[0];
-  const reqPath = decodeHttpPathpathname(pathnameRaw);
+  const reqPath = String(req.url || '').split('?')[0];
 
   if (req.method === 'POST' && reqPath === '/api/navigator-auth') {
     readJsonBody(req).then(body => {
@@ -2152,42 +2136,6 @@ const server = http.createServer((req, res) => {
         + '</svg>'
       );
       sendSvg(svg);
-    });
-    return;
-  }
-
-  if (req.method === 'GET' && reqPath === '/site.webmanifest') {
-    const fpMan = path.join(__dirname, 'site.webmanifest');
-    fs.readFile(fpMan, (err, data) => {
-      if (err) {
-        res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
-        res.end('Not found');
-        return;
-      }
-      res.writeHead(200, {
-        'Content-Type': 'application/manifest+json; charset=utf-8',
-        'Cache-Control': 'public, max-age=86400',
-        ...CORS_HEADERS
-      });
-      res.end(data);
-    });
-    return;
-  }
-
-  if (req.method === 'GET' && reqPath === '/image-preload-worker.js') {
-    const fpW = path.join(__dirname, 'image-preload-worker.js');
-    fs.readFile(fpW, (err, data) => {
-      if (err) {
-        res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS_HEADERS });
-        res.end('Not found');
-        return;
-      }
-      res.writeHead(200, {
-        'Content-Type': 'application/javascript; charset=utf-8',
-        'Cache-Control': 'public, max-age=86400',
-        ...CORS_HEADERS
-      });
-      res.end(data);
     });
     return;
   }
@@ -2549,7 +2497,7 @@ wss.on('connection', (ws, req) => {
     z: sp0.z,
     rotation: sp0.rotation,
     speed: 0,
-    shipType: 'sloop',
+    shipType: 'cutter',
     shipName: '',
     shipParts: { hull: 'basic', sail: 'basic', cannon: 'light', figurehead: 'none', flag: 'mast' },
     flagColor: '#1a1a1a',
