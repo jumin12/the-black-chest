@@ -19806,6 +19806,15 @@ function removeRemotePeer(lid) {
 /** Queue an authoritative `state` snapshot (WebSocket or WebRTC DataChannel). */
 function enqueueNetStateMessage(msg) {
   if (!msg || msg.type !== 'state') return;
+  const stRaw = msg.srvTick;
+  if (stRaw != null && Number.isFinite(Number(stRaw))) {
+    const st = Math.floor(Number(stRaw));
+    if (!G._stateSrvTickRecent) G._stateSrvTickRecent = [];
+    const r = G._stateSrvTickRecent;
+    if (r.indexOf(st) !== -1) return;
+    r.push(st);
+    if (r.length > 20) r.shift();
+  }
   if (!G._netStateDrainQueue) G._netStateDrainQueue = [];
   G._netStateDrainQueue.push(msg);
   {
@@ -19977,6 +19986,7 @@ async function connectToServer() {
   G._netStatePrevArrivalAt = null;
   G._netLastStateGapMs = null;
   G._netStateDrainQueue = [];
+  G._stateSrvTickRecent = null;
   try { G.netPeerStaleSince = null; } catch (e) {}
   G.multiplayerNpcAuthorityId = null;
   G.npcSimFromServer = false;
@@ -21495,8 +21505,15 @@ function applyNetStateMessage(msg, opts) {
       const px0 = Number(ex.x), pz0 = Number(ex.z);
       const px1 = Number(patch.x), pz1 = Number(patch.z);
       if (Number.isFinite(px0) && Number.isFinite(pz0) && Number.isFinite(px1) && Number.isFinite(pz1) && dtSnap > 1e-4) {
-        let vtx = (px1 - px0) / dtSnap;
-        let vtz = (pz1 - pz0) / dtSnap;
+        const dPos = Math.hypot(px1 - px0, pz1 - pz0);
+        const spdPatch = patch.speed != null && Number.isFinite(Number(patch.speed)) ? Math.abs(Number(patch.speed)) : null;
+        const nearStopped = spdPatch != null && spdPatch < 0.06;
+        let vtx = 0;
+        let vtz = 0;
+        if (!nearStopped && dPos >= 0.055) {
+          vtx = (px1 - px0) / dtSnap;
+          vtz = (pz1 - pz0) / dtSnap;
+        }
         const dNear = Math.hypot(Number(G.player.x) - px1, Number(G.player.z) - pz1);
         const vcap1 = dNear < 210 ? 162 : 112;
         const vm0 = Math.hypot(vtx, vtz);

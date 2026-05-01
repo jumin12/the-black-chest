@@ -182,6 +182,16 @@ function createGameSimulation(opts) {
     const dx = cx2 - p.x;
     const dz = cz2 - p.z;
     const d = Math.hypot(dx, dz);
+    /* Idle / hove-to: lock server hull to client-reported xz every tick so AOI snapshots match what
+     * captains see locally — gradual merge + broadcast skew looked like remote ships “teleport” while still. */
+    const spdAbs = p.speed != null && Number.isFinite(Number(p.speed)) ? Math.abs(Number(p.speed)) : 0;
+    if (spdAbs < 0.048) {
+      if (d <= 12) {
+        p.x = cx2;
+        p.z = cz2;
+      }
+      return;
+    }
     if (d < 0.12) return;
     const maxPull = Math.min(28, 3.8 + d * 0.2);
     const k = Math.min(1, maxPull / d);
