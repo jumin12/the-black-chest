@@ -19738,11 +19738,7 @@ function removeRemotePeer(lid) {
   G.remotePlayerStories.delete(lidN);
   try {
     const op = G.otherPlayers.get(lidN);
-    if (op) {
-      op._snapHist = null;
-      op._snapInterpTickBase = null;
-      op._snapInterpMsBase = null;
-    }
+    if (op) op._snapHist = null;
   } catch (e) {}
   G.otherPlayers.delete(lidN);
   if (otherShipGroups.has(lidN)) {
@@ -21388,8 +21384,9 @@ function applyNpcSyncMessage(msg, opts) {
 
 /**
  * Authoritative AOI `state` snapshot(s). Incoming messages queue in `_netStateDrainQueue`; `update` drains
- * with **synthetic recv times** per drained message (same for `npc_sync`) so burst processing does not collapse
- * `_snapHist` timestamps. Wildlife anchor + reconcile + roster run on the newest snapshot only.
+ * up to **eight** snapshots per frame (oldest→newest) with staggered `snapshotWallMs`, matching `npc_sync` burst
+ * handling so `_snapHist` gets intermediate poses instead of one giant teleport. Wildlife anchor, stale-peer prune,
+ * boarding ingest, NPC authority, reconcile-self, and roster run **only** on the final drained message (`peerMergeOnly: false`).
  */
 function applyNetStateMessage(msg, opts) {
   opts = opts || {};
@@ -21397,12 +21394,14 @@ function applyNetStateMessage(msg, opts) {
   const runHudRoster = 'runHudRoster' in opts ? !!opts.runHudRoster : true;
   /** Draining snapshots mid-frame stacks wildlife corrections unless only the newest clock step applies. */
   const applyWildlifeAnchor = 'applyWildlifeAnchor' in opts ? !!opts.applyWildlifeAnchor : true;
+  /** Intermediate queued `state` applies: merge AOI peers + hull history only (see `update` multi-drain). */
+  const peerMergeOnly = 'peerMergeOnly' in opts ? !!opts.peerMergeOnly : false;
   const perfWall = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const snapWallMs =
     opts.snapshotWallMs != null && Number.isFinite(opts.snapshotWallMs) ? opts.snapshotWallMs : perfWall;
   if (!msg || typeof msg !== 'object') return;
   const wT = msg.wildlifeWorldT != null ? msg.wildlifeWorldT : msg.worldT;
-  if (wT != null && applyWildlifeAnchor) anchorWildlifeClockFromServer(wT);
+  if (wT != null && applyWildlifeAnchor && !peerMergeOnly) anchorWildlifeClockFromServer(wT);
   if (!Array.isArray(msg.players)) return;
   const myIdForState = netPlayerId(G.myId);
   if (myIdForState == null) return;
@@ -21488,25 +21487,27 @@ function applyNetStateMessage(msg, opts) {
     const row = G.otherPlayers.get(pid);
     if (row) refreshOtherPlayerShipCacheKey(row);
   });
-  /** Delay removing peers omitted from AOI (packet loss edge or boundary flicker causes pop + hull rebuild churn). */
-  if (!G.netPeerStaleSince) G.netPeerStaleSince = new Map();
-  const _nowStale = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  const _STALE_MS = 580;
-  for (const _pid of activeRemote) G.netPeerStaleSince.delete(_pid);
-  for (const pid of Array.from(G.otherPlayers.keys())) {
-    if (activeRemote.has(pid)) continue;
-    let t0 = G.netPeerStaleSince.get(pid);
-    if (t0 == null) {
-      G.netPeerStaleSince.set(pid, _nowStale);
-      continue;
+  if (!peerMergeOnly) {
+    /** Delay removing peers omitted from AOI (packet loss edge or boundary flicker causes pop + hull rebuild churn). */
+    if (!G.netPeerStaleSince) G.netPeerStaleSince = new Map();
+    const _nowStale = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const _STALE_MS = 580;
+    for (const _pid of activeRemote) G.netPeerStaleSince.delete(_pid);
+    for (const pid of Array.from(G.otherPlayers.keys())) {
+      if (activeRemote.has(pid)) continue;
+      let t0 = G.netPeerStaleSince.get(pid);
+      if (t0 == null) {
+        G.netPeerStaleSince.set(pid, _nowStale);
+        continue;
+      }
+      if (_nowStale - t0 >= _STALE_MS) {
+        G.netPeerStaleSince.delete(pid);
+        removeRemotePeer(pid);
+      }
     }
-    if (_nowStale - t0 >= _STALE_MS) {
-      G.netPeerStaleSince.delete(pid);
-      removeRemotePeer(pid);
-    }
+    recalcMultiplayerNpcAuthorityFromPeers();
+    try { ingestRemoteBoardingState(msg.players); } catch (e) {}
   }
-  recalcMultiplayerNpcAuthorityFromPeers();
-  try { ingestRemoteBoardingState(msg.players); } catch (e) {}
   if (reconcileSelf && selfRow && selfSnapPresent && G.mode === 'playing') try { reconcileLocalPlayerFromServerState(selfRow); } catch (e) {}
   if (runHudRoster && G.chatChannel === 'players') renderActivePlayersRoster();
 }
@@ -24526,7 +24527,8 @@ function startMultiplayerRttLoop() {
     try { ws.send(JSON.stringify({ type: 'client_ping', t: performance.now() })); } catch (e) {}
   };
   tick();
-  const _rttMs = 2480 + ((Number(G.myId) || 0) % 19) * 67;
+  /** ~1.35–2.6s stagger — fresher roster RTT without spamming the socket. */
+  const _rttMs = 1350 + ((Number(G.myId) || 0) % 19) * 67;
   _mpRttTimer = setInterval(tick, _rttMs);
   const _ckMs = 20200 + ((Number(G.myId) || 0) % 23) * 311;
   _mmoCheckpointTimer = setInterval(() => {
@@ -24571,7 +24573,8 @@ function renderActivePlayersRoster() {
     ship: (G.player && G.player.shipName) ? String(G.player.shipName).trim() : '',
     rank: myRank,
     ping: myMs != null ? `${myMs} ms` : '…',
-    pingTitle: 'Your round-trip time to the game server'
+    pingTitle:
+      'Your round-trip to the game server (Wi‑Fi / distance / CPU spikes inflate this). Others show their last reported ms.'
   }];
   G.otherPlayers.forEach((p, pid) => {
     if (p == null) return;
@@ -24648,7 +24651,7 @@ function setChatChannel(ch) {
     if (G.chatChannel === 'directory') {
       hint.textContent = 'Search clans on this server and apply — captains or officers approve under Clan.';
     } else if (G.chatChannel === 'players') {
-      hint.textContent = 'Active captains on this world session. Notoriety rank matches the Pirates board. Ping is each captain’s round-trip to this server (reported to everyone).';
+      hint.textContent = 'Active captains on this world session. Notoriety rank matches the Pirates board. Ping is each captain’s machine ↔ server RTT (distance, Wi‑Fi, or a busy tab can show hundreds of ms).';
     } else {
       hint.textContent = G.chatChannel === 'party'
         ? 'Clan chat is private — only captains in your clan (online or listed in the roster) see these messages.'
@@ -30836,8 +30839,8 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
   const delayMsPlay = getEffectivePeerHullInterpDelayMs();
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, {
-    maxExtrapMs: 52,
-    catmullRom: true
+    maxExtrapMs: 44,
+    catmullRom: false
   });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
     /* Same playback path as DS NPCs: delayed-sample pose only; mesh yaw matches so we don’t stack smoothing. */
@@ -30929,24 +30932,15 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 /** Longer window @ ~60Hz so delayed playback stays inside real samples on jittery links. */
 const REMOTE_SNAP_HIST_MAX = 42;
 
-/** Stable recv timeline for peer hull splines (matches NPC srvTick anchoring; avoids wall-clock burst collapse). */
+/**
+ * Peer hull history timestamps — **wall-clock** (`snapshotWallMs` from net drain), monotonic per row.
+ * srvTick-only timelines fought `performance.now()` playback when the queue collapsed to one snapshot/frame
+ * (large sim gaps vs dense recvMs), which read as teleports; multi-drain restores staggered keys.
+ */
 function computePeerSnapRecvMs(row, srvTick, wallMs) {
+  void srvTick;
   const tickMs = 1000 / NET_SYNC_HZ;
   let recvMs = wallMs;
-  if (srvTick != null && Number.isFinite(srvTick)) {
-    if (row._snapInterpTickBase == null || row._snapInterpMsBase == null) {
-      row._snapInterpTickBase = srvTick;
-      row._snapInterpMsBase = wallMs;
-    } else {
-      const dtick = srvTick - row._snapInterpTickBase;
-      if (dtick > REMOTE_SNAP_HIST_MAX + 140 || dtick < -3) {
-        row._snapInterpTickBase = srvTick;
-        row._snapInterpMsBase = wallMs;
-      }
-      recvMs = row._snapInterpMsBase + (srvTick - row._snapInterpTickBase) * tickMs;
-    }
-  }
-
   const hist = row._snapHist;
   const prev = Array.isArray(hist) && hist.length ? hist[hist.length - 1] : null;
   if (prev && prev.recvMs != null && recvMs <= prev.recvMs + 0.02) {
@@ -30974,17 +30968,24 @@ function update(dt) {
   if (G._netStateDrainQueue && G._netStateDrainQueue.length && G.mode === 'playing') {
     const q = G._netStateDrainQueue;
     while (q.length > 128) q.shift();
-    /** Drop backlog — apply only newest `state` per frame so the world doesn’t stutter through stale snapshots. */
-    while (q.length > 1) q.shift();
+    /** Apply several queued snapshots (oldest→newest) so discarded backlog doesn’t teleport peers in one giant step. */
+    const maxDrain = 8;
+    while (q.length > maxDrain) q.shift();
     const perfBase = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    try {
-      applyNetStateMessage(q.shift(), {
-        reconcileSelf: true,
-        runHudRoster: true,
-        applyWildlifeAnchor: true,
-        snapshotWallMs: perfBase
-      });
-    } catch (e) {}
+    const stateBurstWallStep = (1000 / NET_SYNC_HZ) * 0.1;
+    const nState = q.length;
+    for (let di = 0; di < nState; di++) {
+      const last = di === nState - 1;
+      try {
+        applyNetStateMessage(q.shift(), {
+          reconcileSelf: last,
+          runHudRoster: last,
+          applyWildlifeAnchor: last,
+          snapshotWallMs: perfBase + di * stateBurstWallStep,
+          peerMergeOnly: !last
+        });
+      } catch (e) {}
+    }
   }
   if (G._pendingNpcSyncQueue && G._pendingNpcSyncQueue.length && G.mode === 'playing') {
     const arr = G._pendingNpcSyncQueue;
