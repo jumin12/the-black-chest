@@ -197,7 +197,7 @@ function assignTradeRouteFromHome(npc, homeMeta, list, rng, ws, portController) 
   syncTradeShipName(npc, homeMeta, ws, portController);
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta, portController, ws) % FACTION_COUNT];
   const maxFM = npcMaxForwardSpeed(npc);
-  npc.targetCruise = maxFM * (0.91 + rng() * 0.085);
+  npc.targetCruise = maxFM * (0.94 + rng() * 0.055);
   npc.tradeCruiseSpeed = npc.targetCruise;
 }
 
@@ -307,7 +307,9 @@ function npcMaxForwardSpeed(npc) {
 function npcWindEffect(npc, windAt) {
   const w = windAt(npc.x, npc.z);
   const windDot = Math.cos(w.angle - npc.rotation);
-  return Math.max(0.52, windDot * 0.35 + 0.65);
+  const raw = windDot * 0.35 + 0.65;
+  if (npc && (npc.isTradeShip || npc.isFactionPatrol)) return Math.max(0.58, raw);
+  return Math.max(0.52, raw);
 }
 
 function npcEffectiveForwardSpeed(npc, windAt) {
@@ -327,7 +329,7 @@ function accelerateNpcToward(npc, dt, target) {
   const speedMult = spec.speed + npcSailBonus(npc);
   const maxF = npcMaxForwardSpeed(npc);
   const t = Math.min(maxF, Math.max(0, target));
-  const accel = npc.isFactionPatrol ? 14.55 : npc.isTradeShip ? 13.45 : 11.05;
+  const accel = npc.isFactionPatrol ? 17.2 : npc.isTradeShip ? 16.05 : 11.05;
   let spd = npc.speed || 0;
   if (spd < t - 0.03) {
     spd = Math.min(spd + accel * dt * speedMult, t, maxF);
@@ -342,7 +344,7 @@ function npcShouldUseOffshoreRoutingServer(npc) {
   if (!npc) return true;
   if (!npc.isTradeShip) return true;
   const ph = npc.tradePhase || 'to_dest';
-  return ph !== 'dock_dest' && ph !== 'dock_home' && ph !== 'loading_home';
+  return ph !== 'dock_dest' && ph !== 'dock_home';
 }
 
 function npcLooseCoastalRoom(x, z, dryLand) {
@@ -1122,8 +1124,8 @@ function createServerNpcWorld(opts) {
       if (!isSpawnFree(nx, nz, st, npcs, playerMap, dryLand, edgeClamp, spawnClearanceOk)) continue;
       const startUnderWay = sr() < 0.62;
       npc.tradePhase = startUnderWay ? 'to_dest' : 'loading_home';
-      npc.tradeTimer = startUnderWay ? 0 : (0.35 + sr() * 1.25);
-      if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.72 + sr() * 0.22);
+      npc.tradeTimer = startUnderWay ? 0 : (0.12 + sr() * 0.52);
+      if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.84 + sr() * 0.14);
       npcs.push(npc);
       return true;
     }
@@ -1186,7 +1188,7 @@ function createServerNpcWorld(opts) {
       fireCooldown: 0,
       aggro: false
     };
-    npc.speed = npcMaxForwardSpeed(npc) * (0.78 + sr() * 0.18);
+    npc.speed = npcMaxForwardSpeed(npc) * (0.88 + sr() * 0.11);
     npcs.push(npc);
     return true;
   }
@@ -1608,17 +1610,29 @@ function createServerNpcWorld(opts) {
         }
       }
       if (phase === 'loading_home') {
-        npc.speed = 0;
         npc.tradeTimer -= dt;
+        const maxFL = npcMaxForwardSpeed(npc);
+        accelerateNpcToward(npc, dt, maxFL * 0.36);
         if (npc.homeEmbarkX != null && npc.homeEmbarkZ != null) {
-          const hx = npc.homeEmbarkX;
-          const hz = npc.homeEmbarkZ;
-          npc.x += (hx - npc.x) * Math.min(1, 5 * dt);
-          npc.z += (hz - npc.z) * Math.min(1, 5 * dt);
+          const hx = npc.homeEmbarkX - npc.x;
+          const hz = npc.homeEmbarkZ - npc.z;
+          const de = Math.hypot(hx, hz);
+          if (de > 9 && !npc.escapeMode) {
+            const targetAngle = Math.atan2(hx, hz);
+            let tdiff = targetAngle - npc.rotation;
+            while (tdiff > Math.PI) tdiff -= Math.PI * 2;
+            while (tdiff < -Math.PI) tdiff += Math.PI * 2;
+            npc.rotation += tdiff * 0.48 * dt * npcSailingTurnFactor(npc, windAt);
+            npc.wanderAngle = npc.rotation;
+          } else if (de > 0.12) {
+            const step = Math.min(22 * dt, de);
+            npc.x += (hx / de) * step;
+            npc.z += (hz / de) * step;
+          }
         }
         if (npc.tradeTimer <= 0) {
           npc.tradePhase = 'to_dest';
-          npc.targetCruise = npcMaxForwardSpeed(npc) * (0.91 + Math.random() * 0.085);
+          npc.targetCruise = npcMaxForwardSpeed(npc) * (0.94 + Math.random() * 0.055);
           npc.tradeCruiseSpeed = npc.targetCruise;
         }
       } else if (phase === 'to_dest' || phase === 'to_home') {
@@ -1628,7 +1642,7 @@ function createServerNpcWorld(opts) {
           const distDock = Math.hypot(ddx, ddz);
           if (distDock < TRADE_DOCK_DIST) {
             npc.tradePhase = phase === 'to_dest' ? 'dock_dest' : 'dock_home';
-            npc.tradeTimer = 4.2;
+            npc.tradeTimer = 2.55;
             npc.speed = 0;
           } else {
             const dx = tx - npc.x;
@@ -1644,7 +1658,8 @@ function createServerNpcWorld(opts) {
           }
         }
       } else if (phase === 'dock_dest' || phase === 'dock_home') {
-        npc.speed = 0;
+        const maxFd = npcMaxForwardSpeed(npc);
+        accelerateNpcToward(npc, dt, maxFd * 0.16);
         npc.tradeTimer -= dt;
         if (dockTx != null && dockTz != null) {
           const dx = dockTx - npc.x;
@@ -1673,13 +1688,15 @@ function createServerNpcWorld(opts) {
               npc.homeEmbarkX = npc.x;
               npc.homeEmbarkZ = npc.z;
               npc.tradePhase = 'loading_home';
-              npc.tradeTimer = 5 + Math.random() * 10;
-              npc.speed = 0;
+              npc.tradeTimer = 1.75 + Math.random() * 2.65;
+              npc.speed = npcMaxForwardSpeed(npc) * 0.22;
             }
           }
         }
       }
-      if (phase === 'to_dest' || phase === 'to_home') steerNpcClearanceAhead(npc, dt, 2.45, windAt, dryLand);
+      if (phase === 'to_dest' || phase === 'to_home' || phase === 'loading_home') {
+        steerNpcClearanceAhead(npc, dt, 2.45, windAt, dryLand);
+      }
       nudgeNpcOffIsland(npc, dryLand, edgeClamp);
       applyNpcMoveWithIslandEscape(npc, dt, 2.45, windAt, dryLand, edgeClamp);
     }
@@ -1785,7 +1802,7 @@ function createServerNpcWorld(opts) {
         ? maxF
         : isPatrol
           ? maxF * 0.9995
-          : maxF * 0.998;
+          : maxF * 0.9992;
     accelerateNpcToward(npc, dt, tgtSpd);
     applyNpcMoveWithIslandEscape(npc, dt, sharp, windAt, dryLand, edgeClamp);
   }

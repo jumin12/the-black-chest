@@ -9363,7 +9363,7 @@ function pickTradeDestination(home, list, rng) {
   return cand[Math.floor(rng() * cand.length)];
 }
 const TRADE_DOCK_DIST = 40;
-const TRADE_DOCK_EDGE_SEC = 4.2;
+const TRADE_DOCK_EDGE_SEC = 2.55;
 function syncTradeShipName(npc, homeMeta) {
   const nm = getItemMeta(npc.cargoGood);
   const shortLab = (nm.name || npc.cargoGood || 'cargo').split(/\s+/)[0];
@@ -9409,7 +9409,7 @@ function assignTradeRouteFromHome(npc, homeMeta, list, sr) {
   syncTradeShipName(npc, homeMeta);
   npc.flagColor = FACTION_TRADE_COLORS[townFaction(homeMeta) % FACTION_COUNT];
   /* Was 0.80–0.98×max — reads sluggish vs player cruising; hold ~full sail on trade legs. */
-  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.91 + sr() * 0.085);
+  npc.targetCruise = npcMaxForwardSpeed(npc) * (0.94 + sr() * 0.055);
   npc.tradeCruiseSpeed = npc.targetCruise;
 }
 
@@ -16206,6 +16206,8 @@ function npcWindEffect(npc) {
   const raw = windDot * 0.35 + 0.65;
   /* Tutorial raider matches starter helm wind penalty (player uses ~0.25 floor via `computePlayerSpeedModifiers`). */
   if (npc && npc.tutorialRaidHull) return Math.max(0.2, Math.max(0.25, raw));
+  /* Merchants & faction patrols: keep way-on in headwinds so they stay player-paced (not “stuck” creeping). */
+  if (npc && (npc.isTradeShip || npc.isFactionPatrol)) return Math.max(0.58, raw);
   /* Slightly higher floor than historic 0.42 so DS NPCs don’t crawl into the wind vs player craft. */
   return Math.max(0.52, raw);
 }
@@ -16227,8 +16229,8 @@ function accelerateNpcToward(npc, dt, target) {
   const t = Math.min(maxF, Math.max(0, target));
   const accel =
     npc.tutorialRaidHull ? 4.15 :
-    npc.isFactionPatrol ? 14.55 :
-    npc.isTradeShip ? 13.45 :
+    npc.isFactionPatrol ? 17.2 :
+    npc.isTradeShip ? 16.05 :
     11.05;
   if (npc.speed < t - 0.03) {
     npc.speed = Math.min(npc.speed + accel * dt * speedMult, t, maxF);
@@ -16814,7 +16816,6 @@ function relaxHostNpcNpcOverlaps() {
 /** Light steering bias so AI tries to open distance from very close ships (works with island avoidance). */
 function steerNpcAvoidCloseShips(npc, dt) {
   if (npc.escapeMode) return;
-  if (npc.isTradeShip && npc.tradePhase === 'loading_home') return;
   let wx = 0, wz = 0, wsum = 0;
   const myR = shipHullRadius(npcCollisionShipType(npc));
   for (let k = 0; k < G.npcs.length; k++) {
@@ -16929,8 +16930,8 @@ function tryAddMerchantNpcFromHome(home, allPorts, tradeSyncIdx, seedSalt) {
     if (!isWorldPositionFreeForNpcSpawn(nx, nz, st, npc.rotation)) continue;
     const startUnderWay = sr() < 0.62;
     npc.tradePhase = startUnderWay ? 'to_dest' : 'loading_home';
-    npc.tradeTimer = startUnderWay ? 0 : (0.35 + sr() * 1.25);
-    if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.72 + sr() * 0.22);
+    npc.tradeTimer = startUnderWay ? 0 : (0.12 + sr() * 0.52);
+    if (startUnderWay) npc.speed = npcMaxForwardSpeed(npc) * (0.84 + sr() * 0.14);
     syncTradeShipName(npc, home);
     const mesh = buildShipMesh(npc.type, { hull: 'basic', sail: sailPick, cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, npc.flagColor, npc.name, { merchantHull: true, flagAssetId: npc.flagAssetId });
     npc.crewData = merchantCrewFromRng(sr, npc.type);
@@ -17019,7 +17020,7 @@ function spawnOneFactionPatrol(factionId) {
     attackNpcSyncId: null
   };
   /* Was ~28–42% max — felt sluggish vs tutorial raider & pirates; navy patrols cruise near full sail. */
-  npc.speed = npcMaxForwardSpeed(npc) * (0.78 + sr() * 0.18);
+  npc.speed = npcMaxForwardSpeed(npc) * (0.88 + sr() * 0.11);
   const mesh = buildShipMesh(st, { hull: 'basic', sail: 'war', cannon: cannonPart, figurehead: 'none', flag: npc.flagPosition }, facCol, npc.name, { flagAssetId: npc.flagAssetId });
   npc.crewData = ambientPirateCrewData((tBase + pid * 17) >>> 0, st);
   buildCrewMeshes(mesh, npc.crewData, st);
@@ -17966,12 +17967,24 @@ function updateNPCs(dt) {
           }
         }
         if (phase === 'loading_home') {
-          npc.speed = 0;
           npc.tradeTimer -= dt;
+          const maxFL = npcMaxForwardSpeed(npc);
+          accelerateNpcToward(npc, dt, maxFL * 0.36);
           if (npc.homeEmbarkX != null && npc.homeEmbarkZ != null) {
-            const hx = npc.homeEmbarkX, hz = npc.homeEmbarkZ;
-            npc.x += (hx - npc.x) * Math.min(1, 5 * dt);
-            npc.z += (hz - npc.z) * Math.min(1, 5 * dt);
+            const hx = npc.homeEmbarkX - npc.x, hz = npc.homeEmbarkZ - npc.z;
+            const de = Math.hypot(hx, hz);
+            if (de > 9 && !npc.escapeMode) {
+              const targetAngle = Math.atan2(hx, hz);
+              let tdiff = targetAngle - npc.rotation;
+              while (tdiff > Math.PI) tdiff -= Math.PI * 2;
+              while (tdiff < -Math.PI) tdiff += Math.PI * 2;
+              npc.rotation += tdiff * 0.48 * dt * npcSailingTurnFactor(npc);
+              npc.wanderAngle = npc.rotation;
+            } else if (de > 0.12) {
+              const step = Math.min(22 * dt, de);
+              npc.x += (hx / de) * step;
+              npc.z += (hz / de) * step;
+            }
           }
           if (npc.tradeTimer <= 0) {
             initTownStockpiles();
@@ -17979,7 +17992,7 @@ function updateNPCs(dt) {
             const q = npc.cargoUnits != null ? npc.cargoUnits : TRADE_DELIVERY_UNITS;
             subtractTownStockpile(hk, npc.cargoGood, q);
             npc.tradePhase = 'to_dest';
-            npc.targetCruise = npcMaxForwardSpeed(npc) * (0.91 + Math.random() * 0.085);
+            npc.targetCruise = npcMaxForwardSpeed(npc) * (0.94 + Math.random() * 0.055);
             npc.tradeCruiseSpeed = npc.targetCruise;
           }
         } else if (phase === 'to_dest' || phase === 'to_home') {
@@ -18003,7 +18016,8 @@ function updateNPCs(dt) {
             }
           }
         } else if (phase === 'dock_dest' || phase === 'dock_home') {
-          npc.speed = 0;
+          const maxFd = npcMaxForwardSpeed(npc);
+          accelerateNpcToward(npc, dt, maxFd * 0.16);
           npc.tradeTimer -= dt;
           if (dockTx != null && dockTz != null) {
             const dx = dockTx - npc.x, dz = dockTz - npc.z;
@@ -18055,13 +18069,13 @@ function updateNPCs(dt) {
                 npc.homeEmbarkX = npc.x;
                 npc.homeEmbarkZ = npc.z;
                 npc.tradePhase = 'loading_home';
-                npc.tradeTimer = 5 + Math.random() * 10;
-                npc.speed = 0;
+                npc.tradeTimer = 1.75 + Math.random() * 2.65;
+                npc.speed = npcMaxForwardSpeed(npc) * 0.22;
               } else assignNewTradeRoute(npc);
             }
           }
         }
-        if (phase === 'to_dest' || phase === 'to_home') steerNpcClearanceAhead(npc, dt, 2.45);
+        if (phase === 'to_dest' || phase === 'to_home' || phase === 'loading_home') steerNpcClearanceAhead(npc, dt, 2.45);
         if (isSeaObstructed(npc.x, npc.z)) nudgeNpcOffIsland(npc);
         applyNpcMoveWithIslandEscape(npc, dt, 2.45);
         updateNpcEscapeMode(npc, dt);
@@ -18204,7 +18218,7 @@ function updateNPCs(dt) {
             ? maxF
             : npc.isFactionPatrol
               ? maxF * 0.9995
-              : maxF * 0.998;
+              : maxF * 0.9992;
         accelerateNpcToward(npc, dt, tgtSpd);
       }
       applyNpcMoveWithIslandEscape(npc, dt, sharp);
@@ -18219,10 +18233,10 @@ function updateNPCs(dt) {
         : getEffectiveHullSnapInterpDelayMs();
       /* Velocity prediction + weak pull toward delayed spline anchor — stepping raw anchor alone reads as stutter. */
       const poseNet = useNetInterpNpc
-        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 52, catmullRom: true })
+        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 64, catmullRom: true })
         : null;
       if (poseNet && Number.isFinite(poseNet.x) && Number.isFinite(poseNet.z) && Number.isFinite(poseNet.ry)) {
-        const pvk = 1 - Math.exp(-32 * dt);
+        const pvk = 1 - Math.exp(-40 * dt);
         if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
           npc._npcVelSmX = Number.isFinite(npc._npcVelSmX)
             ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * pvk
@@ -18257,15 +18271,19 @@ function updateNPCs(dt) {
         npc._npcPredZ += vz * dt;
         const ecx = poseNet.x - npc._npcPredX;
         const ecz = poseNet.z - npc._npcPredZ;
-        const corr = 1 - Math.exp(-9.5 * dt);
-        npc._npcPredX += ecx * corr * 0.44;
-        npc._npcPredZ += ecz * corr * 0.44;
+        const corr = 1 - Math.exp(-11.5 * dt);
+        npc._npcPredX += ecx * corr * 0.52;
+        npc._npcPredZ += ecz * corr * 0.52;
         npc.x = npc._npcPredX;
         npc.z = npc._npcPredZ;
-        npc.rotation = poseNet.ry;
+        const ryk = 1 - Math.exp(-27 * dt);
+        if (!Number.isFinite(npc._npcNetRySm)) npc._npcNetRySm = poseNet.ry;
+        else npc._npcNetRySm = interpYawShortest(npc._npcNetRySm, poseNet.ry, ryk);
+        npc.rotation = npc._npcNetRySm;
       } else {
         npc._npcPredX = npc._npcPredZ = undefined;
-        npc._npcNetSmVx = npc._npcNetSmVz = undefined;
+        npc._npcNetRySm = undefined;
+        npc._npcVelSmX = npc._npcVelSmZ = undefined;
         if (npc.syncX == null) { npc.syncX = npc.x; npc.syncZ = npc.z; npc.syncR = npc.rotation; }
       const authR = npc.syncR != null && Number.isFinite(Number(npc.syncR)) ? Number(npc.syncR) : npc.rotation;
       const vsmK = 1 - Math.exp(-26 * dt);
@@ -30874,17 +30892,17 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** Delayed hull playback for NPC relay — still a hair tighter than AOI peers so observers don’t lead NPC authority. */
+/** Observers: slightly lower delay than hull keys + stronger blend so DS/MP NPCs track like local tutorial stepping. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   void relayObserver;
-  return Math.max(12, getEffectiveHullSnapInterpDelayMs() - 5);
+  return Math.max(8, getEffectiveHullSnapInterpDelayMs() - 9);
 }
 
 /**
  * Other captains — ~2 server ticks @ 60Hz behind latest sample (low-latency FPS feel). Adaptive fn adds a little under jitter only.
  */
 function getEffectivePeerHullInterpDelayMs() {
-  return Math.max(19, getEffectiveHullSnapInterpDelayMs() + 8);
+  return Math.max(18, getEffectiveHullSnapInterpDelayMs() + 7);
 }
 
 /**
