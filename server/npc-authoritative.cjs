@@ -301,7 +301,7 @@ function npcMaxForwardSpeed(npc) {
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
   const rigF = Math.max(0.26, Math.pow(rm, 1.32));
   /* Sync with browser `npcMaxForwardSpeed`: hull ceiling + rigging; crew folded into constants vs client crew mult. */
-  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.22 * 1.56;
+  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.22 * 1.716;
 }
 
 function npcWindEffect(npc, windAt) {

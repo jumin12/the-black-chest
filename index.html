@@ -2950,6 +2950,12 @@ body.game-help-mobile-minimal #game-help-panel{
       </ul>
     </div>
     <div class="credits-section">
+      <div class="credits-label">Graphics</div>
+      <ul class="credits-list">
+        <li><a href="https://www.meshy.ai/" target="_blank" rel="noopener noreferrer">Meshy AI</a></li>
+      </ul>
+    </div>
+    <div class="credits-section">
       <div class="credits-label">Sound</div>
       <ul class="credits-list">
         <li>Eleven Labs</li>
@@ -16241,7 +16247,7 @@ function npcMaxForwardSpeed(npc) {
   const spec = SHIP_TYPES[npc.type] || SHIP_TYPES.sloop;
   const rm = Math.max(0.1, getNpcRiggingHealth(npc) / 100);
   const rigF = Math.max(0.26, Math.pow(rm, 1.32));
-  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.22 * npcCrewSpeedMult(npc) * 1.56;
+  return 14.25 * (spec.speed + npcSailBonus(npc)) * rigF * 1.22 * npcCrewSpeedMult(npc) * 1.716;
 }
 function npcWindEffect(npc) {
   const w = getWindAt(npc.x, npc.z);
@@ -18276,10 +18282,10 @@ function updateNPCs(dt) {
         : getEffectiveHullSnapInterpDelayMs();
       /* Velocity prediction + weak pull toward delayed spline anchor — stepping raw anchor alone reads as stutter. */
       const poseNet = useNetInterpNpc
-        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 64, catmullRom: true })
+        ? interpolateHullHistory(npc._snapHist, nowNpc, delayNpc, { maxExtrapMs: 96, catmullRom: true })
         : null;
       if (poseNet && Number.isFinite(poseNet.x) && Number.isFinite(poseNet.z) && Number.isFinite(poseNet.ry)) {
-        const pvk = 1 - Math.exp(-40 * dt);
+        const pvk = 1 - Math.exp(-28 * dt);
         if (Number.isFinite(npc._npcVelTX) && Number.isFinite(npc._npcVelTZ)) {
           npc._npcVelSmX = Number.isFinite(npc._npcVelSmX)
             ? npc._npcVelSmX + (npc._npcVelTX - npc._npcVelSmX) * pvk
@@ -18307,19 +18313,19 @@ function updateNPCs(dt) {
         /* Quantized snapshots often imply ~0 TX/TZ between ticks; synced hull speed + heading keeps steady crawl while net delta catches up. */
         const spFloor = Math.max(0.06, spAbs);
         const blendH =
-          vmNet < spFloor * 0.38 ? 0.78 : vmNet < spFloor * 0.78 ? 0.52 : Math.min(0.34, 0.14 + spAbs * 0.022);
+          vmNet < spFloor * 0.38 ? 0.64 : vmNet < spFloor * 0.78 ? 0.44 : Math.min(0.28, 0.11 + spAbs * 0.02);
         vx = vx * (1 - blendH) + hx * blendH;
         vz = vz * (1 - blendH) + hz * blendH;
         npc._npcPredX += vx * dt;
         npc._npcPredZ += vz * dt;
         const ecx = poseNet.x - npc._npcPredX;
         const ecz = poseNet.z - npc._npcPredZ;
-        const corr = 1 - Math.exp(-11.5 * dt);
-        npc._npcPredX += ecx * corr * 0.52;
-        npc._npcPredZ += ecz * corr * 0.52;
+        const corr = 1 - Math.exp(-8.25 * dt);
+        npc._npcPredX += ecx * corr * 0.39;
+        npc._npcPredZ += ecz * corr * 0.39;
         npc.x = npc._npcPredX;
         npc.z = npc._npcPredZ;
-        const ryk = 1 - Math.exp(-27 * dt);
+        const ryk = 1 - Math.exp(-16 * dt);
         if (!Number.isFinite(npc._npcNetRySm)) npc._npcNetRySm = poseNet.ry;
         else npc._npcNetRySm = interpYawShortest(npc._npcNetRySm, poseNet.ry, ryk);
         npc.rotation = npc._npcNetRySm;
@@ -18428,7 +18434,11 @@ function updateNPCs(dt) {
       npc._visWaveRoll += (nt.waveRoll - npc._visWaveRoll) * tiltK2;
       const targetHullY = worldSeaSurfaceY(npc.x, npc.z) + SHIP_FREEBOARD;
       if (!Number.isFinite(npc._npcHullSeaYVis)) npc._npcHullSeaYVis = targetHullY;
-      const hullYK = 1 - Math.exp(-28 * dt);
+      const netObservedNpc = G.npcSimFromServer || !host;
+      const hullYK =
+        netObservedNpc && !localTutorialRaid
+          ? 1 - Math.exp(-17 * dt)
+          : 1 - Math.exp(-28 * dt);
       npc._npcHullSeaYVis += (targetHullY - npc._npcHullSeaYVis) * hullYK;
       npc.mesh.position.set(npc.x, npc._npcHullSeaYVis, npc.z);
       npc.mesh.rotation.y = npc.rotation;
@@ -30938,10 +30948,10 @@ function getEffectiveNpcInterpDelayMs() {
   return getEffectiveHullSnapInterpDelayMs();
 }
 
-/** Observers: slightly lower delay than hull keys + stronger blend so DS/MP NPCs track like local tutorial stepping. */
+/** Observers — a shade more lookahead than ultra-tight playout so Catmull samples aren’t sampled in the jittery nose of the buffer. */
 function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   void relayObserver;
-  return Math.max(8, getEffectiveHullSnapInterpDelayMs() - 9);
+  return Math.max(14, getEffectiveHullSnapInterpDelayMs() - 3);
 }
 
 /**
