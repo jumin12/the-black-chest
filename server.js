@@ -1906,6 +1906,23 @@ function mimeTypeForFile(filePath) {
   };
   return map[ext] || 'application/octet-stream';
 }
+function warnIfServingGlbLfsPointer(filePath, buf) {
+  try {
+    if (!buf || buf.length >= 8192) return;
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext !== '.glb') return;
+    const head = buf.subarray(0, Math.min(256, buf.length)).toString('latin1');
+    if (head.includes('git-lfs.github.com/spec')) {
+      let rel = filePath.startsWith(ASSETS_ROOT + path.sep)
+        ? filePath.slice(ASSETS_ROOT.length + 1).replace(/\\/g, '/')
+        : path.basename(filePath);
+      console.warn(
+        `[assets] Serving Git LFS pointer as .glb (${buf.length}b): ${rel}. Deploy must run "git lfs pull" (see scripts/render-build.sh).`
+      );
+    }
+  } catch (e) {}
+}
+
 function sendAssetFile(filePath, res) {
   fs.readFile(filePath, (err, data) => {
     if (err) {
@@ -1913,6 +1930,7 @@ function sendAssetFile(filePath, res) {
       res.end('Error reading file');
       return;
     }
+    warnIfServingGlbLfsPointer(filePath, data);
     res.writeHead(200, {
       'Content-Type': mimeTypeForFile(filePath),
       'Cache-Control': 'public, max-age=3600',
