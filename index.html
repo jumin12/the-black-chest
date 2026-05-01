@@ -11593,6 +11593,51 @@ function isObjectDescendantOf(obj, ancestor) {
   }
   return false;
 }
+/** Remove one terrain chunk so `generateIsland` can run again (used after late GLB template load). */
+function unloadIslandChunkAt(cx, cz) {
+  const key = `${cx},${cz}`;
+  for (let i = islandGroup.children.length - 1; i >= 0; i--) {
+    const ch = islandGroup.children[i];
+    const ud = ch.userData;
+    if (!ud || ud.cx !== cx || ud.cz !== cz) continue;
+    for (let fi = G.floatingItems.length - 1; fi >= 0; fi--) {
+      const item = G.floatingItems[fi];
+      if (item.lootVisual && isObjectDescendantOf(item.lootVisual, ch)) {
+        removeFloatingLootVisuals(item);
+        if (item.netId != null) G.lootByNetId.delete(item.netId);
+        G.floatingItems.splice(fi, 1);
+      }
+    }
+    islandGroup.remove(ch);
+    disposeObject3DResources(ch);
+    const ii = G.islands.indexOf(ud);
+    if (ii >= 0) G.islands.splice(ii, 1);
+    G.chunks.delete(key);
+    wildlifeChunkKeys.delete(key);
+  }
+}
+/** Rebuild islands around the viewer once `.glb` templates exist (early `updateChunks` baked procedural fallbacks — including menu vista). */
+function refreshVisibleIslandChunksAfterGlbReady() {
+  if (typeof G === 'undefined') return;
+  let wx = G.player.x, wz = G.player.z;
+  if (G.mode === 'playing' && G.spectate) {
+    const t = resolveSpectateTargetXZR();
+    if (t && Number.isFinite(t.x) && Number.isFinite(t.z)) {
+      wx = t.x;
+      wz = t.z;
+    }
+  }
+  const pcx = Math.floor(wx / CHUNK_SIZE), pcz = Math.floor(wz / CHUNK_SIZE);
+  for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++) {
+    for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++) {
+      unloadIslandChunkAt(pcx + dx, pcz + dz);
+    }
+  }
+  updateChunks();
+  if (G.mode !== 'playing') {
+    try { initMainMenuAttractor(); } catch (_) {}
+  }
+}
 /** Unload terrain far from the player so mobile GPUs do not OOM after long voyages (islands never freed otherwise). */
 function pruneDistantIslandChunks(wx, wz) {
   if (G.mode !== 'playing') return;
@@ -23874,7 +23919,29 @@ function warmupBinaryGameAssetCache(urls) {
 }
 
 let _sceneGlbBootstrapPromise = null;
+/** After first successful scenic GLB parse, rebuild visible chunks once (init calls `updateChunks` before GLBs finish). */
+let _sceneGlbVisibleChunkRefreshScheduled = false;
 const _gltfSceneBootstrapLoader = new GLTFLoader();
+
+/** Git LFS pointer files are tiny text; GLTFLoader cannot use them. */
+function arrayBufferLooksLikeGitLfsPointer(ab) {
+  try {
+    if (!ab || ab.byteLength < 64 || ab.byteLength > 8192) return false;
+    const head = new TextDecoder('latin1').decode(ab.slice(0, Math.min(512, ab.byteLength)));
+    return head.indexOf('git-lfs.github.com/spec') !== -1;
+  } catch (e0) {
+    return false;
+  }
+}
+/** Binary GLB container magic (little-endian) at offset 0. */
+function arrayBufferLooksLikeBinaryGlb(ab) {
+  try {
+    if (!ab || ab.byteLength < 20) return false;
+    return new DataView(ab).getUint32(0, true) === 0x46546C67;
+  } catch (e0) {
+    return false;
+  }
+}
 
 async function fetchGlbArrayBuffersWithWorkerPool(rels, maxWorkers) {
   const out = Object.create(null);
@@ -23882,6 +23949,20 @@ async function fetchGlbArrayBuffersWithWorkerPool(rels, maxWorkers) {
   const tasks = rels.map(rel => ({ rel, url: resolveGameAssetUrl(rel) }));
   const nW = Math.max(1, Math.min(maxWorkers || 8, tasks.length, 16));
   const codeHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
+  const FETCH_POOL_MS = 180000;
+  async function fillMissingOnMainThread() {
+    for (let ti = 0; ti < tasks.length; ti++) {
+      const t = tasks[ti];
+      if (out[t.rel]) continue;
+      try {
+        const res = await fetch(t.url, { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' });
+        if (res.ok) out[t.rel] = await res.arrayBuffer();
+        else try { console.warn('GLB refetch HTTP', t.rel, res.status); } catch (_) {}
+      } catch (eM) {
+        try { console.warn('GLB refetch error', t.rel, eM); } catch (_) {}
+      }
+    }
+  }
   const workers = [];
   const bootOne = () => new Worker(codeHref);
   try {
@@ -23893,25 +23974,17 @@ async function fetchGlbArrayBuffersWithWorkerPool(rels, maxWorkers) {
       const ou = URL.createObjectURL(blob);
       for (let wi = 0; wi < nW; wi++) workers.push(new Worker(ou));
     } catch (e1) {
-      await Promise.all(tasks.map(async (t) => {
-        const res = await fetch(t.url, { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' });
-        if (!res.ok) throw new Error(t.rel + ' ' + res.status);
-        out[t.rel] = await res.arrayBuffer();
-      }));
+      await fillMissingOnMainThread();
       return out;
     }
   }
   if (!workers.length) {
-    await Promise.all(tasks.map(async (t) => {
-      const res = await fetch(t.url, { cache: 'force-cache', credentials: 'same-origin', mode: 'cors' });
-      if (!res.ok) throw new Error(t.rel + ' ' + res.status);
-      out[t.rel] = await res.arrayBuffer();
-    }));
+    await fillMissingOnMainThread();
     return out;
   }
   const inbox = new Map();
   let nextId = 1;
-  const waitAll = new Promise((resolve, reject) => {
+  const waitDone = new Promise((resolve) => {
     let left = tasks.length;
     const doneOne = () => {
       left--;
@@ -23924,14 +23997,13 @@ async function fetchGlbArrayBuffersWithWorkerPool(rels, maxWorkers) {
         const slot = inbox.get(id);
         if (!slot) return;
         inbox.delete(id);
-        if (d.ok && d.ab) {
-          out[slot.rel] = d.ab;
-          doneOne();
-        } else {
-          reject(new Error((slot.rel || 'glb') + ': ' + (d.err || 'worker fetch')));
-        }
+        if (d.ok && d.ab) out[slot.rel] = d.ab;
+        else try { console.warn('GLB worker fetch failed', slot.rel, d.err || '?'); } catch (_) {}
+        doneOne();
       };
-      workers[wi].onerror = (err) => reject(err);
+      workers[wi].onerror = () => {
+        try { console.warn('glb-fetch-worker runtime error'); } catch (_) {}
+      };
     }
     tasks.forEach((t, idx) => {
       const id = nextId++;
@@ -23940,69 +24012,99 @@ async function fetchGlbArrayBuffersWithWorkerPool(rels, maxWorkers) {
     });
   });
   try {
-    await waitAll;
+    await Promise.race([
+      waitDone,
+      new Promise((r) => setTimeout(r, FETCH_POOL_MS))
+    ]);
   } finally {
     for (let wi = 0; wi < workers.length; wi++) {
       try { workers[wi].terminate(); } catch (e2) {}
     }
   }
+  await fillMissingOnMainThread();
   return out;
 }
 
 function ensureSceneGlbsBootstrapped() {
   if (_sceneGlbBootstrapPromise) return _sceneGlbBootstrapPromise;
   const run = async () => {
-    const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
-    const maxW = Math.min(16, Math.max(6, _deviceCores || 8));
-    const buffers = await fetchGlbArrayBuffersWithWorkerPool(rels, maxW);
-    for (let i = 0; i < rels.length; i++) {
+    try {
+      const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
+      const maxW = Math.min(16, Math.max(6, _deviceCores || 8));
+      const buffers = await fetchGlbArrayBuffersWithWorkerPool(rels, maxW);
+      for (let i = 0; i < rels.length; i++) {
       const rel = rels[i];
       const ab = buffers[rel];
-      if (!ab) throw new Error('Missing buffer ' + rel);
-      await new Promise((resolve, reject) => {
-        let settled = false;
-        const PARSE_MS = 90000;
-        const parseTo = window.setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          reject(new Error('GLTF parse timeout: ' + rel));
-        }, PARSE_MS);
-        try {
-          _gltfSceneBootstrapLoader.parse(
-            ab,
-            '',
-            (gltf) => {
-              if (settled) return;
-              settled = true;
-              window.clearTimeout(parseTo);
-              if (gltf && gltf.scene) {
-                _gameGlbParsedSceneTemplates[rel] = gltf.scene;
-                resolve();
-              } else {
-                reject(new Error('Empty glTF ' + rel));
-              }
-            },
-            (err) => {
-              if (settled) return;
-              settled = true;
-              window.clearTimeout(parseTo);
-              reject(err || new Error('parse ' + rel));
-            }
-          );
-        } catch (pe) {
-          if (!settled) {
+      if (!ab) {
+        try { console.warn('Scene GLB missing (no buffer)', rel); } catch (_) {}
+        continue;
+      }
+      if (arrayBufferLooksLikeGitLfsPointer(ab)) {
+        try { console.warn('Scene GLB is a Git LFS pointer, not a model file:', rel); } catch (_) {}
+        continue;
+      }
+      if (!arrayBufferLooksLikeBinaryGlb(ab)) {
+        try { console.warn('Scene GLB does not look like binary glTF (.glb magic):', rel, 'bytes', ab.byteLength); } catch (_) {}
+        continue;
+      }
+      try {
+        await new Promise((resolve, reject) => {
+          let settled = false;
+          const PARSE_MS = 90000;
+          const parseTo = window.setTimeout(() => {
+            if (settled) return;
             settled = true;
-            window.clearTimeout(parseTo);
-            reject(pe);
+            reject(new Error('GLTF parse timeout: ' + rel));
+          }, PARSE_MS);
+          try {
+            _gltfSceneBootstrapLoader.parse(
+              ab,
+              '',
+              (gltf) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(parseTo);
+                if (gltf && gltf.scene) {
+                  _gameGlbParsedSceneTemplates[rel] = gltf.scene;
+                  resolve();
+                } else {
+                  reject(new Error('Empty glTF ' + rel));
+                }
+              },
+              (err) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(parseTo);
+                reject(err || new Error('parse ' + rel));
+              }
+            );
+          } catch (pe) {
+            if (!settled) {
+              settled = true;
+              window.clearTimeout(parseTo);
+              reject(pe);
+            }
           }
+        });
+      } catch (eP) {
+        try { console.warn('Scene GLB parse failed:', rel, eP); } catch (_) {}
+      }
+    }
+      if (!_sceneGlbVisibleChunkRefreshScheduled && Object.keys(_gameGlbParsedSceneTemplates).length > 0) {
+        _sceneGlbVisibleChunkRefreshScheduled = true;
+        try {
+          requestAnimationFrame(() => {
+            try { refreshVisibleIslandChunksAfterGlbReady(); } catch (eRf) {}
+          });
+        } catch (eRf2) {
+          try { refreshVisibleIslandChunksAfterGlbReady(); } catch (_) {}
         }
-      });
+      }
+    } catch (eu) {
+      try { console.warn('Scene GLB bootstrap fatal:', eu); } catch (_) {}
     }
   };
-  _sceneGlbBootstrapPromise = run().catch((err) => {
-    _sceneGlbBootstrapPromise = null;
-    throw err;
-  });
+  _sceneGlbBootstrapPromise = run();
   return _sceneGlbBootstrapPromise;
 }
 
