@@ -19738,7 +19738,11 @@ function removeRemotePeer(lid) {
   G.remotePlayerStories.delete(lidN);
   try {
     const op = G.otherPlayers.get(lidN);
-    if (op) op._snapHist = null;
+    if (op) {
+      op._snapHist = null;
+      op._snapInterpTickBase = null;
+      op._snapInterpMsBase = null;
+    }
   } catch (e) {}
   G.otherPlayers.delete(lidN);
   if (otherShipGroups.has(lidN)) {
@@ -21387,6 +21391,7 @@ function applyNpcSyncMessage(msg, opts) {
  * up to **eight** snapshots per frame (oldest→newest) with staggered `snapshotWallMs`, matching `npc_sync` burst
  * handling so `_snapHist` gets intermediate poses instead of one giant teleport. Wildlife anchor, stale-peer prune,
  * boarding ingest, NPC authority, reconcile-self, and roster run **only** on the final drained message (`peerMergeOnly: false`).
+ * Peer `_snapHist.recvMs` follows **`srvTick`** (like NPC net hulls) so burst synthetic wall times don’t shrink the recv timeline.
  */
 function applyNetStateMessage(msg, opts) {
   opts = opts || {};
@@ -30694,9 +30699,9 @@ function getEffectiveNpcNetObservationInterpDelayMs(relayObserver) {
   return Math.max(20, getEffectiveHullSnapInterpDelayMs() - 12);
 }
 
-/** Other captains’ hulls — tighter than generic hull delay but not as aggressive as NPC relay playback (stable spline keys). */
+/** Other captains’ hulls — slight slack vs hull delay so delayed playback sits inside real ~60Hz keys (less extrap jitter). */
 function getEffectivePeerHullInterpDelayMs() {
-  return Math.max(24, getEffectiveHullSnapInterpDelayMs() - 8);
+  return Math.max(26, getEffectiveHullSnapInterpDelayMs() - 6);
 }
 
 /** Uniform Catmull–Rom scalar segment — smoother paths than linear lerp between quantized ~60Hz hull keys. */
@@ -30839,11 +30844,11 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
     typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
   const delayMsPlay = getEffectivePeerHullInterpDelayMs();
   const ip = interpolateHullHistory(p._snapHist, nowWall, delayMsPlay, {
-    maxExtrapMs: 44,
-    catmullRom: false
+    maxExtrapMs: 52,
+    catmullRom: true
   });
   if (ip && Number.isFinite(ip.x) && Number.isFinite(ip.z) && Number.isFinite(ip.ry)) {
-    /* Same playback path as DS NPCs: delayed-sample pose only; mesh yaw matches so we don’t stack smoothing. */
+    /* Delayed spline pose — Catmull keys spaced by srvTick like NPCs (burst wall-ms alone collapses time → jitter). */
     ns.x = ip.x;
     ns.z = ip.z;
     ns.ry = ip.ry;
@@ -30930,17 +30935,29 @@ function advanceRemoteShipNetSmooth(sg, p, dt) {
 
 /* ============================== GAME LOOP ================================ */
 /** Longer window @ ~60Hz so delayed playback stays inside real samples on jittery links. */
-const REMOTE_SNAP_HIST_MAX = 42;
+const REMOTE_SNAP_HIST_MAX = 48;
 
 /**
- * Peer hull history timestamps — **wall-clock** (`snapshotWallMs` from net drain), monotonic per row.
- * srvTick-only timelines fought `performance.now()` playback when the queue collapsed to one snapshot/frame
- * (large sim gaps vs dense recvMs), which read as teleports; multi-drain restores staggered keys.
+ * Peer hull `recvMs` — **server tick timeline** (same idea as `applyNpcSyncMessage`), aligned to `performance.now()` playback.
+ * Burst drains stagger `snapshotWallMs` by ~1.7ms while positions jump one sim tick each; wall-only recvMs crushed the
+ * timeline and caused high-frequency jitter along the hull path.
  */
 function computePeerSnapRecvMs(row, srvTick, wallMs) {
-  void srvTick;
   const tickMs = 1000 / NET_SYNC_HZ;
   let recvMs = wallMs;
+  if (srvTick != null && Number.isFinite(srvTick)) {
+    if (row._snapInterpTickBase == null || row._snapInterpMsBase == null) {
+      row._snapInterpTickBase = srvTick;
+      row._snapInterpMsBase = wallMs;
+    } else {
+      const dtick = srvTick - row._snapInterpTickBase;
+      if (dtick > REMOTE_SNAP_HIST_MAX + 140 || dtick < -3) {
+        row._snapInterpTickBase = srvTick;
+        row._snapInterpMsBase = wallMs;
+      }
+      recvMs = row._snapInterpMsBase + (srvTick - row._snapInterpTickBase) * tickMs;
+    }
+  }
   const hist = row._snapHist;
   const prev = Array.isArray(hist) && hist.length ? hist[hist.length - 1] : null;
   if (prev && prev.recvMs != null && recvMs <= prev.recvMs + 0.02) {
@@ -31688,13 +31705,18 @@ function update(dt) {
       sg.userData.peerHullSeaY += (tgtY - sg.userData.peerHullSeaY) * hyK;
       sg.position.set(ns.x, sg.userData.peerHullSeaY, ns.z);
       if (sg.userData.visYaw == null) sg.userData.visYaw = ns.ry;
-      let dVisYaw = ns.ry - sg.userData.visYaw;
-      while (dVisYaw > Math.PI) dVisYaw -= Math.PI * 2;
-      while (dVisYaw < -Math.PI) dVisYaw += Math.PI * 2;
-      const interpYawReady = !!(p._snapHist && p._snapHist.length >= 4);
-      const yawLo = !!(ws && ws.readyState === 1 && (G.clientServerRttMs == null || (Number(G.clientServerRttMs) < 118 && !(G._netInterpJitterEwma > 26))));
-      const yawVisK = 1 - Math.exp(-((interpYawReady ? (yawLo ? 24 : 15.8) : (yawLo ? 12.8 : 9.5))) * dt);
-      sg.userData.visYaw += dVisYaw * Math.min(1, yawVisK);
+      /* With ≥3 hull samples we already interpolate yaw on the delayed spline — extra visYaw low-pass caused shimmy. */
+      const interpYawReady = !!(p._snapHist && p._snapHist.length >= 3);
+      if (interpYawReady) {
+        sg.userData.visYaw = ns.ry;
+      } else {
+        let dVisYaw = ns.ry - sg.userData.visYaw;
+        while (dVisYaw > Math.PI) dVisYaw -= Math.PI * 2;
+        while (dVisYaw < -Math.PI) dVisYaw += Math.PI * 2;
+        const yawLo = !!(ws && ws.readyState === 1 && (G.clientServerRttMs == null || (Number(G.clientServerRttMs) < 118 && !(G._netInterpJitterEwma > 26))));
+        const yawVisK = 1 - Math.exp(-((yawLo ? 12.8 : 9.5)) * dt);
+        sg.userData.visYaw += dVisYaw * Math.min(1, yawVisK);
+      }
       const tiltK = 1 - Math.exp(-4.2 * dt);
       if (sg.userData.visWavePitch == null) sg.userData.visWavePitch = wd.wavePitch;
       if (sg.userData.visWaveRoll == null) sg.userData.visWaveRoll = wd.waveRoll;
