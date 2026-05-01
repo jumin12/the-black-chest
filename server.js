@@ -234,6 +234,23 @@ function sanitizeBannerFromClient(raw) {
   return { bg, field, emblems };
 }
 /** Compact boarding engagement relayed in `update` / `state` for multiplayer sync. */
+/** PvP only: push the same engagement onto the partner row so `state` always includes both captains (no second client click). */
+function mirrorPvPBoardingToPartner(fromId, s) {
+  if (!s || typeof s !== 'object') return;
+  const mate = Math.floor(Number(s.sid));
+  if (!Number.isFinite(mate) || mate <= 0 || mate === fromId || !players.has(mate)) return;
+  players.get(mate).boarding = Object.assign({}, s, { sid: fromId });
+}
+
+function clearPairedPvPBoarding(id, prevBoarding) {
+  if (!prevBoarding || typeof prevBoarding !== 'object') return;
+  const mate = Math.floor(Number(prevBoarding.sid));
+  if (!Number.isFinite(mate) || mate <= 0 || mate === id || !players.has(mate)) return;
+  const q = players.get(mate);
+  if (!q || !q.boarding || typeof q.boarding !== 'object') return;
+  if (Math.floor(Number(q.boarding.sid)) === id) q.boarding = null;
+}
+
 function sanitizeBoardingFromClient(b) {
   if (b === null) return null;
   if (typeof b !== 'object' || !b) return null;
@@ -2683,10 +2700,14 @@ wss.on('connection', (ws, req) => {
           }
           if (msg.boarding !== undefined) {
             if (msg.boarding === null) {
+              clearPairedPvPBoarding(id, p.boarding);
               p.boarding = null;
             } else {
               const s = sanitizeBoardingFromClient(msg.boarding);
-              if (s != null) p.boarding = s;
+              if (s != null) {
+                p.boarding = s;
+                if (Math.floor(Number(s.sid)) > 0) mirrorPvPBoardingToPartner(id, s);
+              }
             }
           }
           if (msg.playerPolitics != null && typeof msg.playerPolitics === 'object') {

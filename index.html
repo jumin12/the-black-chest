@@ -48,6 +48,19 @@ input,textarea{-webkit-user-select:text;user-select:text;}
 /* Until realm `init` completes, block HUD/game input except the connecting veil itself. */
 body.mp-connecting-active #ui-layer > *:not(#mp-connecting-overlay){ pointer-events:none !important; }
 body.mp-connecting-active #desync-blocking-overlay{ pointer-events:auto !important; }
+/* One-time cold boot: preload + menu warm before main menu accepts input. */
+body.game-boot-active #start-screen,
+body.game-boot-active #create-screen{ pointer-events:none !important; }
+#game-boot-overlay{
+  display:none;position:fixed;inset:0;z-index:220;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;background:rgba(6,10,18,0.92);color:#e8dcc8;font-family:Georgia,serif;padding:20px;text-align:center;
+}
+#game-boot-overlay .game-boot-spinner{
+  width:40px;height:40px;border:3px solid rgba(201,162,74,0.25);border-top-color:rgba(201,162,74,0.88);border-radius:50%;
+  animation:mp-connecting-spin 0.85s linear infinite;
+}
+#game-boot-overlay .game-boot-title{font-size:18px;color:var(--brass);letter-spacing:0.04em;text-transform:uppercase;}
+#game-boot-overlay .game-boot-sub{max-width:320px;opacity:0.88;font-size:13px;}
 #mp-connecting-overlay{
   display:none;position:absolute;inset:0;z-index:12000;flex-direction:column;align-items:center;justify-content:center;gap:18px;
   padding:24px;box-sizing:border-box;text-align:center;touch-action:manipulation;
@@ -2046,6 +2059,11 @@ body.game-help-mobile-minimal #game-help-panel{
   <div class="p-icon" aria-hidden="true">↻</div>
   <p><strong>Turn your device to portrait</strong><br>Play in portrait mode for the best experience and stability.</p>
 </div>
+<div id="game-boot-overlay" aria-live="polite" aria-hidden="true" role="status">
+  <div class="game-boot-spinner" aria-hidden="true"></div>
+  <div class="game-boot-title">Loading</div>
+  <div class="game-boot-sub">Preparing charts, cargo icons, and the realm&hellip;</div>
+</div>
 <div id="start-screen">
   <div class="main-menu-card">
     <div class="main-menu-crest" style="font-size:clamp(50px,12vw,80px);margin-bottom:4px;opacity:0.55;color:var(--brass);text-shadow:0 0 24px rgba(201,162,74,0.25);">&#9760;</div>
@@ -3410,6 +3428,8 @@ const G = {
   boarding: null,
   /** PvP boarding: loser waits for winner's spoils decision (anchored). */
   boardingVictimAwaitingDecision: null,
+  /** PvP: net id of counterparty until spoils flow completes — hold snapshot may arrive after local `G.boarding` clears. */
+  _boardingPvpPartnerNetId: null,
   /** performance.now() end time: no living crew — drift before abandoned-ship hulling. */
   _abandonedShipDriftEnd: null,
   quests: [],
@@ -13367,6 +13387,7 @@ function abortActiveBoarding(msg) {
     if (n) n._boardingHostLock = false;
   }
   G.boarding = null;
+  G._boardingPvpPartnerNetId = null;
   try { if (ws?.readyState === 1) sendUpdate(true); } catch (e) {}
   const tw = document.getElementById('boarding-tw-wrap');
   if (tw) {
@@ -13383,6 +13404,7 @@ function abortActiveBoarding(msg) {
 function resetMenuBoardingState() {
   try { clearBoardingVictimAwaiting(''); } catch (e) {}
   try { abortActiveBoarding(''); } catch (e) {}
+  try { G._boardingPvpPartnerNetId = null; } catch (e2) {}
   try { G.npcs.forEach(n => { n._boardingHostLock = false; }); } catch (e) {}
 }
 function showBoardingHud(ourName, theirName, pAlive, eAlive, pTot, eTot, swapBar) {
@@ -13590,9 +13612,21 @@ function tryStartDefenderFromNetwork(attackerId, bo) {
   if (G.player.health != null && G.player.health <= 0) return;
   const sidN = Math.floor(Number(bo.sid));
   if (!(sidN > 0) || netPlayerId(bo.sid) !== G.myId) return;
-  const atk = G.otherPlayers.get(attackerId);
-  if (!atk) return;
-  if (!canPlayerShipBeBoarded(atk, attackerId)) return;
+  let atk = G.otherPlayers.get(attackerId);
+  if (!atk) {
+    const ax = Number(bo.nx), az = Number(bo.nz), ar = Number(bo.nr);
+    if (!Number.isFinite(ax) || !Number.isFinite(az)) return;
+    atk = {
+      x: ax,
+      z: az,
+      rotation: Number.isFinite(ar) ? ar : 0,
+      shipType: 'sloop',
+      shipName: '',
+      crewData: null,
+      health: 100,
+      docked: false
+    };
+  } else if (!canPlayerShipBeBoarded(atk, attackerId)) return;
   const myNid = Number(G.myId);
   const atkNid = Number(netPlayerId(attackerId));
   if (!Number.isFinite(myNid) || !Number.isFinite(atkNid)) return;
@@ -13829,6 +13863,10 @@ function boardingCombatTick() {
 function endBoardingResolution() {
   const b = G.boarding;
   if (!b || b.phase !== 'fight') return;
+  if (b.partnerPlayerId != null && b.npcSyncId == null) {
+    const pn = netPlayerId(b.partnerPlayerId);
+    if (pn != null) G._boardingPvpPartnerNetId = pn;
+  }
   let youWin;
   if ((b.pAtk | 0) <= 0 && (b.eAtk | 0) <= 0) {
     if (b.partnerPlayerId != null && b.npcSyncId == null && G.myId != null) {
@@ -14902,6 +14940,7 @@ function resolveNpcVictorOverPlayerBoarding(b) {
   const capLabel = npc && npc.name ? String(npc.name) : 'Enemy crew';
   if (npc) npc._boardingHostLock = false;
   G.boarding = null;
+  G._boardingPvpPartnerNetId = null;
   clearBoardingBodyMarkers();
   const tw0 = document.getElementById('boarding-tw-wrap');
   if (tw0) { tw0.style.display = 'none'; tw0.removeAttribute('data-remote-only'); }
@@ -15108,6 +15147,7 @@ function showBoardingSpoilsModal(won, b) {
   if (won) bumpNotoriety({ boardings: 1 });
   if (!won) {
     if (G.boarding) G.boarding = null;
+    G._boardingPvpPartnerNetId = null;
   }
   const tw = document.getElementById('boarding-tw-wrap');
   if (tw) tw.style.display = 'none';
@@ -15184,6 +15224,7 @@ function showBoardingSpoilsModal(won, b) {
     hideBoardingSpoilsModal();
     clearBoardingBodyMarkers();
     G.boarding = null;
+    G._boardingPvpPartnerNetId = null;
     markBoardingVictorySpoilsGrace();
     clearBoardingSpoilsPvpHoldState();
     notify('Your former hull slips under — you make way in the prize ship.', 5600);
@@ -15228,6 +15269,7 @@ function showBoardingSpoilsModal(won, b) {
     hideBoardingSpoilsModal();
     clearBoardingBodyMarkers();
     G.boarding = null;
+    G._boardingPvpPartnerNetId = null;
     markBoardingVictorySpoilsGrace();
     clearBoardingSpoilsPvpHoldState();
     notify('Hull broken for timber and specie — deck awash with smoke.', 5000);
@@ -15290,6 +15332,7 @@ function showBoardingSpoilsModal(won, b) {
     hideBoardingSpoilsModal();
     clearBoardingBodyMarkers();
     G.boarding = null;
+    G._boardingPvpPartnerNetId = null;
     markBoardingVictorySpoilsGrace();
     clearBoardingSpoilsPvpHoldState();
     if (b.partnerPlayerId) notify('You took what you could carry and cast off.', 4500);
@@ -19772,6 +19815,7 @@ function clearBoardingVictimAwaiting(notifyMsg) {
     G._boardingHoldSnapSent = false;
     G.boardingVictimAwaitingDecision = null;
   }
+  G._boardingPvpPartnerNetId = null;
   G.player.anchored = false;
   try { syncAnchorStatusHud(); syncAnchorToolbarButton(); } catch (e) {}
   hideBoardingSpoilsModal();
@@ -20018,7 +20062,6 @@ async function connectToServer() {
   G.iAmMultiplayerNpcStepper = false;
   try { stopMultiplayerRttLoop(); } catch (e) {}
   if (G.mode === 'playing') {
-    setMultiplayerConnectingOverlay(true);
     queueMicrotask(() => { try { preloadRealmWhileConnecting(); } catch (e) {} });
   }
   let socket;
@@ -20037,6 +20080,7 @@ async function connectToServer() {
     knownServerWorldMapRev = 0;
     serverWorldMapFetchToken++;
     notify('Connected to server');
+    if (G.mode === 'playing') setMultiplayerConnectingOverlay(true);
     flushPendingCaptainCareerDelete();
     const capName = getCaptainDisplayCrew()?.name || 'Pirate';
     G.myCaptainKey = captainNameStorageKey(capName) || G.myCaptainKey;
@@ -20485,7 +20529,9 @@ async function connectToServer() {
       case 'boarding_hold_snapshot': {
         if (G.boardingVictimAwaitingDecision) break;
         const fromPid = netPlayerId(msg.fromPlayerId);
-        const myPartner = G.boarding && G.boarding.partnerPlayerId != null ? netPlayerId(G.boarding.partnerPlayerId) : null;
+        const pidBoard = G.boarding && G.boarding.partnerPlayerId != null ? netPlayerId(G.boarding.partnerPlayerId) : null;
+        const pidHold = G._boardingPvpPartnerNetId != null ? netPlayerId(G._boardingPvpPartnerNetId) : null;
+        const myPartner = pidBoard != null ? pidBoard : pidHold;
         if (fromPid == null || myPartner == null || fromPid !== myPartner) break;
         const st = msg.shipType && SHIP_TYPES[msg.shipType] ? String(msg.shipType) : 'sloop';
         const spec = SHIP_TYPES[st] || SHIP_TYPES.sloop;
@@ -36227,6 +36273,36 @@ function menuRender() {
     requestAnimationFrame(menuRender);
   }
 }
+
+(function runInitialGameBootSequence() {
+  const el = document.getElementById('game-boot-overlay');
+  const sub = el && el.querySelector('.game-boot-sub');
+  if (el) {
+    el.style.display = 'flex';
+    el.style.flexDirection = 'column';
+    el.setAttribute('aria-hidden', 'false');
+  }
+  document.body.classList.add('game-boot-active');
+  try { kickOffGameAssetPreload(); } catch (e) {}
+  let frames = 0;
+  function step() {
+    frames++;
+    if (sub && frames === 3) sub.textContent = 'Warming water, sky, and main menu…';
+    if (frames < 5) {
+      requestAnimationFrame(step);
+      return;
+    }
+    if (sub) sub.textContent = 'Ready.';
+    setTimeout(() => {
+      if (el) {
+        el.style.display = 'none';
+        el.setAttribute('aria-hidden', 'true');
+      }
+      document.body.classList.remove('game-boot-active');
+    }, 120);
+  }
+  requestAnimationFrame(step);
+})();
 menuRender();
 
 const menuIslands = [];
