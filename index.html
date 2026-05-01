@@ -24097,14 +24097,7 @@ function arrayBufferLooksLikeBinaryGlb(ab) {
 }
 
 /**
- * Parallel main-thread `.glb` fetches — same semantics as ordinary page `fetch()` (why “other sites work”).
- *
- * Dedicated Workers were removed from this hot path because they often fail silently on some hosts
- * (CSP `worker-src`, blob-worker edge cases after fetch failure, CDN strips worker scripts, mobile
- * Data Saver quirks). Those failures left `buffers[rel]` empty while DevTools fetch from the Window
- * still looked fine during manual testing.
- *
- * Parsing stays on main thread (GLTFLoader); only the byte download was ever parallelised.
+ * Parallel main-thread `.glb` fetches — fallback when workers miss tasks or hosts block `worker-src`.
  */
 async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent, fetchOptsOverride) {
   const out = Object.create(null);
@@ -24133,6 +24126,173 @@ async function fetchGlbArrayBuffersConcurrent(rels, maxConcurrent, fetchOptsOver
   const nRuns = Math.min(Math.max(2, Number.isFinite(cap) ? Math.floor(cap) : 8), 24, Math.max(1, list.length));
   await Promise.all(Array.from({ length: nRuns }, () => pump()));
   return out;
+}
+
+/**
+ * Multi-worker `.glb` fetch — DedicatedWorkers overlap network + wasm decode latency off the UI thread.
+ * Each task settles exactly once; worker `onerror` accounts for stuck jobs; deadline + hybrid fill prevents hangs.
+ */
+async function fetchGlbArrayBuffersWorkerPool(rels, maxWorkers, fetchOptsOverride) {
+  const out = Object.create(null);
+  if (!rels || !rels.length) return out;
+  const tasks = rels.map((rel) => ({ rel, url: resolveGameAssetUrl(rel) }));
+  const fetchOpts =
+    fetchOptsOverride && typeof fetchOptsOverride === 'object'
+      ? fetchOptsOverride
+      : { cache: 'default', mode: 'cors', credentials: 'omit', redirect: 'follow' };
+  const nW = Math.max(2, Math.min(maxWorkers || 6, tasks.length, 14));
+  const codeHref = resolveGameAssetUrl('assets/glb-fetch-worker.js');
+  const POOL_DEADLINE_MS = 95000;
+
+  const workers = [];
+  let blobUrlHold = null;
+  try {
+    for (let wi = 0; wi < nW; wi++) workers.push(new Worker(codeHref));
+  } catch (_) {
+    try {
+      const js = await fetch(codeHref, {
+        cache: 'force-cache',
+        mode: 'cors',
+        credentials: 'omit',
+        redirect: 'follow'
+      }).then((r) => r.text());
+      blobUrlHold = URL.createObjectURL(new Blob([js], { type: 'application/javascript' }));
+      for (let wi = 0; wi < nW; wi++) workers.push(new Worker(blobUrlHold));
+    } catch (_) {
+      return out;
+    }
+  }
+  if (!workers.length) return out;
+
+  const q = tasks.slice();
+  let nextId = 1;
+  const inbox = new Map();
+  const inflight = new Array(workers.length).fill(null);
+  let completed = 0;
+  const targetN = tasks.length;
+  let resolveAll = null;
+  const allTasksAccounted = new Promise((r) => {
+    resolveAll = r;
+  });
+
+  function bump() {
+    completed++;
+    if (completed >= targetN && typeof resolveAll === 'function') {
+      try {
+        resolveAll();
+      } catch (_) {}
+      resolveAll = null;
+    }
+  }
+
+  function pumpWorker(wi) {
+    const task = q.shift();
+    if (!task) return;
+    const id = nextId++;
+    inbox.set(id, task);
+    inflight[wi] = id;
+    try {
+      workers[wi].postMessage({ id, url: task.url, fetchInit: fetchOpts }, []);
+    } catch (pe) {
+      inbox.delete(id);
+      inflight[wi] = null;
+      q.unshift(task);
+      try {
+        console.warn('GLB worker postMessage', task.rel, pe);
+      } catch (_) {}
+      recoverWorkerSlot(wi);
+    }
+  }
+
+  function recoverWorkerSlot(wi) {
+    try {
+      workers[wi].terminate();
+    } catch (_) {}
+    try {
+      workers[wi] = blobUrlHold ? new Worker(blobUrlHold) : new Worker(codeHref);
+      workers[wi].onmessage = makeOnMessage(wi);
+      workers[wi].onerror = makeOnError(wi);
+    } catch (_) {
+      return;
+    }
+    pumpWorker(wi);
+  }
+
+  function makeOnMessage(wi) {
+    return (ev) => {
+      const d = ev.data || {};
+      const id = d.id;
+      const slot = inbox.get(id);
+      if (!slot) return;
+      inbox.delete(id);
+      inflight[wi] = null;
+      if (d.ok && d.ab) out[slot.rel] = d.ab;
+      else try { console.warn('GLB worker fetch failed', slot.rel, d.err || ''); } catch (_) {}
+      bump();
+      pumpWorker(wi);
+    };
+  }
+
+  function makeOnError(wi) {
+    return () => {
+      try {
+        console.warn('glb-fetch-worker runtime error; recovering slot', wi);
+      } catch (_) {}
+      const stuck = inflight[wi];
+      inflight[wi] = null;
+      if (stuck != null && inbox.has(stuck)) {
+        inbox.delete(stuck);
+        bump();
+      }
+      recoverWorkerSlot(wi);
+    };
+  }
+
+  for (let wi = 0; wi < workers.length; wi++) {
+    workers[wi].onmessage = makeOnMessage(wi);
+    workers[wi].onerror = makeOnError(wi);
+  }
+  for (let wi = 0; wi < workers.length; wi++) pumpWorker(wi);
+
+  try {
+    await Promise.race([
+      allTasksAccounted,
+      new Promise((r) => setTimeout(r, POOL_DEADLINE_MS))
+    ]);
+  } finally {
+    for (let wi = 0; wi < workers.length; wi++) {
+      try {
+        workers[wi].terminate();
+      } catch (_) {}
+    }
+    if (blobUrlHold) {
+      setTimeout(() => {
+        try {
+          URL.revokeObjectURL(blobUrlHold);
+        } catch (_) {}
+      }, 3200);
+    }
+    if (completed < targetN) {
+      try {
+        console.warn('[Scene GLB] Worker pool incomplete', completed + '/' + targetN, '— window.fetch will fill gaps');
+      } catch (_) {}
+    }
+  }
+  return out;
+}
+
+/** Workers first; main-thread concurrent fetch catches misses (blocked workers / timeout / transient errors). */
+async function fetchGlbArrayBuffersHybrid(rels, maxConcurrent, fetchOptsOverride) {
+  const workerSlots = Math.min(12, Math.max(4, Math.floor((_deviceCores || 8) * 0.72)));
+  const wOut = await fetchGlbArrayBuffersWorkerPool(rels, workerSlots, fetchOptsOverride);
+  const missing = rels.filter((r) => !wOut[r]);
+  if (!missing.length) return wOut;
+  const fb = await fetchGlbArrayBuffersConcurrent(missing, maxConcurrent, fetchOptsOverride);
+  for (let i = 0; i < missing.length; i++) {
+    const k = missing[i];
+    if (fb[k]) wOut[k] = fb[k];
+  }
+  return wOut;
 }
 
 /**
@@ -24227,7 +24387,7 @@ function ensureSceneGlbsBootstrapped() {
       const rels = GAME_ASSET_3D_GLB_SCENE_BOOT_RELS;
       const fetchConc = Math.min(22, Math.max(10, (_deviceCores || 8) * 2));
       const parseConc = Math.min(9, Math.max(4, Math.floor((_deviceCores || 8) * 0.85)));
-      const buffers = await fetchGlbArrayBuffersConcurrent(rels, fetchConc);
+      const buffers = await fetchGlbArrayBuffersHybrid(rels, fetchConc);
       await parseSceneGlbBuffersInParallel(rels, buffers, parseConc);
       const missingAfterFirst = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
       if (missingAfterFirst.length) {
@@ -24235,7 +24395,11 @@ function ensureSceneGlbsBootstrapped() {
           console.warn('[Scene GLB] Retrying fetch/parse for', missingAfterFirst.length, 'asset(s) (cache reload)…');
         } catch (_) {}
         const reloadOpts = { cache: 'reload', mode: 'cors', credentials: 'omit', redirect: 'follow' };
-        const bufRetry = await fetchGlbArrayBuffersConcurrent(missingAfterFirst, Math.min(14, Math.max(6, Math.floor(fetchConc * 0.65))), reloadOpts);
+        const bufRetry = await fetchGlbArrayBuffersHybrid(
+          missingAfterFirst,
+          Math.min(14, Math.max(6, Math.floor(fetchConc * 0.65))),
+          reloadOpts
+        );
         await parseSceneGlbBuffersInParallel(missingAfterFirst, bufRetry, Math.max(3, parseConc - 1));
       }
       const stillMissing = rels.filter((r) => !_gameGlbParsedSceneTemplates[r]);
